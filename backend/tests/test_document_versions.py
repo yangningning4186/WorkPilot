@@ -233,3 +233,42 @@ async def test_updated_at_is_maintained_by_database(db_session: AsyncSession) ->
         )
     ).scalar_one()
     assert after > before
+
+
+async def test_parser_identity_change_creates_a_new_version(db_session: AsyncSession) -> None:
+    document_id = await _seed_document(db_session)
+    first = await create_candidate_version(
+        db_session,
+        document_id=document_id,
+        content_hash="same-content",
+        parser="pymupdf",
+        parser_version="1",
+        parse_meta={"backend": "pymupdf-text"},
+    )
+    second = await create_candidate_version(
+        db_session,
+        document_id=document_id,
+        content_hash="same-content",
+        parser="mineru",
+        parser_version="3.4.4:hybrid",
+        parse_meta={"backend": "hybrid", "fallback_reason": None},
+    )
+
+    assert first.created is True
+    assert second.created is True
+    assert second.version_no == 2
+    row = (
+        (
+            await db_session.execute(
+                text(
+                    "SELECT parser, parser_version, parse_meta FROM document_versions WHERE id=:id"
+                ),
+                {"id": second.id},
+            )
+        )
+        .mappings()
+        .one()
+    )
+    assert row["parser"] == "mineru"
+    assert row["parser_version"] == "3.4.4:hybrid"
+    assert row["parse_meta"]["backend"] == "hybrid"

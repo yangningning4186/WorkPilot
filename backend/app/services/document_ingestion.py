@@ -1,6 +1,8 @@
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
@@ -23,6 +25,9 @@ class IngestionResult:
     activated: bool
     unchanged: bool
     content_hash: str
+    parser: str
+    parser_version: str
+    parse_meta: dict[str, Any]
 
 
 async def persist_parsed_document(
@@ -39,8 +44,20 @@ async def persist_parsed_document(
     parser_version: str,
     max_chunk_chars: int,
     source_id: UUID | None = None,
+    parse_meta: dict[str, Any] | None = None,
 ) -> IngestionResult:
     chunks = chunk_by_heading(parsed, max_chars=max_chunk_chars)
+    effective_parse_meta = dict(parse_meta or {})
+    effective_parse_meta["ingest_signature"] = _ingest_signature(
+        parser=parser,
+        parser_version=parser_version,
+        parser_backend=effective_parse_meta.get("backend"),
+        parser_policy_version=effective_parse_meta.get("policy_version"),
+        max_chunk_chars=max_chunk_chars,
+        embedding_model=gateway.embedding_model,
+        embedding_provider=gateway.embedding_provider,
+        embedding_revision=gateway.embedding_revision,
+    )
     _, document_id = await _upsert_document(
         session,
         library_root=library_root,
@@ -58,6 +75,7 @@ async def persist_parsed_document(
         embedding_model=gateway.embedding_model,
         embedding_provider=gateway.embedding_provider,
         embedding_revision=gateway.embedding_revision,
+        parse_meta=effective_parse_meta,
     )
     if not candidate.created:
         current = (
@@ -65,7 +83,7 @@ async def persist_parsed_document(
                 await session.execute(
                     text(
                         """
-                        SELECT activated_at,
+                        SELECT activated_at, parser, parser_version, parse_meta,
                                (SELECT count(*) FROM parsed_blocks WHERE version_id=:id) blocks,
                                (SELECT count(*) FROM chunks WHERE version_id=:id) chunks
                         FROM document_versions WHERE id=:id
@@ -97,6 +115,9 @@ async def persist_parsed_document(
             activated=current["activated_at"] is not None,
             unchanged=True,
             content_hash=content_hash,
+            parser=str(current["parser"]),
+            parser_version=str(current["parser_version"]),
+            parse_meta=dict(current["parse_meta"] or {}),
         )
 
     try:
@@ -228,7 +249,36 @@ async def persist_parsed_document(
         activated=activated,
         unchanged=False,
         content_hash=content_hash,
+        parser=parser,
+        parser_version=parser_version,
+        parse_meta=effective_parse_meta,
     )
+
+
+def _ingest_signature(
+    *,
+    parser: str,
+    parser_version: str,
+    parser_backend: object,
+    parser_policy_version: object,
+    max_chunk_chars: int,
+    embedding_model: str,
+    embedding_provider: str,
+    embedding_revision: str,
+) -> str:
+    payload = {
+        "parser": parser,
+        "parser_version": parser_version,
+        "parser_backend": parser_backend,
+        "parser_policy_version": parser_policy_version,
+        "chunker": "heading:1",
+        "max_chunk_chars": max_chunk_chars,
+        "embedding_model": embedding_model,
+        "embedding_provider": embedding_provider,
+        "embedding_revision": embedding_revision,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 async def _upsert_document(

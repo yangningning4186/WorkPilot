@@ -10,7 +10,7 @@ from typing import Any
 
 import pymupdf
 
-PDF_PARSER_VERSION = "pymupdf-1"
+PDF_PARSER_VERSION = f"{pymupdf.VersionBind}:adapter2"
 
 
 def _limit_resources(memory_mb: int, cpu_seconds: int) -> None:
@@ -52,6 +52,19 @@ def _reading_order(blocks: list[dict[str, Any]], page_width: float) -> list[dict
     return ordered
 
 
+def _looks_multi_column(blocks: list[dict[str, Any]], page_width: float) -> bool:
+    narrow = [block for block in blocks if block["x1"] - block["x0"] < page_width * 0.55]
+    left = [block for block in narrow if (block["x0"] + block["x1"]) / 2 < page_width / 2]
+    right = [block for block in narrow if (block["x0"] + block["x1"]) / 2 >= page_width / 2]
+    if len(left) < 2 or len(right) < 2:
+        return False
+    return any(
+        max(left_block["y0"], right_block["y0"]) < min(left_block["y1"], right_block["y1"])
+        for left_block in left
+        for right_block in right
+    )
+
+
 def extract_pdf(path: Path, max_pages: int) -> dict[str, Any]:
     document: Any = pymupdf.open(path)  # type: ignore[no-untyped-call]
     try:
@@ -62,6 +75,9 @@ def extract_pdf(path: Path, max_pages: int) -> dict[str, Any]:
 
         pages: list[dict[str, Any]] = []
         edge_texts: Counter[str] = Counter()
+        image_count = 0
+        multi_column_pages = 0
+        pages_with_text = 0
         for page_index in range(document.page_count):
             page: Any = document[page_index]
             page_width = float(page.mediabox.width)
@@ -84,6 +100,9 @@ def extract_pdf(path: Path, max_pages: int) -> dict[str, Any]:
                 if block["y0"] < page_height * 0.12 or block["y1"] > page_height * 0.88:
                     page_edge_texts.add(text)
             edge_texts.update(page_edge_texts)
+            image_count += len(page.get_images(full=True))
+            pages_with_text += bool(blocks)
+            multi_column_pages += _looks_multi_column(blocks, page_width)
             pages.append(
                 {
                     "page_no": page_index + 1,
@@ -146,6 +165,11 @@ def extract_pdf(path: Path, max_pages: int) -> dict[str, Any]:
             "page_count": document.page_count,
             "blocks": output_blocks,
             "parser_version": PDF_PARSER_VERSION,
+            "source_analysis": {
+                "image_count": image_count,
+                "multi_column_pages": multi_column_pages,
+                "pages_with_text": pages_with_text,
+            },
         }
     finally:
         document.close()

@@ -20,7 +20,9 @@ async def test_local_dir_sync_add_skip_update_delete_and_restore(
     library.mkdir()
     note = library / "note.md"
     note.write_text("# Note\n\nfirst version", encoding="utf-8")
-    settings = Settings.model_validate({"local_library_path": library})
+    settings = Settings.model_validate(
+        {"local_library_path": library, "pdf_parser_mode": "pymupdf"}
+    )
     gateway = ModelGateway(DeterministicProvider(), embedding_dimensions=1024)
     source = await register_local_dir(
         db_session, requested_root=Path("."), allowed_root=library, name="fixture"
@@ -157,7 +159,9 @@ async def test_local_dir_sync_isolates_a_broken_pdf(
     library.mkdir()
     (library / "good.md").write_text("# Good\n\nsearchable evidence", encoding="utf-8")
     (library / "broken.pdf").write_bytes(b"not a pdf")
-    settings = Settings.model_validate({"local_library_path": library})
+    settings = Settings.model_validate(
+        {"local_library_path": library, "pdf_parser_mode": "pymupdf"}
+    )
     gateway = ModelGateway(DeterministicProvider(), embedding_dimensions=1024)
     source = await register_local_dir(
         db_session, requested_root=Path("."), allowed_root=library, name="fixture"
@@ -184,3 +188,74 @@ async def test_local_dir_sync_isolates_a_broken_pdf(
         .all()
     )
     assert rows == [{"source_uri": "good.md", "deleted_at": None}]
+
+
+@pytest.mark.integration
+async def test_local_dir_sync_rebuilds_when_chunk_configuration_changes(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    library = tmp_path / "library"
+    library.mkdir()
+    (library / "long.md").write_text("# Long\n\n" + "evidence " * 500, encoding="utf-8")
+    settings = Settings.model_validate(
+        {"local_library_path": library, "pdf_parser_mode": "pymupdf"}
+    )
+    gateway = ModelGateway(DeterministicProvider(), embedding_dimensions=1024)
+    source = await register_local_dir(
+        db_session, requested_root=Path("."), allowed_root=library, name="fixture"
+    )
+
+    first = await sync_local_dir(
+        db_session,
+        gateway,
+        source_id=source.id,
+        allowed_root=library,
+        settings=settings,
+        max_chunk_chars=2000,
+    )
+    rebuilt = await sync_local_dir(
+        db_session,
+        gateway,
+        source_id=source.id,
+        allowed_root=library,
+        settings=settings,
+        max_chunk_chars=500,
+    )
+
+    version_count = (
+        await db_session.execute(
+            text(
+                """
+                SELECT count(*)
+                FROM document_versions v
+                JOIN documents d ON d.id=v.document_id
+                WHERE d.source_id=:source_id
+                """
+            ),
+            {"source_id": source.id},
+        )
+    ).scalar_one()
+    signatures = (
+        (
+            await db_session.execute(
+                text(
+                    """
+                    SELECT parse_meta->>'ingest_signature' AS signature
+                    FROM document_versions v
+                    JOIN documents d ON d.id=v.document_id
+                    WHERE d.source_id=:source_id
+                    ORDER BY version_no
+                    """
+                ),
+                {"source_id": source.id},
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    assert first.added == 1
+    assert rebuilt.updated == 1
+    assert version_count == 2
+    assert len(set(signatures)) == 2

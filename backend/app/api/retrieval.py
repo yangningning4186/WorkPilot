@@ -22,7 +22,7 @@ from app.schemas.retrieval import (
 )
 from app.services.grounded_answer import answer_with_citations
 from app.services.markdown_ingestion import LibraryPathError, ingest_markdown_file
-from app.services.pdf_ingestion import ingest_pdf_file
+from app.services.pdf_ingestion import ingest_pdf_file, pdf_parser_config_from_settings
 
 router = APIRouter(prefix="/api/v1", tags=["retrieval"])
 
@@ -65,6 +65,7 @@ async def ingest_pdf(
             max_bytes=settings.pdf_max_bytes,
             memory_mb=settings.pdf_worker_memory_mb,
             cpu_seconds=settings.pdf_worker_cpu_s,
+            parser_config=pdf_parser_config_from_settings(settings),
         )
     except (LibraryPathError, FileNotFoundError, UnicodeDecodeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error

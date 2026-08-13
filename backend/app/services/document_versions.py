@@ -1,4 +1,6 @@
+import json
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
@@ -31,6 +33,7 @@ async def create_candidate_version(
     embedding_model: str = "legacy-unknown",
     embedding_provider: str = "legacy-unknown",
     embedding_revision: str = "legacy-unknown",
+    parse_meta: dict[str, Any] | None = None,
 ) -> CandidateVersion:
     """在文档行锁内去重并分配单调版本号。"""
 
@@ -47,7 +50,8 @@ async def create_candidate_version(
                 await session.execute(
                     text(
                         """
-                    SELECT id, version_no, content_hash, parse_status, invalid_at,
+                    SELECT id, version_no, content_hash, parser, parser_version, parse_meta,
+                           parse_status, invalid_at,
                            embedding_model, embedding_provider, embedding_revision
                     FROM document_versions
                     WHERE document_id = :document_id
@@ -65,9 +69,12 @@ async def create_candidate_version(
         if (
             latest is not None
             and latest["content_hash"] == content_hash
+            and latest["parser"] == parser
+            and latest["parser_version"] == parser_version
             and latest["embedding_model"] == embedding_model
             and latest["embedding_provider"] == embedding_provider
             and latest["embedding_revision"] == embedding_revision
+            and _same_ingest_signature(latest["parse_meta"], parse_meta)
             and latest["invalid_at"] is None
             and latest["parse_status"] in {"pending", "parsing", "done"}
         ):
@@ -80,10 +87,11 @@ async def create_candidate_version(
                 """
                 INSERT INTO document_versions
                     (id, document_id, version_no, content_hash, parser, parser_version,
-                     embedding_model, embedding_provider, embedding_revision)
+                     embedding_model, embedding_provider, embedding_revision, parse_meta)
                 VALUES
                     (:id, :document_id, :version_no, :content_hash, :parser, :parser_version,
-                     :embedding_model, :embedding_provider, :embedding_revision)
+                     :embedding_model, :embedding_provider, :embedding_revision,
+                     CAST(:parse_meta AS jsonb))
                 """
             ),
             {
@@ -96,9 +104,20 @@ async def create_candidate_version(
                 "embedding_model": embedding_model,
                 "embedding_provider": embedding_provider,
                 "embedding_revision": embedding_revision,
+                "parse_meta": json.dumps(parse_meta or {}, ensure_ascii=False),
             },
         )
         return CandidateVersion(id=version_id, version_no=version_no, created=True)
+
+
+def _same_ingest_signature(existing: object, requested: dict[str, Any] | None) -> bool:
+    requested_signature = (requested or {}).get("ingest_signature")
+    if requested_signature is None:
+        return True
+    if not isinstance(requested_signature, str):
+        return False
+    existing_signature = existing.get("ingest_signature") if isinstance(existing, dict) else None
+    return isinstance(existing_signature, str) and existing_signature == requested_signature
 
 
 async def activate_document_version(session: AsyncSession, version_id: UUID) -> bool:

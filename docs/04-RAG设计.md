@@ -72,6 +72,22 @@
 解析必须跑在独立子进程并设资源上限——MinerU 处理畸形 PDF 时 OOM 并不罕见
 （[12 §2.3](12-安全与部署.md)）。
 
+### 1.3 当前实现（M0）
+
+- `auto` 路由先跑 PyMuPDF 轻量分析；检测到多栏、嵌入图片或文本质量问题时选择 MinerU。
+- MinerU CLI 在独立进程组运行，整文档超时/取消会杀掉进程组；其 Python/模型环境与后端隔离。
+- MinerU `content_list.json` 统一转换为 `title/paragraph/table/formula/figure_caption/list/code`，
+  坐标从 0–1000 归一化到左上原点 `[0,1]`；页眉、页脚、页码、旁注和脚注不进入索引。
+- 结构门控强制校验 block 顺序、Unicode 区间回切、页码、页面尺寸、旋转角和 bbox；文本门控检查
+  空结果、低密度、替换字符、控制字符及定位覆盖率。MinerU 失败可配置回退 PyMuPDF。
+- 版本去重身份包含实际 `parser + parser_version`；解析策略、分块或 embedding 身份另进入
+  `source_sync_entries.ingest_signature`，避免配置升级后被文件 stat 快速跳过。
+- `document_versions.parse_meta` 持久化实际 backend、路由理由、回退原因、耗时和质量指标，
+  API 响应也回传这些字段，便于定位“谁解析的、为何选它、是否降级”。
+
+质量跑批由 `eval/pdf_parsing_quality.py` 执行，输出机器可读 JSON、人工可读 Markdown 和抽样 bbox
+叠图。跑批产物不提交，只把人工验收结论登记到 `docs/experiments/`。
+
 ---
 
 ## 2. 分块

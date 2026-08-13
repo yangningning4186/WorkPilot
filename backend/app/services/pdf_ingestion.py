@@ -1,11 +1,14 @@
 import asyncio
 import hashlib
+from dataclasses import replace
 from pathlib import Path
+from time import monotonic
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingest.pdf import parse_pdf_in_subprocess
+from app.core.config import Settings
+from app.ingest.pdf import PdfParserConfig, parse_pdf
 from app.llm.gateway import ModelGateway
 from app.services.document_ingestion import IngestionResult, persist_parsed_document
 from app.services.markdown_ingestion import LibraryPathError
@@ -24,16 +27,28 @@ async def ingest_pdf_file(
     max_bytes: int = 50 * 1024 * 1024,
     memory_mb: int = 2048,
     cpu_seconds: int = 120,
+    parser_config: PdfParserConfig | None = None,
 ) -> IngestionResult:
     root, resolved = await asyncio.to_thread(_resolve_pdf, path, library_root, max_bytes)
     content_hash = await asyncio.to_thread(_sha256_file, resolved)
-    parsed = await parse_pdf_in_subprocess(
-        resolved,
+    config = parser_config or PdfParserConfig(
+        mode="pymupdf",
         timeout_s=timeout_s,
         max_pages=max_pages,
         memory_mb=memory_mb,
         cpu_seconds=cpu_seconds,
+        mineru_command=Path("mineru"),
+        mineru_revision="unknown",
+        mineru_backend="hybrid-engine",
+        mineru_effort="medium",
+        mineru_method="auto",
+        mineru_timeout_s=timeout_s,
+        mineru_fallback_enabled=True,
+        mineru_processing_window_size=1,
     )
+    started = monotonic()
+    parsed = await parse_pdf(resolved, config)
+    parsed = replace(parsed, parse_elapsed_seconds=monotonic() - started)
     return await persist_parsed_document(
         session,
         gateway,
@@ -43,10 +58,29 @@ async def ingest_pdf_file(
         doc_type="paper",
         parsed=parsed.document,
         content_hash=content_hash,
-        parser="pdf",
+        parser=parsed.parser,
         parser_version=parsed.parser_version,
         max_chunk_chars=max_chunk_chars,
         source_id=source_id,
+        parse_meta=parsed.parse_meta(),
+    )
+
+
+def pdf_parser_config_from_settings(settings: Settings) -> PdfParserConfig:
+    return PdfParserConfig(
+        mode=settings.pdf_parser_mode,
+        timeout_s=settings.pdf_parse_timeout_s,
+        max_pages=settings.pdf_max_pages,
+        memory_mb=settings.pdf_worker_memory_mb,
+        cpu_seconds=settings.pdf_worker_cpu_s,
+        mineru_command=settings.pdf_mineru_command,
+        mineru_revision=settings.pdf_mineru_revision,
+        mineru_backend=settings.pdf_mineru_backend,
+        mineru_effort=settings.pdf_mineru_effort,
+        mineru_method=settings.pdf_mineru_method,
+        mineru_timeout_s=settings.pdf_mineru_timeout_s,
+        mineru_fallback_enabled=settings.pdf_mineru_fallback_enabled,
+        mineru_processing_window_size=settings.pdf_mineru_processing_window_size,
     )
 
 

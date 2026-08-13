@@ -1,0 +1,4 @@
+# 独立于 backend/pyproject.toml；安装到 .mineru/.venv。
+mineru[all]==3.4.4
+# 本机/内网环境可能通过 socks 代理访问模型仓库。
+httpx[socks]==0.28.1

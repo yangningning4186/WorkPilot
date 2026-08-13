@@ -10,10 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
 from app.core.config import Settings
+from app.ingest.pdf import PDF_POLICY_VERSION
 from app.llm.gateway import ModelGateway
 from app.services.document_ingestion import IngestionResult
 from app.services.markdown_ingestion import LibraryPathError, ingest_markdown_file
-from app.services.pdf_ingestion import ingest_pdf_file
+from app.services.pdf_ingestion import ingest_pdf_file, pdf_parser_config_from_settings
 
 SUPPORTED_SUFFIXES = {".md", ".markdown", ".pdf"}
 
@@ -147,11 +148,18 @@ async def sync_local_dir(
         seen = {item.source_uri for item in files} | {item.source_uri for item in scan_failures}
         for item in files:
             previous = entries.get(item.source_uri)
+            ingest_signature = _ingest_signature(
+                item,
+                settings=settings,
+                gateway=gateway,
+                max_chunk_chars=max_chunk_chars,
+            )
             if (
                 previous is not None
                 and previous["sync_status"] == "synced"
                 and previous["size_bytes"] == item.size_bytes
                 and previous["mtime_ns"] == item.mtime_ns
+                and previous["ingest_signature"] == ingest_signature
             ):
                 previous_hash = previous["content_hash"]
                 await _record_entry(
@@ -160,6 +168,7 @@ async def sync_local_dir(
                     item,
                     previous_hash if isinstance(previous_hash, str) else None,
                     None,
+                    ingest_signature,
                 )
                 counters["skipped"] += 1
                 continue
@@ -169,8 +178,9 @@ async def sync_local_dir(
                     previous is not None
                     and previous["sync_status"] == "synced"
                     and previous["content_hash"] == file_hash
+                    and previous["ingest_signature"] == ingest_signature
                 ):
-                    await _record_entry(session, source_id, item, file_hash, None)
+                    await _record_entry(session, source_id, item, file_hash, None, ingest_signature)
                     counters["skipped"] += 1
                     continue
                 result = await _ingest_scanned_file(
@@ -182,7 +192,7 @@ async def sync_local_dir(
                     settings=settings,
                     max_chunk_chars=max_chunk_chars,
                 )
-                await _record_entry(session, source_id, item, file_hash, None)
+                await _record_entry(session, source_id, item, file_hash, None, ingest_signature)
                 if previous is None:
                     counters["added"] += 1
                 elif result.unchanged:
@@ -193,7 +203,7 @@ async def sync_local_dir(
                 await session.rollback()
                 message = str(error)[:2000]
                 failures.append(SyncFailure(source_uri=item.source_uri, error=message))
-                await _record_entry(session, source_id, item, None, message)
+                await _record_entry(session, source_id, item, None, message, ingest_signature)
 
         for failure in scan_failures:
             await _record_scan_failure(session, source_id, failure)
@@ -312,7 +322,8 @@ async def _load_entries(session: AsyncSession, source_id: UUID) -> dict[str, dic
             await session.execute(
                 text(
                     """
-                    SELECT source_uri, size_bytes, mtime_ns, content_hash, sync_status
+                    SELECT source_uri, size_bytes, mtime_ns, content_hash, sync_status,
+                           ingest_signature
                     FROM source_sync_entries WHERE source_id=:source_id
                     """
                 ),
@@ -357,6 +368,7 @@ async def _ingest_scanned_file(
         max_bytes=settings.pdf_max_bytes,
         memory_mb=settings.pdf_worker_memory_mb,
         cpu_seconds=settings.pdf_worker_cpu_s,
+        parser_config=pdf_parser_config_from_settings(settings),
     )
 
 
@@ -366,6 +378,7 @@ async def _record_entry(
     item: ScannedFile,
     content_hash: str | None,
     error: str | None,
+    ingest_signature: str | None,
 ) -> None:
     async with session.begin():
         await session.execute(
@@ -373,16 +386,19 @@ async def _record_entry(
                 """
                 INSERT INTO source_sync_entries
                     (source_id, source_uri, size_bytes, mtime_ns, content_hash, sync_status,
-                     sync_error, last_seen_at)
+                     sync_error, last_seen_at, ingest_signature)
                 VALUES
                     (:source_id, :source_uri, :size_bytes, :mtime_ns, :content_hash,
-                     :sync_status, :sync_error, now())
+                     :sync_status, :sync_error, now(), :ingest_signature)
                 ON CONFLICT (source_id, source_uri) DO UPDATE SET
                     size_bytes=EXCLUDED.size_bytes,
                     mtime_ns=EXCLUDED.mtime_ns,
                     content_hash=COALESCE(EXCLUDED.content_hash, source_sync_entries.content_hash),
                     sync_status=EXCLUDED.sync_status,
                     sync_error=EXCLUDED.sync_error,
+                    ingest_signature=COALESCE(
+                        EXCLUDED.ingest_signature, source_sync_entries.ingest_signature
+                    ),
                     last_seen_at=now(),
                     updated_at=now()
                 """
@@ -395,6 +411,7 @@ async def _record_entry(
                 "content_hash": content_hash,
                 "sync_status": "failed" if error else "synced",
                 "sync_error": error,
+                "ingest_signature": ingest_signature,
             },
         )
 
@@ -403,7 +420,37 @@ async def _record_scan_failure(
     session: AsyncSession, source_id: UUID, failure: SyncFailure
 ) -> None:
     item = ScannedFile(path=Path(), source_uri=failure.source_uri, size_bytes=0, mtime_ns=0)
-    await _record_entry(session, source_id, item, None, failure.error)
+    await _record_entry(session, source_id, item, None, failure.error, None)
+
+
+def _ingest_signature(
+    item: ScannedFile,
+    *,
+    settings: Settings,
+    gateway: ModelGateway,
+    max_chunk_chars: int,
+) -> str:
+    if item.path.suffix.lower() in {".md", ".markdown"}:
+        parser_identity: dict[str, object] = {"parser": "markdown", "revision": "1"}
+    else:
+        parser_identity = {
+            "parser": "pdf-policy",
+            "policy_revision": PDF_POLICY_VERSION,
+            "mode": settings.pdf_parser_mode,
+            "mineru_revision": settings.pdf_mineru_revision,
+            "mineru_backend": settings.pdf_mineru_backend,
+            "mineru_effort": settings.pdf_mineru_effort,
+            "mineru_method": settings.pdf_mineru_method,
+        }
+    payload = {
+        **parser_identity,
+        "max_chunk_chars": max_chunk_chars,
+        "embedding_model": gateway.embedding_model,
+        "embedding_provider": gateway.embedding_provider,
+        "embedding_revision": gateway.embedding_revision,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 async def _mark_missing_documents_deleted(

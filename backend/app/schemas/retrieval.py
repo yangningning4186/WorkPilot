@@ -18,6 +18,9 @@ class MarkdownIngestResponse(BaseModel):
     chunk_count: int
     activated: bool
     unchanged: bool
+    parser: str
+    parser_version: str
+    parse_meta: dict[str, Any]
 
 
 class PdfIngestRequest(BaseModel):

@@ -32,11 +32,26 @@ class Settings(BaseSettings):
     embedding_dim: Literal[1024] = 1024
     model_timeout_s: float = Field(default=30.0, gt=0)
     model_trust_env: bool = False
+    pdf_parser_mode: Literal["auto", "pymupdf", "mineru"] = "auto"
     pdf_parse_timeout_s: float = Field(default=120.0, gt=0, le=600)
     pdf_max_pages: int = Field(default=500, ge=1, le=2000)
     pdf_max_bytes: int = Field(default=50 * 1024 * 1024, ge=1024)
     pdf_worker_memory_mb: int = Field(default=2048, ge=256, le=16384)
     pdf_worker_cpu_s: int = Field(default=120, ge=1, le=600)
+    pdf_mineru_command: Path = Path("../.mineru/.venv/bin/mineru")
+    pdf_mineru_revision: str = "3.4.4"
+    pdf_mineru_backend: Literal[
+        "pipeline",
+        "vlm-engine",
+        "hybrid-engine",
+        "vlm-http-client",
+        "hybrid-http-client",
+    ] = "hybrid-engine"
+    pdf_mineru_effort: Literal["medium", "high"] = "medium"
+    pdf_mineru_method: Literal["auto", "txt", "ocr"] = "auto"
+    pdf_mineru_timeout_s: float = Field(default=1800.0, gt=0, le=7200)
+    pdf_mineru_fallback_enabled: bool = True
+    pdf_mineru_processing_window_size: int = Field(default=4, ge=1, le=64)
     refusal_threshold: float = Field(default=0.35, ge=-1.0, le=1.0)
     answer_max_evidence_chars: int = Field(default=12000, ge=1000, le=100000)
     answer_max_tokens: int = Field(default=1200, ge=64, le=8192)

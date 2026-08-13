@@ -87,9 +87,38 @@ curl -X POST http://127.0.0.1:8000/api/v1/answer \
 `bbox_norm`，后续引用不需要从 chunk 文本反推来源。每次模型调用会写入
 `llm_calls`；原始提示词和文档内容不会写入该审计表。
 
-当前 PDF 基线使用 PyMuPDF 文本层，在独立子进程中执行，有文件大小、页数、CPU、内存和超时护栏；
-已做基础双栏排序与重复页眉/页脚过滤。扫描件 OCR、表格还原、公式 LaTeX 和更强的版面语义留给
-MinerU 阶段；无文本层 PDF 会明确失败，不会产生空文档。
+PDF 解析支持 `auto` / `pymupdf` / `mineru` 三种模式。`auto` 先用轻量 PyMuPDF 分析文本密度、
+图片和多栏版面；简单文本直接采用基线，复杂版面转 MinerU。MinerU 输出会归一化为标题、段落、
+表格 Markdown、公式 LaTeX、图注等 block，并丢弃页眉、页脚、页码和旁注。所有结果都经过字符区间、
+页码、页面尺寸和 bbox 结构校验；MinerU 不可用、超时或质量门控失败时按配置回退 PyMuPDF，并在
+`document_versions.parse_meta` 留下实际 parser/backend、选择理由、回退原因、耗时和质量指标。
+
+MinerU 使用独立环境，避免其模型栈污染 FastAPI 依赖。Apple Silicon 本地安装：
+
+```bash
+cd ..
+uv venv --python 3.12 .mineru/.venv
+uv pip install --python .mineru/.venv/bin/python \
+  -r requirements-mineru.txt
+cp .env.example .env
+# 把 PDF_MINERU_COMMAND 改为当前仓库下 .mineru/.venv/bin/mineru 的绝对路径
+```
+
+首次 MinerU 解析会自动下载约数 GB 的本地模型，耗时显著高于热启动。模型和 `.mineru/`、原始资料、
+质量跑批产物均被 Git 忽略。`PDF_MINERU_TIMEOUT_S` 是整份文档的墙钟护栏；超时或任务取消会终止
+整组子进程。解析策略、模型 revision、分块参数或 embedding 身份变化会改变 `ingest_signature`，
+下一次 `local_dir` 同步会自动重解析/重向量化，文件未变化也不会误跳过。
+
+真实 PDF 质量跑批会对比 PyMuPDF 与 MinerU，并输出 JSON、Markdown 和抽样 bbox 叠图：
+
+```bash
+cd ..
+PYTHONPATH=backend backend/.venv/bin/python -m eval.pdf_parsing_quality \
+  --library-root /absolute/path/to/read-only-library --sample-pages 2
+```
+
+无文本层 PDF 在 PyMuPDF 模式会明确失败；`auto` / `mineru` 可尝试 MinerU OCR。现阶段表格中的
+`rowspan` / `colspan` 会按普通单元格展开，跨页表格合并和扫描件专项基线仍需后续语料验证。
 
 问答接口把检索结果展开成 block 级 `[S1]` 证据，要求模型逐句引用，并把短标签解析为
 `block_id`、`version_id`、原文 quote、字符区间和页面坐标。短标签只在单次消息内有效；
