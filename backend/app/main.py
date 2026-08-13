@@ -1,0 +1,30 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from app.api.health import router as health_router
+from app.core.config import get_settings
+from app.core.db import close_database
+from app.core.logging import configure_logging
+from app.core.redis import close_redis
+from app.core.trace import TraceIdMiddleware
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    yield
+    await close_redis()
+    await close_database()
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="WorkPilot API", version="0.1.0", lifespan=lifespan)
+    app.add_middleware(TraceIdMiddleware)
+    app.include_router(health_router)
+    return app
+
+
+app = create_app()

@@ -44,7 +44,7 @@ workpilot/
 
 ## 环境与命令
 
-本机无容器运行时，需先装 OrbStack。Python 用 uv 锁 **3.12**（3.14 上 ML 依赖无 wheel）。
+本机使用 OrbStack 运行容器。Python 用 uv 锁 **3.12**（3.14 上 ML 依赖无 wheel）。
 
 ```bash
 # 基础设施（M0 只需 postgres + redis；minio/langfuse 在 M1 引入）
