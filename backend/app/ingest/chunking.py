@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from app.ingest.markdown import ParsedBlock, ParsedMarkdown
+from app.ingest.types import ParsedBlock, ParsedDocument
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class HeadingChunk:
     heading_path: tuple[str, ...]
 
 
-def chunk_by_heading(parsed: ParsedMarkdown, *, max_chars: int = 2000) -> list[HeadingChunk]:
+def chunk_by_heading(parsed: ParsedDocument, *, max_chars: int = 2000) -> list[HeadingChunk]:
     """标题边界优先；章节过长时仅在 block 边界切分。"""
 
     if max_chars < 1:

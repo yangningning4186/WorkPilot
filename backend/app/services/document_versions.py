@@ -248,4 +248,8 @@ async def activate_document_version(session: AsyncSession, version_id: UUID) -> 
             text("UPDATE chunks SET is_searchable = true WHERE version_id = :version_id"),
             {"version_id": version_id},
         )
+        await session.execute(
+            text("UPDATE documents SET deleted_at = NULL WHERE id = :document_id"),
+            {"document_id": candidate["document_id"]},
+        )
         return True

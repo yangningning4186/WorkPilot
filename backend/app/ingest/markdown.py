@@ -1,26 +1,14 @@
 import re
 import unicodedata
-from dataclasses import dataclass
+
+from app.ingest.types import ParsedBlock, ParsedDocument
 
 HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 LIST_RE = re.compile(r"^(?:[-+*]|\d+[.)])[ \t]+")
 FENCE_RE = re.compile(r"^[ \t]*(```|~~~)")
 
 
-@dataclass(frozen=True)
-class ParsedBlock:
-    block_idx: int
-    block_type: str
-    text: str
-    char_start: int
-    char_end: int
-    heading_path: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ParsedMarkdown:
-    full_text: str
-    blocks: list[ParsedBlock]
+ParsedMarkdown = ParsedDocument
 
 
 def normalize_markdown(content: str) -> str:

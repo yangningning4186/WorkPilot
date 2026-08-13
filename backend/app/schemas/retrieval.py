@@ -20,6 +20,11 @@ class MarkdownIngestResponse(BaseModel):
     unchanged: bool
 
 
+class PdfIngestRequest(BaseModel):
+    path: Path
+    max_chunk_chars: int = Field(default=2000, ge=200, le=20000)
+
+
 class DenseSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     top_k: int = Field(default=10, ge=1, le=50)

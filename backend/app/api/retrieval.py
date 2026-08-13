@@ -18,9 +18,11 @@ from app.schemas.retrieval import (
     GroundedAnswerResponse,
     MarkdownIngestRequest,
     MarkdownIngestResponse,
+    PdfIngestRequest,
 )
 from app.services.grounded_answer import answer_with_citations
 from app.services.markdown_ingestion import LibraryPathError, ingest_markdown_file
+from app.services.pdf_ingestion import ingest_pdf_file
 
 router = APIRouter(prefix="/api/v1", tags=["retrieval"])
 
@@ -38,6 +40,31 @@ async def ingest_markdown(
             path=request.path,
             library_root=get_settings().local_library_path,
             max_chunk_chars=request.max_chunk_chars,
+        )
+    except (LibraryPathError, FileNotFoundError, UnicodeDecodeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return MarkdownIngestResponse(**vars(result))
+
+
+@router.post("/documents/ingest-pdf", response_model=MarkdownIngestResponse)
+async def ingest_pdf(
+    request: PdfIngestRequest,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    gateway: Annotated[ModelGateway, Depends(get_model_gateway)],
+) -> MarkdownIngestResponse:
+    settings = get_settings()
+    try:
+        result = await ingest_pdf_file(
+            session,
+            gateway,
+            path=request.path,
+            library_root=settings.local_library_path,
+            max_chunk_chars=request.max_chunk_chars,
+            timeout_s=settings.pdf_parse_timeout_s,
+            max_pages=settings.pdf_max_pages,
+            max_bytes=settings.pdf_max_bytes,
+            memory_mb=settings.pdf_worker_memory_mb,
+            cpu_seconds=settings.pdf_worker_cpu_s,
         )
     except (LibraryPathError, FileNotFoundError, UnicodeDecodeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error

@@ -9,6 +9,7 @@ dependencies = [
   "fastapi>=0.116,<1",
   "pgvector>=0.4,<1",
   "pydantic-settings>=2.10,<3",
+  "pymupdf>=1.26,<2",
   "redis>=6.4,<7",
   "sqlalchemy[asyncio]>=2.0.41,<3",
   "structlog>=25.4,<26",
