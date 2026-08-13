@@ -11,14 +11,16 @@
 ```bash
 PYTHONPATH=backend backend/.venv/bin/python -m eval.dense_baseline \
   --dataset core-dev --origin human --label dense-core-dev-v1 \
-  --top-k 10 --token-budget 4000 --theta 0.5 --alpha 0.5
+  --top-k 10 --diagnostic-k 50 --token-budget 4000 --theta 0.5 --alpha 0.5
 ```
 
 `mapping.py` 只在 `version_id` 相同的前提下计算 gold span 覆盖率；默认重叠阈值 θ=0.5。
 `metrics/retrieval.py` 实现 span Recall@K、固定 token budget Recall、nDCG、α-nDCG、MRR 和
 context precision；`metrics/refusal.py` 计算 answerable/unanswerable AUROC，并在 dev 样本上扫描
 macro-F1 最优阈值。跑批会拒绝 stale span、无 gold span 的可答题，以及 dense-only 不支持的
-`global` / `agent_task` 类别。
+`global` / `agent_task` 类别。报告还按 category 汇总指标、展示可答/不可答 top score 分布，并将
+未命中的 gold span 归因为 token budget 截断、Top-K 外命中、同文档未排入、文档未召回或索引
+未覆盖；`--diagnostic-k` 只控制归因深度，不改变正式 Top-K 指标。
 
 工程链路可用合成 title smoke 检查，但其数字不能作为模型质量结论：
 

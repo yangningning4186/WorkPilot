@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
 from eval.mapping import GoldSpan, RetrievedChunk
+from eval.metrics.diagnostics import diagnose_spans, percentile, summarize_scores
 from eval.metrics.refusal import RefusalAnalysis, analyze_refusal
 from eval.metrics.retrieval import RetrievalMetrics, evaluate_retrieval
 
@@ -46,6 +48,7 @@ class ItemResult:
     latency_ms: int
     retrieval: dict[str, float | int] | None
     retrieved: list[dict[str, object]]
+    span_diagnostics: list[dict[str, object]]
 
 
 async def run_dense_baseline(
@@ -54,6 +57,7 @@ async def run_dense_baseline(
     label: str,
     origin: str,
     top_k: int,
+    diagnostic_k: int,
     token_budget: int,
     theta: float,
     alpha: float,
@@ -61,9 +65,12 @@ async def run_dense_baseline(
     settings: Settings | None = None,
 ) -> Path:
     settings = settings or Settings()
+    if not 1 <= top_k <= diagnostic_k <= 50:
+        raise ValueError("必须满足 1 <= top_k <= diagnostic_k <= 50")
     config: dict[str, object] = {
         "strategy": "dense-only",
         "top_k": top_k,
+        "diagnostic_k": diagnostic_k,
         "token_budget": token_budget,
         "theta": theta,
         "alpha": alpha,
@@ -97,6 +104,7 @@ async def run_dense_baseline(
                 run_id=run_id,
                 items=items,
                 top_k=top_k,
+                diagnostic_k=diagnostic_k,
                 token_budget=token_budget,
                 theta=theta,
                 alpha=alpha,
@@ -105,7 +113,11 @@ async def run_dense_baseline(
                 [(item.top_score, item.answerable) for item in results],
                 configured_threshold=settings.refusal_threshold,
             )
-            metrics = _aggregate(results, refusal)
+            metrics = _aggregate(
+                results,
+                refusal,
+                configured_threshold=settings.refusal_threshold,
+            )
             await _finish_run(session, run_id, metrics)
         except Exception:
             await session.rollback()
@@ -250,6 +262,7 @@ async def _evaluate_items(
     run_id: UUID,
     items: list[EvalItem],
     top_k: int,
+    diagnostic_k: int,
     token_budget: int,
     theta: float,
     alpha: float,
@@ -257,10 +270,13 @@ async def _evaluate_items(
     results: list[ItemResult] = []
     for item in items:
         started = time.monotonic()
-        hits = await dense_search(session, gateway, query=item.question, top_k=top_k)
+        hits = await dense_search(
+            session, gateway, query=item.question, top_k=diagnostic_k
+        )
         latency_ms = max(0, round((time.monotonic() - started) * 1000))
         retrieved = [_retrieved_chunk(hit) for hit in hits]
         metrics: RetrievalMetrics | None = None
+        span_diagnostics: list[dict[str, object]] = []
         if item.answerable:
             candidates = await _candidate_chunks(
                 session,
@@ -278,6 +294,17 @@ async def _evaluate_items(
                 theta=theta,
                 alpha=alpha,
             )
+            span_diagnostics = [
+                diagnostic.to_dict()
+                for diagnostic in diagnose_spans(
+                    item.gold_spans,
+                    retrieved,
+                    candidates,
+                    top_k=top_k,
+                    token_budget=token_budget,
+                    theta=theta,
+                )
+            ]
         result = ItemResult(
             item_id=item.id,
             category=item.category,
@@ -286,7 +313,8 @@ async def _evaluate_items(
             top_score=hits[0].score if hits else -1.0,
             latency_ms=latency_ms,
             retrieval=metrics.to_dict() if metrics else None,
-            retrieved=[_serialize_hit(hit) for hit in hits],
+            retrieved=[_serialize_hit(hit) for hit in hits[:top_k]],
+            span_diagnostics=span_diagnostics,
         )
         await _store_result(session, run_id, result)
         results.append(result)
@@ -387,6 +415,7 @@ async def _store_result(
                     "answerable": result.answerable,
                     "top_score": result.top_score,
                     "retrieval": result.retrieval,
+                    "span_diagnostics": result.span_diagnostics,
                 }
             ),
             "latency_ms": result.latency_ms,
@@ -396,8 +425,56 @@ async def _store_result(
 
 
 def _aggregate(
-    results: list[ItemResult], refusal: RefusalAnalysis
+    results: list[ItemResult],
+    refusal: RefusalAnalysis,
+    *,
+    configured_threshold: float,
 ) -> dict[str, object]:
+    retrieval_summary = _retrieval_summary(results)
+    category_summary = {
+        category: _slice_summary(
+            [item for item in results if item.category == category],
+            configured_threshold=configured_threshold,
+        )
+        for category in sorted({item.category for item in results})
+    }
+    refusal_summary = refusal.to_dict()
+    refusal_summary["score_distributions"] = {
+        "answerable": summarize_scores(
+            [item.top_score for item in results if item.answerable]
+        ),
+        "unanswerable": summarize_scores(
+            [item.top_score for item in results if not item.answerable]
+        ),
+    }
+    status_counts = Counter(
+        str(span["status"]) for item in results for span in item.span_diagnostics
+    )
+    missed_items = sum(
+        any(span["status"] != "hit" for span in item.span_diagnostics)
+        for item in results
+    )
+    latencies = sorted(item.latency_ms for item in results)
+    return {
+        "item_count": len(results),
+        "answerable_count": sum(item.answerable for item in results),
+        "unanswerable_count": sum(not item.answerable for item in results),
+        "retrieval": retrieval_summary,
+        "by_category": category_summary,
+        "diagnostics": {
+            "gold_span_count": sum(len(item.span_diagnostics) for item in results),
+            "missed_item_count": missed_items,
+            "status_counts": dict(sorted(status_counts.items())),
+        },
+        "refusal": refusal_summary,
+        "latency_ms": {
+            "mean": fmean(latencies) if latencies else None,
+            "p95": percentile(latencies, 0.95),
+        },
+    }
+
+
+def _retrieval_summary(results: list[ItemResult]) -> dict[str, float | None]:
     retrievals = [item.retrieval for item in results if item.retrieval is not None]
     metric_names = (
         "span_recall_at_k",
@@ -407,20 +484,32 @@ def _aggregate(
         "mrr",
         "context_precision",
     )
-    retrieval_summary = {
+    return {
         name: fmean(float(item[name]) for item in retrievals) if retrievals else None
         for name in metric_names
     }
-    latencies = sorted(item.latency_ms for item in results)
+
+
+def _slice_summary(
+    results: list[ItemResult], *, configured_threshold: float
+) -> dict[str, object]:
+    refused = [item for item in results if item.top_score < configured_threshold]
     return {
         "item_count": len(results),
         "answerable_count": sum(item.answerable for item in results),
         "unanswerable_count": sum(not item.answerable for item in results),
-        "retrieval": retrieval_summary,
-        "refusal": refusal.to_dict(),
-        "latency_ms": {
-            "mean": fmean(latencies) if latencies else None,
-            "p95": _percentile(latencies, 0.95),
+        "retrieval": _retrieval_summary(results),
+        "scores": summarize_scores([item.top_score for item in results]),
+        "configured_refusal": {
+            "threshold": configured_threshold,
+            "refused_count": len(refused),
+            "refusal_rate": len(refused) / len(results) if results else 0.0,
+            "false_refusal": sum(item.answerable for item in refused),
+            "false_answerable": sum(
+                not item.answerable
+                for item in results
+                if item.top_score >= configured_threshold
+            ),
         },
     }
 
@@ -449,13 +538,21 @@ def _json_item(item: ItemResult) -> dict[str, object]:
 
 def _markdown_report(payload: dict[str, object]) -> str:
     metrics = payload["metrics"]
+    config = payload["config"]
+    items = payload["items"]
     assert isinstance(metrics, dict)
+    assert isinstance(config, dict)
+    assert isinstance(items, list)
     retrieval = metrics["retrieval"]
     refusal = metrics["refusal"]
     latency = metrics["latency_ms"]
+    by_category = metrics["by_category"]
+    diagnostics = metrics["diagnostics"]
     assert isinstance(retrieval, dict)
     assert isinstance(refusal, dict)
     assert isinstance(latency, dict)
+    assert isinstance(by_category, dict)
+    assert isinstance(diagnostics, dict)
     best = refusal.get("best")
     configured = refusal.get("configured")
     lines = [
@@ -464,7 +561,9 @@ def _markdown_report(payload: dict[str, object]) -> str:
         f"- 数据集: `{payload['dataset']}`",
         f"- 标签: `{payload['label']}`",
         f"- Git: `{payload['git_sha']}`",
+        f"- Config hash: `{payload['config_hash']}`",
         f"- 样本: {metrics['item_count']}（可答 {metrics['answerable_count']} / 不可答 {metrics['unanswerable_count']}）",
+        f"- 排名口径: Top {config['top_k']}；漏召回诊断深度: Top {config['diagnostic_k']}；token budget: {config['token_budget']}",
         "",
         "## 检索",
         "",
@@ -479,21 +578,156 @@ def _markdown_report(payload: dict[str, object]) -> str:
             precision=_fmt(retrieval.get("context_precision")),
         ),
         "",
+        "## 分类别",
+        "",
+        "| category | n | span recall | budget recall | nDCG | MRR | score median | 当前阈值拒答 |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        *_category_markdown_rows(by_category),
+        "",
+        "## Gold span 漏召回诊断",
+        "",
+        f"- Gold spans: {diagnostics['gold_span_count']}；涉及漏召回/预算截断的样本: {diagnostics['missed_item_count']}。",
+        f"- 状态计数: `{json.dumps(diagnostics['status_counts'], ensure_ascii=False, sort_keys=True)}`",
+        "",
+        *_missed_span_markdown(items),
+        "",
         "## 拒答",
         "",
         f"- AUROC: {_fmt(refusal.get('auroc'))}",
         f"- 当前阈值: {_threshold_line(configured)}",
         f"- dev 最优阈值: {_threshold_line(best)}",
         "",
+        *_score_distribution_markdown(refusal),
+        "",
         "## 延迟",
         "",
         f"- mean: {_fmt(latency.get('mean'), digits=1)} ms",
         f"- p95: {_fmt(latency.get('p95'), digits=1)} ms",
         "",
-        "> 只有包含人工确认 gold span 的数据集才能作为正式质量结论；synthetic title smoke 仅验证工程链路。",
+        _report_caveat(config, metrics),
         "",
     ]
     return "\n".join(lines)
+
+
+def _category_markdown_rows(by_category: dict[object, object]) -> list[str]:
+    rows: list[str] = []
+    for category, raw_summary in by_category.items():
+        assert isinstance(raw_summary, dict)
+        retrieval = raw_summary["retrieval"]
+        scores = raw_summary["scores"]
+        refusal = raw_summary["configured_refusal"]
+        assert isinstance(retrieval, dict)
+        assert isinstance(scores, dict)
+        assert isinstance(refusal, dict)
+        rows.append(
+            "| {category} | {count} | {recall} | {budget} | {ndcg} | {mrr} | "
+            "{median} | {refused}/{count} |".format(
+                category=category,
+                count=raw_summary["item_count"],
+                recall=_fmt(retrieval.get("span_recall_at_k")),
+                budget=_fmt(retrieval.get("budget_span_recall")),
+                ndcg=_fmt(retrieval.get("ndcg_at_k")),
+                mrr=_fmt(retrieval.get("mrr")),
+                median=_fmt(scores.get("median")),
+                refused=refusal["refused_count"],
+            )
+        )
+    return rows
+
+
+def _missed_span_markdown(items: list[object]) -> list[str]:
+    rows = [
+        "| category | question | span | status | first hit rank | best overlap | quote |",
+        "|---|---|---:|---|---:|---:|---|",
+    ]
+    missed = 0
+    for raw_item in items:
+        assert isinstance(raw_item, dict)
+        raw_spans = raw_item["span_diagnostics"]
+        assert isinstance(raw_spans, list)
+        for raw_span in raw_spans:
+            assert isinstance(raw_span, dict)
+            if raw_span["status"] == "hit":
+                continue
+            missed += 1
+            rank = raw_span["first_hit_rank"]
+            rows.append(
+                "| {category} | {question} | {span} | {status} | {rank} | {overlap} | {quote} |".format(
+                    category=raw_item["category"],
+                    question=_markdown_cell(str(raw_item["question"]), limit=80),
+                    span=int(raw_span["span_index"]) + 1,
+                    status=raw_span["status"],
+                    rank=rank if rank is not None else "-",
+                    overlap=_fmt(raw_span["best_retrieved_overlap"]),
+                    quote=_markdown_cell(str(raw_span["quote"]), limit=100),
+                )
+            )
+    return rows if missed else ["Top-K 与 token budget 均覆盖全部 gold span。"]
+
+
+def _score_distribution_markdown(refusal: dict[object, object]) -> list[str]:
+    distributions = refusal["score_distributions"]
+    assert isinstance(distributions, dict)
+    answerable = distributions["answerable"]
+    unanswerable = distributions["unanswerable"]
+    assert isinstance(answerable, dict)
+    assert isinstance(unanswerable, dict)
+    lines = [
+        "### Top score 分布",
+        "",
+        "| label | n | min | p25 | median | p75 | p95 | max | mean |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        _distribution_row("answerable", answerable),
+        _distribution_row("unanswerable", unanswerable),
+        "",
+        "| score bin | answerable | unanswerable |",
+        "|---|---:|---:|",
+    ]
+    answerable_histogram = answerable["histogram"]
+    unanswerable_histogram = unanswerable["histogram"]
+    assert isinstance(answerable_histogram, dict)
+    assert isinstance(unanswerable_histogram, dict)
+    for label in sorted(set(answerable_histogram) | set(unanswerable_histogram)):
+        lines.append(
+            f"| {label} | {answerable_histogram.get(label, 0)} | "
+            f"{unanswerable_histogram.get(label, 0)} |"
+        )
+    return lines
+
+
+def _distribution_row(label: str, distribution: dict[object, object]) -> str:
+    return (
+        "| {label} | {count} | {min} | {p25} | {median} | {p75} | {p95} | "
+        "{max} | {mean} |"
+    ).format(
+        label=label,
+        count=distribution["count"],
+        min=_fmt(distribution["min"]),
+        p25=_fmt(distribution["p25"]),
+        median=_fmt(distribution["median"]),
+        p75=_fmt(distribution["p75"]),
+        p95=_fmt(distribution["p95"]),
+        max=_fmt(distribution["max"]),
+        mean=_fmt(distribution["mean"]),
+    )
+
+
+def _markdown_cell(value: str, *, limit: int) -> str:
+    compact = " ".join(value.split()).replace("|", "\\|")
+    return compact if len(compact) <= limit else compact[: limit - 1] + "…"
+
+
+def _report_caveat(config: dict[object, object], metrics: dict[object, object]) -> str:
+    if config.get("origin") != "human":
+        return "> 非 human 数据只用于工程 smoke，不能作为正式质量结论。"
+    unanswerable_count = metrics["unanswerable_count"]
+    assert isinstance(unanswerable_count, int)
+    if unanswerable_count < 10:
+        return (
+            "> 当前不可答样本少于 10 条；阈值分析仅作方向判断，不能直接固化为线上阈值。"
+        )
+    return "> 本报告来自人工确认 gold span；阈值仍应在独立 test 集复核后上线。"
 
 
 def _threshold_line(value: object) -> str:
@@ -507,16 +741,6 @@ def _threshold_line(value: object) -> str:
 
 def _fmt(value: object, *, digits: int = 4) -> str:
     return f"{value:.{digits}f}" if isinstance(value, int | float) else "-"
-
-
-def _percentile(values: list[int], quantile: float) -> float | None:
-    if not values:
-        return None
-    position = min(len(values) - 1, max(0.0, (len(values) - 1) * quantile))
-    lower = int(position)
-    upper = min(len(values) - 1, lower + 1)
-    fraction = position - lower
-    return values[lower] + (values[upper] - values[lower]) * fraction
 
 
 def _git_sha() -> str:
@@ -544,6 +768,12 @@ def _parse_args() -> argparse.Namespace:
         "--origin", choices=["human", "synthetic", "badcase", "all"], default="human"
     )
     parser.add_argument("--top-k", type=int, default=10)
+    parser.add_argument(
+        "--diagnostic-k",
+        type=int,
+        default=50,
+        help="为漏召回归因保留的最大排名深度，必须不小于 top-k",
+    )
     parser.add_argument("--token-budget", type=int, default=4000)
     parser.add_argument("--theta", type=float, default=0.5)
     parser.add_argument("--alpha", type=float, default=0.5)
@@ -561,6 +791,7 @@ def main() -> None:
             label=args.label,
             origin=args.origin,
             top_k=args.top_k,
+            diagnostic_k=args.diagnostic_k,
             token_budget=args.token_budget,
             theta=args.theta,
             alpha=args.alpha,

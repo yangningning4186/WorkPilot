@@ -37,7 +37,7 @@ def evaluate_retrieval(
         raise ValueError("alpha 必须位于 [0,1)")
     ranked = retrieved[:top_k]
     covered = _covered_span_indexes(ranked, gold_spans, theta)
-    budget_ranked = _take_token_budget(retrieved, token_budget)
+    budget_ranked = take_token_budget(retrieved, token_budget)
     budget_covered = _covered_span_indexes(budget_ranked, gold_spans, theta)
     relevances = [_chunk_relevance(chunk, gold_spans) for chunk in ranked]
     ideal_relevances = sorted(
@@ -87,7 +87,7 @@ def _is_relevant(chunk: RetrievedChunk, spans: list[GoldSpan], theta: float) -> 
     return any(hits(chunk, span, theta=theta) for span in spans)
 
 
-def _take_token_budget(
+def take_token_budget(
     chunks: list[RetrievedChunk], budget: int
 ) -> list[RetrievedChunk]:
     selected: list[RetrievedChunk] = []
