@@ -3,7 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     refusal_threshold: float = Field(default=0.35, ge=-1.0, le=1.0)
     answer_max_evidence_chars: int = Field(default=12000, ge=1000, le=100000)
     answer_max_tokens: int = Field(default=1200, ge=64, le=8192)
+
+    @field_validator("embedding_dim", mode="before")
+    @classmethod
+    def parse_embedding_dim(cls, value: object) -> object:
+        if isinstance(value, str) and value.isdecimal():
+            return int(value)
+        return value
 
 
 @lru_cache
