@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from app.llm.gateway import EmbeddingDimensionError, ModelGateway
+from app.llm.gateway import EmbeddingDimensionError, EmbeddingIdentityError, ModelGateway
 from app.llm.providers.openai_compatible import OpenAICompatibleProvider
 from app.llm.types import Message
 from tests.fakes import DeterministicProvider
@@ -25,6 +25,16 @@ async def test_gateway_exposes_complete_stream_and_embed() -> None:
 async def test_gateway_rejects_wrong_embedding_dimensions() -> None:
     gateway = ModelGateway(DeterministicProvider(3), embedding_dimensions=4)
     with pytest.raises(EmbeddingDimensionError):
+        await gateway.embed(["hello"])
+
+
+async def test_gateway_rejects_unexpected_embedding_identity() -> None:
+    provider = DeterministicProvider(4)
+    provider.embedding_model = "configured-model"
+    gateway = ModelGateway(provider, embedding_dimensions=4)
+    provider.embedding_model = "changed-model"
+
+    with pytest.raises(EmbeddingIdentityError):
         await gateway.embed(["hello"])
 
 

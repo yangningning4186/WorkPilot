@@ -24,6 +24,24 @@ OpenAI-compatible 的 `/chat/completions` 与 `/embeddings`。聊天模型读取
 `TIER_MAIN_BASE_URL` / `TIER_MAIN_MODEL`，embedding 服务优先读取
 `EMBEDDING_BASE_URL` / `EMBEDDING_MODEL`（未配置时复用 main 服务）；数据库向量维度由
 schema 固定为 1024，`EMBEDDING_DIM` 会在配置加载时强制校验，模型输出也会在写库前校验。
+每组向量同时记录 `EMBEDDING_MODEL`、provider 和 `EMBEDDING_REVISION`；查询只会读取完全相同
+的向量空间。模型或权重变化后必须更新 revision，同内容文档也会自动建立新版本并重算向量，
+旧向量在新版本激活前仍保持可检索。
+
+本机可用 Ollama 启动 E0 候选对照：
+
+```bash
+brew install ollama
+brew services start ollama
+ollama pull bge-m3
+ollama pull qwen3-embedding:0.6b
+cd ..
+uv run --project backend python -m eval.embedding_bakeoff
+```
+
+跑批会验证模型清单与 1024 维输出，分别重建隔离的内存索引，并报告 span recall、nDCG、
+MRR、固定 context budget recall、拒答 AUROC/阈值和本机吞吐/延迟。原始报告写入忽略提交的
+`eval/outputs/embedding-bakeoff/`，人工结论记录在 `docs/experiments/`。
 
 将 Markdown 放进 `LOCAL_LIBRARY_PATH` 后执行：
 

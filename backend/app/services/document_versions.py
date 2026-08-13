@@ -28,6 +28,9 @@ async def create_candidate_version(
     content_hash: str,
     parser: str,
     parser_version: str,
+    embedding_model: str = "legacy-unknown",
+    embedding_provider: str = "legacy-unknown",
+    embedding_revision: str = "legacy-unknown",
 ) -> CandidateVersion:
     """在文档行锁内去重并分配单调版本号。"""
 
@@ -44,7 +47,8 @@ async def create_candidate_version(
                 await session.execute(
                     text(
                         """
-                    SELECT id, version_no, content_hash, parse_status, invalid_at
+                    SELECT id, version_no, content_hash, parse_status, invalid_at,
+                           embedding_model, embedding_provider, embedding_revision
                     FROM document_versions
                     WHERE document_id = :document_id
                     ORDER BY version_no DESC
@@ -61,6 +65,9 @@ async def create_candidate_version(
         if (
             latest is not None
             and latest["content_hash"] == content_hash
+            and latest["embedding_model"] == embedding_model
+            and latest["embedding_provider"] == embedding_provider
+            and latest["embedding_revision"] == embedding_revision
             and latest["invalid_at"] is None
             and latest["parse_status"] in {"pending", "parsing", "done"}
         ):
@@ -72,9 +79,11 @@ async def create_candidate_version(
             text(
                 """
                 INSERT INTO document_versions
-                    (id, document_id, version_no, content_hash, parser, parser_version)
+                    (id, document_id, version_no, content_hash, parser, parser_version,
+                     embedding_model, embedding_provider, embedding_revision)
                 VALUES
-                    (:id, :document_id, :version_no, :content_hash, :parser, :parser_version)
+                    (:id, :document_id, :version_no, :content_hash, :parser, :parser_version,
+                     :embedding_model, :embedding_provider, :embedding_revision)
                 """
             ),
             {
@@ -84,6 +93,9 @@ async def create_candidate_version(
                 "content_hash": content_hash,
                 "parser": parser,
                 "parser_version": parser_version,
+                "embedding_model": embedding_model,
+                "embedding_provider": embedding_provider,
+                "embedding_revision": embedding_revision,
             },
         )
         return CandidateVersion(id=version_id, version_no=version_no, created=True)
@@ -98,7 +110,8 @@ async def activate_document_version(session: AsyncSession, version_id: UUID) -> 
                 await session.execute(
                     text(
                         """
-                    SELECT id, document_id, version_no, parse_status, full_text
+                    SELECT id, document_id, version_no, parse_status, full_text,
+                           embedding_model, embedding_provider, embedding_revision
                     FROM document_versions
                     WHERE id = :version_id
                     """
@@ -150,12 +163,24 @@ async def activate_document_version(session: AsyncSession, version_id: UUID) -> 
                       (SELECT count(*) FROM parsed_blocks WHERE version_id = :version_id)
                         AS block_count,
                       count(*) AS chunk_count,
-                      count(*) FILTER (WHERE embedding IS NULL) AS missing_embeddings
+                      count(*) FILTER (WHERE embedding IS NULL) AS missing_embeddings,
+                      count(*) FILTER (
+                        WHERE embedding IS NOT NULL AND ROW(
+                          embedding_model, embedding_provider, embedding_revision
+                        ) IS DISTINCT FROM ROW(
+                          :embedding_model, :embedding_provider, :embedding_revision
+                        )
+                      ) AS mismatched_embeddings
                     FROM chunks
                     WHERE version_id = :version_id
                     """
                     ),
-                    {"version_id": version_id},
+                    {
+                        "version_id": version_id,
+                        "embedding_model": candidate["embedding_model"],
+                        "embedding_provider": candidate["embedding_provider"],
+                        "embedding_revision": candidate["embedding_revision"],
+                    },
                 )
             )
             .mappings()
@@ -165,8 +190,9 @@ async def activate_document_version(session: AsyncSession, version_id: UUID) -> 
             readiness["block_count"] == 0
             or readiness["chunk_count"] == 0
             or readiness["missing_embeddings"] > 0
+            or readiness["mismatched_embeddings"] > 0
         ):
-            raise VersionNotReadyError("候选版本缺少 block、chunk 或 embedding")
+            raise VersionNotReadyError("候选版本缺少 block、chunk、embedding 或向量身份不一致")
 
         activated_at = (await session.execute(text("SELECT transaction_timestamp()"))).scalar_one()
         old_versions = (

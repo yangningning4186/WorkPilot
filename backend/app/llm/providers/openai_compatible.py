@@ -24,12 +24,17 @@ class OpenAICompatibleProvider:
         chat_model: str,
         embedding_model: str,
         timeout_s: float = 30.0,
+        trust_env: bool = False,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.chat_model = chat_model
         self.embedding_model = embedding_model
         self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout_s)
+        self._client = client or httpx.AsyncClient(
+            base_url=base_url.rstrip("/"),
+            timeout=timeout_s,
+            trust_env=trust_env,
+        )
 
     async def complete(
         self,

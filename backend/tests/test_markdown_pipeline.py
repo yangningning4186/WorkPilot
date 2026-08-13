@@ -92,3 +92,61 @@ async def test_ingestion_rejects_real_path_outside_library(
             path=outside,
             library_root=library,
         )
+
+
+@pytest.mark.integration
+async def test_embedding_revision_change_reindexes_unchanged_markdown(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    library = tmp_path / "library"
+    library.mkdir()
+    document = library / "revision.md"
+    document.write_text("# Revision\n\nSame content.", encoding="utf-8")
+
+    revision_one = ModelGateway(
+        DeterministicProvider(), embedding_dimensions=1024, embedding_revision="fixture-v1"
+    )
+    first = await ingest_markdown_file(
+        db_session, revision_one, path=Path("revision.md"), library_root=library
+    )
+    unchanged = await ingest_markdown_file(
+        db_session, revision_one, path=Path("revision.md"), library_root=library
+    )
+    revision_two = ModelGateway(
+        DeterministicProvider(), embedding_dimensions=1024, embedding_revision="fixture-v2"
+    )
+    rebuilt = await ingest_markdown_file(
+        db_session, revision_two, path=Path("revision.md"), library_root=library
+    )
+
+    identities = (
+        (
+            await db_session.execute(
+                text(
+                    """
+                    SELECT v.version_no, v.embedding_revision,
+                           c.embedding_revision AS chunk_embedding_revision,
+                           c.is_searchable
+                    FROM document_versions v
+                    JOIN chunks c ON c.version_id = v.id
+                    WHERE v.document_id = :document_id
+                    ORDER BY v.version_no
+                    """
+                ),
+                {"document_id": first.document_id},
+            )
+        )
+        .mappings()
+        .all()
+    )
+
+    assert unchanged.unchanged is True
+    assert rebuilt.unchanged is False
+    assert rebuilt.version_no == 2
+    assert [row["embedding_revision"] for row in identities] == ["fixture-v1", "fixture-v2"]
+    assert [row["chunk_embedding_revision"] for row in identities] == [
+        "fixture-v1",
+        "fixture-v2",
+    ]
+    assert [row["is_searchable"] for row in identities] == [False, True]

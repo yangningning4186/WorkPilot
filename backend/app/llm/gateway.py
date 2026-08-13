@@ -20,6 +20,10 @@ class EmbeddingDimensionError(ValueError):
     pass
 
 
+class EmbeddingIdentityError(ValueError):
+    pass
+
+
 class ModelGateway:
     """业务层唯一允许依赖的模型接口。"""
 
@@ -28,12 +32,16 @@ class ModelGateway:
         provider: ModelProvider,
         *,
         embedding_dimensions: int,
+        embedding_revision: str = "unversioned",
         embedding_provider: ModelProvider | None = None,
         audit_sink: AuditSink | None = None,
     ) -> None:
         self._chat_provider = provider
         self._embedding_provider = embedding_provider or provider
         self.embedding_dimensions = embedding_dimensions
+        self.embedding_model = self._embedding_provider.embedding_model
+        self.embedding_provider = self._embedding_provider.name
+        self.embedding_revision = embedding_revision
         self._audit_sink = audit_sink
 
     async def complete(
@@ -100,6 +108,20 @@ class ModelGateway:
                 success=False,
             )
             raise
+        if result.model != self.embedding_model or result.provider != self.embedding_provider:
+            await self._audit(
+                task_type=task_type,
+                model=result.model,
+                provider=self._embedding_provider,
+                usage=result.usage,
+                started=started,
+                success=False,
+            )
+            raise EmbeddingIdentityError(
+                "embedding 响应身份与配置不一致: "
+                f"期望 {self.embedding_provider}/{self.embedding_model}, "
+                f"实际 {result.provider}/{result.model}"
+            )
         invalid = [
             len(vector) for vector in result.embeddings if len(vector) != self.embedding_dimensions
         ]
@@ -191,6 +213,7 @@ def build_model_gateway(settings: Settings, *, audit_sink: AuditSink | None = No
         chat_model=settings.tier_main_model,
         embedding_model=settings.embedding_model,
         timeout_s=settings.model_timeout_s,
+        trust_env=settings.model_trust_env,
     )
     embedding_provider = OpenAICompatibleProvider(
         base_url=settings.embedding_base_url or settings.tier_main_base_url,
@@ -198,10 +221,12 @@ def build_model_gateway(settings: Settings, *, audit_sink: AuditSink | None = No
         chat_model=settings.tier_main_model,
         embedding_model=settings.embedding_model,
         timeout_s=settings.model_timeout_s,
+        trust_env=settings.model_trust_env,
     )
     return ModelGateway(
         chat_provider,
         embedding_dimensions=settings.embedding_dim,
+        embedding_revision=settings.embedding_revision,
         embedding_provider=embedding_provider,
         audit_sink=audit_sink,
     )

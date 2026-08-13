@@ -1,0 +1,24 @@
+{
+  "batch_size": 8,
+  "top_k": 10,
+  "estimated_token_budget": 800,
+  "timeout_s": 120,
+  "candidates": [
+    {
+      "name": "bge-m3-ollama",
+      "model": "bge-m3:latest",
+      "revision": "sha256-daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "expected_dimensions": 1024,
+      "query_prefix": ""
+    },
+    {
+      "name": "qwen3-embedding-0.6b-ollama",
+      "model": "qwen3-embedding:0.6b",
+      "revision": "sha256-06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "expected_dimensions": 1024,
+      "query_prefix": "Instruct: Given a knowledge-base query, retrieve relevant passages that answer the query\nQuery:"
+    }
+  ]
+}

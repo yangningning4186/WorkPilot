@@ -92,13 +92,22 @@ async def dense_search(
                     WHERE c.is_searchable=true
                       AND c.strategy='heading'
                       AND c.embedding IS NOT NULL
+                      AND c.embedding_model=:embedding_model
+                      AND c.embedding_provider=:embedding_provider
+                      AND c.embedding_revision=:embedding_revision
                       AND d.deleted_at IS NULL
                       AND v.invalid_at IS NULL
                     ORDER BY c.embedding <=> CAST(:embedding AS vector), c.id
                     LIMIT :top_k
                     """
                 ),
-                {"embedding": vector, "top_k": top_k},
+                {
+                    "embedding": vector,
+                    "embedding_model": gateway.embedding_model,
+                    "embedding_provider": gateway.embedding_provider,
+                    "embedding_revision": gateway.embedding_revision,
+                    "top_k": top_k,
+                },
             )
         )
         .mappings()

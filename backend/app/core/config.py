@@ -28,8 +28,10 @@ class Settings(BaseSettings):
     cluster_api_key: str = ""
     embedding_base_url: str = ""
     embedding_model: str = "local-embedding"
+    embedding_revision: str = "unversioned"
     embedding_dim: Literal[1024] = 1024
     model_timeout_s: float = Field(default=30.0, gt=0)
+    model_trust_env: bool = False
     refusal_threshold: float = Field(default=0.35, ge=-1.0, le=1.0)
     answer_max_evidence_chars: int = Field(default=12000, ge=1000, le=100000)
     answer_max_tokens: int = Field(default=1200, ge=64, le=8192)

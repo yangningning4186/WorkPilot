@@ -1,0 +1,20 @@
+{"id":"q01","query":"稠密检索为什么不要求查询和原文包含完全相同的词？","relevant_ids":["rag-dense"],"answerable":true,"category":"single_hop_zh"}
+{"id":"q02","query":"Markdown 是怎样按照标题层级分块的？","relevant_ids":["chunk-heading"],"answerable":true,"category":"single_hop_zh"}
+{"id":"q03","query":"引用为什么应该锚定 block 而不是 chunk id？","relevant_ids":["parsed-blocks","citation-anchor"],"answerable":true,"category":"multi_hop_zh"}
+{"id":"q04","query":"如何保证失败或慢到的候选版本不会破坏当前可搜索版本？","relevant_ids":["version-activation","version-concurrency"],"answerable":true,"category":"multi_hop_zh"}
+{"id":"q05","query":"S1 最终会被解析成哪些原文定位信息？","relevant_ids":["citation-anchor"],"answerable":true,"category":"single_hop_zh"}
+{"id":"q06","query":"模型输出一个未提供的 S99 标签时应该如何处理？","relevant_ids":["citation-validation"],"answerable":true,"category":"single_hop_zh"}
+{"id":"q07","query":"什么情况下应该在调用生成模型之前直接拒答？","relevant_ids":["refusal-gate"],"answerable":true,"category":"single_hop_zh"}
+{"id":"q08","query":"PostgreSQL 的 ts_rank_cd 是 BM25 吗？","relevant_ids":["rag-lexical"],"answerable":true,"category":"terminology_zh"}
+{"id":"q09","query":"为什么融合 dense 和词法结果时选择 RRF 而不是直接加权分数？","relevant_ids":["rag-rrf"],"answerable":true,"category":"reasoning_zh"}
+{"id":"q10","query":"并发商用模型请求怎样避免突破每日费用上限？","relevant_ids":["cost-budget"],"answerable":true,"category":"single_hop_zh"}
+{"id":"q11","query":"Which component hides providers from business code, and where should routine generation be routed?","relevant_ids":["model-gateway","route-qwen"],"answerable":true,"category":"multi_hop_en"}
+{"id":"q12","query":"Why can post-filtering one shared HNSW index reduce recall, and what scan option mitigates it?","relevant_ids":["hnsw-partial","hnsw-iterative"],"answerable":true,"category":"multi_hop_en"}
+{"id":"q13","query":"How is an incoming request identifier propagated and returned?","relevant_ids":["trace-id"],"answerable":true,"category":"single_hop_en"}
+{"id":"q14","query":"为什么切换 embedding 模型后不能继续混用旧向量？","relevant_ids":["embedding-identity"],"answerable":true,"category":"single_hop_zh"}
+{"id":"q15","query":"BGE-M3 的 sparse 表示目前会直接参与 M0 检索吗？","relevant_ids":["embedding-sparse"],"answerable":true,"category":"single_hop_zh"}
+{"id":"q16","query":"提拉米苏需要使用多少克马斯卡彭奶酪？","relevant_ids":[],"answerable":false,"category":"unanswerable_recipe"}
+{"id":"q17","query":"明天从上海飞往东京最便宜的航班是哪一班？","relevant_ids":[],"answerable":false,"category":"unanswerable_realtime"}
+{"id":"q18","query":"公司今年给高级工程师的调薪比例是多少？","relevant_ids":[],"answerable":false,"category":"unanswerable_private"}
+{"id":"q19","query":"What is the recommended treatment dosage for acute migraine?","relevant_ids":[],"answerable":false,"category":"unanswerable_medical"}
+{"id":"q20","query":"杭州本周六上午会下雨吗？","relevant_ids":[],"answerable":false,"category":"unanswerable_weather"}

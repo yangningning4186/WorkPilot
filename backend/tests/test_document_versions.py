@@ -72,11 +72,13 @@ async def _make_ready(session: AsyncSession, version_id: UUID, content: str) -> 
                 INSERT INTO chunks
                     (id, version_id, strategy, chunk_index, content, content_tokens,
                      block_start_idx, block_end_idx, char_start, char_end,
-                     dominant_block_type, embedding, doc_type)
+                     dominant_block_type, embedding, doc_type, embedding_model,
+                     embedding_provider, embedding_revision)
                 VALUES
                     (:id, :version_id, 'heading', 0, :content, 1,
                      0, 0, 0, :length, 'paragraph',
-                     array_fill(0::real, ARRAY[1024])::vector, 'note')
+                     array_fill(0::real, ARRAY[1024])::vector, 'note',
+                     'legacy-unknown', 'legacy-unknown', 'legacy-unknown')
                 """
             ),
             {

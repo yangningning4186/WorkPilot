@@ -98,6 +98,9 @@ async def _persist_markdown(
         content_hash=content_hash,
         parser="markdown",
         parser_version="1",
+        embedding_model=gateway.embedding_model,
+        embedding_provider=gateway.embedding_provider,
+        embedding_revision=gateway.embedding_revision,
     )
     if not candidate.created:
         current = (
@@ -177,12 +180,14 @@ async def _persist_markdown(
                         INSERT INTO chunks
                             (id, version_id, strategy, chunk_index, content, content_tokens,
                              block_start_idx, block_end_idx, char_start, char_end,
-                             dominant_block_type, heading_path, embedding, doc_type)
+                             dominant_block_type, heading_path, embedding, doc_type,
+                             embedding_model, embedding_provider, embedding_revision)
                         VALUES
                             (:id, :version_id, 'heading', :chunk_index, :content,
                              :content_tokens, :block_start_idx, :block_end_idx, :char_start,
                              :char_end, :dominant_block_type, :heading_path,
-                             CAST(:embedding AS vector), 'note')
+                             CAST(:embedding AS vector), 'note', :embedding_model,
+                             :embedding_provider, :embedding_revision)
                         """
                     ),
                     {
@@ -198,6 +203,9 @@ async def _persist_markdown(
                         "dominant_block_type": chunk.dominant_block_type,
                         "heading_path": list(chunk.heading_path) or None,
                         "embedding": _vector_literal(embedding),
+                        "embedding_model": gateway.embedding_model,
+                        "embedding_provider": gateway.embedding_provider,
+                        "embedding_revision": gateway.embedding_revision,
                     },
                 )
             await session.execute(
