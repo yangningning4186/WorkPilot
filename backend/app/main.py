@@ -3,6 +3,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.annotation import page_router as annotation_page_router
+from app.api.annotation import router as annotation_router
 from app.api.health import router as health_router
 from app.api.retrieval import router as retrieval_router
 from app.api.sources import router as sources_router
@@ -25,6 +27,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     app = FastAPI(title="WorkPilot API", version="0.1.0", lifespan=lifespan)
     app.add_middleware(TraceIdMiddleware)
+    app.include_router(annotation_page_router)
+    app.include_router(annotation_router)
     app.include_router(health_router)
     app.include_router(retrieval_router)
     app.include_router(sources_router)

@@ -33,6 +33,7 @@ package = false
 addopts = "-ra --strict-markers"
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = [".."]
 markers = [
   "integration: requires the PostgreSQL test database",
 ]

@@ -41,6 +41,9 @@ class DenseSearchHitResponse(BaseModel):
     title: str
     source_uri: str
     content: str
+    content_tokens: int
+    char_start: int
+    char_end: int
     score: float
     heading_path: list[str]
     blocks: list[dict[str, Any]]

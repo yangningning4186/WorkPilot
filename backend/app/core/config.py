@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     )
 
     app_env: Literal["development", "test", "production"] = "development"
+    annotation_tool_enabled: bool = True
     log_level: str = "INFO"
     database_url: str = "postgresql+asyncpg://workpilot:workpilot@localhost:5432/workpilot"
     redis_url: str = "redis://localhost:6379/0"

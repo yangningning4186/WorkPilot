@@ -132,6 +132,35 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.pdf_parsing_quality \
 embedding 服务上线前的工程初值，不能当成质量结论；接入真实模型后必须用
 answerable / unanswerable 标注集做 ROC 与误拒答率校准。
 
+## Gold span 标注与 dense-only 基线
+
+数据库迁移完成并启动后端后，打开 `http://127.0.0.1:8000/annotation`。本地工作台可以：
+
+- 按资料、block 类型和正文搜索证据；
+- 对 Markdown/PDF 原文拖选，后端把浏览器 UTF-16 offset 转为 Unicode code-point offset；
+- 对 PDF 页渲染 bbox 定位预览；
+- 标注 single-hop、multi-hop、table、unanswerable，以及答案、约束、难度与来源；
+- 保存时从 `document_versions.full_text` 回切 quote；解析版本变化后将旧 span 标为 stale。
+
+页面和 API 受 `ANNOTATION_TOOL_ENABLED` 控制，且 `APP_ENV=production` 时无条件关闭。它只读取
+已注册 `local_dir` 中的原文件，不会修改或复制资料。人工标注保存在本地 PostgreSQL。
+
+完成一批人工样本后运行纯 dense 基线：
+
+```bash
+cd ..
+PYTHONPATH=backend backend/.venv/bin/python -m eval.dense_baseline \
+  --dataset core-dev --origin human --label dense-core-dev-v1 \
+  --top-k 10 --token-budget 4000
+```
+
+跑批在开始前拒绝 stale span，使用模型网关调用当前 query embedding，按版本和字符区间映射
+gold span 到 heading chunk。结果写入 `eval_runs/eval_results`，并在 Git 忽略的
+`eval/outputs/dense-baseline/` 生成逐样本 JSON 与 Markdown 摘要。报告包括 span Recall@K、固定
+token budget Recall、nDCG、α-nDCG、MRR、context precision、拒答 AUROC、当前/最优阈值和延迟。
+评测强制记录 embedding model/revision 与 `fallback_enabled=false`；只有 `origin=human` 的真实
+人工集可以作为正式质量结论。
+
 ## 质量检查
 
 ```bash

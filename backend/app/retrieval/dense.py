@@ -20,6 +20,9 @@ class DenseSearchHit:
     score: float
     heading_path: list[str]
     blocks: list[dict[str, Any]]
+    content_tokens: int = 0
+    char_start: int = 0
+    char_end: int = 0
 
 
 async def dense_search(
@@ -48,6 +51,9 @@ async def dense_search(
                         d.title,
                         d.source_uri,
                         c.content,
+                        c.content_tokens,
+                        c.char_start,
+                        c.char_end,
                         1 - (c.embedding <=> CAST(:embedding AS vector)) AS score,
                         COALESCE(c.heading_path, ARRAY[]::text[]) AS heading_path,
                         COALESCE(
@@ -122,6 +128,9 @@ async def dense_search(
             title=row["title"],
             source_uri=row["source_uri"],
             content=row["content"],
+            content_tokens=row["content_tokens"],
+            char_start=row["char_start"],
+            char_end=row["char_end"],
             score=float(row["score"]),
             heading_path=list(row["heading_path"]),
             blocks=list(row["blocks"]),
