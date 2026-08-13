@@ -1,0 +1,38 @@
+# 任务 → 模型档位路由表，见 docs/07-模型路由与成本.md §2。
+# 复制为 routing.yaml；`${NAME}` 由配置加载器从环境变量展开。
+version: 1
+
+defaults:
+  timeout_s: 30
+  max_retries: 2
+
+# M0 只启用 main + external。light/heavy 在 M2 加入，不要提前扩 scope。
+tiers:
+  main:
+    primary:
+      provider: openai_compatible
+      base_url: ${TIER_MAIN_BASE_URL}
+      api_key: ${CLUSTER_API_KEY}
+      model: ${TIER_MAIN_MODEL}
+    fallback:
+      - provider: anthropic
+        api_key: ${ANTHROPIC_API_KEY}
+        model: ${EXTERNAL_MODEL}
+
+  external:
+    primary:
+      provider: anthropic
+      api_key: ${ANTHROPIC_API_KEY}
+      model: ${EXTERNAL_MODEL}
+    fallback: []
+
+routes:
+  generate: main
+  citation_repair: main
+  judge: external       # M0 不自动跑 Judge；仅为手工/后续任务预留
+
+modes:
+  online:
+    fallback_enabled: true
+  evaluation:
+    fallback_enabled: false
