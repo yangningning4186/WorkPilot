@@ -73,6 +73,7 @@ async def answer(
             gateway,
             query=request.query,
             top_k=request.top_k,
+            refusal_threshold=settings.refusal_threshold,
             max_evidence_chars=settings.answer_max_evidence_chars,
             max_tokens=settings.answer_max_tokens,
         )
@@ -92,7 +93,10 @@ async def answer(
         answer=result.answer,
         citations=[CitationResponse(**vars(citation)) for citation in result.citations],
         refused=result.refused,
+        refusal_reason=result.refusal_reason,
         retrieved_chunks=result.retrieved_chunks,
+        top_score=result.top_score,
+        threshold=result.threshold,
         model=result.model,
         provider=result.provider,
     )

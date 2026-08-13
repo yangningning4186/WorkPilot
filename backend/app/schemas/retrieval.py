@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -65,6 +65,9 @@ class GroundedAnswerResponse(BaseModel):
     answer: str
     citations: list[CitationResponse]
     refused: bool
+    refusal_reason: Literal["no_evidence", "below_threshold", "model_insufficient_evidence"] | None
     retrieved_chunks: int
+    top_score: float | None
+    threshold: float
     model: str | None
     provider: str | None

@@ -52,6 +52,13 @@ curl -X POST http://127.0.0.1:8000/api/v1/answer \
 模型引用未知标签或正常回答不带引用时，接口返回 `502 invalid_model_citation`，不会猜测修复。
 证据为空或模型明确判断证据不足时返回 `资料库中未找到相关信息。`，且 `refused=true`。
 
+生成前还有一层确定性拒答门控：最高 dense score 小于 `REFUSAL_THRESHOLD` 时直接拒答，
+不会调用生成模型。响应同时返回 `top_score`、`threshold` 和 `refusal_reason`；其中
+`below_threshold` 表示低分拒答，`no_evidence` 表示没有检索证据，
+`model_insufficient_evidence` 表示通过门控后模型仍判断证据不足。默认阈值 `0.35` 只是
+embedding 服务上线前的工程初值，不能当成质量结论；接入真实模型后必须用
+answerable / unanswerable 标注集做 ROC 与误拒答率校准。
+
 ## 质量检查
 
 ```bash
