@@ -272,6 +272,10 @@ async def evaluate_candidate(
     endpoint = EmbeddingEndpoint(candidate, timeout_s=timeout_s)
     try:
         await endpoint.verify()
+        warmup_started = time.perf_counter()
+        await endpoint.embed([corpus[0].text], query=False)
+        warmup_ms = (time.perf_counter() - warmup_started) * 1000
+
         started = time.perf_counter()
         corpus_vectors: list[list[float]] = []
         for index in range(0, len(corpus), batch_size):
@@ -295,6 +299,7 @@ async def evaluate_candidate(
         }
         return {
             "candidate": asdict(candidate),
+            "warmup_request_ms": warmup_ms,
             "corpus": {
                 "items": len(corpus),
                 "seconds": corpus_seconds,
