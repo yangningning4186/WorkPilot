@@ -16,6 +16,8 @@
 - Embedding：Ollama `bge-m3:latest`，1024 维，revision 固定为当前本地权重摘要。
 - 样本：12 条 synthetic title query + 3 条 synthetic unanswerable。
 - 检索：heading chunk，dense-only，Top 10，gold span 重叠阈值 θ=0.5，token budget=4000。
+- 代码：`69e18ca0ec22862c938a079ade197ee3513d0414`。
+- 配置摘要：`e959067bf4b45d3e43f29205b9109e37bc14460ef5db44d46d06fce27e5b185c`。
 - 注意：标题题远比真实知识问答简单，且样本量很小。
 
 ## 结果
@@ -33,7 +35,8 @@
 | 当前阈值误答 / 误拒 | 3 / 0 |
 | smoke 最优阈值 | 0.5329 |
 
-首个请求包含本地模型冷启动，15 条平均延迟约 313 ms；因此本次不把小样本 p95 当性能结论。
+首个请求包含本地模型冷启动，15 条平均延迟约 246 ms、p95 约 514 ms；因此本次不把小样本
+延迟当性能结论。
 
 ## 解读与下一步
 
