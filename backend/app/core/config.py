@@ -1,5 +1,6 @@
 from decimal import Decimal
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -21,6 +22,14 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     daily_cost_limit_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
     cost_budget_timezone: str = "Asia/Shanghai"
+    local_library_path: Path = Path("../data/library")
+    tier_main_base_url: str = "http://localhost:8000/v1"
+    tier_main_model: str = "local-chat"
+    cluster_api_key: str = ""
+    embedding_base_url: str = ""
+    embedding_model: str = "local-embedding"
+    embedding_dim: Literal[1024] = 1024
+    model_timeout_s: float = Field(default=30.0, gt=0)
 
 
 @lru_cache

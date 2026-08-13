@@ -17,6 +17,32 @@ uv run fastapi dev app/main.py
 
 健康检查：`GET /health/live` 只检查进程，`GET /health/ready` 同时检查 PostgreSQL 与 Redis。
 
+## Markdown → dense 最小链路
+
+模型网关统一提供 `complete`、`stream`、`embed`，当前 provider 使用
+OpenAI-compatible 的 `/chat/completions` 与 `/embeddings`。聊天模型读取
+`TIER_MAIN_BASE_URL` / `TIER_MAIN_MODEL`，embedding 服务优先读取
+`EMBEDDING_BASE_URL` / `EMBEDDING_MODEL`（未配置时复用 main 服务）；数据库向量维度由
+schema 固定为 1024，`EMBEDDING_DIM` 会在配置加载时强制校验，模型输出也会在写库前校验。
+
+将 Markdown 放进 `LOCAL_LIBRARY_PATH` 后执行：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/documents/ingest-markdown \
+  -H 'content-type: application/json' \
+  -d '{"path":"notes/retrieval.md"}'
+
+curl -X POST http://127.0.0.1:8000/api/v1/search/dense \
+  -H 'content-type: application/json' \
+  -d '{"query":"什么是稠密检索？","top_k":5}'
+```
+
+入库接口只接受资料根目录内的 `.md` / `.markdown` 文件，并按 realpath 防止目录穿越。
+文本统一为 NFC 与 LF，block offset 使用 Unicode code point；heading 分块、批量 embedding
+全部成功后才原子激活新版本。检索只读取当前可搜索版本，并返回 `version_id`、block ID、
+字符区间与 heading path，后续引用不需要从 chunk 文本反推来源。每次模型调用会写入
+`llm_calls`；原始提示词和文档内容不会写入该审计表。
+
 ## 质量检查
 
 ```bash
