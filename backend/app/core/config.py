@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     embedding_model: str = "local-embedding"
     embedding_dim: Literal[1024] = 1024
     model_timeout_s: float = Field(default=30.0, gt=0)
+    answer_max_evidence_chars: int = Field(default=12000, ge=1000, le=100000)
+    answer_max_tokens: int = Field(default=1200, ge=64, le=8192)
 
 
 @lru_cache

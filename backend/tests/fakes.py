@@ -11,8 +11,10 @@ class DeterministicProvider:
     chat_model = "fake-chat"
     embedding_model = "fake-embedding"
 
-    def __init__(self, dimensions: int = 1024) -> None:
+    def __init__(self, dimensions: int = 1024, completion_text: str | None = None) -> None:
         self.dimensions = dimensions
+        self.completion_text = completion_text
+        self.last_messages: list[Message] = []
 
     async def complete(
         self,
@@ -22,8 +24,9 @@ class DeterministicProvider:
         temperature: float,
     ) -> CompletionResult:
         del max_tokens, temperature
+        self.last_messages = messages
         return CompletionResult(
-            text=messages[-1].content,
+            text=self.completion_text if self.completion_text is not None else messages[-1].content,
             model=self.chat_model,
             provider=self.name,
             usage=Usage(input_tokens=3, output_tokens=2),

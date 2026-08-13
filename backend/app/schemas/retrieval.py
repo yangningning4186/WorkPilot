@@ -40,3 +40,31 @@ class DenseSearchHitResponse(BaseModel):
 
 class DenseSearchResponse(BaseModel):
     hits: list[DenseSearchHitResponse]
+
+
+class GroundedAnswerRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
+class CitationResponse(BaseModel):
+    citation_id: str
+    block_id: UUID
+    version_id: UUID
+    document_id: UUID
+    title: str
+    source_uri: str
+    quote: str
+    char_start: int
+    char_end: int
+    heading_path: list[str]
+    locations: list[dict[str, Any]]
+
+
+class GroundedAnswerResponse(BaseModel):
+    answer: str
+    citations: list[CitationResponse]
+    refused: bool
+    retrieved_chunks: int
+    model: str | None
+    provider: str | None

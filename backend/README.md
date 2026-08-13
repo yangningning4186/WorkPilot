@@ -35,6 +35,10 @@ curl -X POST http://127.0.0.1:8000/api/v1/documents/ingest-markdown \
 curl -X POST http://127.0.0.1:8000/api/v1/search/dense \
   -H 'content-type: application/json' \
   -d '{"query":"什么是稠密检索？","top_k":5}'
+
+curl -X POST http://127.0.0.1:8000/api/v1/answer \
+  -H 'content-type: application/json' \
+  -d '{"query":"什么是稠密检索？","top_k":5}'
 ```
 
 入库接口只接受资料根目录内的 `.md` / `.markdown` 文件，并按 realpath 防止目录穿越。
@@ -42,6 +46,11 @@ curl -X POST http://127.0.0.1:8000/api/v1/search/dense \
 全部成功后才原子激活新版本。检索只读取当前可搜索版本，并返回 `version_id`、block ID、
 字符区间与 heading path，后续引用不需要从 chunk 文本反推来源。每次模型调用会写入
 `llm_calls`；原始提示词和文档内容不会写入该审计表。
+
+问答接口把检索结果展开成 block 级 `[S1]` 证据，要求模型逐句引用，并把短标签解析为
+`block_id`、`version_id`、原文 quote、字符区间和页面坐标。短标签只在单次消息内有效；
+模型引用未知标签或正常回答不带引用时，接口返回 `502 invalid_model_citation`，不会猜测修复。
+证据为空或模型明确判断证据不足时返回 `资料库中未找到相关信息。`，且 `refused=true`。
 
 ## 质量检查
 

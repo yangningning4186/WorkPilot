@@ -60,7 +60,24 @@ async def dense_search(
                                         'text', b.text,
                                         'char_start', b.char_start,
                                         'char_end', b.char_end,
-                                        'heading_path', COALESCE(b.heading_path, ARRAY[]::text[])
+                                        'heading_path', COALESCE(b.heading_path, ARRAY[]::text[]),
+                                        'locations', COALESCE(
+                                            (
+                                                SELECT jsonb_agg(
+                                                    jsonb_build_object(
+                                                        'page_no', l.page_no,
+                                                        'page_width', l.page_width,
+                                                        'page_height', l.page_height,
+                                                        'rotation', l.rotation,
+                                                        'coord_origin', l.coord_origin,
+                                                        'bbox_norm', l.bbox_norm
+                                                    ) ORDER BY l.location_idx
+                                                )
+                                                FROM parsed_block_locations l
+                                                WHERE l.block_id=b.id
+                                            ),
+                                            '[]'::jsonb
+                                        )
                                     ) ORDER BY b.block_idx
                                 )
                                 FROM parsed_blocks b
