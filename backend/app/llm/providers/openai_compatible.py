@@ -1,14 +1,41 @@
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import httpx
 
-from app.llm.types import CompletionResult, EmbeddingResult, Message, Usage
+from app.llm.types import (
+    CompletionResult,
+    EmbeddingResult,
+    Message,
+    ProviderNotDispatchedError,
+    Usage,
+)
 
 
 class ProviderResponseError(RuntimeError):
     pass
+
+
+# 只有在建连阶段就失败的错误才能证明请求没有发出去; 读超时和连接中断都可能已经计费,
+# 因此不在这个白名单里(docs/12 §2.2)。
+NOT_DISPATCHED_ERRORS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+    httpx.ProxyError,
+    httpx.UnsupportedProtocol,
+    httpx.InvalidURL,
+)
+
+
+@contextmanager
+def _dispatch_guard() -> Iterator[None]:
+    try:
+        yield
+    except NOT_DISPATCHED_ERRORS as error:
+        raise ProviderNotDispatchedError(str(error)) from error
 
 
 class OpenAICompatibleProvider:
@@ -55,11 +82,12 @@ class OpenAICompatibleProvider:
             request_payload["chat_template_kwargs"] = {
                 "enable_thinking": self._enable_thinking
             }
-        response = await self._client.post(
-            "chat/completions",
-            headers=self._headers,
-            json=request_payload,
-        )
+        with _dispatch_guard():
+            response = await self._client.post(
+                "chat/completions",
+                headers=self._headers,
+                json=request_payload,
+            )
         response.raise_for_status()
         payload: dict[str, Any] = response.json()
         try:
@@ -95,12 +123,15 @@ class OpenAICompatibleProvider:
             request_payload["chat_template_kwargs"] = {
                 "enable_thinking": self._enable_thinking
             }
-        async with self._client.stream(
-            "POST",
-            "chat/completions",
-            headers=self._headers,
-            json=request_payload,
-        ) as response:
+        with _dispatch_guard():
+            stream = self._client.stream(
+                "POST",
+                "chat/completions",
+                headers=self._headers,
+                json=request_payload,
+            )
+            response = await stream.__aenter__()
+        try:
             response.raise_for_status()
             async for line in response.aiter_lines():
                 if not line.startswith("data:"):
@@ -112,13 +143,16 @@ class OpenAICompatibleProvider:
                 delta = payload.get("choices", [{}])[0].get("delta", {}).get("content")
                 if delta:
                     yield str(delta)
+        finally:
+            await stream.__aexit__(None, None, None)
 
     async def embed(self, texts: list[str]) -> EmbeddingResult:
-        response = await self._client.post(
-            "embeddings",
-            headers=self._headers,
-            json={"model": self.embedding_model, "input": texts},
-        )
+        with _dispatch_guard():
+            response = await self._client.post(
+                "embeddings",
+                headers=self._headers,
+                json={"model": self.embedding_model, "input": texts},
+            )
         response.raise_for_status()
         payload: dict[str, Any] = response.json()
         rows = sorted(payload.get("data", []), key=lambda row: int(row["index"]))

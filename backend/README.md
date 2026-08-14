@@ -136,6 +136,85 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.pdf_parsing_quality \
 RRF 与 dense 合并。远端步骤只发送问题及截断候选，不上传原始文件；部署时仍需按数据策略确认
 具体语料是否允许外发。默认阈值 `0.35` 只是工程初值，不能当成质量结论。
 
+## run / SSE：任务不依附 HTTP 连接
+
+普通问答也走 run（[ADR-0007](../docs/adr/0007-agent幂等与事件溯源.md)）。接口只负责创建 run
+并入队，执行在 Arq worker 进程；关掉页面任务照跑，刷新回放与实时流读的是同一份
+`run_events`，因此不会出现"实时看到的和刷新后看到的不一致"。
+
+worker 需要单独起一个进程：
+
+```bash
+uv run arq app.worker.main.WorkerSettings
+```
+
+```bash
+# 创建 run，立即返回 run_id（202），不等生成
+curl -X POST http://127.0.0.1:8000/api/v1/runs \
+  -H 'content-type: application/json' \
+  -d '{"query":"什么是稠密检索？","top_k":5}'
+
+# 订阅事件流：先补历史，再续实时
+curl -N http://127.0.0.1:8000/api/v1/runs/<run_id>/events?after_seq=0
+
+# 断线重连由浏览器自动带 Last-Event-ID，手工模拟：
+curl -N -H 'Last-Event-ID: <run_id>:12' \
+  http://127.0.0.1:8000/api/v1/runs/<run_id>/events
+
+curl -X POST http://127.0.0.1:8000/api/v1/runs/<run_id>/cancel
+```
+
+事件信封与 [docs/08 §3.2](../docs/08-前端设计.md) 一致：
+
+```
+id: <run_id>:<seq>
+event: message.delta
+data: {"id":"<run_id>:<seq>","run_id":"…","seq":"12","type":"message.delta","data":{"text":"…"}}
+```
+
+- `seq` 用字符串传，DB 是 BIGINT，直接给 JS number 会丢精度；前端比较时转 `BigInt`。
+- SSE 的 `id:` 就是 `run_id:seq`，浏览器 `EventSource` 重连会自动带回 `Last-Event-ID`，
+  服务端解析出 seq 续发——这是断线续传（B2）成立的机制。`Last-Event-ID` 优先于 `after_seq`。
+- 当前发出的事件类型：`message.start` / `message.delta` / `citation` / `message.done` /
+  `error`。`plan` / `step.update` / `interrupt` 随 M1 的 LangGraph 工作流引入。
+- `citation` 是独立事件而非嵌在正文里，并携带完整定位元数据（`block_id` / `doc_id` /
+  `locations[]` 含页码、页面尺寸、旋转、坐标原点、`bbox_norm`），前端才能跨渲染器正确高亮。
+- delta 按 `RUN_DELTA_FLUSH_CHARS` / `RUN_DELTA_FLUSH_MS` 批量落库，结构化事件逐条落；
+  写事务提交之后才发唤醒通知，否则订阅方被唤醒却查不到事件。
+- 续流服务器**先订阅再查库**，每次醒来和心跳超时都重新查库。通知可以丢，数据库事件不能丢，
+  因此不存在"查完历史、订阅生效之前"的丢事件窗口。无事件时发 `: keepalive` 注释帧保活。
+
+run 有 worker 租约与 heartbeat。关闭页面不会取消 run；worker 崩溃后租约过期，watchdog 把
+普通流式回答**显式标记为失败**（`messages.status = failed`）并发 `error` 事件，**不自动重试**——
+一次已经发出去的模型调用是否计费无法确认，静默重放等于重复计费。能自动恢复的只有带
+checkpoint 且工具满足幂等边界的 Agent run。取消对已在执行的 run 只打标记，由持有租约的
+worker 在下一个检查点自己收尾，避免"终态之后仍在写事件"。
+
+> 当前 `message.delta` 是整答生成完成后按标点切片产出的，首 token 延迟等于整答延迟。
+> 这是为了让检索、拒答阈值、证据充分性门控只有一条实现路径（约束 6）；
+> 把 `app/services/answer_stream.py` 的 `produce_answer` 换成 `gateway.stream()` 即可
+> 变成真流式，对外协议不变。
+
+## 每日成本硬上限
+
+模型网关在**调用前原子预留、调用后按实际用量结算**（[docs/12 §2.2](../docs/12-安全与部署.md)）。
+调用后统计余额会被并发请求一起穿透，所以预留走 `daily_cost_budgets` 的条件 UPDATE。
+
+三条失败路径的语义不同，不能混：
+
+| 情况 | 处理 | 理由 |
+|---|---|---|
+| 额度不足 | 直接抛错，**不发起调用** | 应用侧唯一能真正控制的就是"是否再发起调用" |
+| 确认未发给 provider（建连失败） | 释放全部预留 | 只有建连阶段失败能证明一个字节都没发出去 |
+| 结果不明（读超时、进程崩溃） | 保留预留，到期后按上限记为已花费 | 无法证明 provider 没计费；直接释放等于假设它没收钱 |
+
+`PRICE_*_USD_PER_MTOK` **默认为 0**，表示本地自部署模型，此时网关跳过预留直接调用。
+换成商用 API 时必须填价格，否则每日上限形同虚设。token 估算默认按 1 字符 = 1 token 的保守
+上界，多预留的部分在结算时释放。provider 不返回 usage 时按预留上限记账，不按 0 记。
+
+应用侧无法证明 provider 在网络超时后一定没计费，因此线上仍需配置 provider 账户级月度限额
+作为最终保险丝。
+
 ## Gold span 标注与 dense-only 基线
 
 数据库迁移完成并启动后端后，打开 `http://127.0.0.1:8000/annotation`。本地工作台可以：

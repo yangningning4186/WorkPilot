@@ -257,6 +257,46 @@ async def charge_expired_estimate(session: AsyncSession, *, idempotency_key: str
         )
 
 
+async def sweep_expired_reservations(session: AsyncSession, *, limit: int = 200) -> int:
+    """把过期未结算的预留按上限落账, 返回处理条数。
+
+    进程崩溃或读超时后没人来结算, 额度会被永久占住; 但也不能直接释放——那等于
+    假设 provider 一定没计费。折中是到期后按预留上限记为已花费。
+    """
+
+    if limit < 1:
+        raise ValueError("limit 必须大于 0")
+    keys = list(
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT idempotency_key
+                    FROM cost_reservations
+                    WHERE status = 'reserved' AND expires_at <= now()
+                    ORDER BY expires_at
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            )
+        )
+        .scalars()
+        .all()
+    )
+    await session.rollback()
+
+    swept = 0
+    for key in keys:
+        try:
+            await charge_expired_estimate(session, idempotency_key=key)
+        except InvalidReservationTransitionError:
+            # 并发结算已经先落地, 跳过即可。
+            continue
+        swept += 1
+    return swept
+
+
 async def _lock_reservation(session: AsyncSession, key: str) -> dict[str, object]:
     row = (
         (

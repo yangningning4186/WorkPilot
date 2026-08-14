@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     daily_cost_limit_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
     cost_budget_timezone: str = "Asia/Shanghai"
+    cost_reservation_ttl_s: int = Field(default=900, ge=60, le=7200)
+    # 1 字符 = 1 token 是保守上界; 预留偏大只会多占额度, 估小则会穿透每日上限。
+    cost_estimate_chars_per_token: float = Field(default=1.0, gt=0, le=8)
+    # 每百万 token 单价。默认 0 = 本地自部署模型, 此时网关跳过预留直接调用。
+    price_main_input_usd_per_mtok: Decimal = Field(default=Decimal("0"), ge=0)
+    price_main_output_usd_per_mtok: Decimal = Field(default=Decimal("0"), ge=0)
+    price_embedding_input_usd_per_mtok: Decimal = Field(default=Decimal("0"), ge=0)
     local_library_path: Path = Path("../data/library")
     tier_main_base_url: str = "http://localhost:8000/v1"
     tier_main_model: str = "local-chat"
@@ -54,6 +61,15 @@ class Settings(BaseSettings):
     pdf_mineru_timeout_s: float = Field(default=1800.0, gt=0, le=7200)
     pdf_mineru_fallback_enabled: bool = True
     pdf_mineru_processing_window_size: int = Field(default=4, ge=1, le=64)
+    # run 预算上限(约束 5): 任一超限即熔断, 防止反思循环烧钱。
+    run_budget_tokens: int = Field(default=200_000, ge=0)
+    run_budget_calls: int = Field(default=40, ge=0)
+    run_budget_wall_ms: int = Field(default=300_000, ge=1_000)
+    run_lease_s: int = Field(default=60, ge=5, le=3600)
+    # 心跳必须明显短于租约, 否则正常执行中的 run 会被 watchdog 误判为失联。
+    run_heartbeat_s: float = Field(default=15.0, gt=0)
+    run_delta_flush_ms: int = Field(default=50, ge=10, le=1000)
+    run_delta_flush_chars: int = Field(default=120, ge=1, le=4000)
     refusal_threshold: float = Field(default=0.35, ge=-1.0, le=1.0)
     refusal_margin_threshold: float = Field(default=0.03, ge=0.0, le=2.0)
     evidence_gate_max_chars: int = Field(default=3000, ge=500, le=20000)

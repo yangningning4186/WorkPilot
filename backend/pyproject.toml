@@ -5,12 +5,15 @@ description = "WorkPilot FastAPI backend"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "alembic>=1.16,<2",
+  "arq>=0.26,<1",
   "asyncpg>=0.30,<1",
   "fastapi>=0.116,<1",
   "pgvector>=0.4,<1",
   "pydantic-settings>=2.10,<3",
   "pymupdf>=1.26,<2",
-  "redis>=6.4,<7",
+  # arq 全系列都把 redis 卡在 <6, 因此从 6.x 回退到 5.x。
+  # 用到的只有 from_url / publish / pubsub / aclose, 5.0.1+ 全部具备。
+  "redis>=5.0.1,<6",
   "sqlalchemy[asyncio]>=2.0.41,<3",
   "structlog>=25.4,<26",
   "uuid6>=2025.0.1,<2026",
