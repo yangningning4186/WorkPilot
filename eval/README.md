@@ -29,8 +29,11 @@ macro-F1 最优阈值。跑批会拒绝 stale span、无 gold span 的可答题�
 # 多查询 dense（会把问题文本发送到配置的远端 chat model）
 --strategy multi-query-dense
 
-# dense Top-50 → 远端 listwise rerank → Top-K（会发送问题与截断候选正文）
+# dense Top-50 → 本地 cross-encoder rerank → Top-K
 --strategy dense-rerank
+
+# dense + lexical RRF Top-50 → 本地 cross-encoder → Top-K
+--strategy dense-lexical-rrf-rerank
 
 # 完全本地的 dense + lexical + RRF
 --strategy dense-lexical-rrf
@@ -38,6 +41,33 @@ macro-F1 最优阈值。跑批会拒绝 stale span、无 gold span 的可答题�
 
 远端策略运行前必须确认数据外发范围与目标端点。正式单变量对照应保持 dataset、Top-K、
 diagnostic-K、token budget、embedding identity 和 gold span 不变。
+
+带 rerank 的策略需要先启动本机 cross-encoder 服务（见 [reranker/README.md](../reranker/README.md)）；
+服务不可用时跑批直接失败，不会静默退回原顺序，避免把降级结果记成实验数字。
+
+## 独立留出集
+
+`multihop-test-v1` 是与 `core-dev` 不重叠的 PDF multi-hop 留出集，只用来验收调参后的策略，
+不参与阈值和策略选择：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.seed_multihop_test
+PYTHONPATH=backend backend/.venv/bin/python -m eval.dense_baseline \
+  --dataset multihop-test-v1 --origin synthetic --label holdout-rrf-rerank-v1 \
+  --strategy dense-lexical-rrf-rerank --top-k 10 --diagnostic-k 50
+```
+
+## 精排延迟
+
+单独测量 `/v1/rerank` 往返，候选检索不计入耗时；候选数按逗号分隔可一次扫多档：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.reranker_latency \
+  --dataset multihop-test-v1 --label rerank-latency-v1 \
+  --candidate-counts 10,25,50 --top-k 5 --repeat 3 --warmup 2
+```
+
+报告写入 Git 忽略的 `eval/outputs/reranker-latency/`，包含服务侧 device/dtype/batch 配置。
 
 工程链路可用合成 title smoke 检查，但其数字不能作为模型质量结论：
 

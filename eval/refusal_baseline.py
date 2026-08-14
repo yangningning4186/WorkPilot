@@ -10,6 +10,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from statistics import fmean
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.llm.gateway import ModelGateway, build_model_gateway
@@ -22,8 +25,7 @@ from app.services.evidence_sufficiency import (
     assess_evidence_sufficiency,
 )
 from app.services.grounded_answer import evaluate_refusal
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.reranker import rerank_candidates
 
 
 @dataclass(frozen=True)
@@ -53,8 +55,12 @@ async def run_refusal_baseline(
     settings: Settings | None = None,
 ) -> Path:
     settings = settings or Settings()
-    if strategy not in {"dense-only", "dense-lexical-rrf"}:
-        raise ValueError("拒答基线只支持 dense-only 或 dense-lexical-rrf")
+    if strategy not in {
+        "dense-only",
+        "dense-lexical-rrf",
+        "dense-lexical-rrf-rerank",
+    }:
+        raise ValueError("拒答基线不支持该检索策略")
     config: dict[str, object] = {
         "strategy": strategy,
         "top_k": top_k,
@@ -62,11 +68,15 @@ async def run_refusal_baseline(
         "refusal_threshold": settings.refusal_threshold,
         "refusal_margin_threshold": settings.refusal_margin_threshold,
         "evidence_gate_max_chars": settings.evidence_gate_max_chars,
+        "rerank_evidence_gate_max_chars": settings.rerank_evidence_gate_max_chars,
+        "evidence_gate_max_segment_chars": settings.evidence_gate_max_segment_chars,
         "evidence_gate_max_tokens": settings.evidence_gate_max_tokens,
         "embedding_model": settings.embedding_model,
         "embedding_revision": settings.embedding_revision,
         "chat_model": settings.tier_main_model,
         "rrf_k": settings.rrf_k,
+        "reranker_base_url": settings.reranker_base_url,
+        "reranker_model": settings.reranker_model,
     }
     config_hash = hashlib.sha256(
         json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
@@ -143,13 +153,27 @@ async def _evaluate_item(
     settings: Settings,
 ) -> RefusalItemResult:
     started = time.monotonic()
-    dense_hits = await dense_search(session, gateway, query=question, top_k=top_k)
+    candidate_k = settings.rerank_candidate_k if strategy.endswith("rerank") else top_k
+    dense_hits = await dense_search(session, gateway, query=question, top_k=candidate_k)
     hits: list[DenseSearchHit] = dense_hits
-    if strategy == "dense-lexical-rrf":
-        lexical_hits = await lexical_search(session, query=question, top_k=top_k)
+    if strategy in {"dense-lexical-rrf", "dense-lexical-rrf-rerank"}:
+        lexical_hits = await lexical_search(session, query=question, top_k=candidate_k)
         hits = reciprocal_rank_fusion(
-            [dense_hits, lexical_hits], top_k=top_k, rrf_k=settings.rrf_k
+            [dense_hits, lexical_hits], top_k=candidate_k, rrf_k=settings.rrf_k
         )
+    if strategy == "dense-lexical-rrf-rerank" and len(hits) > top_k:
+        reranked = await rerank_candidates(
+            query=question,
+            candidates=hits,
+            top_k=top_k,
+            base_url=settings.reranker_base_url,
+            model=settings.reranker_model,
+            timeout_s=settings.reranker_timeout_s,
+            max_candidate_chars=settings.rerank_max_candidate_chars,
+        )
+        if not reranked.applied:
+            raise RuntimeError(reranked.reason)
+        hits = reranked.hits
     signals = evaluate_refusal(
         hits,
         threshold=settings.refusal_threshold,
@@ -159,8 +183,17 @@ async def _evaluate_item(
     evidence_reason: str | None = None
     invalid = False
     if refusal_reason is None:
+        coverage_packing = strategy.endswith("rerank")
         evidence = build_evidence_segments(
-            hits, max_chars=settings.evidence_gate_max_chars
+            hits,
+            max_chars=(
+                settings.rerank_evidence_gate_max_chars
+                if coverage_packing
+                else settings.evidence_gate_max_chars
+            ),
+            max_segment_chars=(
+                settings.evidence_gate_max_segment_chars if coverage_packing else None
+            ),
         )
         if not evidence:
             refusal_reason = "no_evidence"
@@ -298,7 +331,9 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--label", required=True)
     parser.add_argument(
-        "--strategy", choices=["dense-only", "dense-lexical-rrf"], default="dense-only"
+        "--strategy",
+        choices=["dense-only", "dense-lexical-rrf", "dense-lexical-rrf-rerank"],
+        default="dense-only",
     )
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument(

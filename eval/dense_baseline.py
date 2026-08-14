@@ -11,6 +11,10 @@ from pathlib import Path
 from statistics import fmean
 from uuid import UUID
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from uuid6 import uuid7
+
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.llm.audit import SqlLlmCallAudit
@@ -20,10 +24,6 @@ from app.retrieval.fusion import reciprocal_rank_fusion
 from app.retrieval.lexical import lexical_search
 from app.services.query_decomposition import plan_retrieval_queries
 from app.services.reranker import rerank_candidates
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-from uuid6 import uuid7
-
 from eval.mapping import GoldSpan, RetrievedChunk
 from eval.metrics.diagnostics import diagnose_spans, percentile, summarize_scores
 from eval.metrics.refusal import RefusalAnalysis, analyze_refusal
@@ -77,6 +77,7 @@ async def run_dense_baseline(
         "multi-query-dense",
         "dense-rerank",
         "dense-lexical-rrf",
+        "dense-lexical-rrf-rerank",
     }
     if strategy not in supported_strategies:
         raise ValueError(f"不支持的检索策略: {strategy}")
@@ -95,8 +96,8 @@ async def run_dense_baseline(
         "embedding_dim": settings.embedding_dim,
         "chat_model": settings.tier_main_model,
         "query_decomposition_max_subqueries": settings.query_decomposition_max_subqueries,
-        "rerank_batch_size": settings.rerank_batch_size,
-        "rerank_batch_keep": settings.rerank_batch_keep,
+        "reranker_base_url": settings.reranker_base_url,
+        "reranker_model": settings.reranker_model,
         "rrf_k": settings.rrf_k,
     }
     config_hash = hashlib.sha256(
@@ -388,14 +389,13 @@ async def _retrieve_with_strategy(
         if len(candidates) <= top_k:
             return candidates
         result = await rerank_candidates(
-            gateway,
             query=query,
             candidates=candidates,
             top_k=top_k,
-            batch_size=settings.rerank_batch_size,
-            batch_keep=settings.rerank_batch_keep,
+            base_url=settings.reranker_base_url,
+            model=settings.reranker_model,
+            timeout_s=settings.reranker_timeout_s,
             max_candidate_chars=settings.rerank_max_candidate_chars,
-            max_tokens=settings.rerank_max_tokens,
         )
         if not result.applied:
             raise RuntimeError(result.reason)
@@ -408,6 +408,28 @@ async def _retrieve_with_strategy(
             top_k=diagnostic_k,
             rrf_k=settings.rrf_k,
         )
+    if strategy == "dense-lexical-rrf-rerank":
+        dense_hits = await dense_search(session, gateway, query=query, top_k=diagnostic_k)
+        lexical_hits = await lexical_search(session, query=query, top_k=diagnostic_k)
+        candidates = reciprocal_rank_fusion(
+            [dense_hits, lexical_hits],
+            top_k=diagnostic_k,
+            rrf_k=settings.rrf_k,
+        )
+        if len(candidates) <= top_k:
+            return candidates
+        result = await rerank_candidates(
+            query=query,
+            candidates=candidates,
+            top_k=top_k,
+            base_url=settings.reranker_base_url,
+            model=settings.reranker_model,
+            timeout_s=settings.reranker_timeout_s,
+            max_candidate_chars=settings.rerank_max_candidate_chars,
+        )
+        if not result.applied:
+            raise RuntimeError(result.reason)
+        return result.hits
     raise AssertionError(f"未处理的检索策略: {strategy}")
 
 
@@ -885,6 +907,7 @@ def _parse_args() -> argparse.Namespace:
             "multi-query-dense",
             "dense-rerank",
             "dense-lexical-rrf",
+            "dense-lexical-rrf-rerank",
         ],
         default="dense-only",
     )
