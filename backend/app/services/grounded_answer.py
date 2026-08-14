@@ -85,16 +85,18 @@ async def answer_with_citations(
     refusal_threshold: float = 0.35,
     refusal_margin_threshold: float = 0.03,
     evidence_gate_max_chars: int = 3000,
+    rerank_evidence_gate_max_chars: int = 6000,
+    evidence_gate_max_segment_chars: int = 1200,
     evidence_gate_max_tokens: int = 300,
     query_decomposition_enabled: bool = False,
     query_decomposition_max_subqueries: int = 4,
     query_decomposition_max_tokens: int = 300,
     rerank_enabled: bool = False,
     rerank_candidate_k: int = 50,
-    rerank_batch_size: int = 10,
-    rerank_batch_keep: int = 3,
-    rerank_max_candidate_chars: int = 600,
-    rerank_max_tokens: int = 1000,
+    reranker_base_url: str = "http://127.0.0.1:8011",
+    reranker_model: str = "BAAI/bge-reranker-v2-m3",
+    reranker_timeout_s: float = 10.0,
+    rerank_max_candidate_chars: int = 1200,
     lexical_rrf_enabled: bool = True,
     rrf_k: int = 60,
     max_evidence_chars: int = 12000,
@@ -124,14 +126,13 @@ async def answer_with_citations(
         )
     if rerank_enabled and len(candidate_hits) > top_k:
         rerank_result = await rerank_candidates(
-            gateway,
             query=query,
             candidates=candidate_hits,
             top_k=top_k,
-            batch_size=rerank_batch_size,
-            batch_keep=rerank_batch_keep,
+            base_url=reranker_base_url,
+            model=reranker_model,
+            timeout_s=reranker_timeout_s,
             max_candidate_chars=rerank_max_candidate_chars,
-            max_tokens=rerank_max_tokens,
         )
     else:
         rerank_result = RerankResult(
@@ -179,7 +180,12 @@ async def answer_with_citations(
         )
 
     assert top_score is not None
-    gate_evidence = build_evidence_segments(hits, max_chars=evidence_gate_max_chars)
+    coverage_packing = rerank_result.applied
+    gate_evidence = build_evidence_segments(
+        hits,
+        max_chars=(rerank_evidence_gate_max_chars if coverage_packing else evidence_gate_max_chars),
+        max_segment_chars=evidence_gate_max_segment_chars if coverage_packing else None,
+    )
     try:
         assessment = await assess_evidence_sufficiency(
             gateway,

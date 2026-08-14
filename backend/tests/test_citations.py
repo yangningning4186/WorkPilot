@@ -59,6 +59,25 @@ def test_evidence_is_block_anchored_and_respects_character_budget() -> None:
     assert segments[0].char_end == 15
 
 
+def test_evidence_gate_packing_covers_multiple_hits_before_second_blocks() -> None:
+    first = _hit()
+    second = _hit()
+    second.blocks[1]["text"] = "Second-hop evidence"
+    second.blocks[1]["char_end"] = second.blocks[1]["char_start"] + len(second.blocks[1]["text"])
+
+    segments = build_evidence_segments(
+        [first, second],
+        max_chars=12,
+        max_segment_chars=6,
+    )
+
+    assert [segment.quote for segment in segments] == ["Vector", "Second"]
+    assert [segment.document_id for segment in segments] == [
+        first.document_id,
+        second.document_id,
+    ]
+
+
 def test_parse_citations_maps_and_deduplicates_labels() -> None:
     evidence = build_evidence_segments([_hit()], max_chars=100)
     citations = parse_citations("A fact [S1]. Repeated [S1].", evidence)

@@ -131,10 +131,24 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.pdf_parsing_quality \
 `model_insufficient_evidence`。响应同时暴露分数、margin、门控原因和实际模型，便于离线校准。
 
 复杂问题可由远端模型分解为最多 4 个自包含子查询，批量 embedding 后融合召回；规划失败自动
-退回原 query。Top-50 候选可按批次发送到远端模型做 listwise rerank，失败时保留原排序。
+退回原 query。Top-50 候选发送到本机 `RERANKER_BASE_URL` 的专用 cross-encoder 做一次批量精排，
+失败时保留原排序，不再用 35B 生成模型做 listwise rerank。门控证据按 Top-K 候选轮询打包，并以
+`EVIDENCE_GATE_MAX_SEGMENT_CHARS` 限制单段长度，避免第一个长 block 挤掉第二跳证据。
 `LEXICAL_RRF_ENABLED` 默认开启，会用英文标识符与中文双字词做本地词法召回，再以
-RRF 与 dense 合并。远端步骤只发送问题及截断候选，不上传原始文件；部署时仍需按数据策略确认
-具体语料是否允许外发。默认阈值 `0.35` 只是工程初值，不能当成质量结论。
+RRF 与 dense 合并。查询分解和证据充分性门控仍是远端步骤，只发送问题及截断候选，不上传原始
+文件；部署时仍需按数据策略确认具体语料是否允许外发。默认阈值 `0.35` 只是工程初值，不能当成
+质量结论。
+
+本地 reranker 使用独立环境，避免主后端引入 PyTorch。首次启动会下载约 2.3GB 权重：
+
+```bash
+cd ..
+uv sync --project reranker --group dev
+HF_HOME="$PWD/.cache/huggingface" \
+  uv run --project reranker uvicorn reranker_service.main:app \
+  --app-dir reranker --host 127.0.0.1 --port 8011
+curl http://127.0.0.1:8011/health
+```
 
 ## 向量索引：每策略一个部分 HNSW
 
@@ -254,6 +268,12 @@ cd ..
 PYTHONPATH=backend backend/.venv/bin/python -m eval.dense_baseline \
   --dataset core-dev --origin human --label dense-core-dev-v1 \
   --top-k 10 --token-budget 4000
+```
+
+独立 PDF multi-hop 留出集可按当前激活解析版本重新生成；脚本只写评测表，不修改资料：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.seed_multihop_test
 ```
 
 跑批在开始前拒绝 stale span，使用模型网关调用当前 query embedding，按版本和字符区间映射

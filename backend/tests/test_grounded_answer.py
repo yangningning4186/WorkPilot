@@ -26,7 +26,11 @@ from app.services.grounded_answer import (
 )
 from app.services.markdown_ingestion import ingest_markdown_file
 from app.services.query_decomposition import QueryDecompositionError, parse_query_plan
-from app.services.reranker import RerankResponseError, parse_rerank_response
+from app.services.reranker import (
+    RerankResponseError,
+    parse_cross_encoder_response,
+    rerank_candidates,
+)
 from tests.fakes import DeterministicProvider
 
 
@@ -164,17 +168,105 @@ def test_multi_query_fusion_keeps_head_evidence_from_each_query() -> None:
 
 
 def test_rerank_parser_requires_complete_unique_ranking() -> None:
-    ranking = parse_rerank_response(
-        '{"ranking":[{"id":"C2","score":0.9},{"id":"C1","score":0.2}]}',
+    ranking, model = parse_cross_encoder_response(
+        {
+            "model": "test-reranker",
+            "results": [
+                {"id": "C2", "relevance_score": 0.9},
+                {"id": "C1", "relevance_score": 0.2},
+            ],
+        },
         allowed_ids={"C1", "C2"},
     )
 
     assert ranking == [("C2", 0.9), ("C1", 0.2)]
+    assert model == "test-reranker"
     with pytest.raises(RerankResponseError, match="未覆盖全部候选"):
-        parse_rerank_response(
-            '{"ranking":[{"id":"C1","score":0.5}]}',
+        parse_cross_encoder_response(
+            {
+                "model": "test-reranker",
+                "results": [{"id": "C1", "relevance_score": 0.5}],
+            },
             allowed_ids={"C1", "C2"},
         )
+
+
+@pytest.mark.asyncio
+async def test_local_reranker_client_reorders_and_degrades_safely() -> None:
+    first = DenseSearchHit(
+        chunk_id=uuid7(),
+        document_id=uuid7(),
+        version_id=uuid7(),
+        version_no=1,
+        title="first",
+        source_uri="first.md",
+        content="first evidence",
+        score=0.8,
+        heading_path=[],
+        blocks=[],
+    )
+    second = DenseSearchHit(
+        chunk_id=uuid7(),
+        document_id=uuid7(),
+        version_id=uuid7(),
+        version_no=1,
+        title="second",
+        source_uri="second.md",
+        content="second evidence",
+        score=0.7,
+        heading_path=[],
+        blocks=[],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/rerank"
+        return httpx.Response(
+            200,
+            json={
+                "model": "test-reranker",
+                "results": [
+                    {"id": "C2", "index": 1, "relevance_score": 0.9},
+                    {"id": "C1", "index": 0, "relevance_score": 0.1},
+                ],
+            },
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://reranker.test",
+    )
+    result = await rerank_candidates(
+        query="second",
+        candidates=[first, second],
+        top_k=1,
+        base_url="http://reranker.test",
+        model="test-reranker",
+        client=client,
+    )
+    await client.aclose()
+
+    assert result.applied is True
+    assert result.hits[0].chunk_id == second.chunk_id
+    assert result.hits[0].rerank_score == 0.9
+    assert result.provider == "local_cross_encoder"
+
+    failing_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(503)),
+        base_url="http://reranker.test",
+    )
+    degraded = await rerank_candidates(
+        query="second",
+        candidates=[first, second],
+        top_k=1,
+        base_url="http://reranker.test",
+        model="test-reranker",
+        client=failing_client,
+    )
+    await failing_client.aclose()
+
+    assert degraded.applied is False
+    assert degraded.hits == [first]
+    assert degraded.reason == "rerank 降级: HTTPStatusError"
 
 
 def test_lexical_terms_and_rrf_cover_exact_identifier() -> None:

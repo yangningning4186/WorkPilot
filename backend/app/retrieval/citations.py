@@ -50,25 +50,52 @@ class Citation:
     locations: list[dict[str, Any]]
 
 
-def build_evidence_segments(hits: list[DenseSearchHit], *, max_chars: int) -> list[EvidenceSegment]:
+def build_evidence_segments(
+    hits: list[DenseSearchHit],
+    *,
+    max_chars: int,
+    max_segment_chars: int | None = None,
+) -> list[EvidenceSegment]:
     if max_chars < 1:
         raise ValueError("max_chars 必须大于 0")
+    if max_segment_chars is not None and max_segment_chars < 1:
+        raise ValueError("max_segment_chars 必须大于 0")
     segments: list[EvidenceSegment] = []
     seen_blocks: set[UUID] = set()
     remaining = max_chars
 
-    candidates = [
-        (hit, block) for hit in hits for block in hit.blocks if block.get("block_type") != "title"
-    ]
-    if not candidates:
-        candidates = [(hit, block) for hit in hits for block in hit.blocks]
+    if max_segment_chars is None:
+        candidates = [
+            (hit, block)
+            for hit in hits
+            for block in hit.blocks
+            if block.get("block_type") != "title"
+        ]
+        if not candidates:
+            candidates = [(hit, block) for hit in hits for block in hit.blocks]
+    else:
+        block_rankings = [
+            [block for block in hit.blocks if block.get("block_type") != "title"] or hit.blocks
+            for hit in hits
+        ]
+        # 精排后的多跳候选需要覆盖优先。按候选轮询 block, 避免第一个 chunk 的多个长 block
+        # 吃完预算, 使已经召回的第二跳证据不可见。
+        candidates = []
+        max_blocks = max((len(blocks) for blocks in block_rankings), default=0)
+        for block_rank in range(max_blocks):
+            for hit, blocks in zip(hits, block_rankings, strict=True):
+                if block_rank < len(blocks):
+                    candidates.append((hit, blocks[block_rank]))
 
     for hit, block in candidates:
         block_id = UUID(str(block["block_id"]))
         if block_id in seen_blocks or remaining <= 0:
             continue
         text = str(block["text"])
-        quote = text[:remaining]
+        segment_budget = (
+            min(remaining, max_segment_chars) if max_segment_chars is not None else remaining
+        )
+        quote = text[:segment_budget]
         if not quote:
             continue
         char_start = int(block["char_start"])
