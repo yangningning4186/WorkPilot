@@ -154,7 +154,43 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.dense_baseline \
 ```
 
 报告保存在 Git 忽略的 `eval/outputs/dense-baseline/`，聚合与逐样本结果同时写入 PostgreSQL。
-下一阶段的 compare、Judge 校准和 CI gate 尚未实现。
+下一阶段的 Judge 校准和 CI gate 尚未实现。
+
+## 两次跑批的配对对照
+
+`compare.py` 只读两份 `report.json`，不连数据库、不调模型、不重跑检索；
+`stats.py` 提供逐样本 paired bootstrap（[docs/06 §4.3](../docs/06-评测体系.md)）：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.compare \
+  eval/outputs/dense-baseline/<baseline-run> \
+  eval/outputs/dense-baseline/<candidate-run> \
+  --output-dir eval/outputs/compare/<label>
+```
+
+位置参数可以是 `report.json` 本身，也可以是它所在的跑批目录。支持 `dense_baseline`
+（检索轨）与 `generation_baseline`（生成轨）两类报告；`refusal_baseline` 报告没有
+`item_id`，无法配对，跑批会直接拒绝。
+
+配对与兼容性校验在计算任何指标之前执行，任一条不满足即拒绝出报告：
+
+- 两份报告必须是同一 `dataset`、同一类型，且 `item_id` 集合完全相同；
+- 逐条比对 `category` 与 `answerable`，不一致说明标注已漂移，配对无效；
+- 受控配置项（检索轨 `origin` / `top_k` / `token_budget` / `theta` / `alpha`）不同则
+  两侧算的不是同一个指标，默认拒绝，确属有意对照时用 `--allow-config-drift` 放行；
+- 其余配置差异全部列进报告的「配置差异」表——那才是被对照的实验变量。
+
+统计口径：配对百分位 bootstrap，默认 `--resamples 10000`、`--seed 12345`、`--ci-level 0.95`，
+同一份输入永远给出同一个区间。所有指标共用同一批重采样下标，因此指标之间的区间可以并排解读；
+类别切片在切片内部单独重采样。**置信区间跨 0 就是"无显著差异"，不允许写成提升**。
+
+逐样本表按主指标（检索轨默认 `budget_span_recall`，生成轨默认 `constraint_pass`，
+可用 `--primary-metric` 覆盖）给出变好 / 变差 / 持平 / 不适用四类，`--top-n` 控制
+markdown 里各列几条，`report.json` 始终保留全部逐样本差值。
+
+一个样本只要在任一侧不适用某指标（不可答题没有检索指标、一侧拒答另一侧作答、
+一侧跑批报错），两侧就一起剔除，剔除数量记在「仅一侧适用」列——
+否则比较的是两批不同的样本。因此对照报告里的绝对值可能与单次跑批报告的聚合值不同。
 
 组合拒答跑批只执行“检索分数 + margin + 证据充分性”, 不生成最终答案：
 
