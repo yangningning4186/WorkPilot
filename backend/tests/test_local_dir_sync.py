@@ -7,7 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.llm.gateway import ModelGateway
-from app.services.local_dir import _scan_files, register_local_dir, sync_local_dir
+from app.services.local_dir import (
+    SyncProgress,
+    _scan_files,
+    register_local_dir,
+    sync_local_dir,
+)
 from tests.fakes import DeterministicProvider
 
 
@@ -188,6 +193,59 @@ async def test_local_dir_sync_isolates_a_broken_pdf(
         .all()
     )
     assert rows == [{"source_uri": "good.md", "deleted_at": None}]
+
+
+@pytest.mark.integration
+async def test_local_dir_sync_reports_progress_for_every_file(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    library = tmp_path / "library"
+    library.mkdir()
+    (library / "good.md").write_text("# Good\n\nsearchable evidence", encoding="utf-8")
+    (library / "broken.pdf").write_bytes(b"not a pdf")
+    settings = Settings.model_validate(
+        {"local_library_path": library, "pdf_parser_mode": "pymupdf"}
+    )
+    gateway = ModelGateway(DeterministicProvider(), embedding_dimensions=1024)
+    source = await register_local_dir(
+        db_session, requested_root=Path("."), allowed_root=library, name="fixture"
+    )
+
+    first_progress: list[SyncProgress] = []
+    await sync_local_dir(
+        db_session,
+        gateway,
+        source_id=source.id,
+        allowed_root=library,
+        settings=settings,
+        on_progress=first_progress.append,
+    )
+    second_progress: list[SyncProgress] = []
+    await sync_local_dir(
+        db_session,
+        gateway,
+        source_id=source.id,
+        allowed_root=library,
+        settings=settings,
+        on_progress=second_progress.append,
+    )
+
+    # 失败文件也必须上报, 否则数小时的批量导入会在中途"看起来卡住"。
+    assert [item.index for item in first_progress] == [1, 2]
+    assert {item.total for item in first_progress} == {2}
+    assert {item.source_uri: item.action for item in first_progress} == {
+        "broken.pdf": "failed",
+        "good.md": "added",
+    }
+    broken = next(item for item in first_progress if item.source_uri == "broken.pdf")
+    assert broken.error is not None
+    assert all(item.elapsed_s >= 0 for item in first_progress)
+    # 第二次只有失败文件会重试, 已入库文件走增量游标跳过。
+    assert {item.source_uri: item.action for item in second_progress} == {
+        "broken.pdf": "failed",
+        "good.md": "skipped",
+    }
 
 
 @pytest.mark.integration

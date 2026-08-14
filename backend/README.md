@@ -60,6 +60,17 @@ curl -X POST http://127.0.0.1:8000/api/v1/sources/<source_id>/sync \
 在全部成功后激活，消失文件软删除并退出检索。单文件失败只记录该文件，不会阻断整个目录。
 隐藏目录、非白名单后缀和符号链接不会入库；注册根目录与每个文件都做 realpath 边界校验。
 
+**批量导入不要走上面的 HTTP 接口。** 本机实测 MinerU 约 166s/篇（7.4s/页），百篇量级要跑数
+小时，既超过 Arq 的 `job_timeout`，也违反"worker 不依附 HTTP 连接"。用脱离连接的 CLI，
+它复用同一套增量游标与失败隔离，中断后重跑会跳过已入库文件：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m app.cli.ingest_library
+PYTHONPATH=backend backend/.venv/bin/python -m app.cli.ingest_library --root papers
+```
+
+逐文件打印 `added/updated/skipped/failed` 与耗时，结束后汇总激活文档数与可检索 chunk 数。
+
 也可以单独导入一个文件：
 
 ```bash

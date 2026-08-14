@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
 import json
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
@@ -60,6 +62,18 @@ class ScannedFile:
     source_uri: str
     size_bytes: int
     mtime_ns: int
+
+
+@dataclass(frozen=True)
+class SyncProgress:
+    """单个文件处理完成后的进度快照。批量导入耗时以小时计, 必须可观测。"""
+
+    index: int
+    total: int
+    source_uri: str
+    action: str
+    elapsed_s: float
+    error: str | None
 
 
 async def register_local_dir(
@@ -137,6 +151,7 @@ async def sync_local_dir(
     allowed_root: Path,
     settings: Settings,
     max_chunk_chars: int = 2000,
+    on_progress: Callable[[SyncProgress], None] | None = None,
 ) -> LocalDirSyncResult:
     root = await _begin_sync(session, source_id, allowed_root)
     failures: list[SyncFailure] = []
@@ -146,7 +161,10 @@ async def sync_local_dir(
         failures.extend(scan_failures)
         entries = await _load_entries(session, source_id)
         seen = {item.source_uri for item in files} | {item.source_uri for item in scan_failures}
-        for item in files:
+        for index, item in enumerate(files, start=1):
+            started = time.perf_counter()
+            action = "skipped"
+            failure_message: str | None = None
             previous = entries.get(item.source_uri)
             ingest_signature = _ingest_signature(
                 item,
@@ -154,56 +172,75 @@ async def sync_local_dir(
                 gateway=gateway,
                 max_chunk_chars=max_chunk_chars,
             )
-            if (
-                previous is not None
-                and previous["sync_status"] == "synced"
-                and previous["size_bytes"] == item.size_bytes
-                and previous["mtime_ns"] == item.mtime_ns
-                and previous["ingest_signature"] == ingest_signature
-            ):
-                previous_hash = previous["content_hash"]
-                await _record_entry(
-                    session,
-                    source_id,
-                    item,
-                    previous_hash if isinstance(previous_hash, str) else None,
-                    None,
-                    ingest_signature,
-                )
-                counters["skipped"] += 1
-                continue
             try:
-                file_hash = await asyncio.to_thread(_sha256_file, item.path)
                 if (
                     previous is not None
                     and previous["sync_status"] == "synced"
-                    and previous["content_hash"] == file_hash
+                    and previous["size_bytes"] == item.size_bytes
+                    and previous["mtime_ns"] == item.mtime_ns
                     and previous["ingest_signature"] == ingest_signature
                 ):
-                    await _record_entry(session, source_id, item, file_hash, None, ingest_signature)
+                    previous_hash = previous["content_hash"]
+                    await _record_entry(
+                        session,
+                        source_id,
+                        item,
+                        previous_hash if isinstance(previous_hash, str) else None,
+                        None,
+                        ingest_signature,
+                    )
                     counters["skipped"] += 1
                     continue
-                result = await _ingest_scanned_file(
-                    session,
-                    gateway,
-                    source_id=source_id,
-                    root=root,
-                    item=item,
-                    settings=settings,
-                    max_chunk_chars=max_chunk_chars,
-                )
-                await _record_entry(session, source_id, item, file_hash, None, ingest_signature)
-                if previous is None:
-                    counters["added"] += 1
-                elif result.unchanged:
-                    counters["skipped"] += 1
-                else:
-                    counters["updated"] += 1
-            except Exception as error:
-                await session.rollback()
-                message = str(error)[:2000]
-                failures.append(SyncFailure(source_uri=item.source_uri, error=message))
-                await _record_entry(session, source_id, item, None, message, ingest_signature)
+                try:
+                    file_hash = await asyncio.to_thread(_sha256_file, item.path)
+                    if (
+                        previous is not None
+                        and previous["sync_status"] == "synced"
+                        and previous["content_hash"] == file_hash
+                        and previous["ingest_signature"] == ingest_signature
+                    ):
+                        await _record_entry(
+                            session, source_id, item, file_hash, None, ingest_signature
+                        )
+                        counters["skipped"] += 1
+                        continue
+                    result = await _ingest_scanned_file(
+                        session,
+                        gateway,
+                        source_id=source_id,
+                        root=root,
+                        item=item,
+                        settings=settings,
+                        max_chunk_chars=max_chunk_chars,
+                    )
+                    await _record_entry(session, source_id, item, file_hash, None, ingest_signature)
+                    if previous is None:
+                        counters["added"] += 1
+                        action = "added"
+                    elif result.unchanged:
+                        counters["skipped"] += 1
+                    else:
+                        counters["updated"] += 1
+                        action = "updated"
+                except Exception as error:
+                    await session.rollback()
+                    message = str(error)[:2000]
+                    failures.append(SyncFailure(source_uri=item.source_uri, error=message))
+                    await _record_entry(session, source_id, item, None, message, ingest_signature)
+                    action = "failed"
+                    failure_message = message
+            finally:
+                if on_progress is not None:
+                    on_progress(
+                        SyncProgress(
+                            index=index,
+                            total=len(files),
+                            source_uri=item.source_uri,
+                            action=action,
+                            elapsed_s=time.perf_counter() - started,
+                            error=failure_message,
+                        )
+                    )
 
         for failure in scan_failures:
             await _record_scan_failure(session, source_id, failure)
