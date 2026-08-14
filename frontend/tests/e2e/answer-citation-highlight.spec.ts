@@ -145,5 +145,25 @@ test.describe("提问 → SSE 回答 → 点击引用 → 原文高亮", () => {
     await expect(page.locator(".answer-copy")).toHaveCount(0);
     // 拒答也是正常终态：输入框要能继续提问。
     await expect(page.getByRole("button", { name: "提问" })).toBeVisible();
+    // 默认不出现免责标识：这一条还没有产出任何不可溯源的内容。
+    await expect(page.locator(".ungrounded-banner")).toHaveCount(0);
+  });
+
+  test("体面拒答：一键切到通用知识，回答带醒目免责且没有引用", async ({ page }) => {
+    await ask(page, "请回答一个资料库里没有的问题，应该拒答");
+    await expect(page.locator(".refusal-card")).toBeVisible();
+
+    await page.getByRole("button", { name: "基于通用知识回答" }).click();
+
+    // 新 run：URL 换掉，正文来自通用知识剧本。
+    await expect(page.locator(".answer-copy")).toContainText("混合检索通常指同时使用向量召回");
+    // 免责标识必须在正文之前出现，且说清楚不可核验。
+    const banner = page.locator(".ungrounded-banner");
+    await expect(banner).toContainText("以下回答来自模型的通用知识");
+    await expect(banner).toContainText("没有引用可以核验");
+    // 不可溯源的回答绝不能带引用卡片或原文预览。
+    await expect(citationCards(page)).toHaveCount(0);
+    await expect(evidencePanel(page)).toHaveCount(0);
+    await expect(page.locator(".refusal-card")).toHaveCount(0);
   });
 });

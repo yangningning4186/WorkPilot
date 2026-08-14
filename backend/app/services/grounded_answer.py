@@ -1,4 +1,5 @@
 import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Literal
 
@@ -17,6 +18,7 @@ from app.retrieval.dense import DenseSearchHit, multi_query_dense_search
 from app.retrieval.fusion import reciprocal_rank_fusion
 from app.retrieval.lexical import lexical_search
 from app.services.evidence_sufficiency import (
+    EvidenceAssessment,
     EvidenceAssessmentError,
     assess_evidence_sufficiency,
 )
@@ -76,6 +78,107 @@ class GroundedAnswerResult:
     provider: str | None
 
 
+@dataclass(frozen=True)
+class _GenerationContext:
+    """判定链已经放行, 只差生成。
+
+    字段就是最终结果里与"模型写了什么"无关的那部分——流式与非流式共用它,
+    保证两条出口报告的检索、拒答、门控信号完全一致。
+    """
+
+    evidence: list[EvidenceSegment]
+    retrieved_chunks: int
+    top_score: float
+    signals: "RetrievalRefusalSignals"
+    threshold: float
+    margin_threshold: float
+    assessment: EvidenceAssessment
+    query_plan: QueryPlan
+    rerank_result: RerankResult
+    lexical_rrf_applied: bool
+    lexical_candidate_count: int
+
+
+async def stream_answer_with_citations(
+    session: AsyncSession,
+    gateway: ModelGateway,
+    *,
+    query: str,
+    top_k: int = 5,
+    refusal_threshold: float = 0.35,
+    refusal_margin_threshold: float = 0.03,
+    evidence_gate_max_chars: int = 3000,
+    rerank_evidence_gate_max_chars: int = 6000,
+    evidence_gate_max_segment_chars: int = 1200,
+    evidence_gate_max_tokens: int = 300,
+    query_decomposition_enabled: bool = False,
+    query_decomposition_max_subqueries: int = 4,
+    query_decomposition_max_tokens: int = 300,
+    rerank_enabled: bool = False,
+    rerank_candidate_k: int = 50,
+    reranker_base_url: str = "http://127.0.0.1:8011",
+    reranker_model: str = "BAAI/bge-reranker-v2-m3",
+    reranker_timeout_s: float = 10.0,
+    rerank_max_candidate_chars: int = 1200,
+    rerank_candidate_text_mode: str = "title_heading_content",
+    lexical_rrf_enabled: bool = True,
+    lexical_mode: str = "ts_rank",
+    rrf_k: int = 60,
+    max_evidence_chars: int = 12000,
+    max_tokens: int = 1200,
+) -> AsyncIterator[str | GroundedAnswerResult]:
+    """产出正文片段, 最后产出一个结果对象。
+
+    真流式: 首 token 延迟等于模型首 token 延迟, 不再等整答生成完。
+    判定链(检索 → 阈值 → 证据门控)全部发生在生成之前, 因此拒答时一个字都不会流出去。
+    非流式入口 `answer_with_citations` 消费同一个生成器, 保证只有一条实现路径(约束 6)。
+    """
+
+    prepared = await _prepare_generation(
+        session,
+        gateway,
+        query=query,
+        top_k=top_k,
+        refusal_threshold=refusal_threshold,
+        refusal_margin_threshold=refusal_margin_threshold,
+        evidence_gate_max_chars=evidence_gate_max_chars,
+        rerank_evidence_gate_max_chars=rerank_evidence_gate_max_chars,
+        evidence_gate_max_segment_chars=evidence_gate_max_segment_chars,
+        evidence_gate_max_tokens=evidence_gate_max_tokens,
+        query_decomposition_enabled=query_decomposition_enabled,
+        query_decomposition_max_subqueries=query_decomposition_max_subqueries,
+        query_decomposition_max_tokens=query_decomposition_max_tokens,
+        rerank_enabled=rerank_enabled,
+        rerank_candidate_k=rerank_candidate_k,
+        reranker_base_url=reranker_base_url,
+        reranker_model=reranker_model,
+        reranker_timeout_s=reranker_timeout_s,
+        rerank_max_candidate_chars=rerank_max_candidate_chars,
+        rerank_candidate_text_mode=rerank_candidate_text_mode,
+        lexical_rrf_enabled=lexical_rrf_enabled,
+        lexical_mode=lexical_mode,
+        rrf_k=rrf_k,
+        max_evidence_chars=max_evidence_chars,
+    )
+    if isinstance(prepared, GroundedAnswerResult):
+        yield prepared
+        return
+
+    parts: list[str] = []
+    async for chunk in gateway.stream(
+        [
+            Message(role="system", content=SYSTEM_PROMPT),
+            Message(role="user", content=_build_user_prompt(query, prepared.evidence)),
+        ],
+        task_type="grounded_answer",
+        max_tokens=max_tokens,
+        temperature=0.0,
+    ):
+        parts.append(chunk)
+        yield chunk
+    yield _generated_result(prepared, answer="".join(parts).strip(), gateway=gateway)
+
+
 async def answer_with_citations(
     session: AsyncSession,
     gateway: ModelGateway,
@@ -104,6 +207,76 @@ async def answer_with_citations(
     max_evidence_chars: int = 12000,
     max_tokens: int = 1200,
 ) -> GroundedAnswerResult:
+    """一次性拿到完整结果。评测与 `/api/v1/answer` 用这个入口。
+
+    实现就是把流式生成器读完——**不要**在这里另写一条判定链, 那会让评测和线上
+    跑在两条代码上(约束 6)。
+    """
+
+    result: GroundedAnswerResult | None = None
+    async for item in stream_answer_with_citations(
+        session,
+        gateway,
+        query=query,
+        top_k=top_k,
+        refusal_threshold=refusal_threshold,
+        refusal_margin_threshold=refusal_margin_threshold,
+        evidence_gate_max_chars=evidence_gate_max_chars,
+        rerank_evidence_gate_max_chars=rerank_evidence_gate_max_chars,
+        evidence_gate_max_segment_chars=evidence_gate_max_segment_chars,
+        evidence_gate_max_tokens=evidence_gate_max_tokens,
+        query_decomposition_enabled=query_decomposition_enabled,
+        query_decomposition_max_subqueries=query_decomposition_max_subqueries,
+        query_decomposition_max_tokens=query_decomposition_max_tokens,
+        rerank_enabled=rerank_enabled,
+        rerank_candidate_k=rerank_candidate_k,
+        reranker_base_url=reranker_base_url,
+        reranker_model=reranker_model,
+        reranker_timeout_s=reranker_timeout_s,
+        rerank_max_candidate_chars=rerank_max_candidate_chars,
+        rerank_candidate_text_mode=rerank_candidate_text_mode,
+        lexical_rrf_enabled=lexical_rrf_enabled,
+        lexical_mode=lexical_mode,
+        rrf_k=rrf_k,
+        max_evidence_chars=max_evidence_chars,
+        max_tokens=max_tokens,
+    ):
+        if isinstance(item, GroundedAnswerResult):
+            result = item
+    if result is None:  # pragma: no cover - 生成器契约保证最后一项是结果
+        raise RuntimeError("生成器没有产出结果对象")
+    return result
+
+
+async def _prepare_generation(
+    session: AsyncSession,
+    gateway: ModelGateway,
+    *,
+    query: str,
+    top_k: int,
+    refusal_threshold: float,
+    refusal_margin_threshold: float,
+    evidence_gate_max_chars: int,
+    rerank_evidence_gate_max_chars: int,
+    evidence_gate_max_segment_chars: int,
+    evidence_gate_max_tokens: int,
+    query_decomposition_enabled: bool,
+    query_decomposition_max_subqueries: int,
+    query_decomposition_max_tokens: int,
+    rerank_enabled: bool,
+    rerank_candidate_k: int,
+    reranker_base_url: str,
+    reranker_model: str,
+    reranker_timeout_s: float,
+    rerank_max_candidate_chars: int,
+    rerank_candidate_text_mode: str,
+    lexical_rrf_enabled: bool,
+    lexical_mode: str,
+    rrf_k: int,
+    max_evidence_chars: int,
+) -> "_GenerationContext | GroundedAnswerResult":
+    """检索 → 阈值拒答 → 证据门控。返回拒答结果, 或放行生成所需的上下文。"""
+
     query_plan = await _build_query_plan(
         gateway,
         query=query,
@@ -235,48 +408,66 @@ async def answer_with_citations(
             lexical_candidate_count=len(lexical_hits),
         )
 
-    completion = await gateway.complete(
-        [
-            Message(role="system", content=SYSTEM_PROMPT),
-            Message(role="user", content=_build_user_prompt(query, evidence)),
-        ],
-        task_type="grounded_answer",
-        max_tokens=max_tokens,
-        temperature=0.0,
+    return _GenerationContext(
+        evidence=evidence,
+        retrieved_chunks=len(hits),
+        top_score=top_score,
+        signals=signals,
+        threshold=refusal_threshold,
+        margin_threshold=refusal_margin_threshold,
+        assessment=assessment,
+        query_plan=query_plan,
+        rerank_result=rerank_result,
+        lexical_rrf_applied=lexical_rrf_enabled,
+        lexical_candidate_count=len(lexical_hits),
     )
-    answer = completion.text.strip()
-    citations = parse_citations(answer, evidence)
+
+
+def _generated_result(
+    context: _GenerationContext,
+    *,
+    answer: str,
+    gateway: ModelGateway,
+) -> GroundedAnswerResult:
+    """把模型写出来的正文和判定链上下文合成最终结果。
+
+    模型仍可能在拿到证据后自己判定不足并输出拒答句, 这时 refused=True——
+    与门控拒答同一个 reason, 但走到这里说明证据是过了门控的。
+    """
+
+    citations = parse_citations(answer, context.evidence)
     refused = answer == REFUSAL_TEXT
     return GroundedAnswerResult(
         answer=answer,
         citations=citations,
         refused=refused,
         refusal_reason="model_insufficient_evidence" if refused else None,
-        retrieved_chunks=len(hits),
-        top_score=top_score,
-        second_score=signals.second_score,
-        score_margin=signals.score_margin,
-        low_margin=signals.low_margin,
-        threshold=refusal_threshold,
-        margin_threshold=refusal_margin_threshold,
+        retrieved_chunks=context.retrieved_chunks,
+        top_score=context.top_score,
+        second_score=context.signals.second_score,
+        score_margin=context.signals.score_margin,
+        low_margin=context.signals.low_margin,
+        threshold=context.threshold,
+        margin_threshold=context.margin_threshold,
         evidence_sufficient=True,
-        evidence_reason=assessment.reason,
-        evidence_model=assessment.model,
-        evidence_provider=assessment.provider,
-        query_decomposed=query_plan.decomposed,
-        retrieval_queries=query_plan.queries,
-        query_plan_reason=query_plan.reason,
-        query_plan_model=query_plan.model,
-        query_plan_provider=query_plan.provider,
-        rerank_applied=rerank_result.applied,
-        rerank_candidate_count=rerank_result.candidate_count,
-        rerank_reason=rerank_result.reason,
-        rerank_model=rerank_result.model,
-        rerank_provider=rerank_result.provider,
-        lexical_rrf_applied=lexical_rrf_enabled,
-        lexical_candidate_count=len(lexical_hits),
-        model=completion.model,
-        provider=completion.provider,
+        evidence_reason=context.assessment.reason,
+        evidence_model=context.assessment.model,
+        evidence_provider=context.assessment.provider,
+        query_decomposed=context.query_plan.decomposed,
+        retrieval_queries=context.query_plan.queries,
+        query_plan_reason=context.query_plan.reason,
+        query_plan_model=context.query_plan.model,
+        query_plan_provider=context.query_plan.provider,
+        rerank_applied=context.rerank_result.applied,
+        rerank_candidate_count=context.rerank_result.candidate_count,
+        rerank_reason=context.rerank_result.reason,
+        rerank_model=context.rerank_result.model,
+        rerank_provider=context.rerank_result.provider,
+        lexical_rrf_applied=context.lexical_rrf_applied,
+        lexical_candidate_count=context.lexical_candidate_count,
+        # 流式没有响应体可读, 身份取网关配置(gateway.chat_model/chat_provider)。
+        model=gateway.chat_model,
+        provider=gateway.chat_provider,
     )
 
 

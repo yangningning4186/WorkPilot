@@ -47,6 +47,8 @@ export interface MessageDonePayload {
   message_id: string;
   refused: boolean;
   refusal_reason: string | null;
+  /** 这条回答是否基于资料库。false 时正文不可溯源，必须挂免责标识。 */
+  grounded: boolean;
   latency_ms: number;
   cost_usd: string;
 }

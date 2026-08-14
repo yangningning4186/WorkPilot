@@ -14,10 +14,15 @@ RunEventType = Literal[
 ]
 
 
+AnswerMode = Literal["grounded", "general"]
+
+
 class CreateRunRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     conversation_id: UUID | None = None
     top_k: int = Field(default=5, ge=1, le=20)
+    # general 只能由用户在拒答之后显式选择, 默认永远是可溯源的资料库回答。
+    mode: AnswerMode = "grounded"
 
 
 class CreateRunResponse(BaseModel):
@@ -30,6 +35,7 @@ class RunStatusResponse(BaseModel):
     run_id: UUID
     conversation_id: UUID
     goal: str
+    answer_mode: AnswerMode
     status: str
     cancel_requested: bool
     used_tokens: int

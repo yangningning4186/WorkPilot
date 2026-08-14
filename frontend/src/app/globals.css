@@ -328,9 +328,10 @@ textarea:focus-visible,
   cursor: pointer;
 }
 
+/* 正文现在由 Markdown 渲染成真实块级元素，不再需要 pre-wrap 保留换行——
+   留着的话每个块之间会多出一段空白。 */
 .answer-copy {
   margin-top: 26px;
-  white-space: pre-wrap;
   font-size: 17px;
   line-height: 1.9;
 }
@@ -884,4 +885,529 @@ textarea:focus-visible,
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ---------------------------------------------------------------- 顶栏导航 */
+
+.topbar-nav {
+  display: flex;
+  gap: 4px;
+  margin-right: auto;
+  margin-left: 28px;
+}
+
+.topbar-nav a {
+  padding: 6px 12px;
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.topbar-nav a:hover {
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+
+.topbar-nav a[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------- 拒答降级与不可溯源标识 */
+
+.refusal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.refusal-actions span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ghost-button {
+  padding: 7px 14px;
+  border: 1px solid rgb(163 58 43 / 34%);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.ghost-button:hover:not(:disabled) {
+  background: rgb(163 58 43 / 8%);
+  transform: translateY(-1px);
+}
+
+.ghost-button:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+/* 通用知识回答的免责条：颜色刻意用警示黄而不是品牌绿——
+   它和"有引用的回答"是两种不同可信度的东西，视觉上必须一眼分得开。 */
+.ungrounded-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 22px;
+  padding: 13px 16px;
+  border: 1px solid rgb(172 123 15 / 34%);
+  border-left: 4px solid rgb(172 123 15 / 76%);
+  border-radius: 10px;
+  background: rgb(242 214 111 / 18%);
+  font-size: 13px;
+}
+
+.ungrounded-banner span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.inline-notice {
+  margin-top: 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* ---------------------------------------------------------------- 资料库页 */
+
+.library-frame {
+  display: block;
+}
+
+.library-body {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 34px 28px 64px;
+}
+
+.library-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 26px;
+}
+
+.library-header h1 {
+  margin: 6px 0 8px;
+  font-size: 27px;
+  letter-spacing: -0.02em;
+}
+
+.library-header p {
+  max-width: 52ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.library-search {
+  width: 260px;
+  padding: 9px 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.library-stats {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  margin-bottom: 20px;
+}
+
+.stat-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 15px 17px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface);
+}
+
+.stat-tile span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.stat-tile strong {
+  font-size: 24px;
+  letter-spacing: -0.02em;
+}
+
+.stat-tile em {
+  color: var(--faint);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.stat-tile.warn {
+  border-color: rgb(163 58 43 / 30%);
+  background: rgb(163 58 43 / 5%);
+}
+
+.stat-tile.warn strong {
+  color: var(--danger);
+}
+
+.source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 26px;
+}
+
+.source-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 15px 18px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface);
+}
+
+.source-card > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.source-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.source-error {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.source-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.source-actions button {
+  padding: 8px 15px;
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.source-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.sync-status {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sync-status.syncing {
+  color: var(--accent);
+}
+
+.sync-status.failed {
+  color: var(--danger);
+}
+
+.library-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface);
+}
+
+.library-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.library-table th,
+.library-table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.library-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.library-table tr:last-child td {
+  border-bottom: none;
+}
+
+.library-table .numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.library-table .time {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.doc-title {
+  font-weight: 600;
+}
+
+.doc-uri {
+  overflow: hidden;
+  max-width: 42ch;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-error {
+  overflow: hidden;
+  max-width: 42ch;
+  color: var(--danger);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.state-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.state-badge.ready {
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+
+.state-badge.parsing {
+  background: rgb(242 214 111 / 30%);
+  color: #7a5c0c;
+}
+
+.state-badge.failed {
+  background: rgb(163 58 43 / 12%);
+  color: var(--danger);
+}
+
+.state-badge.stale {
+  background: var(--surface-muted);
+  color: var(--muted);
+}
+
+.locatable {
+  font-size: 12px;
+}
+
+.locatable.yes {
+  color: var(--accent);
+}
+
+.locatable.no {
+  color: var(--faint);
+}
+
+.library-empty {
+  padding: 26px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+@media (max-width: 860px) {
+  .library-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .library-search {
+    width: 100%;
+  }
+
+  .topbar-nav {
+    margin-left: 12px;
+  }
+}
+
+/* ------------------------------------------------------------ 回答 Markdown */
+
+.answer-copy > * {
+  margin: 0;
+}
+
+.answer-copy > * + * {
+  margin-top: 14px;
+}
+
+.answer-copy h1,
+.answer-copy h2,
+.answer-copy h3,
+.answer-copy h4 {
+  margin-top: 22px;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.5;
+}
+
+.answer-copy h1 {
+  font-size: 20px;
+}
+
+.answer-copy h2 {
+  font-size: 18px;
+}
+
+/* Tailwind preflight 会把列表标记清掉，回答里的有序列表是有语义的（"三个组件"），
+   必须显式加回来。 */
+.answer-copy ul {
+  padding-left: 22px;
+  list-style: disc;
+}
+
+.answer-copy ol {
+  padding-left: 24px;
+  list-style: decimal;
+}
+
+.answer-copy li::marker {
+  color: var(--faint);
+}
+
+.answer-copy li + li {
+  margin-top: 4px;
+}
+
+.answer-copy li > ul,
+.answer-copy li > ol {
+  margin-top: 4px;
+}
+
+.answer-copy strong {
+  font-weight: 650;
+}
+
+.answer-copy code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--surface-muted);
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+}
+
+.answer-copy pre {
+  overflow-x: auto;
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-muted);
+  line-height: 1.6;
+}
+
+.answer-copy pre code {
+  padding: 0;
+  background: none;
+  font-size: 13px;
+}
+
+.answer-copy blockquote {
+  padding-left: 14px;
+  border-left: 3px solid var(--line-strong);
+  color: var(--muted);
+}
+
+/* 表格是学术资料里最常见的结构化证据，必须能横向滚动而不撑破对话栏。 */
+.answer-copy table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.answer-copy th,
+.answer-copy td {
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  text-align: left;
+}
+
+.answer-copy th {
+  background: var(--surface-muted);
+  font-weight: 600;
+}
+
+.answer-copy hr {
+  border: none;
+  border-top: 1px solid var(--line);
+}
+
+.answer-copy a {
+  color: var(--accent-deep);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* 正文里的引用锚点。做成 chip 而不是纯文字：它是可点的，视觉上就该像可点的。 */
+.citation-chip {
+  display: inline-block;
+  padding: 0 7px;
+  border: 1px solid rgb(31 107 85 / 26%);
+  border-radius: 999px;
+  margin: 0 1px;
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  vertical-align: 1px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.citation-chip:hover,
+.citation-chip.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+.citation-chip.static {
+  cursor: default;
 }

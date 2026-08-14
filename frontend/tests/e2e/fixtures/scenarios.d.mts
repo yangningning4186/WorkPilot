@@ -7,6 +7,7 @@
  * 这正是想要的：剧本和契约必须一起改。
  */
 
+import type { LibraryResponse } from "../../../src/lib/api";
 import type {
   CitationPayload,
   ErrorPayload,
@@ -42,6 +43,8 @@ export interface Scenario {
 
 export type ScenarioName =
   | "pdf"
+  | "general"
+  | "markdownRender"
   | "markdown"
   | "refusal"
   | "error"
@@ -71,4 +74,6 @@ export declare const PDF_CITATION_S2: CitationPayload;
 export declare const MD_CITATION: CitationPayload;
 export declare const MD_FILE_CONTENT: string;
 export declare const SCENARIOS: Record<ScenarioName, Scenario>;
-export declare function pickScenario(query: string): ScenarioName;
+export declare function pickScenario(query: string, mode?: "grounded" | "general"): ScenarioName;
+
+export declare const LIBRARY: LibraryResponse;

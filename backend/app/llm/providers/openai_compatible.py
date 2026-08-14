@@ -79,9 +79,7 @@ class OpenAICompatibleProvider:
             "temperature": temperature,
         }
         if self._enable_thinking is not None:
-            request_payload["chat_template_kwargs"] = {
-                "enable_thinking": self._enable_thinking
-            }
+            request_payload["chat_template_kwargs"] = {"enable_thinking": self._enable_thinking}
         with _dispatch_guard():
             response = await self._client.post(
                 "chat/completions",
@@ -120,9 +118,7 @@ class OpenAICompatibleProvider:
             "stream": True,
         }
         if self._enable_thinking is not None:
-            request_payload["chat_template_kwargs"] = {
-                "enable_thinking": self._enable_thinking
-            }
+            request_payload["chat_template_kwargs"] = {"enable_thinking": self._enable_thinking}
         with _dispatch_guard():
             stream = self._client.stream(
                 "POST",

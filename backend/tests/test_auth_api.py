@@ -41,9 +41,7 @@ async def test_admin_login_session_and_logout_use_http_only_cookie() -> None:
     store = MemoryAdminSessionStore()
     transport = httpx.ASGITransport(app=_app(store))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        login = await client.post(
-            "/api/v1/auth/admin/login", json={"password": "correct horse"}
-        )
+        login = await client.post("/api/v1/auth/admin/login", json={"password": "correct horse"})
         assert login.status_code == 200
         cookie = login.headers["set-cookie"].lower()
         assert "workpilot_admin_session=" in cookie
@@ -89,9 +87,7 @@ async def test_maintenance_and_debug_surfaces_require_admin_session() -> None:
             await client.get("/annotation"),
             await client.get("/api/v1/annotation/datasets"),
             await client.get(f"/api/v1/sources/{uuid4()}"),
-            await client.post(
-                "/api/v1/documents/ingest-markdown", json={"path": "note.md"}
-            ),
+            await client.post("/api/v1/documents/ingest-markdown", json={"path": "note.md"}),
             await client.post("/api/v1/search/dense", json={"query": "test"}),
             await client.post("/api/v1/answer", json={"query": "test"}),
         ]

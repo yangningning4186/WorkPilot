@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     rrf_k: int = Field(default=60, ge=1, le=1000)
     answer_max_evidence_chars: int = Field(default=12000, ge=1000, le=100000)
     answer_max_tokens: int = Field(default=1200, ge=64, le=8192)
+    # 通用知识回答不可溯源, 刻意给得比资料库回答更短: 它是降级出口不是主路。
+    general_answer_max_tokens: int = Field(default=800, ge=64, le=4096)
 
     @field_validator("embedding_dim", mode="before")
     @classmethod

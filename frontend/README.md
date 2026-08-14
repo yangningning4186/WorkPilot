@@ -1,6 +1,9 @@
 # frontend
 
 Next.js 16 App Router + 原生 CSS + 自写 SSE 客户端（未引入 shadcn/ui 与 Vercel AI SDK）。
+唯一的第三方渲染依赖是 react-markdown + remark-gfm：答案正文必须支持表格与代码块，
+自己写 Markdown 解析器只会更糟。**不要加 rehype-raw**——证据是不可信数据，
+"默认不渲染裸 HTML" 是这里的安全边界（见 `src/components/answer-markdown.tsx`）。
 设计见 [docs/08-前端设计.md](../docs/08-前端设计.md)。
 
 开发前先定死 SSE 事件协议（08 §3），再写两端。
@@ -26,6 +29,10 @@ Next.js 16 App Router + 原生 CSS + 自写 SSE 客户端（未引入 shadcn/ui 
 | B3 关页面再回来 | run 状态只由 URL 上的 run_id 决定 |
 | B5 并发隔离 | 两个标签页各自一条 EventSource，正文不串台 |
 | 取消 / 失败态 / 创建失败 | 停止落到 cancel 接口、错误可读且不谎报可重试、不留假加载态 |
+| Markdown 渲染 | 流式半截语法不炸、`[S1]` 变可点锚点、代码块里的 `[S1]` 保持字面量 |
+| 证据注入 | 答案里的裸 HTML 不解析、`javascript:` 链接被过滤 |
+| 通用知识切换 | 拒答后一键降级，回答挂免责标识且没有引用 |
+| 资料库页 | 四种解析状态如实区分（尤其"新版失败但旧版仍在服务"）、统计与同步入口 |
 
 ```bash
 npm run test:e2e          # 全量验收（自动起 mock 后端 + 产线构建）

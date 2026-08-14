@@ -90,6 +90,10 @@ class ModelGateway:
     ) -> None:
         self._chat_provider = provider
         self._embedding_provider = embedding_provider or provider
+        # 流式接口只吐文本, 拿不到响应里的 model 字段; 但"这条答案是谁生成的"必须能记录
+        # (评测要报 actual_models), 所以在网关层暴露配置身份。
+        self.chat_model = self._chat_provider.chat_model
+        self.chat_provider = self._chat_provider.name
         self.embedding_dimensions = embedding_dimensions
         self.embedding_model = self._embedding_provider.embedding_model
         self.embedding_provider = self._embedding_provider.name

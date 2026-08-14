@@ -9,7 +9,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import text
@@ -68,6 +68,8 @@ class RunRecord:
     used_calls: int
     next_seq: int
     error: str | None
+    # grounded = 依据资料库回答; general = 用户显式选择的通用知识回答(不可溯源)。
+    answer_mode: Literal["grounded", "general"] = "grounded"
 
     @property
     def is_terminal(self) -> bool:
@@ -80,11 +82,10 @@ class RunRecord:
 
 _RUN_COLUMNS = """
     id, conversation_id, goal, status, worker_id, lease_until, cancel_requested_at,
-    budget_tokens, budget_calls, budget_wall_ms, used_tokens, used_calls, next_seq, error
+    budget_tokens, budget_calls, budget_wall_ms, used_tokens, used_calls, next_seq, error,
+    answer_mode
 """
-_RUN_COLUMNS_QUALIFIED = ", ".join(
-    f"ar.{column.strip()}" for column in _RUN_COLUMNS.split(",")
-)
+_RUN_COLUMNS_QUALIFIED = ", ".join(f"ar.{column.strip()}" for column in _RUN_COLUMNS.split(","))
 
 
 async def ensure_conversation(
@@ -138,18 +139,21 @@ async def create_run(
     budget_tokens: int,
     budget_calls: int,
     budget_wall_ms: int,
+    answer_mode: str = "grounded",
 ) -> RunRecord:
     if not goal.strip():
         raise ValueError("run 目标不能为空")
+    if answer_mode not in {"grounded", "general"}:
+        raise ValueError("answer_mode 只能是 grounded 或 general")
     run_id = uuid7()
     await session.execute(
         text(
             """
             INSERT INTO agent_runs
                 (id, conversation_id, goal, status,
-                 budget_tokens, budget_calls, budget_wall_ms)
+                 budget_tokens, budget_calls, budget_wall_ms, answer_mode)
             VALUES (:id, :conversation_id, :goal, 'queued',
-                    :budget_tokens, :budget_calls, :budget_wall_ms)
+                    :budget_tokens, :budget_calls, :budget_wall_ms, :answer_mode)
             """
         ),
         {
@@ -159,6 +163,7 @@ async def create_run(
             "budget_tokens": budget_tokens,
             "budget_calls": budget_calls,
             "budget_wall_ms": budget_wall_ms,
+            "answer_mode": answer_mode,
         },
     )
     run = await get_run(session, run_id)

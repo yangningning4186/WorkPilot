@@ -15,6 +15,14 @@ const MOCK_PORT = Number(process.env.MOCK_BACKEND_PORT ?? 8787);
 const APP_PORT = Number(process.env.E2E_APP_PORT ?? 3100);
 const APP_URL = `http://127.0.0.1:${APP_PORT}`;
 
+// Playwright 会自行探测 webServer.url；某些开发机全局配置了 HTTP 代理，
+// 如果没有本地地址豁免，健康检查会被错误转发到代理并误判服务未启动。
+const loopbackNoProxy = ["127.0.0.1", "localhost"];
+for (const key of ["NO_PROXY", "no_proxy"] as const) {
+  const current = process.env[key]?.split(",").filter(Boolean) ?? [];
+  process.env[key] = [...new Set([...current, ...loopbackNoProxy])].join(",");
+}
+
 export default defineConfig({
   testDir: "./tests/e2e",
   // SSE 剧本靠真实时序推进，并发跑会互相抢 CPU 造成假失败。用例总量很小，串行足够快。
@@ -56,7 +64,9 @@ export default defineConfig({
     {
       // rewrites 在 build 时就被烘进 routes-manifest，所以 BACKEND_ORIGIN 必须在
       // build 和 start 两步都生效——这里让它作用于整条命令。
-      command: `npm run build && npx next start --port ${APP_PORT}`,
+      // Turbopack 的 PostCSS worker 会绑定临时端口，在受限 CI/agent 环境中可能被拒绝；
+      // E2E 只关心产线产物行为，显式走 Next 官方 webpack 构建路径更稳定。
+      command: `npm run build:e2e && npx next start --port ${APP_PORT}`,
       url: APP_URL,
       reuseExistingServer: !process.env.CI,
       timeout: 240_000,

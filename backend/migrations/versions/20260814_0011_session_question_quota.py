@@ -29,7 +29,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        "ck_demo_sessions_question_count", "demo_sessions", type_="check"
-    )
+    op.drop_constraint("ck_demo_sessions_question_count", "demo_sessions", type_="check")
     op.drop_column("demo_sessions", "question_count")

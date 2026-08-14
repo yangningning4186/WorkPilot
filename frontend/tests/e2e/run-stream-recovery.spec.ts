@@ -32,9 +32,8 @@ test.describe("流式恢复与失败态", () => {
     await expect(answerCopy(page)).toContainText("断线前的前半句");
 
     // 逐字相等是关键：从头重放会变成"断线前的前半句"出现两次。
-    await expect(answerCopy(page)).toHaveText(
-      "断线前的前半句，断线后续上的后半句，以及结尾 [S1]。",
-    );
+    // 正文里的 [S1] 会渲染成引用 chip，文本只剩 S1（见 answer-markdown.spec.ts）。
+    await expect(answerCopy(page)).toHaveText("断线前的前半句，断线后续上的后半句，以及结尾 S1。");
     await expect(citationCards(page)).toHaveCount(1);
 
     // 确认真的断过并重连了，否则这条用例可能只是"一次连接跑到底"。
@@ -48,9 +47,7 @@ test.describe("流式恢复与失败态", () => {
     await ask(page, "这一题重连后会重放全部事件");
 
     await expect(answerCopy(page)).toContainText("重放前的前半句");
-    await expect(answerCopy(page)).toHaveText(
-      "重放前的前半句，重放后补上的后半句，以及结尾 [S1]。",
-    );
+    await expect(answerCopy(page)).toHaveText("重放前的前半句，重放后补上的后半句，以及结尾 S1。");
     // 引用同样只留一份，不因重放变两张卡。
     await expect(citationCards(page)).toHaveCount(1);
   });

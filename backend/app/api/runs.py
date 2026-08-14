@@ -75,6 +75,7 @@ async def create_answer_run(
         budget_tokens=settings.run_budget_tokens,
         budget_calls=settings.run_budget_calls,
         budget_wall_ms=settings.run_budget_wall_ms,
+        answer_mode=request.mode,
     )
     trace_id = str(structlog.contextvars.get_contextvars().get("trace_id") or "local")
     await append_message(
@@ -121,15 +122,14 @@ async def read_run(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     demo_session: Annotated[DemoSession, Depends(get_demo_session)],
 ) -> RunStatusResponse:
-    run = await get_run_for_demo_session(
-        session, run_id=run_id, demo_session_id=demo_session.id
-    )
+    run = await get_run_for_demo_session(session, run_id=run_id, demo_session_id=demo_session.id)
     if run is None:
         raise HTTPException(status_code=404, detail="run 不存在")
     return RunStatusResponse(
         run_id=run.id,
         conversation_id=run.conversation_id,
         goal=run.goal,
+        answer_mode=run.answer_mode,
         status=run.status,
         cancel_requested=run.cancel_requested,
         used_tokens=run.used_tokens,
@@ -156,9 +156,7 @@ async def stream_events(
     """
 
     if (
-        await get_run_for_demo_session(
-            session, run_id=run_id, demo_session_id=demo_session.id
-        )
+        await get_run_for_demo_session(session, run_id=run_id, demo_session_id=demo_session.id)
         is None
     ):
         raise HTTPException(status_code=404, detail="run 不存在")
@@ -187,9 +185,7 @@ async def cancel_run(
     """请求取消。已在执行的 run 由持有租约的 worker 在下一个检查点收尾。"""
 
     try:
-        run = await request_cancel(
-            session, run_id=run_id, demo_session_id=demo_session.id
-        )
+        run = await request_cancel(session, run_id=run_id, demo_session_id=demo_session.id)
     except RunNotFoundError as error:
         raise HTTPException(status_code=404, detail="run 不存在") from error
     await session.commit()
@@ -198,6 +194,7 @@ async def cancel_run(
         run_id=run.id,
         conversation_id=run.conversation_id,
         goal=run.goal,
+        answer_mode=run.answer_mode,
         status=run.status,
         cancel_requested=run.cancel_requested,
         used_tokens=run.used_tokens,

@@ -55,9 +55,7 @@ async def test_api_rate_limit_returns_429_with_retry_after_but_health_stays_publ
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        limited = await client.post(
-            "/api/v1/auth/admin/login", json={"password": "irrelevant"}
-        )
+        limited = await client.post("/api/v1/auth/admin/login", json={"password": "irrelevant"})
         health = await client.get("/health/live")
 
     assert limited.status_code == 429
@@ -70,9 +68,7 @@ async def test_rate_limit_fails_closed_when_redis_is_unavailable() -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        response = await client.post(
-            "/api/v1/auth/admin/login", json={"password": "irrelevant"}
-        )
+        response = await client.post("/api/v1/auth/admin/login", json={"password": "irrelevant"})
     assert response.status_code == 503
 
 
@@ -83,8 +79,7 @@ async def test_redis_token_bucket_enforces_burst_atomically() -> None:
     limiter = RedisIpRateLimiter(client, prefix=prefix)
     try:
         decisions = [
-            await limiter.consume("203.0.113.10", rate_per_minute=1, burst=5)
-            for _ in range(6)
+            await limiter.consume("203.0.113.10", rate_per_minute=1, burst=5) for _ in range(6)
         ]
         assert [decision.allowed for decision in decisions] == [True] * 5 + [False]
         assert decisions[-1].retry_after_s > 0

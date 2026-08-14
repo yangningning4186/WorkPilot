@@ -1,11 +1,12 @@
 "use client";
 
 import { Suspense, useCallback, useState } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
+import { AnswerMarkdown } from "@/components/answer-markdown";
 import { EvidencePreview } from "@/components/evidence-preview";
-import { ApiError, cancelRun, createRun } from "@/lib/api";
+import { Topbar } from "@/components/topbar";
+import { type AnswerMode, ApiError, cancelRun, createRun, getRun } from "@/lib/api";
 import type { CitationPayload } from "@/lib/run-protocol";
 import { isRunFinished } from "@/lib/run-state";
 import { useRunStream } from "@/lib/use-run-stream";
@@ -113,18 +114,20 @@ function RunWorkspace({
   const state = useRunStream(runId);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [selectedCitationId, setSelectedCitationId] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
   const selectedCitation = state.citations.find(
     (citation) => citation.citation_id === selectedCitationId,
   );
   const busy = runId !== null && !isRunFinished(state);
 
   const ask = useCallback(
-    async (query: string) => {
+    async (query: string, mode: AnswerMode = "grounded") => {
       setSubmitError(null);
       try {
         const created = await createRun({
           query,
           ...(conversationId === null ? {} : { conversation_id: conversationId }),
+          ...(mode === "grounded" ? {} : { mode }),
         });
         router.replace(`/?run=${created.run_id}&conversation=${created.conversation_id}`);
       } catch (error) {
@@ -135,6 +138,24 @@ function RunWorkspace({
     },
     [conversationId, router],
   );
+
+  // 切换到通用知识要重新提问，而刷新过的页面上原问题只存在于 run 记录里（run.goal）。
+  // 点了才去取：拒答是少数情况，没必要每次都多打一次接口。
+  const askWithGeneralKnowledge = useCallback(async () => {
+    if (runId === null) return;
+    setSwitching(true);
+    setSubmitError(null);
+    try {
+      const run = await getRun(runId);
+      await ask(run.goal, "general");
+    } catch (error) {
+      setSubmitError(
+        error instanceof ApiError ? `切换失败（${error.status}）` : "暂时无法切换到通用知识回答",
+      );
+    } finally {
+      setSwitching(false);
+    }
+  }, [ask, runId]);
 
   return (
     <>
@@ -176,12 +197,38 @@ function RunWorkspace({
               </div>
             )}
 
-            {state.text !== "" && <article className="answer-copy">{state.text}</article>}
+            {!state.grounded && state.text !== "" && (
+              <div className="ungrounded-banner" role="note">
+                <strong>以下回答来自模型的通用知识</strong>
+                <span>不基于你的资料库，没有引用可以核验，请自行判断准确性。</span>
+              </div>
+            )}
+
+            {state.text !== "" && (
+              <AnswerMarkdown
+                activeCitationId={selectedCitationId}
+                // 正文里的 [S1] 与下方引用卡片指向同一份选中状态：点哪边都是打开这条原文。
+                // 引用还没到达时点了也无妨——selectedCitation 查不到就还是占位态。
+                onSelectCitation={setSelectedCitationId}
+                text={state.text}
+              />
+            )}
 
             {state.phase === "refused" && state.text === "" && (
               <div className="refusal-card">
                 <strong>资料库中未找到足够证据</strong>
                 <p>我没有用通用知识补全答案，以免把未经核验的信息混进来。</p>
+                <div className="refusal-actions">
+                  <button
+                    className="ghost-button"
+                    disabled={switching}
+                    onClick={() => void askWithGeneralKnowledge()}
+                    type="button"
+                  >
+                    {switching ? "正在切换…" : "基于通用知识回答"}
+                  </button>
+                  <span>换来的答案不可溯源，只在你确认能自己判断时使用。</span>
+                </div>
               </div>
             )}
 
@@ -251,16 +298,7 @@ function Conversation() {
 
   return (
     <main className="app-frame">
-      <header className="topbar">
-        <Link className="brand" href="/">
-          <span>W</span>
-          <strong>WorkPilot</strong>
-        </Link>
-        <div className="product-note">
-          <span />
-          本地资料库已连接
-        </div>
-      </header>
+      <Topbar />
       <div className="workspace">
         <RunWorkspace
           key={runId ?? "new-run"}

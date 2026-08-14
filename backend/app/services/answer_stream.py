@@ -12,8 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.llm.gateway import ModelGateway
-from app.retrieval.citations import Citation
-from app.services.grounded_answer import answer_with_citations
+from app.retrieval.citations import REFUSAL_TEXT, Citation
+from app.services.general_answer import stream_general_answer
+from app.services.grounded_answer import (
+    GroundedAnswerResult,
+    stream_answer_with_citations,
+)
 
 # 中文按句号断句最自然; 英文与代码退化为定长切片。
 _BREAK_CHARS = "。！？；\n"  # noqa: RUF001 - 中文全角标点是断句依据, 不能替换成半角
@@ -36,6 +40,9 @@ class AnswerFinished:
     citations: list[Citation]
     refused: bool
     refusal_reason: str | None
+    # 这条回答是否基于资料库。通用知识模式为 False, 前端据此挂免责标识;
+    # 默认 True 让既有调用点不必改。
+    grounded: bool = True
 
 
 AnswerStreamEvent = AnswerDelta | AnswerFinished
@@ -78,14 +85,18 @@ async def produce_answer(
     top_k: int,
     settings: Settings,
 ) -> AsyncIterator[AnswerStreamEvent]:
-    """默认实现: 复用 answer_with_citations 的完整判定链, 再切片产出。
+    """真流式: 模型吐一段就发一段, 首 token 延迟不再等整答生成完。
 
-    刻意不在这里重写一条"流式版检索+拒答+生成": 那会让同一个产品行为有两条
-    实现路径, 评测只覆盖其中一条(约束 6)。代价是首 token 延迟等于整答生成延迟;
-    等拒答链路稳定后, 把这里换成 gateway.stream() 即可, 对外协议不变。
+    判定链在生成之前跑完, 所以门控拒答时一个字都不会流出去。唯一需要防的是
+    **模型自己写出拒答句**: 那句话是哨兵不是正文, 泄漏出去前端就会既显示
+    "资料库中未找到相关信息。" 又显示拒答卡片。因此开头先攒一段, 确认不是哨兵再放行。
     """
 
-    result = await answer_with_citations(
+    result: GroundedAnswerResult | None = None
+    held = ""
+    releasing = False
+
+    async for item in stream_answer_with_citations(
         session,
         gateway,
         query=query,
@@ -94,12 +105,65 @@ async def produce_answer(
         refusal_margin_threshold=settings.refusal_margin_threshold,
         max_evidence_chars=settings.answer_max_evidence_chars,
         max_tokens=settings.answer_max_tokens,
-    )
-    for piece in split_deltas(result.answer, max_chars=settings.run_delta_flush_chars):
-        yield AnswerDelta(text=piece)
+    ):
+        if isinstance(item, GroundedAnswerResult):
+            result = item
+            continue
+        if releasing:
+            for piece in split_deltas(item, max_chars=settings.run_delta_flush_chars):
+                yield AnswerDelta(text=piece)
+            continue
+        held += item
+        if REFUSAL_TEXT.startswith(held.strip()):
+            # 还可能长成整句拒答, 继续攒。
+            continue
+        releasing = True
+        for piece in split_deltas(held.lstrip(), max_chars=settings.run_delta_flush_chars):
+            yield AnswerDelta(text=piece)
+        held = ""
+
+    if result is None:  # pragma: no cover - 生成器契约保证最后一项是结果
+        raise RuntimeError("答案生成没有产出结果对象")
+    if held and not result.refused:
+        # 短答案整条都在缓冲里, 且确认不是拒答句。
+        for piece in split_deltas(held.strip(), max_chars=settings.run_delta_flush_chars):
+            yield AnswerDelta(text=piece)
     yield AnswerFinished(
         answer=result.answer,
         citations=result.citations,
         refused=result.refused,
         refusal_reason=result.refusal_reason,
+    )
+
+
+async def produce_general_answer(
+    session: AsyncSession,
+    gateway: ModelGateway,
+    *,
+    query: str,
+    top_k: int,
+    settings: Settings,
+) -> AsyncIterator[AnswerStreamEvent]:
+    """通用知识模式: 跳过检索, 产出不可溯源的回答。
+
+    签名与 `produce_answer` 一致(AnswerProducer), worker 因此不需要知道两种模式的差别,
+    只按 run 上记录的 answer_mode 选一个 producer。
+    """
+
+    del session, top_k  # 通用知识模式不检索, 保留参数只为满足 AnswerProducer 协议
+    parts: list[str] = []
+    async for chunk in stream_general_answer(
+        gateway,
+        query=query,
+        max_tokens=settings.general_answer_max_tokens,
+    ):
+        parts.append(chunk)
+        for piece in split_deltas(chunk, max_chars=settings.run_delta_flush_chars):
+            yield AnswerDelta(text=piece)
+    yield AnswerFinished(
+        answer="".join(parts).strip(),
+        citations=[],
+        refused=False,
+        refusal_reason=None,
+        grounded=False,
     )

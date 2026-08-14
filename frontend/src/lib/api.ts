@@ -4,10 +4,14 @@
 // NEXT_PUBLIC_API_BASE 仅保留给明确需要直连 API 的部署方式。
 export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "").replace(/\/$/, "");
 
+/** grounded = 依据资料库回答；general = 用户在拒答后显式选择的通用知识回答。 */
+export type AnswerMode = "grounded" | "general";
+
 export interface CreateRunRequest {
   query: string;
   conversation_id?: string;
   top_k?: number;
+  mode?: AnswerMode;
 }
 
 export interface CreateRunResponse {
@@ -20,6 +24,7 @@ export interface RunStatusResponse {
   run_id: string;
   conversation_id: string;
   goal: string;
+  answer_mode: AnswerMode;
   status: string;
   cancel_requested: boolean;
   used_tokens: number;
@@ -68,6 +73,64 @@ export function cancelRun(runId: string): Promise<RunStatusResponse> {
 
 export function runEventsUrl(runId: string, afterSeq: bigint): string {
   return `${API_BASE}/api/v1/runs/${runId}/events?after_seq=${afterSeq.toString()}`;
+}
+
+/** 资料库读模型，字段与后端 app/schemas/library.py 一一对应。 */
+export type DocumentState = "ready" | "parsing" | "failed" | "stale";
+
+export interface LibraryDocument {
+  document_id: string;
+  version_id: string | null;
+  title: string;
+  source_uri: string;
+  doc_type: string;
+  source_name: string;
+  source_kind: string;
+  state: DocumentState;
+  parser: string | null;
+  parse_error: string | null;
+  page_count: number | null;
+  block_count: number;
+  chunk_count: number;
+  searchable_chunk_count: number;
+  locatable: boolean;
+  version_no: number | null;
+  updated_at: string;
+}
+
+export interface LibrarySource {
+  id: string;
+  name: string;
+  kind: string;
+  sync_status: string;
+  sync_error: string | null;
+  document_count: number;
+  last_sync_at: string | null;
+}
+
+export interface LibraryResponse {
+  sources: LibrarySource[];
+  documents: LibraryDocument[];
+  totals: {
+    documents: number;
+    chunks: number;
+    searchable_chunks: number;
+    parsing: number;
+    failed: number;
+  };
+}
+
+export function fetchLibrary(query: string): Promise<LibraryResponse> {
+  const search = query.trim() === "" ? "" : `?query=${encodeURIComponent(query.trim())}`;
+  return request<LibraryResponse>(`/api/v1/library${search}`);
+}
+
+/** 触发同步。需要 admin 登录，未登录时后端返回 401（前端据此提示）。 */
+export function syncSource(sourceId: string): Promise<unknown> {
+  return request<unknown>(`/api/v1/sources/${sourceId}/sync`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 export function sourceFileUrl(versionId: string): string {

@@ -25,6 +25,7 @@ from app.services.answer_stream import (
     AnswerFinished,
     AnswerProducer,
     produce_answer,
+    produce_general_answer,
 )
 from app.services.cost_budget import BudgetExceededError
 from app.services.model_budget import build_cost_guard
@@ -79,7 +80,6 @@ async def answer_run(
     settings: Settings = ctx.get("settings") or get_settings()
     bus: RunBus = ctx["bus"]
     session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]
-    producer: AnswerProducer = ctx.get("answer_producer") or produce_answer
     worker_id = worker_identity()
 
     async with session_factory() as session:
@@ -92,6 +92,13 @@ async def answer_run(
         # 直接退出, 这是防双跑(以及重复计费)的主防线。
         logger.info("run 无法抢占, 跳过", run_id=str(run_id))
         return
+
+    # 模式取自 run 记录而不是队列参数: 重投递或 watchdog 重跑时, 队列消息可能已经
+    # 不在了, 但"这条回答是不是可溯源的"必须始终一致。
+    default_producer: AnswerProducer = (
+        produce_general_answer if run.answer_mode == "general" else produce_answer
+    )
+    producer: AnswerProducer = ctx.get("answer_producer") or default_producer
 
     emitter = RunEventEmitter(
         session_factory,
@@ -166,6 +173,9 @@ async def answer_run(
                 "message_id": str(message_id),
                 "refused": finished.refused,
                 "refusal_reason": finished.refusal_reason,
+                # 前端据此决定挂不挂"未经溯源"的免责标识; 缺省当作可溯源会更危险,
+                # 所以这个字段是必填而不是可选。
+                "grounded": finished.grounded,
                 "latency_ms": latency_ms,
                 "cost_usd": await _run_cost_usd(session_factory, run_id=run_id),
             },

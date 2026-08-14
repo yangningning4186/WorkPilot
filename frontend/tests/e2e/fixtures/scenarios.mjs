@@ -118,6 +118,8 @@ const DONE_OK = {
   message_id: IDS.message,
   refused: false,
   refusal_reason: null,
+  // 资料库回答永远是可溯源的; 通用知识回答那条剧本里显式置 false。
+  grounded: true,
   latency_ms: 1840,
   cost_usd: "0.0031",
 };
@@ -179,6 +181,7 @@ export const SCENARIOS = {
           message_id: IDS.message,
           refused: true,
           refusal_reason: "top_score_below_threshold",
+          grounded: true,
           latency_ms: 640,
           cost_usd: "0.0004",
         },
@@ -220,6 +223,79 @@ export const SCENARIOS = {
   },
 
   /**
+   * Markdown 排版。
+   *
+   * 分片刻意切在表格中间与加粗中间：流式渲染最容易坏在"半截语法"上——
+   * 半个表格、没闭合的 `**`，一次性渲染永远遇不到这种输入。
+   * 代码块里塞了一个 [S1]，用来验证它不会被当成引用锚点。
+   * 还塞了裸 HTML 与 javascript: 链接：证据是不可信数据，它们绝不能变成真元素。
+   */
+  markdownRender: {
+    events: [
+      { delay_ms: 100, type: "message.start", data: { message_id: IDS.message } },
+      {
+        delay_ms: 150,
+        type: "message.delta",
+        data: { text: "## 结论\n\n混合检索的增益来自**互补而非叠加** [S1]。\n\n" },
+      },
+      {
+        delay_ms: 250,
+        type: "message.delta",
+        data: { text: "- dense 擅长同义改写\n- 词法擅长专有名词\n\n| 类别 | Recall@10 |\n| --- |" },
+      },
+      {
+        delay_ms: 400,
+        type: "message.delta",
+        data: { text: " --- |\n| table | 0.81 |\n| single | 0.92 |\n\n" },
+      },
+      {
+        delay_ms: 200,
+        type: "message.delta",
+        data: {
+          text:
+            "调用方式见 `search(query)`：\n\n```python\n# 这里的 [S1] 只是代码里的字面量\nsearch(\"rrf\")\n```\n\n" +
+            "<script>window.pwned = 1</script>\n\n[点我](javascript:alert(1)) 详见 [S2]。\n",
+        },
+      },
+      { delay_ms: 100, type: "citation", data: PDF_CITATION_S1 },
+      { delay_ms: 60, type: "citation", data: PDF_CITATION_S2 },
+      { delay_ms: 80, type: "message.done", data: DONE_OK },
+    ],
+  },
+
+  /**
+   * 通用知识回答: 用户在拒答之后显式选择的降级出口。
+   * 不产 citation, 且 message.done 的 grounded 必须是 false——前端据此挂免责标识。
+   */
+  general: {
+    events: [
+      { delay_ms: 100, type: "message.start", data: { message_id: IDS.message } },
+      {
+        delay_ms: 150,
+        type: "message.delta",
+        data: { text: "这是基于通用知识的回答，不来自你的资料库。" },
+      },
+      {
+        delay_ms: 200,
+        type: "message.delta",
+        data: { text: "混合检索通常指同时使用向量召回与词法召回，再做融合排序。" },
+      },
+      {
+        delay_ms: 80,
+        type: "message.done",
+        data: {
+          message_id: IDS.message,
+          refused: false,
+          refusal_reason: null,
+          grounded: false,
+          latency_ms: 920,
+          cost_usd: "0.0008",
+        },
+      },
+    ],
+  },
+
+  /**
    * 重连重放：断线后服务端**不认** Last-Event-ID，从头重发一遍。
    *
    * 真后端是认的，但重连竞态下客户端仍可能收到已经看过的事件，所以前端必须按 seq
@@ -255,13 +331,117 @@ export const SCENARIOS = {
   },
 };
 
-/** query 文本 → 剧本。测试用中文关键词选场景，读用例时一眼能看出在测什么。 */
-export function pickScenario(query) {
+/**
+ * 剧本选择。mode 优先于 query 文本：后端也是按 run 上记录的 answer_mode 决定走哪条路，
+ * 而不是猜问题内容。
+ */
+export function pickScenario(query, mode = "grounded") {
+  if (mode === "general") return "general";
   if (query.includes("markdown")) return "markdown";
   if (query.includes("拒答")) return "refusal";
   if (query.includes("报错")) return "error";
   if (query.includes("断线")) return "drop";
   if (query.includes("重放")) return "replay";
+  if (query.includes("排版")) return "markdownRender";
   if (query.includes("取消")) return "cancel";
   return "pdf";
 }
+
+/**
+ * 资料库读模型的假数据。
+ *
+ * 四种状态各来一条，尤其是 failed——它表示"最新一版没进去，检索还在用旧版"，
+ * 是约束 10 造成的沉默降级，资料库页存在的主要意义就是把它显示出来。
+ */
+export const LIBRARY = {
+  sources: [
+    {
+      id: "5a1b2c30-0000-4e00-8000-000000000001",
+      name: "文档资料",
+      kind: "local_dir",
+      sync_status: "idle",
+      sync_error: null,
+      document_count: 4,
+      last_sync_at: "2026-08-14T10:57:09.950579Z",
+    },
+  ],
+  documents: [
+    {
+      document_id: "5a1b2c30-1111-4e00-8000-00000000000a",
+      version_id: "5a1b2c30-1111-4e00-8000-00000000000b",
+      title: "混合检索与 RRF 融合",
+      source_uri: "papers/hybrid-retrieval.pdf",
+      doc_type: "paper",
+      source_name: "文档资料",
+      source_kind: "local_dir",
+      state: "ready",
+      parser: "mineru",
+      parse_error: null,
+      page_count: 12,
+      block_count: 311,
+      chunk_count: 42,
+      searchable_chunk_count: 42,
+      locatable: true,
+      version_no: 3,
+      updated_at: "2026-08-14T10:57:09.885003Z",
+    },
+    {
+      document_id: "5a1b2c30-2222-4e00-8000-00000000000a",
+      version_id: "5a1b2c30-2222-4e00-8000-00000000000b",
+      title: "扫描件年报",
+      source_uri: "reports/annual-scan.pdf",
+      doc_type: "report",
+      source_name: "文档资料",
+      source_kind: "local_dir",
+      state: "failed",
+      parser: "mineru",
+      parse_error: "MinerU 子进程超时",
+      page_count: 88,
+      block_count: 240,
+      chunk_count: 30,
+      searchable_chunk_count: 30,
+      locatable: true,
+      version_no: 1,
+      updated_at: "2026-08-14T09:12:00.000000Z",
+    },
+    {
+      document_id: "5a1b2c30-3333-4e00-8000-00000000000a",
+      version_id: null,
+      title: "刚拖进来的论文",
+      source_uri: "papers/incoming.pdf",
+      doc_type: "paper",
+      source_name: "文档资料",
+      source_kind: "local_dir",
+      state: "parsing",
+      parser: null,
+      parse_error: null,
+      page_count: null,
+      block_count: 0,
+      chunk_count: 0,
+      searchable_chunk_count: 0,
+      locatable: false,
+      version_no: null,
+      updated_at: "2026-08-14T11:30:00.000000Z",
+    },
+    {
+      document_id: "5a1b2c30-4444-4e00-8000-00000000000a",
+      version_id: "5a1b2c30-4444-4e00-8000-00000000000b",
+      title: "检索评测笔记",
+      source_uri: "notes/检索评测笔记.md",
+      doc_type: "note",
+      source_name: "文档资料",
+      source_kind: "local_dir",
+      state: "stale",
+      parser: "markdown",
+      parse_error: null,
+      page_count: null,
+      block_count: 18,
+      chunk_count: 6,
+      searchable_chunk_count: 0,
+      locatable: false,
+      version_no: 2,
+      updated_at: "2026-08-13T22:05:00.000000Z",
+    },
+  ],
+  totals: { documents: 4, chunks: 78, searchable_chunks: 72, parsing: 1, failed: 1 },
+};

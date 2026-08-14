@@ -27,6 +27,12 @@ export interface RunState {
   citations: CitationPayload[];
   error: ErrorPayload | null;
   refusalReason: string | null;
+  /**
+   * 是否基于资料库。默认 true：万一后端漏发这个字段，宁可少挂一次免责标识，
+   * 也不能把可溯源的回答误标成"通用知识"——那会让用户不信任本来正确的引用。
+   * 通用知识模式由 message.done 显式置为 false。
+   */
+  grounded: boolean;
   latencyMs: number | null;
   costUsd: string | null;
 }
@@ -40,6 +46,7 @@ export function initialRunState(): RunState {
     citations: [],
     error: null,
     refusalReason: null,
+    grounded: true,
     latencyMs: null,
     costUsd: null,
   };
@@ -85,6 +92,7 @@ export function applyEnvelope(state: RunState, envelope: StreamEnvelope): RunSta
       next.messageId = data.message_id;
       next.phase = data.refused ? "refused" : "done";
       next.refusalReason = data.refusal_reason;
+      next.grounded = data.grounded !== false;
       next.latencyMs = data.latency_ms;
       next.costUsd = data.cost_usd;
       return next;

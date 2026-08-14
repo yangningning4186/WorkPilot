@@ -21,6 +21,8 @@ class DeterministicProvider:
         self.completion_text = completion_text
         self.completion_texts = list(completion_texts or [])
         self.last_messages: list[Message] = []
+        # 用来断言"通用知识模式确实没有检索"——没有 embedding 就没有召回。
+        self.embed_calls = 0
 
     def queue_completions(self, *values: str) -> None:
         self.completion_texts.extend(values)
@@ -49,10 +51,22 @@ class DeterministicProvider:
         max_tokens: int,
         temperature: float,
     ) -> AsyncIterator[str]:
+        """与 complete 取同一份排队文本, 只是切成多片吐出来。
+
+        两个入口的行为必须一致: 生成走流式、评测走非流式, 假 provider 一旦分叉,
+        测试就只能覆盖其中一条(和线上一样的坑)。分片也是刻意的——一次性吐完整段
+        会让"边界正好落在拒答哨兵上"这类流式专属 bug 永远测不出来。
+        """
+
         del max_tokens, temperature
-        yield messages[-1].content
+        self.last_messages = messages
+        text = self.completion_texts.pop(0) if self.completion_texts else self.completion_text
+        content = text if text is not None else messages[-1].content
+        for index in range(0, len(content), 8):
+            yield content[index : index + 8]
 
     async def embed(self, texts: list[str]) -> EmbeddingResult:
+        self.embed_calls += 1
         return EmbeddingResult(
             embeddings=[self._vector(text) for text in texts],
             model=self.embedding_model,

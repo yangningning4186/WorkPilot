@@ -18,6 +18,7 @@ import { deflateSync } from "node:zlib";
 
 import {
   IDS,
+  LIBRARY,
   MD_FILE_CONTENT,
   PAGE,
   SCENARIOS,
@@ -266,12 +267,15 @@ const server = createServer((request, response) => {
         return;
       }
       const query = typeof body.query === "string" ? body.query : "";
+      // 模式跟着 run 走, 与后端一致(agent_runs.answer_mode), 不靠猜问题内容。
+      const answerMode = body.mode === "general" ? "general" : "grounded";
       const run = {
         id: nextRunId(),
         conversation_id: session.conversation_id,
         session_token: session.token,
         goal: query,
-        scenario: pickScenario(query),
+        answer_mode: answerMode,
+        scenario: pickScenario(query, answerMode),
         status: "queued",
         cancelled: false,
         dropped: false,
@@ -304,6 +308,40 @@ const server = createServer((request, response) => {
       return;
     }
     void streamEvents(request, response, run);
+    return;
+  }
+
+  const runMatch = path.match(/^\/api\/v1\/runs\/([^/]+)$/);
+  if (runMatch && request.method === "GET") {
+    const run = runs.get(runMatch[1]);
+    if (run === undefined || currentSession(request)?.token !== run.session_token) {
+      json(response, 404, { detail: "run 不存在" });
+      return;
+    }
+    json(response, 200, {
+      run_id: run.id,
+      conversation_id: run.conversation_id,
+      goal: run.goal,
+      answer_mode: run.answer_mode,
+      status: run.status,
+      cancel_requested: run.cancelled,
+      used_tokens: 128,
+      used_calls: 1,
+      next_seq: run.last_sent_seq + 1,
+      error: null,
+    });
+    return;
+  }
+
+  if (path === "/api/v1/library" && request.method === "GET") {
+    const keyword = (url.searchParams.get("query") ?? "").trim();
+    const documents =
+      keyword === ""
+        ? LIBRARY.documents
+        : LIBRARY.documents.filter(
+            (item) => item.title.includes(keyword) || item.source_uri.includes(keyword),
+          );
+    json(response, 200, { ...LIBRARY, documents });
     return;
   }
 
