@@ -3,6 +3,7 @@ from pathlib import Path
 from uuid import UUID
 
 from eval.citation_review import cited_claims
+from eval.import_citation_review import _item_payload, load_reviews
 from eval.m0_report import _human_review
 from eval.metrics.generation import (
     CitationSource,
@@ -136,3 +137,19 @@ def test_citation_review_extracts_only_claims_using_the_label() -> None:
     assert cited_claims(answer, "S1") == (
         "Repository https://example.com/repo is required.[S1]\n第三个结论。[S1][S2]"
     )
+
+
+def test_citation_review_import_payload_preserves_attribution(tmp_path: Path) -> None:
+    review = tmp_path / "review.csv"
+    review.write_text(
+        "item_id,citation_id,supported,reason,reviewer,reviewed_at\n"
+        f"{BLOCK_ID},S1,no,上下文不支持,行之,2026-08-15T00:00:00+08:00\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_reviews(review)
+    payload = _item_payload(list(loaded.values()))["citation_accuracy"]
+
+    assert payload["status"] == "complete"
+    assert payload["rate"] == 0.0
+    assert payload["reviews"][0]["reviewer"] == "行之"

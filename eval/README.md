@@ -93,6 +93,17 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.m0_report \
 语义 `citation_accuracy` 必须填写 `citation-review.csv` 的 `supported`、`reason`、`reviewer`、
 `reviewed_at` 后重新合并报告，未覆盖全部实际引用时保持 `pending_human_review`。
 
+完整复核后先做只读校验，再显式写回 `eval_results.human_label` 和 `eval_runs.metrics`：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.import_citation_review \
+  --generation-report /path/to/core-generation.json \
+  --generation-report /path/to/english-generation.json \
+  --review-csv /path/to/citation-review.csv
+
+# 上一步通过后追加 --apply
+```
+
 **动词法检索、分词或查询改写的实验，必须同时报中文集与英文集**——
 E2 的教训是全中文题集会把英文失效整个藏起来。
 
