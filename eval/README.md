@@ -11,6 +11,7 @@
 ```bash
 PYTHONPATH=backend backend/.venv/bin/python -m eval.dense_baseline \
   --dataset core-dev --origin human --label dense-core-dev-v1 \
+  --strategy dense-only \
   --top-k 10 --diagnostic-k 50 --token-budget 4000 --theta 0.5 --alpha 0.5
 ```
 
@@ -22,6 +23,22 @@ macro-F1 最优阈值。跑批会拒绝 stale span、无 gold span 的可答题�
 未命中的 gold span 归因为 token budget 截断、Top-K 外命中、同文档未排入、文档未召回或索引
 未覆盖；`--diagnostic-k` 只控制归因深度，不改变正式 Top-K 指标。
 
+同一脚本支持单变量策略对照：
+
+```bash
+# 多查询 dense（会把问题文本发送到配置的远端 chat model）
+--strategy multi-query-dense
+
+# dense Top-50 → 远端 listwise rerank → Top-K（会发送问题与截断候选正文）
+--strategy dense-rerank
+
+# 完全本地的 dense + lexical + RRF
+--strategy dense-lexical-rrf
+```
+
+远端策略运行前必须确认数据外发范围与目标端点。正式单变量对照应保持 dataset、Top-K、
+diagnostic-K、token budget、embedding identity 和 gold span 不变。
+
 工程链路可用合成 title smoke 检查，但其数字不能作为模型质量结论：
 
 ```bash
@@ -32,6 +49,17 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.dense_baseline \
 
 报告保存在 Git 忽略的 `eval/outputs/dense-baseline/`，聚合与逐样本结果同时写入 PostgreSQL。
 下一阶段的 compare、Judge 校准和 CI gate 尚未实现。
+
+组合拒答跑批只执行“检索分数 + margin + 证据充分性”, 不生成最终答案：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.refusal_baseline \
+  --dataset core-dev --origin all --label composite-refusal-v1 \
+  --strategy dense-lexical-rrf --top-k 5
+```
+
+报告写入 `eval/outputs/refusal-baseline/`, 包含误答、误拒、macro-F1、分类拒答率、非法门控响应和
+逐样本原因。该命令会向 chat model 发送问题与截断候选证据, 运行前同样必须确认外发授权。
 
 ## PDF 解析质量
 

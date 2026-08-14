@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     local_library_path: Path = Path("../data/library")
     tier_main_base_url: str = "http://localhost:8000/v1"
     tier_main_model: str = "local-chat"
+    tier_main_enable_thinking: bool | None = None
     cluster_api_key: str = ""
     embedding_base_url: str = ""
     embedding_model: str = "local-embedding"
@@ -54,6 +55,20 @@ class Settings(BaseSettings):
     pdf_mineru_fallback_enabled: bool = True
     pdf_mineru_processing_window_size: int = Field(default=4, ge=1, le=64)
     refusal_threshold: float = Field(default=0.35, ge=-1.0, le=1.0)
+    refusal_margin_threshold: float = Field(default=0.03, ge=0.0, le=2.0)
+    evidence_gate_max_chars: int = Field(default=3000, ge=500, le=20000)
+    evidence_gate_max_tokens: int = Field(default=300, ge=64, le=2048)
+    query_decomposition_enabled: bool = False
+    query_decomposition_max_subqueries: int = Field(default=4, ge=2, le=8)
+    query_decomposition_max_tokens: int = Field(default=300, ge=64, le=2048)
+    rerank_enabled: bool = False
+    rerank_candidate_k: int = Field(default=50, ge=2, le=50)
+    rerank_batch_size: int = Field(default=10, ge=2, le=25)
+    rerank_batch_keep: int = Field(default=3, ge=1, le=25)
+    rerank_max_candidate_chars: int = Field(default=600, ge=100, le=4000)
+    rerank_max_tokens: int = Field(default=1000, ge=128, le=4096)
+    lexical_rrf_enabled: bool = True
+    rrf_k: int = Field(default=60, ge=1, le=1000)
     answer_max_evidence_chars: int = Field(default=12000, ge=1000, le=100000)
     answer_max_tokens: int = Field(default=1200, ge=64, le=8192)
 

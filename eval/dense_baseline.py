@@ -15,7 +15,11 @@ from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.llm.audit import SqlLlmCallAudit
 from app.llm.gateway import ModelGateway, build_model_gateway
-from app.retrieval.dense import DenseSearchHit, dense_search
+from app.retrieval.dense import DenseSearchHit, dense_search, multi_query_dense_search
+from app.retrieval.fusion import reciprocal_rank_fusion
+from app.retrieval.lexical import lexical_search
+from app.services.query_decomposition import plan_retrieval_queries
+from app.services.reranker import rerank_candidates
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
@@ -62,13 +66,22 @@ async def run_dense_baseline(
     theta: float,
     alpha: float,
     output_root: Path,
+    strategy: str = "dense-only",
     settings: Settings | None = None,
 ) -> Path:
     settings = settings or Settings()
     if not 1 <= top_k <= diagnostic_k <= 50:
         raise ValueError("必须满足 1 <= top_k <= diagnostic_k <= 50")
+    supported_strategies = {
+        "dense-only",
+        "multi-query-dense",
+        "dense-rerank",
+        "dense-lexical-rrf",
+    }
+    if strategy not in supported_strategies:
+        raise ValueError(f"不支持的检索策略: {strategy}")
     config: dict[str, object] = {
-        "strategy": "dense-only",
+        "strategy": strategy,
         "top_k": top_k,
         "diagnostic_k": diagnostic_k,
         "token_budget": token_budget,
@@ -80,6 +93,11 @@ async def run_dense_baseline(
         "embedding_provider_base_url": settings.embedding_base_url,
         "embedding_revision": settings.embedding_revision,
         "embedding_dim": settings.embedding_dim,
+        "chat_model": settings.tier_main_model,
+        "query_decomposition_max_subqueries": settings.query_decomposition_max_subqueries,
+        "rerank_batch_size": settings.rerank_batch_size,
+        "rerank_batch_keep": settings.rerank_batch_keep,
+        "rrf_k": settings.rrf_k,
     }
     config_hash = hashlib.sha256(
         json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
@@ -108,6 +126,8 @@ async def run_dense_baseline(
                 token_budget=token_budget,
                 theta=theta,
                 alpha=alpha,
+                strategy=strategy,
+                settings=settings,
             )
             refusal = analyze_refusal(
                 [(item.top_score, item.answerable) for item in results],
@@ -230,6 +250,14 @@ async def _create_run(
             }
         ]
     }
+    if config.get("strategy") in {"multi-query-dense", "dense-rerank"}:
+        actual_models["chat"] = [
+            {
+                "provider": "openai_compatible",
+                "model": settings.tier_main_model,
+                "revision": "unversioned",
+            }
+        ]
     async with session.begin():
         await session.execute(
             text(
@@ -266,12 +294,20 @@ async def _evaluate_items(
     token_budget: int,
     theta: float,
     alpha: float,
+    strategy: str,
+    settings: Settings,
 ) -> list[ItemResult]:
     results: list[ItemResult] = []
     for item in items:
         started = time.monotonic()
-        hits = await dense_search(
-            session, gateway, query=item.question, top_k=diagnostic_k
+        hits = await _retrieve_with_strategy(
+            session,
+            gateway,
+            query=item.question,
+            strategy=strategy,
+            top_k=top_k,
+            diagnostic_k=diagnostic_k,
+            settings=settings,
         )
         latency_ms = max(0, round((time.monotonic() - started) * 1000))
         retrieved = [_retrieved_chunk(hit) for hit in hits]
@@ -310,7 +346,7 @@ async def _evaluate_items(
             category=item.category,
             question=item.question,
             answerable=item.answerable,
-            top_score=hits[0].score if hits else -1.0,
+            top_score=max((_retrieval_score(hit) for hit in hits), default=-1.0),
             latency_ms=latency_ms,
             retrieval=metrics.to_dict() if metrics else None,
             retrieved=[_serialize_hit(hit) for hit in hits[:top_k]],
@@ -319,6 +355,60 @@ async def _evaluate_items(
         await _store_result(session, run_id, result)
         results.append(result)
     return results
+
+
+async def _retrieve_with_strategy(
+    session: AsyncSession,
+    gateway: ModelGateway,
+    *,
+    query: str,
+    strategy: str,
+    top_k: int,
+    diagnostic_k: int,
+    settings: Settings,
+) -> list[DenseSearchHit]:
+    if strategy == "dense-only":
+        return await dense_search(session, gateway, query=query, top_k=diagnostic_k)
+    if strategy == "multi-query-dense":
+        plan = await plan_retrieval_queries(
+            gateway,
+            query=query,
+            max_subqueries=settings.query_decomposition_max_subqueries,
+            max_tokens=settings.query_decomposition_max_tokens,
+        )
+        return await multi_query_dense_search(
+            session,
+            gateway,
+            queries=plan.queries,
+            top_k=diagnostic_k,
+            per_query_top_k=diagnostic_k,
+        )
+    if strategy == "dense-rerank":
+        candidates = await dense_search(session, gateway, query=query, top_k=diagnostic_k)
+        if len(candidates) <= top_k:
+            return candidates
+        result = await rerank_candidates(
+            gateway,
+            query=query,
+            candidates=candidates,
+            top_k=top_k,
+            batch_size=settings.rerank_batch_size,
+            batch_keep=settings.rerank_batch_keep,
+            max_candidate_chars=settings.rerank_max_candidate_chars,
+            max_tokens=settings.rerank_max_tokens,
+        )
+        if not result.applied:
+            raise RuntimeError(result.reason)
+        return result.hits
+    if strategy == "dense-lexical-rrf":
+        dense_hits = await dense_search(session, gateway, query=query, top_k=diagnostic_k)
+        lexical_hits = await lexical_search(session, query=query, top_k=diagnostic_k)
+        return reciprocal_rank_fusion(
+            [dense_hits, lexical_hits],
+            top_k=diagnostic_k,
+            rrf_k=settings.rrf_k,
+        )
+    raise AssertionError(f"未处理的检索策略: {strategy}")
 
 
 async def _candidate_chunks(
@@ -386,10 +476,20 @@ def _serialize_hit(hit: DenseSearchHit) -> dict[str, object]:
         "document_id": str(hit.document_id),
         "source_uri": hit.source_uri,
         "score": hit.score,
+        "dense_score": hit.dense_score,
+        "lexical_score": hit.lexical_score,
+        "fusion_score": hit.fusion_score,
+        "rerank_score": hit.rerank_score,
         "char_start": hit.char_start,
         "char_end": hit.char_end,
         "content_tokens": hit.content_tokens,
     }
+
+
+def _retrieval_score(hit: DenseSearchHit) -> float:
+    if hit.dense_score is not None:
+        return hit.dense_score
+    return hit.score
 
 
 async def _store_result(
@@ -556,12 +656,13 @@ def _markdown_report(payload: dict[str, object]) -> str:
     best = refusal.get("best")
     configured = refusal.get("configured")
     lines = [
-        "# Dense-only 评测基线",
+        "# 检索策略评测",
         "",
         f"- 数据集: `{payload['dataset']}`",
         f"- 标签: `{payload['label']}`",
         f"- Git: `{payload['git_sha']}`",
         f"- Config hash: `{payload['config_hash']}`",
+        f"- 策略: `{config['strategy']}`",
         f"- 样本: {metrics['item_count']}（可答 {metrics['answerable_count']} / 不可答 {metrics['unanswerable_count']}）",
         f"- 排名口径: Top {config['top_k']}；漏召回诊断深度: Top {config['diagnostic_k']}；token budget: {config['token_budget']}",
         "",
@@ -761,7 +862,7 @@ def _slug(value: str) -> str:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="运行 dense-only gold span 评测")
+    parser = argparse.ArgumentParser(description="运行 gold span 检索策略评测")
     parser.add_argument("--dataset", default="core-dev")
     parser.add_argument("--label", required=True)
     parser.add_argument(
@@ -777,6 +878,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--token-budget", type=int, default=4000)
     parser.add_argument("--theta", type=float, default=0.5)
     parser.add_argument("--alpha", type=float, default=0.5)
+    parser.add_argument(
+        "--strategy",
+        choices=[
+            "dense-only",
+            "multi-query-dense",
+            "dense-rerank",
+            "dense-lexical-rrf",
+        ],
+        default="dense-only",
+    )
     parser.add_argument(
         "--output-dir", type=Path, default=Path("eval/outputs/dense-baseline")
     )
@@ -796,6 +907,7 @@ def main() -> None:
             theta=args.theta,
             alpha=args.alpha,
             output_root=args.output_dir,
+            strategy=args.strategy,
         )
     )
     print(report)

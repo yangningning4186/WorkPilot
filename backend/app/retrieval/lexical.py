@@ -1,121 +1,24 @@
-from dataclasses import dataclass
-from typing import Any
-from uuid import UUID
+import re
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.llm.gateway import ModelGateway
+from app.retrieval.dense import DenseSearchHit
 
 
-@dataclass(frozen=True)
-class DenseSearchHit:
-    chunk_id: UUID
-    document_id: UUID
-    version_id: UUID
-    version_no: int
-    title: str
-    source_uri: str
-    content: str
-    score: float
-    heading_path: list[str]
-    blocks: list[dict[str, Any]]
-    content_tokens: int = 0
-    char_start: int = 0
-    char_end: int = 0
-    rerank_score: float | None = None
-    dense_score: float | None = None
-    lexical_score: float | None = None
-    fusion_score: float | None = None
-
-
-async def dense_search(
+async def lexical_search(
     session: AsyncSession,
-    gateway: ModelGateway,
     *,
     query: str,
-    top_k: int = 10,
+    top_k: int = 50,
 ) -> list[DenseSearchHit]:
     if not query.strip():
         raise ValueError("query 不能为空")
     if not 1 <= top_k <= 50:
         raise ValueError("top_k 必须位于 1 到 50")
-    result = await gateway.embed([query], task_type="query_embedding")
-    return await _dense_search_by_vector(
-        session,
-        gateway,
-        embedding=result.embeddings[0],
-        top_k=top_k,
-    )
-
-
-async def multi_query_dense_search(
-    session: AsyncSession,
-    gateway: ModelGateway,
-    *,
-    queries: list[str],
-    top_k: int = 10,
-    per_query_top_k: int = 50,
-) -> list[DenseSearchHit]:
-    normalized = list(dict.fromkeys(" ".join(query.split()) for query in queries if query.strip()))
-    if not normalized:
-        raise ValueError("queries 不能为空")
-    if not 1 <= top_k <= 50:
-        raise ValueError("top_k 必须位于 1 到 50")
-    if not 1 <= per_query_top_k <= 50:
-        raise ValueError("per_query_top_k 必须位于 1 到 50")
-    if len(normalized) == 1:
-        return await dense_search(session, gateway, query=normalized[0], top_k=top_k)
-
-    result = await gateway.embed(normalized, task_type="multi_query_embedding")
-    rankings = [
-        await _dense_search_by_vector(
-            session,
-            gateway,
-            embedding=embedding,
-            top_k=per_query_top_k,
-        )
-        for embedding in result.embeddings
-    ]
-    return _merge_query_rankings(rankings, top_k=top_k)
-
-
-def _merge_query_rankings(
-    rankings: list[list[DenseSearchHit]], *, top_k: int
-) -> list[DenseSearchHit]:
-    # 多跳查询需要覆盖互补证据。RRF 会过度奖励在多个 query 中重复出现的同一主题 chunk,
-    # 反而挤掉只被某个子查询命中的第二跳证据; 因此按 query 轮询头部结果并去重。
-    best_hits: dict[UUID, DenseSearchHit] = {}
-    for ranking in rankings:
-        for hit in ranking:
-            current = best_hits.get(hit.chunk_id)
-            if current is None or hit.score > current.score:
-                best_hits[hit.chunk_id] = hit
-    merged: list[DenseSearchHit] = []
-    seen: set[UUID] = set()
-    max_rank = max((len(ranking) for ranking in rankings), default=0)
-    for rank in range(max_rank):
-        for ranking in rankings:
-            if rank >= len(ranking):
-                continue
-            hit = ranking[rank]
-            if hit.chunk_id in seen:
-                continue
-            seen.add(hit.chunk_id)
-            merged.append(best_hits[hit.chunk_id])
-            if len(merged) >= top_k:
-                return merged
-    return merged
-
-
-async def _dense_search_by_vector(
-    session: AsyncSession,
-    gateway: ModelGateway,
-    *,
-    embedding: list[float],
-    top_k: int,
-) -> list[DenseSearchHit]:
-    vector = "[" + ",".join(format(value, ".9g") for value in embedding) + "]"
+    terms = lexical_terms(query)
+    if not terms:
+        return []
     rows = (
         (
             await session.execute(
@@ -132,7 +35,7 @@ async def _dense_search_by_vector(
                         c.content_tokens,
                         c.char_start,
                         c.char_end,
-                        1 - (c.embedding <=> CAST(:embedding AS vector)) AS score,
+                        matches.matched::float / :term_count AS score,
                         COALESCE(c.heading_path, ARRAY[]::text[]) AS heading_path,
                         COALESCE(
                             (
@@ -173,25 +76,27 @@ async def _dense_search_by_vector(
                     FROM chunks c
                     JOIN document_versions v ON v.id=c.version_id
                     JOIN documents d ON d.id=v.document_id
+                    CROSS JOIN LATERAL (
+                        SELECT count(*) AS matched
+                        FROM unnest(CAST(:terms AS text[])) AS term
+                        WHERE position(
+                            term IN lower(
+                                d.title || ' ' ||
+                                array_to_string(COALESCE(c.heading_path, ARRAY[]::text[]), ' ') ||
+                                ' ' || c.content
+                            )
+                        ) > 0
+                    ) matches
                     WHERE c.is_searchable=true
                       AND c.strategy='heading'
-                      AND c.embedding IS NOT NULL
-                      AND c.embedding_model=:embedding_model
-                      AND c.embedding_provider=:embedding_provider
-                      AND c.embedding_revision=:embedding_revision
                       AND d.deleted_at IS NULL
                       AND v.invalid_at IS NULL
-                    ORDER BY c.embedding <=> CAST(:embedding AS vector), c.id
+                      AND matches.matched > 0
+                    ORDER BY matches.matched DESC, length(c.content), c.id
                     LIMIT :top_k
                     """
                 ),
-                {
-                    "embedding": vector,
-                    "embedding_model": gateway.embedding_model,
-                    "embedding_provider": gateway.embedding_provider,
-                    "embedding_revision": gateway.embedding_revision,
-                    "top_k": top_k,
-                },
+                {"terms": terms, "term_count": len(terms), "top_k": top_k},
             )
         )
         .mappings()
@@ -210,9 +115,22 @@ async def _dense_search_by_vector(
             char_start=row["char_start"],
             char_end=row["char_end"],
             score=float(row["score"]),
-            dense_score=float(row["score"]),
+            lexical_score=float(row["score"]),
             heading_path=list(row["heading_path"]),
             blocks=list(row["blocks"]),
         )
         for row in rows
     ]
+
+
+def lexical_terms(query: str, *, max_terms: int = 24) -> list[str]:
+    normalized = query.casefold()
+    latin = re.findall(r"[a-z0-9]+(?:[._+/-][a-z0-9]+)*", normalized)
+    chinese_runs = re.findall(r"[\u4e00-\u9fff]+", normalized)
+    chinese: list[str] = []
+    for run in chinese_runs:
+        if len(run) <= 4:
+            chinese.append(run)
+        chinese.extend(run[index : index + 2] for index in range(len(run) - 1))
+    terms = [item for item in [*latin, *chinese] if len(item) >= 2]
+    return list(dict.fromkeys(terms))[:max_terms]

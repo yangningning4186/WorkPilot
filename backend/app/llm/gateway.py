@@ -212,6 +212,7 @@ def build_model_gateway(settings: Settings, *, audit_sink: AuditSink | None = No
         api_key=settings.cluster_api_key,
         chat_model=settings.tier_main_model,
         embedding_model=settings.embedding_model,
+        enable_thinking=settings.tier_main_enable_thinking,
         timeout_s=settings.model_timeout_s,
         trust_env=settings.model_trust_env,
     )

@@ -72,6 +72,7 @@ async def test_openai_compatible_provider_maps_wire_format() -> None:
         api_key="secret",
         chat_model="chat",
         embedding_model="embed",
+        enable_thinking=False,
         client=client,
     )
 
@@ -89,4 +90,5 @@ async def test_openai_compatible_provider_maps_wire_format() -> None:
         "/v1/embeddings",
     ]
     assert requests[0].headers["authorization"] == "Bearer secret"
+    assert json.loads(requests[0].content)["chat_template_kwargs"] == {"enable_thinking": False}
     assert json.loads(requests[1].content)["input"] == ["one", "two"]

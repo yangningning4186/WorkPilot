@@ -125,12 +125,16 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.pdf_parsing_quality \
 模型引用未知标签或正常回答不带引用时，接口返回 `502 invalid_model_citation`，不会猜测修复。
 证据为空或模型明确判断证据不足时返回 `资料库中未找到相关信息。`，且 `refused=true`。
 
-生成前还有一层确定性拒答门控：最高 dense score 小于 `REFUSAL_THRESHOLD` 时直接拒答，
-不会调用生成模型。响应同时返回 `top_score`、`threshold` 和 `refusal_reason`；其中
-`below_threshold` 表示低分拒答，`no_evidence` 表示没有检索证据，
-`model_insufficient_evidence` 表示通过门控后模型仍判断证据不足。默认阈值 `0.35` 只是
-embedding 服务上线前的工程初值，不能当成质量结论；接入真实模型后必须用
-answerable / unanswerable 标注集做 ROC 与误拒答率校准。
+生成前使用组合拒答：先检查最高检索分数和 top1/top2 margin，再让远端模型严格判断候选证据
+是否明确覆盖问题所需的全部事实。证据门控只接收问题与 `EVIDENCE_GATE_MAX_CHARS` 截断后的
+候选片段；非法 JSON 会 fail-closed 为 `evidence_gate_invalid`，明确缺证据则返回
+`model_insufficient_evidence`。响应同时暴露分数、margin、门控原因和实际模型，便于离线校准。
+
+复杂问题可由远端模型分解为最多 4 个自包含子查询，批量 embedding 后融合召回；规划失败自动
+退回原 query。Top-50 候选可按批次发送到远端模型做 listwise rerank，失败时保留原排序。
+`LEXICAL_RRF_ENABLED` 默认开启，会用英文标识符与中文双字词做本地词法召回，再以
+RRF 与 dense 合并。远端步骤只发送问题及截断候选，不上传原始文件；部署时仍需按数据策略确认
+具体语料是否允许外发。默认阈值 `0.35` 只是工程初值，不能当成质量结论。
 
 ## Gold span 标注与 dense-only 基线
 

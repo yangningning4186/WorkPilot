@@ -23,12 +23,14 @@ class OpenAICompatibleProvider:
         api_key: str,
         chat_model: str,
         embedding_model: str,
+        enable_thinking: bool | None = None,
         timeout_s: float = 30.0,
         trust_env: bool = False,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.chat_model = chat_model
         self.embedding_model = embedding_model
+        self._enable_thinking = enable_thinking
         self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -43,15 +45,20 @@ class OpenAICompatibleProvider:
         max_tokens: int,
         temperature: float,
     ) -> CompletionResult:
+        request_payload: dict[str, Any] = {
+            "model": self.chat_model,
+            "messages": [vars(message) for message in messages],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if self._enable_thinking is not None:
+            request_payload["chat_template_kwargs"] = {
+                "enable_thinking": self._enable_thinking
+            }
         response = await self._client.post(
             "chat/completions",
             headers=self._headers,
-            json={
-                "model": self.chat_model,
-                "messages": [vars(message) for message in messages],
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            },
+            json=request_payload,
         )
         response.raise_for_status()
         payload: dict[str, Any] = response.json()
@@ -77,17 +84,22 @@ class OpenAICompatibleProvider:
         max_tokens: int,
         temperature: float,
     ) -> AsyncIterator[str]:
+        request_payload: dict[str, Any] = {
+            "model": self.chat_model,
+            "messages": [vars(message) for message in messages],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if self._enable_thinking is not None:
+            request_payload["chat_template_kwargs"] = {
+                "enable_thinking": self._enable_thinking
+            }
         async with self._client.stream(
             "POST",
             "chat/completions",
             headers=self._headers,
-            json={
-                "model": self.chat_model,
-                "messages": [vars(message) for message in messages],
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "stream": True,
-            },
+            json=request_payload,
         ) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():

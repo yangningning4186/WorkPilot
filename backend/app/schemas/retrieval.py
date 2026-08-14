@@ -47,6 +47,10 @@ class DenseSearchHitResponse(BaseModel):
     score: float
     heading_path: list[str]
     blocks: list[dict[str, Any]]
+    rerank_score: float | None
+    dense_score: float | None
+    lexical_score: float | None
+    fusion_score: float | None
 
 
 class DenseSearchResponse(BaseModel):
@@ -76,9 +80,37 @@ class GroundedAnswerResponse(BaseModel):
     answer: str
     citations: list[CitationResponse]
     refused: bool
-    refusal_reason: Literal["no_evidence", "below_threshold", "model_insufficient_evidence"] | None
+    refusal_reason: (
+        Literal[
+            "no_evidence",
+            "below_threshold",
+            "model_insufficient_evidence",
+            "evidence_gate_invalid",
+        ]
+        | None
+    )
     retrieved_chunks: int
     top_score: float | None
+    second_score: float | None
+    score_margin: float | None
+    low_margin: bool
     threshold: float
+    margin_threshold: float
+    evidence_sufficient: bool | None
+    evidence_reason: str | None
+    evidence_model: str | None
+    evidence_provider: str | None
+    query_decomposed: bool
+    retrieval_queries: list[str]
+    query_plan_reason: str
+    query_plan_model: str | None
+    query_plan_provider: str | None
+    rerank_applied: bool
+    rerank_candidate_count: int
+    rerank_reason: str
+    rerank_model: str | None
+    rerank_provider: str | None
+    lexical_rrf_applied: bool
+    lexical_candidate_count: int
     model: str | None
     provider: str | None
