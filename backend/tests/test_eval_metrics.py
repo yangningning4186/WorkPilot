@@ -1,3 +1,4 @@
+from collections import Counter
 from uuid import UUID
 
 import pytest
@@ -6,6 +7,8 @@ from eval.mapping import GoldSpan, RetrievedChunk, hits, overlap_ratio
 from eval.metrics.diagnostics import diagnose_spans, summarize_scores
 from eval.metrics.refusal import analyze_refusal
 from eval.metrics.retrieval import evaluate_retrieval
+from eval.seed_english_dev import _CJK, _leaked_ngrams
+from eval.seed_english_dev import ITEMS as ENGLISH_ITEMS
 
 VERSION_A = UUID("00000000-0000-0000-0000-000000000001")
 VERSION_B = UUID("00000000-0000-0000-0000-000000000002")
@@ -198,3 +201,42 @@ def test_aggregate_reports_category_metrics_and_refusal_distributions() -> None:
     refusal_metrics = aggregate["refusal"]
     assert isinstance(refusal_metrics, dict)
     assert refusal_metrics["score_distributions"]["answerable"]["count"] == 2
+
+
+def test_english_dataset_questions_are_pure_english_and_do_not_copy_gold() -> None:
+    """英文集的两条有效性前提: 不含 CJK, 且不从 gold 原文抄词。
+
+    抄词会让词法臂靠字面重合直接命中, 测出来的是抄袭度不是检索能力 —— 这个集存在
+    的唯一目的就是量英文检索, 前提破了整个集就没有意义(台账 E3)。
+    """
+    assert _CJK.search("How does PagedAttention work?") is None
+    assert _CJK.search("PagedAttention 是怎么工作的") is not None
+
+    block = (
+        "Action Space We design a simple Wikipedia web API with three types of "
+        "actions to support interactive information retrieval"
+    )
+    assert _leaked_ngrams("What are the three types of actions in the API?", block) == [
+        "three types of actions"
+    ]
+    assert (
+        _leaked_ngrams(
+            "Which three actions did the ReAct authors expose in their Wikipedia API?", block
+        )
+        == []
+    )
+
+
+def test_english_dataset_seeds_are_internally_consistent() -> None:
+    """unanswerable 必须没有 gold span, 可答题必须有 —— 两者错配会静默污染指标。"""
+    for item in ENGLISH_ITEMS:
+        assert (item.category == "unanswerable") == (not item.evidence), item.question
+        assert item.category != "unanswerable" or not item.gold_answer, item.question
+        assert _CJK.search(item.question) is None, item.question
+    categories = Counter(item.category for item in ENGLISH_ITEMS)
+    assert categories == {
+        "single_hop": 7,
+        "table": 5,
+        "multi_hop": 4,
+        "unanswerable": 4,
+    }

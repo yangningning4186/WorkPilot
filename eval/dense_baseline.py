@@ -87,6 +87,9 @@ async def run_dense_baseline(
     text_mode = rerank_candidate_text_mode or settings.rerank_candidate_text_mode
     lex_mode = lexical_mode or settings.lexical_mode
     config: dict[str, object] = {
+        # dataset 必须进 config_hash: 否则同一套参数跑不同数据集会撞出同一个 hash,
+        # 台账里用 config_hash 当 run 句柄就会指错运行。
+        "dataset": dataset_name,
         "strategy": strategy,
         "top_k": top_k,
         "diagnostic_k": diagnostic_k,

@@ -62,6 +62,9 @@ async def run_refusal_baseline(
     }:
         raise ValueError("拒答基线不支持该检索策略")
     config: dict[str, object] = {
+        # dataset 必须进 config_hash: 否则同一套参数跑不同数据集会撞出同一个 hash,
+        # 台账里用 config_hash 当 run 句柄就会指错运行。
+        "dataset": dataset_name,
         "strategy": strategy,
         "top_k": top_k,
         "origin": origin,

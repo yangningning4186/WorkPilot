@@ -51,6 +51,25 @@ macro-F1 最优阈值。跑批会拒绝 stale span、无 gold span 的可答题�
 --lexical-mode ts_rank
 ```
 
+## 数据集
+
+| 名称 | origin | 条数 | 用途 |
+|---|---|---:|---|
+| `core-dev` | human | 26 | 作者亲手标注，唯一的 human 级证据 |
+| `multihop-test-v1` | synthetic | 8 | PDF multi-hop 留出集 |
+| `english-dev` | synthetic | 20 | **纯英文**，补全中文题集留下的英文检索盲区（台账 E3） |
+| `dense-title-smoke` | synthetic | 15 | 只验工程链路，不作质量结论 |
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.seed_english_dev
+```
+
+`english-dev` 的两条有效性前提由种子脚本强制，违反即拒绝入库：问题不含任何 CJK 字符；
+问题不与 gold 原文连续重合 4 个词（抄原文会让词法臂靠字面重合命中，测的就不是检索能力）。
+
+**动词法检索、分词或查询改写的实验，必须同时报中文集与英文集**——
+E2 的教训是全中文题集会把英文失效整个藏起来。
+
 远端策略运行前必须确认数据外发范围与目标端点。正式单变量对照应保持 dataset、Top-K、
 diagnostic-K、token budget、embedding identity 和 gold span 不变。
 
