@@ -17,6 +17,33 @@ uv run fastapi dev app/main.py
 
 健康检查：`GET /health/live` 只检查进程，`GET /health/ready` 同时检查 PostgreSQL 与 Redis。
 
+## API 权限边界
+
+除健康检查和 admin 登录外，API 不再匿名裸奔：
+
+| 表面 | 权限 |
+|---|---|
+| `/api/v1/runs/**` | 匿名 demo session，只能操作自己的 conversation/run/SSE |
+| `/api/v1/documents/{version_id}/**` | demo session，且该版本必须被自己的 run 引用过 |
+| `/api/v1/sources/**`、入库、直接检索、同步回答 | demo admin |
+| `/api/v1/annotation/**`、`/annotation` | demo admin；生产环境仍固定关闭标注工具 |
+| `/health/**`、`/api/v1/auth/admin/login` | 公开 |
+
+admin 密码只以 bcrypt hash 写入环境变量，会话只存 Redis：
+
+```bash
+uv run python -m app.cli.hash_admin_password
+# 把输出写入 .env 的 DEMO_ADMIN_PASSWORD_HASH
+
+curl -c /tmp/workpilot-admin.cookie \
+  -H 'content-type: application/json' \
+  -d '{"password":"<你的密码>"}' \
+  http://127.0.0.1:8000/api/v1/auth/admin/login
+```
+
+维护接口的后续 curl 请求使用 `-b /tmp/workpilot-admin.cookie`。未配置 hash 时 admin 登录
+fail-closed 返回 `503`，不会在开发环境隐式放行。
+
 ## local_dir → PDF/Markdown → dense 最小链路
 
 模型网关统一提供 `complete`、`stream`、`embed`，当前 provider 使用
@@ -186,6 +213,12 @@ M0 只有 `heading` 有数据，其余三个是空分区、不产生写入开销
 并入队，执行在 Arq worker 进程；关掉页面任务照跑，刷新回放与实时流读的是同一份
 `run_events`，因此不会出现"实时看到的和刷新后看到的不一致"。
 
+公网 demo 使用 30 分钟有效的匿名 `HttpOnly` session cookie。数据库只保存 token 的 SHA-256，并把
+conversation 绑定到 session；run 状态、取消和 SSE 都经 conversation 校验所有权。不存在的对象
+和其他 session 的对象统一返回 `404`，避免泄漏对象是否存在。生产环境
+自动带 `Secure`，浏览器前后端应走同源访问。citation 原文还会校验该版本确实出现在当前
+session 自己的 run 事件中，拿到 `version_id` 也不能越权读取。命令行调试必须复用 cookie jar：
+
 worker 需要单独起一个进程：
 
 ```bash
@@ -195,17 +228,20 @@ uv run arq app.worker.main.WorkerSettings
 ```bash
 # 创建 run，立即返回 run_id（202），不等生成
 curl -X POST http://127.0.0.1:8000/api/v1/runs \
+  -c /tmp/workpilot-demo.cookie \
   -H 'content-type: application/json' \
   -d '{"query":"什么是稠密检索？","top_k":5}'
 
 # 订阅事件流：先补历史，再续实时
-curl -N http://127.0.0.1:8000/api/v1/runs/<run_id>/events?after_seq=0
+curl -N -b /tmp/workpilot-demo.cookie \
+  http://127.0.0.1:8000/api/v1/runs/<run_id>/events?after_seq=0
 
 # 断线重连由浏览器自动带 Last-Event-ID，手工模拟：
-curl -N -H 'Last-Event-ID: <run_id>:12' \
+curl -N -b /tmp/workpilot-demo.cookie -H 'Last-Event-ID: <run_id>:12' \
   http://127.0.0.1:8000/api/v1/runs/<run_id>/events
 
-curl -X POST http://127.0.0.1:8000/api/v1/runs/<run_id>/cancel
+curl -X POST -b /tmp/workpilot-demo.cookie \
+  http://127.0.0.1:8000/api/v1/runs/<run_id>/cancel
 ```
 
 事件信封与 [docs/08 §3.2](../docs/08-前端设计.md) 一致：

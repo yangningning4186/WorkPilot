@@ -1,6 +1,8 @@
 /** 后端 HTTP 客户端。字段保持 snake_case，与后端契约一致。 */
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000";
+// 默认走 Next.js 同源 rewrite，浏览器不再直接跨域访问后端。
+// NEXT_PUBLIC_API_BASE 仅保留给明确需要直连 API 的部署方式。
+export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "").replace(/\/$/, "");
 
 export interface CreateRunRequest {
   query: string;
@@ -66,4 +68,12 @@ export function cancelRun(runId: string): Promise<RunStatusResponse> {
 
 export function runEventsUrl(runId: string, afterSeq: bigint): string {
   return `${API_BASE}/api/v1/runs/${runId}/events?after_seq=${afterSeq.toString()}`;
+}
+
+export function sourceFileUrl(versionId: string): string {
+  return `${API_BASE}/api/v1/documents/${encodeURIComponent(versionId)}/file`;
+}
+
+export function sourcePageUrl(versionId: string, pageNo: number): string {
+  return `${API_BASE}/api/v1/documents/${encodeURIComponent(versionId)}/pages/${pageNo}.png`;
 }

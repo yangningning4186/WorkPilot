@@ -1,49 +1,122 @@
 "use client";
 
 import { Suspense, useCallback, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
+import { EvidencePreview } from "@/components/evidence-preview";
 import { ApiError, cancelRun, createRun } from "@/lib/api";
-import { useRunStream } from "@/lib/use-run-stream";
+import type { CitationPayload } from "@/lib/run-protocol";
 import { isRunFinished } from "@/lib/run-state";
+import { useRunStream } from "@/lib/use-run-stream";
+
+function ArrowIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="M4 10h12M11 5l5 5-5 5" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <rect height="8" rx="1" width="8" x="6" y="6" />
+    </svg>
+  );
+}
 
 function AskForm({ onSubmit, busy }: { onSubmit: (query: string) => void; busy: boolean }) {
   const [query, setQuery] = useState("");
+
   return (
     <form
-      className="flex gap-2"
+      className="ask-form"
       onSubmit={(event) => {
         event.preventDefault();
-        if (query.trim() !== "") {
-          onSubmit(query.trim());
+        const nextQuery = query.trim();
+        if (nextQuery !== "") {
+          onSubmit(nextQuery);
+          setQuery("");
         }
       }}
     >
-      <input
-        className="flex-1 rounded border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
-        value={query}
-        placeholder="问一个资料库里的问题"
-        onChange={(event) => setQuery(event.target.value)}
-      />
-      <button
-        className="rounded bg-neutral-900 px-4 py-2 text-white disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900"
-        disabled={busy || query.trim() === ""}
-        type="submit"
-      >
-        提问
-      </button>
+      <label htmlFor="knowledge-query">向资料库提问</label>
+      <div className="ask-control">
+        <textarea
+          autoFocus
+          disabled={busy}
+          id="knowledge-query"
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }
+          }}
+          placeholder="例如：混合检索为什么比单路召回更稳定？"
+          rows={2}
+          value={query}
+        />
+        <button disabled={busy || query.trim() === ""} type="submit">
+          <span>{busy ? "回答中" : "提问"}</span>
+          <ArrowIcon />
+        </button>
+      </div>
+      <p>Enter 发送 · Shift + Enter 换行 · 答案仅依据已入库资料</p>
     </form>
   );
 }
 
-function Conversation() {
+function CitationCard({
+  citation,
+  active,
+  onSelect,
+}: {
+  citation: CitationPayload;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  const page = citation.locations[0]?.page_no;
+  return (
+    <button
+      aria-pressed={active}
+      className={`citation-card${active ? " active" : ""}`}
+      onClick={onSelect}
+      type="button"
+    >
+      <span className="citation-index">{citation.citation_id}</span>
+      <span className="citation-body">
+        <strong>{citation.title}</strong>
+        <span>
+          {citation.heading_path.at(-1) ?? citation.source_uri}
+          {page === undefined ? "" : ` · 第 ${page} 页`}
+        </span>
+        <q>{citation.quote}</q>
+      </span>
+      <span className="citation-open">
+        查看原文
+        <ArrowIcon />
+      </span>
+    </button>
+  );
+}
+
+function RunWorkspace({
+  runId,
+  conversationId,
+}: {
+  runId: string | null;
+  conversationId: string | null;
+}) {
   const router = useRouter();
-  const params = useSearchParams();
-  // run_id 放 URL 里：刷新页面天然回到同一个 run（B1），不需要额外的本地存储。
-  const runId = params.get("run");
-  const conversationId = params.get("conversation");
-  const [submitError, setSubmitError] = useState<string | null>(null);
   const state = useRunStream(runId);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [selectedCitationId, setSelectedCitationId] = useState<string | null>(null);
+  const selectedCitation = state.citations.find(
+    (citation) => citation.citation_id === selectedCitationId,
+  );
+  const busy = runId !== null && !isRunFinished(state);
 
   const ask = useCallback(
     async (query: string) => {
@@ -56,92 +129,152 @@ function Conversation() {
         router.replace(`/?run=${created.run_id}&conversation=${created.conversation_id}`);
       } catch (error) {
         setSubmitError(
-          error instanceof ApiError ? `创建 run 失败（${error.status}）` : "创建 run 失败",
+          error instanceof ApiError ? `创建回答失败（${error.status}）` : "暂时无法创建回答",
         );
       }
     },
     [conversationId, router],
   );
 
-  const busy = runId !== null && !isRunFinished(state);
-
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 p-8">
-      <header>
-        <h1 className="text-xl font-semibold">WorkPilot</h1>
-        <p className="text-sm text-neutral-500">
-          基于个人资料库的可溯源问答。答案只依据检索到的证据。
-        </p>
-      </header>
+    <>
+      <section className="conversation-panel">
+        <AskForm busy={busy} onSubmit={(query) => void ask(query)} />
+        {submitError !== null && <div className="inline-error">{submitError}</div>}
 
-      <AskForm onSubmit={ask} busy={busy} />
-      {submitError !== null && <p className="text-sm text-red-600">{submitError}</p>}
+        {runId === null ? (
+          <div className="empty-state">
+            <span className="empty-mark">W</span>
+            <div>
+              <h1>从你的资料里，找到有出处的答案。</h1>
+              <p>每条结论都可以回到原文核验；证据不足时，WorkPilot 会直接说明找不到。</p>
+            </div>
+          </div>
+        ) : (
+          <div className="run-result">
+            <div className="run-meta">
+              <span className={`status-dot ${state.phase}`} />
+              <span>{state.phase === "connecting" ? "正在检索证据" : state.phase}</span>
+              <span className="run-id">run {runId.slice(0, 8)}</span>
+              {busy && (
+                <button
+                  className="cancel-button"
+                  onClick={() => void cancelRun(runId)}
+                  type="button"
+                >
+                  <StopIcon />
+                  停止
+                </button>
+              )}
+            </div>
 
-      {runId !== null && (
-        <section className="flex flex-col gap-4">
-          <div className="flex items-center gap-3 text-xs text-neutral-500">
-            <span>run {runId.slice(0, 8)}</span>
-            <span>状态 {state.phase}</span>
-            {busy && (
-              <button
-                className="rounded border border-neutral-300 px-2 py-1 dark:border-neutral-700"
-                onClick={() => void cancelRun(runId)}
-                type="button"
-              >
-                取消
-              </button>
+            {state.phase === "connecting" && (
+              <div className="answer-skeleton" aria-label="正在生成回答">
+                <span />
+                <span />
+                <span />
+              </div>
+            )}
+
+            {state.text !== "" && <article className="answer-copy">{state.text}</article>}
+
+            {state.phase === "refused" && state.text === "" && (
+              <div className="refusal-card">
+                <strong>资料库中未找到足够证据</strong>
+                <p>我没有用通用知识补全答案，以免把未经核验的信息混进来。</p>
+              </div>
+            )}
+
+            {state.error !== null && (
+              <div className="inline-error">
+                <strong>{state.error.user_message}</strong>
+                {state.error.retryable && <span>稍后可以重新提问。</span>}
+              </div>
+            )}
+
+            {state.citations.length > 0 && (
+              <section className="citations-section">
+                <div className="section-heading">
+                  <div>
+                    <span className="eyebrow">可核验来源</span>
+                    <h2>引用证据</h2>
+                  </div>
+                  <span>{state.citations.length} 处</span>
+                </div>
+                <div className="citation-list">
+                  {state.citations.map((citation) => (
+                    <CitationCard
+                      key={citation.citation_id}
+                      active={citation.citation_id === selectedCitationId}
+                      citation={citation}
+                      onSelect={() => setSelectedCitationId(citation.citation_id)}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {state.latencyMs !== null && (
+              <p className="run-footnote">
+                本次回答耗时 {(state.latencyMs / 1000).toFixed(1)} 秒
+                {state.costUsd === null ? "" : ` · 模型成本 $${state.costUsd}`}
+              </p>
             )}
           </div>
+        )}
+      </section>
 
-          {/* 首 token 未到时给阶段提示，而不是空白（B8）。 */}
-          {state.phase === "connecting" && (
-            <p className="text-sm text-neutral-500">正在检索…</p>
-          )}
-
-          {state.text !== "" && (
-            <article className="whitespace-pre-wrap leading-relaxed">{state.text}</article>
-          )}
-
-          {state.error !== null && (
-            <p className="text-sm text-red-600">
-              {state.error.user_message}
-              {state.error.retryable && "（可以重试）"}
-            </p>
-          )}
-
-          {state.citations.length > 0 && (
-            <aside className="flex flex-col gap-2">
-              <h2 className="text-sm font-medium">引用</h2>
-              {state.citations.map((citation) => (
-                <div
-                  key={citation.citation_id}
-                  className="rounded border border-neutral-200 p-3 text-sm dark:border-neutral-800"
-                >
-                  <div className="text-xs text-neutral-500">
-                    {citation.citation_id} · {citation.title}
-                    {citation.locations[0] !== undefined &&
-                      ` · 第 ${citation.locations[0].page_no} 页`}
-                  </div>
-                  <p className="mt-1">{citation.quote}</p>
-                </div>
-              ))}
-            </aside>
-          )}
-
-          {state.latencyMs !== null && (
-            <p className="text-xs text-neutral-500">
-              耗时 {state.latencyMs} ms · 花费 ${state.costUsd}
-            </p>
-          )}
-        </section>
+      {selectedCitation !== undefined ? (
+        <EvidencePreview
+          key={selectedCitation.block_id}
+          citation={selectedCitation}
+          onClose={() => setSelectedCitationId(null)}
+        />
+      ) : (
+        <aside className="evidence-placeholder" aria-label="原文预览占位">
+          <div className="preview-grid" />
+          <div>
+            <span className="eyebrow">Evidence viewer</span>
+            <h2>原文会在这里打开</h2>
+            <p>回答完成后，点击任意引用即可查看对应页面与精确高亮位置。</p>
+          </div>
+        </aside>
       )}
+    </>
+  );
+}
+
+function Conversation() {
+  const params = useSearchParams();
+  const runId = params.get("run");
+  const conversationId = params.get("conversation");
+
+  return (
+    <main className="app-frame">
+      <header className="topbar">
+        <Link className="brand" href="/">
+          <span>W</span>
+          <strong>WorkPilot</strong>
+        </Link>
+        <div className="product-note">
+          <span />
+          本地资料库已连接
+        </div>
+      </header>
+      <div className="workspace">
+        <RunWorkspace
+          key={runId ?? "new-run"}
+          conversationId={conversationId}
+          runId={runId}
+        />
+      </div>
     </main>
   );
 }
 
 export default function Page() {
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<div className="app-loading">正在打开工作台…</div>}>
       <Conversation />
     </Suspense>
   );

@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     database_url: str = "postgresql+asyncpg://workpilot:workpilot@localhost:5432/workpilot"
     redis_url: str = "redis://localhost:6379/0"
+    session_cookie_name: str = "workpilot_session"
+    session_ttl_s: int = Field(default=30 * 60, ge=300, le=90 * 24 * 60 * 60)
+    session_cookie_secure: bool | None = None
+    admin_cookie_name: str = "workpilot_admin_session"
+    admin_session_ttl_s: int = Field(default=8 * 60 * 60, ge=300, le=7 * 24 * 60 * 60)
+    demo_admin_password_hash: str = ""
     daily_cost_limit_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
     cost_budget_timezone: str = "Asia/Shanghai"
     cost_reservation_ttl_s: int = Field(default=900, ge=60, le=7200)

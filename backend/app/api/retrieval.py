@@ -1,9 +1,13 @@
+import asyncio
+from pathlib import Path
 from typing import Annotated
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_model_gateway
+from app.api.dependencies import get_demo_session, get_model_gateway, require_admin_session
 from app.core.config import get_settings
 from app.core.db import get_db_session
 from app.llm.gateway import ModelGateway
@@ -20,11 +24,71 @@ from app.schemas.retrieval import (
     MarkdownIngestResponse,
     PdfIngestRequest,
 )
+from app.services.annotation import (
+    AnnotationConflictError,
+    AnnotationNotFoundError,
+    render_pdf_page,
+    resolve_source_file,
+)
+from app.services.demo_sessions import DemoSession
 from app.services.grounded_answer import answer_with_citations
 from app.services.markdown_ingestion import LibraryPathError, ingest_markdown_file
 from app.services.pdf_ingestion import ingest_pdf_file, pdf_parser_config_from_settings
+from app.services.runs import demo_session_can_access_version
 
 router = APIRouter(prefix="/api/v1", tags=["retrieval"])
+AdminRequired = Annotated[None, Depends(require_admin_session)]
+
+
+@router.get("/documents/{version_id}/file")
+async def get_document_file(
+    version_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    demo_session: Annotated[DemoSession, Depends(get_demo_session)],
+) -> FileResponse:
+    """返回引用锚定版本对应的原文件；路径始终由已注册 local_dir 反解。"""
+
+    if not await demo_session_can_access_version(
+        session, version_id=version_id, demo_session_id=demo_session.id
+    ):
+        raise HTTPException(status_code=404, detail="文档版本不存在")
+    try:
+        path, source_uri = await resolve_source_file(session, version_id)
+    except (AnnotationNotFoundError, AnnotationConflictError) as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    media_type = "application/pdf" if path.suffix.lower() == ".pdf" else "text/markdown"
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=Path(source_uri).name,
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+@router.get("/documents/{version_id}/pages/{page_no}.png")
+async def get_document_page(
+    version_id: UUID,
+    page_no: int,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    demo_session: Annotated[DemoSession, Depends(get_demo_session)],
+) -> Response:
+    """把 PDF 页渲染为图片，供前端按归一化 bbox 叠加引用高亮。"""
+
+    if not await demo_session_can_access_version(
+        session, version_id=version_id, demo_session_id=demo_session.id
+    ):
+        raise HTTPException(status_code=404, detail="文档版本不存在")
+    try:
+        path, _source_uri = await resolve_source_file(session, version_id)
+        content = await asyncio.to_thread(render_pdf_page, path, page_no)
+    except (AnnotationNotFoundError, AnnotationConflictError, ValueError) as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return Response(
+        content,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 @router.post("/documents/ingest-markdown", response_model=MarkdownIngestResponse)
@@ -32,6 +96,7 @@ async def ingest_markdown(
     request: MarkdownIngestRequest,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     gateway: Annotated[ModelGateway, Depends(get_model_gateway)],
+    _: AdminRequired,
 ) -> MarkdownIngestResponse:
     try:
         result = await ingest_markdown_file(
@@ -51,6 +116,7 @@ async def ingest_pdf(
     request: PdfIngestRequest,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     gateway: Annotated[ModelGateway, Depends(get_model_gateway)],
+    _: AdminRequired,
 ) -> MarkdownIngestResponse:
     settings = get_settings()
     try:
@@ -77,6 +143,7 @@ async def search_dense(
     request: DenseSearchRequest,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     gateway: Annotated[ModelGateway, Depends(get_model_gateway)],
+    _: AdminRequired,
 ) -> DenseSearchResponse:
     hits = await dense_search(
         session,
@@ -93,6 +160,7 @@ async def answer(
     request: GroundedAnswerRequest,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     gateway: Annotated[ModelGateway, Depends(get_model_gateway)],
+    _: AdminRequired,
 ) -> GroundedAnswerResponse:
     settings = get_settings()
     try:

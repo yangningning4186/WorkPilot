@@ -6,12 +6,18 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.api.dependencies import get_run_bus, get_run_queue_dependency, get_session_factory
+from app.api.dependencies import (
+    get_demo_session,
+    get_run_bus,
+    get_run_queue_dependency,
+    get_session_factory,
+)
 from app.core.config import get_settings
 from app.core.db import get_db_session
 from app.core.queue import RunQueue
 from app.core.run_bus import RunBus
 from app.schemas.runs import CreateRunRequest, CreateRunResponse, RunStatusResponse
+from app.services.demo_sessions import DemoSession
 from app.services.run_stream import parse_last_event_id, stream_run_events
 from app.services.runs import (
     RunNotFoundError,
@@ -20,7 +26,7 @@ from app.services.runs import (
     create_run,
     ensure_conversation,
     finish_run,
-    get_run,
+    get_run_for_demo_session,
     request_cancel,
 )
 
@@ -41,13 +47,17 @@ async def create_answer_run(
     request: CreateRunRequest,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     queue: Annotated[RunQueue, Depends(get_run_queue_dependency)],
+    demo_session: Annotated[DemoSession, Depends(get_demo_session)],
 ) -> CreateRunResponse:
     """创建 run 并入队, 立即返回。执行在 worker 进程, 不依附本次 HTTP 连接。"""
 
     settings = get_settings()
     try:
         conversation_id = await ensure_conversation(
-            session, conversation_id=request.conversation_id
+            session,
+            conversation_id=request.conversation_id,
+            scope="demo",
+            demo_session_id=demo_session.id,
         )
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
@@ -103,8 +113,11 @@ async def create_answer_run(
 async def read_run(
     run_id: UUID,
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    demo_session: Annotated[DemoSession, Depends(get_demo_session)],
 ) -> RunStatusResponse:
-    run = await get_run(session, run_id)
+    run = await get_run_for_demo_session(
+        session, run_id=run_id, demo_session_id=demo_session.id
+    )
     if run is None:
         raise HTTPException(status_code=404, detail="run 不存在")
     return RunStatusResponse(
@@ -126,6 +139,7 @@ async def stream_events(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     bus: Annotated[RunBus, Depends(get_run_bus)],
     stream_sessions: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
+    demo_session: Annotated[DemoSession, Depends(get_demo_session)],
     after_seq: Annotated[int, Query(ge=0)] = 0,
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> StreamingResponse:
@@ -135,7 +149,12 @@ async def stream_events(
     真正收到的最后一个事件; 查询参数只是首次连接或手动回放用的起点。
     """
 
-    if await get_run(session, run_id) is None:
+    if (
+        await get_run_for_demo_session(
+            session, run_id=run_id, demo_session_id=demo_session.id
+        )
+        is None
+    ):
         raise HTTPException(status_code=404, detail="run 不存在")
 
     cursor = parse_last_event_id(last_event_id)
@@ -157,11 +176,14 @@ async def cancel_run(
     run_id: UUID,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     bus: Annotated[RunBus, Depends(get_run_bus)],
+    demo_session: Annotated[DemoSession, Depends(get_demo_session)],
 ) -> RunStatusResponse:
     """请求取消。已在执行的 run 由持有租约的 worker 在下一个检查点收尾。"""
 
     try:
-        run = await request_cancel(session, run_id=run_id)
+        run = await request_cancel(
+            session, run_id=run_id, demo_session_id=demo_session.id
+        )
     except RunNotFoundError as error:
         raise HTTPException(status_code=404, detail="run 不存在") from error
     await session.commit()

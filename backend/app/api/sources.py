@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_model_gateway
+from app.api.dependencies import get_model_gateway, require_admin_session
 from app.core.config import get_settings
 from app.core.db import get_db_session
 from app.llm.gateway import ModelGateway
@@ -23,7 +23,11 @@ from app.services.local_dir import (
 )
 from app.services.markdown_ingestion import LibraryPathError
 
-router = APIRouter(prefix="/api/v1/sources", tags=["sources"])
+router = APIRouter(
+    prefix="/api/v1/sources",
+    tags=["sources"],
+    dependencies=[Depends(require_admin_session)],
+)
 
 
 @router.post("/local-dir", response_model=LocalDirSourceResponse)

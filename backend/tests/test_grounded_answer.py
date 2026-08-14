@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
-from app.api.dependencies import get_model_gateway
+from app.api.dependencies import get_model_gateway, require_admin_session
 from app.core.db import get_db_session
 from app.llm.audit import SqlLlmCallAudit
 from app.llm.gateway import ModelGateway
@@ -517,6 +517,7 @@ async def test_retrieval_generation_and_block_citation_chain(
         yield gateway
 
     app = create_app()
+    app.dependency_overrides[require_admin_session] = lambda: None
     app.dependency_overrides[get_db_session] = override_session
     app.dependency_overrides[get_model_gateway] = override_gateway
     provider.queue_completions(

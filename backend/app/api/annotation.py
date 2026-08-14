@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import require_admin_session
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
 from app.schemas.annotation import (
@@ -36,8 +37,15 @@ from app.services.annotation import (
     update_item,
 )
 
-router = APIRouter(prefix="/api/v1/annotation", tags=["annotation"])
-page_router = APIRouter(include_in_schema=False)
+router = APIRouter(
+    prefix="/api/v1/annotation",
+    tags=["annotation"],
+    dependencies=[Depends(require_admin_session)],
+)
+page_router = APIRouter(
+    include_in_schema=False,
+    dependencies=[Depends(require_admin_session)],
+)
 STATIC_ROOT = Path(__file__).parents[1] / "static" / "annotation"
 
 

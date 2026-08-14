@@ -1,21 +1,28 @@
 from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException, Request, Response
+from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.db import get_db_session, session_factory
 from app.core.queue import RunQueue, get_run_queue
 from app.core.redis import redis_client
 from app.core.run_bus import RedisRunBus, RunBus
 from app.llm.audit import SqlLlmCallAudit
 from app.llm.gateway import ModelGateway, build_model_gateway
+from app.services.admin_sessions import AdminSessionStore, RedisAdminSessionStore
+from app.services.demo_sessions import DemoSession, resolve_demo_session
 from app.services.model_budget import build_cost_guard
 
 
 def get_run_bus() -> RunBus:
     return RedisRunBus(redis_client)
+
+
+def get_admin_session_store() -> AdminSessionStore:
+    return RedisAdminSessionStore(redis_client)
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -26,6 +33,52 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 
 async def get_run_queue_dependency() -> RunQueue:
     return await get_run_queue()
+
+
+async def get_demo_session(
+    request: Request,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> DemoSession:
+    """解析或签发匿名 session；原始 token 只进入 HttpOnly cookie。"""
+
+    cookie_name = settings.session_cookie_name
+    resolved = await resolve_demo_session(
+        session,
+        cookie_token=request.cookies.get(cookie_name),
+        ttl_s=settings.session_ttl_s,
+    )
+    if resolved.cookie_token is not None:
+        secure = settings.session_cookie_secure
+        response.set_cookie(
+            key=cookie_name,
+            value=resolved.cookie_token,
+            max_age=settings.session_ttl_s,
+            httponly=True,
+            secure=settings.app_env == "production" if secure is None else secure,
+            samesite="lax",
+            path="/",
+        )
+    return resolved.session
+
+
+async def require_admin_session(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+    store: Annotated[AdminSessionStore, Depends(get_admin_session_store)],
+) -> None:
+    """要求有效 admin Cookie；未配置密码也绝不隐式放行。"""
+
+    token = request.cookies.get(settings.admin_cookie_name)
+    if token is None:
+        raise HTTPException(status_code=401, detail="需要 demo admin 登录")
+    try:
+        valid = await store.validate(token)
+    except RedisError as error:
+        raise HTTPException(status_code=503, detail="admin 会话服务不可用") from error
+    if not valid:
+        raise HTTPException(status_code=401, detail="admin 会话无效或已过期")
 
 
 async def get_model_gateway(

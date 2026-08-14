@@ -82,6 +82,9 @@ _RUN_COLUMNS = """
     id, conversation_id, goal, status, worker_id, lease_until, cancel_requested_at,
     budget_tokens, budget_calls, budget_wall_ms, used_tokens, used_calls, next_seq, error
 """
+_RUN_COLUMNS_QUALIFIED = ", ".join(
+    f"ar.{column.strip()}" for column in _RUN_COLUMNS.split(",")
+)
 
 
 async def ensure_conversation(
@@ -95,12 +98,16 @@ async def ensure_conversation(
     """复用已有对话或新建一个。demo 作用域必须带 session, 由建表约束保证。"""
 
     if conversation_id is not None:
-        found = (
-            await session.execute(
-                text("SELECT id FROM conversations WHERE id = :id"),
-                {"id": conversation_id},
-            )
-        ).scalar_one_or_none()
+        if demo_session_id is None:
+            statement = "SELECT id FROM conversations WHERE id = :id"
+            parameters = {"id": conversation_id}
+        else:
+            statement = """
+                SELECT id FROM conversations
+                WHERE id = :id AND scope = 'demo' AND demo_session_id = :demo_session_id
+            """
+            parameters = {"id": conversation_id, "demo_session_id": demo_session_id}
+        found = (await session.execute(text(statement), parameters)).scalar_one_or_none()
         if found is None:
             raise LookupError(f"对话不存在: {conversation_id}")
         return UUID(str(found))
@@ -172,6 +179,67 @@ async def get_run(session: AsyncSession, run_id: UUID) -> RunRecord | None:
         .one_or_none()
     )
     return None if row is None else RunRecord(**row)
+
+
+async def get_run_for_demo_session(
+    session: AsyncSession,
+    *,
+    run_id: UUID,
+    demo_session_id: UUID,
+) -> RunRecord | None:
+    """按 conversation 所有权读取 run；不存在与越权对调用方均表现为 None。"""
+
+    row = (
+        (
+            await session.execute(
+                text(
+                    f"""
+                    SELECT {_RUN_COLUMNS_QUALIFIED}
+                    FROM agent_runs ar
+                    JOIN conversations c ON c.id = ar.conversation_id
+                    WHERE ar.id = :run_id
+                      AND c.scope = 'demo'
+                      AND c.demo_session_id = :demo_session_id
+                    """
+                ),
+                {"run_id": run_id, "demo_session_id": demo_session_id},
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    return None if row is None else RunRecord(**row)
+
+
+async def demo_session_can_access_version(
+    session: AsyncSession,
+    *,
+    version_id: UUID,
+    demo_session_id: UUID,
+) -> bool:
+    """只允许读取当前 session 自己收到过 citation 的文档版本。"""
+
+    return bool(
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM run_events re
+                        JOIN agent_runs ar ON ar.id = re.run_id
+                        JOIN conversations c ON c.id = ar.conversation_id
+                        WHERE re.type = 'citation'
+                          AND re.payload ->> 'version_id' = :version_id
+                          AND c.scope = 'demo'
+                          AND c.demo_session_id = :demo_session_id
+                    )
+                    """
+                ),
+                {"version_id": str(version_id), "demo_session_id": demo_session_id},
+            )
+        ).scalar_one()
+    )
 
 
 async def append_events(
@@ -387,7 +455,12 @@ async def finish_run(
     return updated is not None
 
 
-async def request_cancel(session: AsyncSession, *, run_id: UUID) -> RunRecord:
+async def request_cancel(
+    session: AsyncSession,
+    *,
+    run_id: UUID,
+    demo_session_id: UUID | None = None,
+) -> RunRecord:
     """请求取消。
 
     还没被 worker 领走就直接落终态; 已经在跑则只打标记, 由 worker 在下一个检查点
@@ -405,10 +478,19 @@ async def request_cancel(session: AsyncSession, *, run_id: UUID) -> RunRecord:
                         finished_at = CASE WHEN status = 'queued' THEN now() ELSE finished_at END,
                         updated_at = now()
                     WHERE id = :run_id
+                      AND (
+                        CAST(:demo_session_id AS uuid) IS NULL
+                        OR EXISTS (
+                            SELECT 1 FROM conversations c
+                            WHERE c.id = agent_runs.conversation_id
+                              AND c.scope = 'demo'
+                              AND c.demo_session_id = :demo_session_id
+                        )
+                      )
                     RETURNING {_RUN_COLUMNS}
                     """
                 ),
-                {"run_id": run_id},
+                {"run_id": run_id, "demo_session_id": demo_session_id},
             )
         )
         .mappings()

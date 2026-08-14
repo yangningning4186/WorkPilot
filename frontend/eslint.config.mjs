@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // 验收产物：构建输出与 Playwright 报告不参与 lint。
+    ".next-e2e/**",
+    "test-results/**",
+    "playwright-report/**",
   ]),
 ]);
 
