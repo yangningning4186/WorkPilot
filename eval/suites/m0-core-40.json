@@ -1,0 +1,16 @@
+{
+  "name": "m0-core-40",
+  "description": "M0 正式人工评测套件；中文与英文各 20 条，不复制底层 gold。",
+  "origin": "human",
+  "item_count": 40,
+  "datasets": [
+    {"name": "core-dev", "item_count": 20},
+    {"name": "english-dev", "item_count": 20}
+  ],
+  "category_counts": {
+    "single_hop": 14,
+    "multi_hop": 8,
+    "table": 10,
+    "unanswerable": 8
+  }
+}
