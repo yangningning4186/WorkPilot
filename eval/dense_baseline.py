@@ -395,10 +395,13 @@ async def _retrieve_with_strategy(
         candidates = await dense_search(session, gateway, query=query, top_k=diagnostic_k)
         if len(candidates) <= top_k:
             return candidates
+        # 返回精排后的完整排序而不是 Top-K: 正式指标仍按 top_k 截断(evaluate_retrieval
+        # 内部取 retrieved[:top_k]), 但漏召回归因和 budget recall 需要看到 Top-K 之外的
+        # 深度, 否则精排策略的诊断信息弱于非精排策略, 分不清"排在 11-50 位"和"没召回"。
         result = await rerank_candidates(
             query=query,
             candidates=candidates,
-            top_k=top_k,
+            top_k=len(candidates),
             base_url=settings.reranker_base_url,
             model=settings.reranker_model,
             timeout_s=settings.reranker_timeout_s,
@@ -426,10 +429,13 @@ async def _retrieve_with_strategy(
         )
         if len(candidates) <= top_k:
             return candidates
+        # 返回精排后的完整排序而不是 Top-K: 正式指标仍按 top_k 截断(evaluate_retrieval
+        # 内部取 retrieved[:top_k]), 但漏召回归因和 budget recall 需要看到 Top-K 之外的
+        # 深度, 否则精排策略的诊断信息弱于非精排策略, 分不清"排在 11-50 位"和"没召回"。
         result = await rerank_candidates(
             query=query,
             candidates=candidates,
-            top_k=top_k,
+            top_k=len(candidates),
             base_url=settings.reranker_base_url,
             model=settings.reranker_model,
             timeout_s=settings.reranker_timeout_s,
