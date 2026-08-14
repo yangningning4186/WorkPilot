@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+from pathlib import Path
 from uuid import UUID
 
+from eval.m0_report import _human_review
 from eval.metrics.generation import (
     CitationSource,
     evaluate_citation_validity,
@@ -98,3 +100,27 @@ def test_constraint_rules_are_literal_and_case_insensitive() -> None:
 
     assert passed.passed is True
     assert failed.issues == ("missing:Postgres", "forbidden:oracle")
+
+
+def test_human_citation_accuracy_requires_attributed_complete_review(tmp_path: Path) -> None:
+    items = [
+        {
+            "item_id": "item-1",
+            "citations": [{"citation_id": "S1"}, {"citation_id": "S2"}],
+        }
+    ]
+    pending = _human_review(items, [])
+    review = tmp_path / "review.csv"
+    review.write_text(
+        "item_id,citation_id,supported,reason,reviewer,reviewed_at\n"
+        "item-1,S1,yes,直接支持,Alice,2026-08-14T12:00:00+08:00\n"
+        "item-1,S2,no,证据不支持,Alice,2026-08-14T12:01:00+08:00\n",
+        encoding="utf-8",
+    )
+    complete = _human_review(items, [review])
+
+    assert pending["status"] == "pending_human_review"
+    assert pending["rate"] is None
+    assert complete["status"] == "complete"
+    assert complete["review_coverage"] == 1.0
+    assert complete["rate"] == 0.5
