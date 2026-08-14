@@ -1,11 +1,12 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from app.api.annotation import page_router as annotation_page_router
 from app.api.annotation import router as annotation_router
 from app.api.auth import router as auth_router
+from app.api.dependencies import enforce_ip_rate_limit
 from app.api.health import router as health_router
 from app.api.retrieval import router as retrieval_router
 from app.api.runs import router as runs_router
@@ -31,13 +32,14 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     app = FastAPI(title="WorkPilot API", version="0.1.0", lifespan=lifespan)
     app.add_middleware(TraceIdMiddleware)
-    app.include_router(annotation_page_router)
-    app.include_router(annotation_router)
-    app.include_router(auth_router)
+    rate_limited = [Depends(enforce_ip_rate_limit)]
+    app.include_router(annotation_page_router, dependencies=rate_limited)
+    app.include_router(annotation_router, dependencies=rate_limited)
+    app.include_router(auth_router, dependencies=rate_limited)
     app.include_router(health_router)
-    app.include_router(retrieval_router)
-    app.include_router(runs_router)
-    app.include_router(sources_router)
+    app.include_router(retrieval_router, dependencies=rate_limited)
+    app.include_router(runs_router, dependencies=rate_limited)
+    app.include_router(sources_router, dependencies=rate_limited)
     return app
 
 

@@ -119,7 +119,11 @@ async def test_production_session_cookie_is_secure(db_session: AsyncSession) -> 
     client, _ = _client(
         db_session,
         RecordingQueue(),
-        settings=Settings(app_env="production", session_cookie_secure=None),
+        settings=Settings(
+            app_env="production",
+            session_cookie_secure=None,
+            ip_rate_limit_enabled=False,
+        ),
     )
     async with client:
         response = await client.post("/api/v1/runs", json={"query": "问题"})
@@ -282,3 +286,23 @@ async def test_forged_or_expired_cookie_rotates_to_new_session(
 
     assert client.cookies["workpilot_session"] != first_cookie
     assert second_session_id != first_session_id
+
+
+async def test_demo_session_question_quota_is_atomic(db_session: AsyncSession) -> None:
+    queue = RecordingQueue()
+    client, _ = _client(
+        db_session,
+        queue,
+        settings=Settings(app_env="test", demo_session_question_limit=2),
+    )
+    async with client:
+        assert (await client.post("/api/v1/runs", json={"query": "一"})).status_code == 202
+        assert (await client.post("/api/v1/runs", json={"query": "二"})).status_code == 202
+        exhausted = await client.post("/api/v1/runs", json={"query": "三"})
+
+    assert exhausted.status_code == 429
+    assert exhausted.json()["detail"] == "本 session 的提问额度已用尽"
+    assert len(queue.enqueued) == 2
+    assert (
+        await db_session.execute(text("SELECT question_count FROM demo_sessions"))
+    ).scalar_one() == 2

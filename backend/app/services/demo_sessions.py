@@ -82,3 +82,31 @@ async def resolve_demo_session(
     )
     await session.commit()
     return ResolvedDemoSession(session=DemoSession(**row), cookie_token=raw_token)
+
+
+async def consume_question_quota(
+    session: AsyncSession,
+    *,
+    demo_session_id: UUID,
+    limit: int,
+) -> bool:
+    """原子消费一次提问额度；并发请求也不会超过 limit。"""
+
+    consumed = (
+        await session.execute(
+            text(
+                """
+                UPDATE demo_sessions
+                SET question_count = question_count + 1,
+                    last_seen_at = now()
+                WHERE id = :id
+                  AND revoked_at IS NULL
+                  AND expires_at > now()
+                  AND question_count < :limit
+                RETURNING question_count
+                """
+            ),
+            {"id": demo_session_id, "limit": limit},
+        )
+    ).scalar_one_or_none()
+    return consumed is not None

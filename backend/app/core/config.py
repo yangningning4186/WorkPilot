@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     admin_cookie_name: str = "workpilot_admin_session"
     admin_session_ttl_s: int = Field(default=8 * 60 * 60, ge=300, le=7 * 24 * 60 * 60)
     demo_admin_password_hash: str = ""
+    ip_rate_limit_enabled: bool | None = None
+    ip_rate_limit_per_minute: int = Field(default=20, ge=1, le=10_000)
+    ip_rate_limit_burst: int = Field(default=5, ge=1, le=1_000)
+    demo_session_question_limit: int = Field(default=20, ge=1, le=10_000)
     daily_cost_limit_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
     cost_budget_timezone: str = "Asia/Shanghai"
     cost_reservation_ttl_s: int = Field(default=900, ge=60, le=7200)

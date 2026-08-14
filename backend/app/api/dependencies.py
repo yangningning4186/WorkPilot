@@ -15,6 +15,7 @@ from app.llm.gateway import ModelGateway, build_model_gateway
 from app.services.admin_sessions import AdminSessionStore, RedisAdminSessionStore
 from app.services.demo_sessions import DemoSession, resolve_demo_session
 from app.services.model_budget import build_cost_guard
+from app.services.rate_limit import IpRateLimiter, RedisIpRateLimiter
 
 
 def get_run_bus() -> RunBus:
@@ -23,6 +24,10 @@ def get_run_bus() -> RunBus:
 
 def get_admin_session_store() -> AdminSessionStore:
     return RedisAdminSessionStore(redis_client)
+
+
+def get_ip_rate_limiter() -> IpRateLimiter:
+    return RedisIpRateLimiter(redis_client)
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -79,6 +84,34 @@ async def require_admin_session(
         raise HTTPException(status_code=503, detail="admin 会话服务不可用") from error
     if not valid:
         raise HTTPException(status_code=401, detail="admin 会话无效或已过期")
+
+
+async def enforce_ip_rate_limit(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+    limiter: Annotated[IpRateLimiter, Depends(get_ip_rate_limiter)],
+) -> None:
+    """生产默认开启；开发/测试可显式开启，避免本地测试互相污染桶状态。"""
+
+    configured = settings.ip_rate_limit_enabled
+    enabled = settings.app_env == "production" if configured is None else configured
+    if not enabled:
+        return
+    ip = request.client.host if request.client is not None else "unknown"
+    try:
+        decision = await limiter.consume(
+            ip,
+            rate_per_minute=settings.ip_rate_limit_per_minute,
+            burst=settings.ip_rate_limit_burst,
+        )
+    except RedisError as error:
+        raise HTTPException(status_code=503, detail="请求限流服务不可用") from error
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="请求过于频繁, 请稍后重试",
+            headers={"Retry-After": str(decision.retry_after_s)},
+        )
 
 
 async def get_model_gateway(

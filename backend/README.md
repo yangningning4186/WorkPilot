@@ -44,6 +44,13 @@ curl -c /tmp/workpilot-admin.cookie \
 维护接口的后续 curl 请求使用 `-b /tmp/workpilot-admin.cookie`。未配置 hash 时 admin 登录
 fail-closed 返回 `503`，不会在开发环境隐式放行。
 
+生产环境默认启用两层滥用防护：Redis 原子 token bucket 按 `request.client.host` 限制每 IP
+每分钟 20 次、突发 5 次；PostgreSQL 条件更新限制每个 30 分钟 demo session 最多提问 20 次。
+Redis 不可用时请求层 fail-closed 返回 `503`，桶耗尽返回带 `Retry-After` 的 `429`；session
+配额在并发请求下也不会穿透。开发/测试默认不启用 IP 限流，可用
+`IP_RATE_LIMIT_ENABLED=true` 显式打开。反向代理部署时只应信任已知代理地址，让 Uvicorn
+校正 `request.client`，不要直接信任客户端可伪造的 `X-Forwarded-For`。
+
 ## local_dir → PDF/Markdown → dense 最小链路
 
 模型网关统一提供 `complete`、`stream`、`embed`，当前 provider 使用

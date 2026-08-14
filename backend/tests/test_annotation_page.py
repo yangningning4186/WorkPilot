@@ -25,7 +25,9 @@ async def test_local_annotation_page_and_assets_are_available() -> None:
 async def test_annotation_page_is_disabled_in_production() -> None:
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: Settings(
-        app_env="production", annotation_tool_enabled=True
+        app_env="production",
+        annotation_tool_enabled=True,
+        ip_rate_limit_enabled=False,
     )
     app.dependency_overrides[require_admin_session] = lambda: None
     transport = httpx.ASGITransport(app=app)

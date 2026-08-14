@@ -12,12 +12,12 @@ from app.api.dependencies import (
     get_run_queue_dependency,
     get_session_factory,
 )
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
 from app.core.queue import RunQueue
 from app.core.run_bus import RunBus
 from app.schemas.runs import CreateRunRequest, CreateRunResponse, RunStatusResponse
-from app.services.demo_sessions import DemoSession
+from app.services.demo_sessions import DemoSession, consume_question_quota
 from app.services.run_stream import parse_last_event_id, stream_run_events
 from app.services.runs import (
     RunNotFoundError,
@@ -48,10 +48,10 @@ async def create_answer_run(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     queue: Annotated[RunQueue, Depends(get_run_queue_dependency)],
     demo_session: Annotated[DemoSession, Depends(get_demo_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> CreateRunResponse:
     """创建 run 并入队, 立即返回。执行在 worker 进程, 不依附本次 HTTP 连接。"""
 
-    settings = get_settings()
     try:
         conversation_id = await ensure_conversation(
             session,
@@ -61,6 +61,12 @@ async def create_answer_run(
         )
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    if not await consume_question_quota(
+        session,
+        demo_session_id=demo_session.id,
+        limit=settings.demo_session_question_limit,
+    ):
+        raise HTTPException(status_code=429, detail="本 session 的提问额度已用尽")
 
     run = await create_run(
         session,
