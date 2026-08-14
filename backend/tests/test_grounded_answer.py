@@ -362,6 +362,96 @@ async def test_lexical_search_matches_exact_identifier(
     assert hits[0].lexical_score is not None
 
 
+async def test_lexical_search_rejects_unknown_mode(db_session: AsyncSession) -> None:
+    with pytest.raises(ValueError, match="未知的 lexical_mode"):
+        await lexical_search(db_session, query="任意查询", mode="bm25")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("ranked_mode", ["ts_rank", "ts_rank_cd"])
+async def test_ranked_modes_beat_coverage_on_english_stopword_query(
+    db_session: AsyncSession,
+    tmp_path: Path,
+    ranked_mode: str,
+) -> None:
+    """coverage 下英文停用词会淹没判别词; 两种 ts_rank 都靠 english 停用词表修掉。"""
+    library = tmp_path / "library"
+    library.mkdir()
+    (library / "relevant.md").write_text(
+        "# Serving\n\nPagedAttention manages the KV cache of vLLM in paged blocks.\n",
+        encoding="utf-8",
+    )
+    (library / "noise.md").write_text(
+        "# General\n\nHow does this work, and how is it done in practice? "
+        "This is how we work on it.\n",
+        encoding="utf-8",
+    )
+    (library / "chinese.md").write_text(
+        "# 推理\n\n分页注意力把显存按块管理, 是推理部署的关键。\n",
+        encoding="utf-8",
+    )
+    gateway = ModelGateway(DeterministicProvider(), embedding_dimensions=1024)
+    for name in ("relevant.md", "noise.md", "chinese.md"):
+        await ingest_markdown_file(db_session, gateway, path=Path(name), library_root=library)
+
+    query = "How does PagedAttention work in vLLM?"
+    coverage = await lexical_search(db_session, query=query, top_k=5, mode="coverage")
+    ranked = await lexical_search(db_session, query=query, top_k=5, mode=ranked_mode)
+
+    # 停用词把只含 how/does/work/in 的噪声文档顶到第一, 这是换掉 coverage 的原因。
+    assert coverage[0].source_uri == "noise.md"
+    assert ranked[0].source_uri == "relevant.md"
+
+    # bigram 列保证中文不因换打分而退化。
+    chinese = await lexical_search(db_session, query="推理部署要点", top_k=5, mode=ranked_mode)
+    assert chinese[0].source_uri == "chinese.md"
+
+
+@pytest.mark.integration
+async def test_ingest_writes_tsvectors_matching_migration_backfill(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    """写入路径与迁移 0009 的回填必须同源, 否则存量与新增语料打分口径会悄悄分叉。"""
+    library = tmp_path / "library"
+    library.mkdir()
+    (library / "mixed.md").write_text(
+        "# 混排 Mixed\n\n## 章节 Section\n\nPagedAttention 把 KV cache 按块管理。\n",
+        encoding="utf-8",
+    )
+    gateway = ModelGateway(DeterministicProvider(), embedding_dimensions=1024)
+    await ingest_markdown_file(db_session, gateway, path=Path("mixed.md"), library_root=library)
+
+    drift = (
+        await db_session.execute(
+            text(
+                """
+                SELECT count(*) AS drifted
+                FROM chunks c
+                JOIN document_versions v ON v.id=c.version_id
+                JOIN documents d ON d.id=v.document_id
+                WHERE c.tsv_en IS DISTINCT FROM (
+                        setweight(to_tsvector('english', lexical_en_text(d.title)), 'A') ||
+                        setweight(to_tsvector('english', lexical_en_text(
+                            array_to_string(COALESCE(c.heading_path, ARRAY[]::text[]), ' ')
+                        )), 'B') ||
+                        setweight(to_tsvector('english', lexical_en_text(c.content)), 'D')
+                      )
+                   OR c.tsv_zh IS DISTINCT FROM (
+                        setweight(to_tsvector('simple', lexical_zh_bigrams(d.title)), 'A') ||
+                        setweight(to_tsvector('simple', lexical_zh_bigrams(
+                            array_to_string(COALESCE(c.heading_path, ARRAY[]::text[]), ' ')
+                        )), 'B') ||
+                        setweight(to_tsvector('simple', lexical_zh_bigrams(c.content)), 'D')
+                      )
+                """
+            )
+        )
+    ).scalar_one()
+
+    assert drift == 0
+
+
 @pytest.mark.integration
 async def test_retrieval_generation_and_block_citation_chain(
     db_session: AsyncSession,

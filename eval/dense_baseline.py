@@ -21,7 +21,7 @@ from app.llm.audit import SqlLlmCallAudit
 from app.llm.gateway import ModelGateway, build_model_gateway
 from app.retrieval.dense import DenseSearchHit, dense_search, multi_query_dense_search
 from app.retrieval.fusion import reciprocal_rank_fusion
-from app.retrieval.lexical import lexical_search
+from app.retrieval.lexical import LEXICAL_MODES, lexical_search
 from app.services.query_decomposition import plan_retrieval_queries
 from app.services.reranker import rerank_candidates
 from eval.mapping import GoldSpan, RetrievedChunk
@@ -68,6 +68,7 @@ async def run_dense_baseline(
     output_root: Path,
     strategy: str = "dense-only",
     rerank_candidate_text_mode: str | None = None,
+    lexical_mode: str | None = None,
     settings: Settings | None = None,
 ) -> Path:
     settings = settings or Settings()
@@ -75,6 +76,7 @@ async def run_dense_baseline(
         raise ValueError("必须满足 1 <= top_k <= diagnostic_k <= 50")
     supported_strategies = {
         "dense-only",
+        "lexical-only",
         "multi-query-dense",
         "dense-rerank",
         "dense-lexical-rrf",
@@ -83,6 +85,7 @@ async def run_dense_baseline(
     if strategy not in supported_strategies:
         raise ValueError(f"不支持的检索策略: {strategy}")
     text_mode = rerank_candidate_text_mode or settings.rerank_candidate_text_mode
+    lex_mode = lexical_mode or settings.lexical_mode
     config: dict[str, object] = {
         "strategy": strategy,
         "top_k": top_k,
@@ -101,6 +104,7 @@ async def run_dense_baseline(
         "reranker_base_url": settings.reranker_base_url,
         "reranker_model": settings.reranker_model,
         "rerank_candidate_text_mode": text_mode,
+        "lexical_mode": lex_mode,
         "rrf_k": settings.rrf_k,
     }
     config_hash = hashlib.sha256(
@@ -133,6 +137,7 @@ async def run_dense_baseline(
                 strategy=strategy,
                 settings=settings,
                 text_mode=text_mode,
+                lex_mode=lex_mode,
             )
             refusal = analyze_refusal(
                 [(item.top_score, item.answerable) for item in results],
@@ -302,6 +307,7 @@ async def _evaluate_items(
     strategy: str,
     settings: Settings,
     text_mode: str,
+    lex_mode: str,
 ) -> list[ItemResult]:
     results: list[ItemResult] = []
     for item in items:
@@ -315,6 +321,7 @@ async def _evaluate_items(
             diagnostic_k=diagnostic_k,
             settings=settings,
             text_mode=text_mode,
+            lex_mode=lex_mode,
         )
         latency_ms = max(0, round((time.monotonic() - started) * 1000))
         retrieved = [_retrieved_chunk(hit) for hit in hits]
@@ -374,9 +381,13 @@ async def _retrieve_with_strategy(
     diagnostic_k: int,
     settings: Settings,
     text_mode: str,
+    lex_mode: str,
 ) -> list[DenseSearchHit]:
     if strategy == "dense-only":
         return await dense_search(session, gateway, query=query, top_k=diagnostic_k)
+    if strategy == "lexical-only":
+        # 单臂对照: RRF 里 dense 会兜住词法的失效, 只看融合结果无法归因词法打分的好坏。
+        return await lexical_search(session, query=query, top_k=diagnostic_k, mode=lex_mode)
     if strategy == "multi-query-dense":
         plan = await plan_retrieval_queries(
             gateway,
@@ -413,7 +424,9 @@ async def _retrieve_with_strategy(
         return result.hits
     if strategy == "dense-lexical-rrf":
         dense_hits = await dense_search(session, gateway, query=query, top_k=diagnostic_k)
-        lexical_hits = await lexical_search(session, query=query, top_k=diagnostic_k)
+        lexical_hits = await lexical_search(
+            session, query=query, top_k=diagnostic_k, mode=lex_mode
+        )
         return reciprocal_rank_fusion(
             [dense_hits, lexical_hits],
             top_k=diagnostic_k,
@@ -421,7 +434,9 @@ async def _retrieve_with_strategy(
         )
     if strategy == "dense-lexical-rrf-rerank":
         dense_hits = await dense_search(session, gateway, query=query, top_k=diagnostic_k)
-        lexical_hits = await lexical_search(session, query=query, top_k=diagnostic_k)
+        lexical_hits = await lexical_search(
+            session, query=query, top_k=diagnostic_k, mode=lex_mode
+        )
         candidates = reciprocal_rank_fusion(
             [dense_hits, lexical_hits],
             top_k=diagnostic_k,
@@ -919,6 +934,7 @@ def _parse_args() -> argparse.Namespace:
         "--strategy",
         choices=[
             "dense-only",
+            "lexical-only",
             "multi-query-dense",
             "dense-rerank",
             "dense-lexical-rrf",
@@ -931,6 +947,12 @@ def _parse_args() -> argparse.Namespace:
         choices=["title_heading_content", "heading_content", "content"],
         default=None,
         help="送给 cross-encoder 的候选文本构造方式, 默认取配置值",
+    )
+    parser.add_argument(
+        "--lexical-mode",
+        choices=list(LEXICAL_MODES),
+        default=None,
+        help="词法打分方式: coverage 为覆盖率, ts_rank_cd 为分语言 tsvector, 默认取配置值",
     )
     parser.add_argument(
         "--output-dir", type=Path, default=Path("eval/outputs/dense-baseline")
@@ -953,6 +975,7 @@ def main() -> None:
             output_root=args.output_dir,
             strategy=args.strategy,
             rerank_candidate_text_mode=args.rerank_candidate_text_mode,
+            lexical_mode=args.lexical_mode,
         )
     )
     print(report)

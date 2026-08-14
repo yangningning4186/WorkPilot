@@ -118,6 +118,7 @@ async def answer(
             rerank_max_candidate_chars=settings.rerank_max_candidate_chars,
             rerank_candidate_text_mode=settings.rerank_candidate_text_mode,
             lexical_rrf_enabled=settings.lexical_rrf_enabled,
+            lexical_mode=settings.lexical_mode,
             rrf_k=settings.rrf_k,
             max_evidence_chars=settings.answer_max_evidence_chars,
             max_tokens=settings.answer_max_tokens,

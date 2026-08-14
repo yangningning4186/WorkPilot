@@ -75,6 +75,7 @@ async def run_refusal_baseline(
         "embedding_revision": settings.embedding_revision,
         "chat_model": settings.tier_main_model,
         "rrf_k": settings.rrf_k,
+        "lexical_mode": settings.lexical_mode,
         "reranker_base_url": settings.reranker_base_url,
         "reranker_model": settings.reranker_model,
     }
@@ -157,7 +158,9 @@ async def _evaluate_item(
     dense_hits = await dense_search(session, gateway, query=question, top_k=candidate_k)
     hits: list[DenseSearchHit] = dense_hits
     if strategy in {"dense-lexical-rrf", "dense-lexical-rrf-rerank"}:
-        lexical_hits = await lexical_search(session, query=question, top_k=candidate_k)
+        lexical_hits = await lexical_search(
+            session, query=question, top_k=candidate_k, mode=settings.lexical_mode
+        )
         hits = reciprocal_rank_fusion(
             [dense_hits, lexical_hits], top_k=candidate_k, rrf_k=settings.rrf_k
         )

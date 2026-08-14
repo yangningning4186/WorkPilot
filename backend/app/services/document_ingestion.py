@@ -203,13 +203,27 @@ async def persist_parsed_document(
                             (id, version_id, strategy, chunk_index, content, content_tokens,
                              block_start_idx, block_end_idx, char_start, char_end,
                              dominant_block_type, heading_path, embedding, doc_type,
-                             embedding_model, embedding_provider, embedding_revision)
+                             embedding_model, embedding_provider, embedding_revision,
+                             tsv_en, tsv_zh)
                         VALUES
                             (:id, :version_id, 'heading', :chunk_index, :content,
                              :content_tokens, :block_start_idx, :block_end_idx, :char_start,
                              :char_end, :dominant_block_type, :heading_path,
                              CAST(:embedding AS vector), :doc_type, :embedding_model,
-                             :embedding_provider, :embedding_revision)
+                             :embedding_provider, :embedding_revision,
+                             -- 词法检索的分语言 tsvector, 口径必须与迁移 0009 的回填一致,
+                             -- 否则存量与新增语料的打分不同源。title 在 documents 上,
+                             -- 跨表所以做不成 generated column, 只能在写入侧显式拼。
+                             setweight(to_tsvector('english', lexical_en_text(:title)), 'A') ||
+                             setweight(
+                                 to_tsvector('english', lexical_en_text(:heading_text)), 'B'
+                             ) ||
+                             setweight(to_tsvector('english', lexical_en_text(:content)), 'D'),
+                             setweight(to_tsvector('simple', lexical_zh_bigrams(:title)), 'A') ||
+                             setweight(
+                                 to_tsvector('simple', lexical_zh_bigrams(:heading_text)), 'B'
+                             ) ||
+                             setweight(to_tsvector('simple', lexical_zh_bigrams(:content)), 'D'))
                         """
                     ),
                     {
@@ -224,6 +238,9 @@ async def persist_parsed_document(
                         "char_end": chunk.char_end,
                         "dominant_block_type": chunk.dominant_block_type,
                         "heading_path": list(chunk.heading_path) or None,
+                        # lexical_* 函数是 STRICT 的, 传 NULL 会让整列 tsvector 变 NULL。
+                        "title": title,
+                        "heading_text": " ".join(chunk.heading_path),
                         "embedding": _vector_literal(embedding),
                         "doc_type": doc_type,
                         "embedding_model": gateway.embedding_model,

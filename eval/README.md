@@ -37,6 +37,18 @@ macro-F1 最优阈值。跑批会拒绝 stale span、无 gold span 的可答题�
 
 # 完全本地的 dense + lexical + RRF
 --strategy dense-lexical-rrf
+
+# 只跑词法单臂。RRF 里 dense 会兜住词法的失效, 只看融合结果无法归因词法打分的好坏
+--strategy lexical-only
+```
+
+词法打分方式是独立的单变量开关，进 `config_hash`：
+
+```bash
+# ts_rank(默认): 分语言 tsvector, english 配置负责停用词与词干, 中文走 bigram
+# coverage:      命中词数 / 总词数, 无停用词表、无 IDF、子串匹配(旧默认)
+# ts_rank_cd:    同上但用 cover density —— 对中文 bigram 有害, 保留为反例, 见台账 E2
+--lexical-mode ts_rank
 ```
 
 远端策略运行前必须确认数据外发范围与目标端点。正式单变量对照应保持 dataset、Top-K、

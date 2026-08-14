@@ -95,6 +95,7 @@ class Settings(BaseSettings):
         "title_heading_content"
     )
     lexical_rrf_enabled: bool = True
+    lexical_mode: Literal["ts_rank", "coverage", "ts_rank_cd"] = "ts_rank"
     rrf_k: int = Field(default=60, ge=1, le=1000)
     answer_max_evidence_chars: int = Field(default=12000, ge=1000, le=100000)
     answer_max_tokens: int = Field(default=1200, ge=64, le=8192)

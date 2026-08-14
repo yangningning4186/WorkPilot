@@ -99,6 +99,7 @@ async def answer_with_citations(
     rerank_max_candidate_chars: int = 1200,
     rerank_candidate_text_mode: str = "title_heading_content",
     lexical_rrf_enabled: bool = True,
+    lexical_mode: str = "ts_rank",
     rrf_k: int = 60,
     max_evidence_chars: int = 12000,
     max_tokens: int = 1200,
@@ -119,7 +120,9 @@ async def answer_with_citations(
     )
     lexical_hits: list[DenseSearchHit] = []
     if lexical_rrf_enabled:
-        lexical_hits = await lexical_search(session, query=query, top_k=candidate_k)
+        lexical_hits = await lexical_search(
+            session, query=query, top_k=candidate_k, mode=lexical_mode
+        )
         candidate_hits = reciprocal_rank_fusion(
             [candidate_hits, lexical_hits],
             top_k=candidate_k,

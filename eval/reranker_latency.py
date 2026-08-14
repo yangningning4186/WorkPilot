@@ -160,7 +160,9 @@ async def _build_candidates(
     settings: Settings,
 ) -> list[DenseSearchHit]:
     dense_hits = await dense_search(session, gateway, query=query, top_k=top_k)
-    lexical_hits = await lexical_search(session, query=query, top_k=top_k)
+    lexical_hits = await lexical_search(
+        session, query=query, top_k=top_k, mode=settings.lexical_mode
+    )
     return reciprocal_rank_fusion([dense_hits, lexical_hits], top_k=top_k, rrf_k=settings.rrf_k)
 
 
