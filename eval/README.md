@@ -55,9 +55,10 @@ macro-F1 最优阈值。跑批会拒绝 stale span、无 gold span 的可答题�
 
 | 名称 | origin | 条数 | 用途 |
 |---|---|---:|---|
-| `core-dev` | human | 26 | 作者亲手标注，唯一的 human 级证据 |
+| `core-dev` | human | 20 | 作者亲手标注的中文与跨语言问题 |
+| `core-dev` | synthetic | 6 | hard-negative 候选，不计入 M0 正式 40 条 |
 | `multihop-test-v1` | synthetic | 8 | PDF multi-hop 留出集 |
-| `english-dev` | synthetic | 20 | **纯英文**，补全中文题集留下的英文检索盲区（台账 E3） |
+| `english-dev` | human | 20 | AI 构造候选后由 owner 逐条复核升级；补全英文检索盲区（台账 E3） |
 | `dense-title-smoke` | synthetic | 15 | 只验工程链路，不作质量结论 |
 
 ```bash
@@ -66,6 +67,31 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.seed_english_dev
 
 `english-dev` 的两条有效性前提由种子脚本强制，违反即拒绝入库：问题不含任何 CJK 字符；
 问题不与 gold 原文连续重合 4 个词（抄原文会让词法臂靠字面重合命中，测的就不是检索能力）。
+种子脚本仍只写入 `synthetic` 候选；不能用脚本自动冒充人工标注。当前 human 身份来自 owner
+逐条复核与明确确认，provenance 固化在 `eval/suites/m0-core-40.json`。
+
+## M0 40 条正式套件与生成规则轨
+
+`m0-core-40` 固定组合 `core-dev` 20 条和 `english-dev` 20 条，不复制底层 gold；运行前会校验
+数据集条数、14/8/10/8 类别分布、origin、stale span 与可答题 gold 完整性。
+
+```bash
+# 生成 + 拒答 + citation_validity + constraint_pass；M0 固定 dense-only
+PYTHONPATH=backend backend/.venv/bin/python -m eval.generation_baseline \
+  --dataset core-dev --origin human --label M0-formal-generation-core --top-k 5
+
+# 两个 dataset 各跑一次后，合并检索与生成 report.json
+PYTHONPATH=backend backend/.venv/bin/python -m eval.m0_report \
+  --retrieval-report /path/to/core-retrieval.json \
+  --retrieval-report /path/to/english-retrieval.json \
+  --generation-report /path/to/core-generation.json \
+  --generation-report /path/to/english-generation.json \
+  --output-dir eval/outputs/m0-baseline/<run>
+```
+
+`citation_validity` 只校验引用格式、记录映射、block/version/document、字符区间和 quote 原文；
+语义 `citation_accuracy` 必须填写 `citation-review.csv` 的 `supported`、`reason`、`reviewer`、
+`reviewed_at` 后重新合并报告，未覆盖全部实际引用时保持 `pending_human_review`。
 
 **动词法检索、分词或查询改写的实验，必须同时报中文集与英文集**——
 E2 的教训是全中文题集会把英文失效整个藏起来。

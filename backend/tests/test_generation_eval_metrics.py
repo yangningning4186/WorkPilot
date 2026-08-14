@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
+from eval.citation_review import cited_claims
 from eval.m0_report import _human_review
 from eval.metrics.generation import (
     CitationSource,
@@ -124,3 +125,14 @@ def test_human_citation_accuracy_requires_attributed_complete_review(tmp_path: P
     assert complete["status"] == "complete"
     assert complete["review_coverage"] == 1.0
     assert complete["rate"] == 0.5
+
+
+def test_citation_review_extracts_only_claims_using_the_label() -> None:
+    answer = (
+        "Repository https://example.com/repo is required.[S1] Second claim.[S2]\n"
+        "第三个结论。[S1][S2]"
+    )
+
+    assert cited_claims(answer, "S1") == (
+        "Repository https://example.com/repo is required.[S1]\n第三个结论。[S1][S2]"
+    )

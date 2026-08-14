@@ -107,6 +107,26 @@ def build_m0_report(
                 bool(item["constraint_pass"]["passed"]) for item in completed
             ),
             "total": len(completed),
+            "answerable_rate": _rate(
+                sum(
+                    bool(item["constraint_pass"]["passed"])
+                    for item in answerable_generation
+                ),
+                len(answerable_generation),
+            ),
+            "answerable_passed": sum(
+                bool(item["constraint_pass"]["passed"])
+                for item in answerable_generation
+            ),
+            "answerable_total": len(answerable_generation),
+            "non_refusal_rate": _rate(
+                sum(bool(item["constraint_pass"]["passed"]) for item in non_refusals),
+                len(non_refusals),
+            ),
+            "non_refusal_passed": sum(
+                bool(item["constraint_pass"]["passed"]) for item in non_refusals
+            ),
+            "non_refusal_total": len(non_refusals),
         },
         "citation_gold_alignment": {
             "rate": _rate(aligned_total, citation_total),
@@ -129,6 +149,7 @@ def build_m0_report(
         "generated_at": datetime.now(UTC).isoformat(),
         "item_count": suite.item_count,
         "dataset_counts": {item.name: item.item_count for item in suite.datasets},
+        "provenance": suite.provenance,
         "category_counts": suite.category_counts,
         "git_shas": git_shas,
         "run_ids": {
@@ -283,9 +304,11 @@ def markdown_report(payload: dict[str, object]) -> str:
 | 检索分数拒答 | 当前阈值 0.35 macro-F1 | {_decimal(configured.get("macro_f1") if isinstance(configured, dict) else None)} |
 | 检索分数拒答 | dev 最优 macro-F1 | {_decimal(best.get("macro_f1") if isinstance(best, dict) else None)} |
 | 端到端拒答 | 总准确率 | {_percent(refusal["accuracy"])} ({refusal["correct"]}/{refusal["total"]}) |
+| 端到端拒答 | 可答题正常回答率 | {_percent(refusal["answerable_answer_rate"])} |
 | 端到端拒答 | 不可答正确拒答率 | {_percent(refusal["unanswerable_correct_refusal_rate"])} |
 | 引用规则 | citation_validity（非拒答） | {_percent(validity["non_refusal_rate"])} ({validity["non_refusal_valid"]}/{validity["non_refusal_total"]}) |
-| 答案规则 | constraint_pass | {_percent(constraints["rate"])} ({constraints["passed"]}/{constraints["total"]}) |
+| 答案规则 | constraint_pass（可答题） | {_percent(constraints["answerable_rate"])} ({constraints["answerable_passed"]}/{constraints["answerable_total"]}) |
+| 答案规则 | constraint_pass（实际非拒答） | {_percent(constraints["non_refusal_rate"])} ({constraints["non_refusal_passed"]}/{constraints["non_refusal_total"]}) |
 | 引用代理 | gold span alignment | {_percent(alignment["rate"])} ({alignment["aligned"]}/{alignment["total"]}) |
 | 人工引用 | citation_accuracy | {_human_accuracy(accuracy)} |
 

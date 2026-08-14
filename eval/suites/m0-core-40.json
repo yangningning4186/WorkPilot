@@ -7,6 +7,18 @@
     {"name": "core-dev", "item_count": 20},
     {"name": "english-dev", "item_count": 20}
   ],
+  "provenance": {
+    "core-dev": {
+      "reviewer": "owner",
+      "reviewed_at": "2026-08-14",
+      "note": "作者通过 annotation 工具逐条创建或复核。"
+    },
+    "english-dev": {
+      "reviewer": "owner",
+      "reviewed_at": "2026-08-14",
+      "note": "AI 构造候选后由 owner 逐条人工复核，并明确确认可升级为 human。"
+    }
+  },
   "category_counts": {
     "single_hop": 14,
     "multi_hop": 8,

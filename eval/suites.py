@@ -21,6 +21,7 @@ class EvalSuite:
     origin: str
     item_count: int
     datasets: tuple[SuiteDataset, ...]
+    provenance: dict[str, dict[str, str]]
     category_counts: dict[str, int]
 
 
@@ -36,6 +37,10 @@ def load_suite(path: Path) -> EvalSuite:
         origin=str(payload["origin"]),
         item_count=int(payload["item_count"]),
         datasets=datasets,
+        provenance={
+            str(dataset): {str(key): str(value) for key, value in review.items()}
+            for dataset, review in payload["provenance"].items()
+        },
         category_counts={
             str(key): int(value) for key, value in payload["category_counts"].items()
         },
@@ -47,6 +52,12 @@ def load_suite(path: Path) -> EvalSuite:
         raise ValueError("suite 的 dataset 条数之和与 item_count 不一致")
     if sum(suite.category_counts.values()) != suite.item_count:
         raise ValueError("suite 的 category_counts 与 item_count 不一致")
+    dataset_names = {item.name for item in suite.datasets}
+    if set(suite.provenance) != dataset_names:
+        raise ValueError("suite 的 provenance 必须覆盖每个 dataset")
+    for dataset, review in suite.provenance.items():
+        if not review.get("reviewer") or not review.get("reviewed_at"):
+            raise ValueError(f"suite 的人工 provenance 不完整: {dataset}")
     return suite
 
 
