@@ -67,6 +67,7 @@ async def run_dense_baseline(
     alpha: float,
     output_root: Path,
     strategy: str = "dense-only",
+    rerank_candidate_text_mode: str | None = None,
     settings: Settings | None = None,
 ) -> Path:
     settings = settings or Settings()
@@ -81,6 +82,7 @@ async def run_dense_baseline(
     }
     if strategy not in supported_strategies:
         raise ValueError(f"不支持的检索策略: {strategy}")
+    text_mode = rerank_candidate_text_mode or settings.rerank_candidate_text_mode
     config: dict[str, object] = {
         "strategy": strategy,
         "top_k": top_k,
@@ -98,6 +100,7 @@ async def run_dense_baseline(
         "query_decomposition_max_subqueries": settings.query_decomposition_max_subqueries,
         "reranker_base_url": settings.reranker_base_url,
         "reranker_model": settings.reranker_model,
+        "rerank_candidate_text_mode": text_mode,
         "rrf_k": settings.rrf_k,
     }
     config_hash = hashlib.sha256(
@@ -129,6 +132,7 @@ async def run_dense_baseline(
                 alpha=alpha,
                 strategy=strategy,
                 settings=settings,
+                text_mode=text_mode,
             )
             refusal = analyze_refusal(
                 [(item.top_score, item.answerable) for item in results],
@@ -297,6 +301,7 @@ async def _evaluate_items(
     alpha: float,
     strategy: str,
     settings: Settings,
+    text_mode: str,
 ) -> list[ItemResult]:
     results: list[ItemResult] = []
     for item in items:
@@ -309,6 +314,7 @@ async def _evaluate_items(
             top_k=top_k,
             diagnostic_k=diagnostic_k,
             settings=settings,
+            text_mode=text_mode,
         )
         latency_ms = max(0, round((time.monotonic() - started) * 1000))
         retrieved = [_retrieved_chunk(hit) for hit in hits]
@@ -367,6 +373,7 @@ async def _retrieve_with_strategy(
     top_k: int,
     diagnostic_k: int,
     settings: Settings,
+    text_mode: str,
 ) -> list[DenseSearchHit]:
     if strategy == "dense-only":
         return await dense_search(session, gateway, query=query, top_k=diagnostic_k)
@@ -396,6 +403,7 @@ async def _retrieve_with_strategy(
             model=settings.reranker_model,
             timeout_s=settings.reranker_timeout_s,
             max_candidate_chars=settings.rerank_max_candidate_chars,
+            candidate_text_mode=text_mode,
         )
         if not result.applied:
             raise RuntimeError(result.reason)
@@ -426,6 +434,7 @@ async def _retrieve_with_strategy(
             model=settings.reranker_model,
             timeout_s=settings.reranker_timeout_s,
             max_candidate_chars=settings.rerank_max_candidate_chars,
+            candidate_text_mode=text_mode,
         )
         if not result.applied:
             raise RuntimeError(result.reason)
@@ -912,6 +921,12 @@ def _parse_args() -> argparse.Namespace:
         default="dense-only",
     )
     parser.add_argument(
+        "--rerank-candidate-text-mode",
+        choices=["title_heading_content", "heading_content", "content"],
+        default=None,
+        help="送给 cross-encoder 的候选文本构造方式, 默认取配置值",
+    )
+    parser.add_argument(
         "--output-dir", type=Path, default=Path("eval/outputs/dense-baseline")
     )
     return parser.parse_args()
@@ -931,6 +946,7 @@ def main() -> None:
             alpha=args.alpha,
             output_root=args.output_dir,
             strategy=args.strategy,
+            rerank_candidate_text_mode=args.rerank_candidate_text_mode,
         )
     )
     print(report)

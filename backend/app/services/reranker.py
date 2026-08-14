@@ -4,6 +4,10 @@ import httpx
 
 from app.retrieval.dense import DenseSearchHit
 
+# 送给 cross-encoder 的候选文本构造方式。title 前置会让标题与问题字面吻合的 chunk
+# 压过正文真正相关的 chunk, 见台账 D5; 因此做成可切换的单变量。第一项是当前默认值。
+CANDIDATE_TEXT_MODES = ("title_heading_content", "heading_content", "content")
+
 
 class RerankResponseError(ValueError):
     pass
@@ -28,6 +32,7 @@ async def rerank_candidates(
     model: str,
     timeout_s: float = 10.0,
     max_candidate_chars: int = 1200,
+    candidate_text_mode: str = CANDIDATE_TEXT_MODES[0],
     client: httpx.AsyncClient | None = None,
 ) -> RerankResult:
     if not candidates:
@@ -38,6 +43,8 @@ async def rerank_candidates(
         raise ValueError("top_k 必须位于 1 到候选数量")
     if not 100 <= max_candidate_chars <= 8000:
         raise ValueError("max_candidate_chars 必须位于 100 到 8000")
+    if candidate_text_mode not in CANDIDATE_TEXT_MODES:
+        raise ValueError(f"candidate_text_mode 必须是 {CANDIDATE_TEXT_MODES} 之一")
 
     candidate_map = {f"C{index}": hit for index, hit in enumerate(candidates, start=1)}
     payload = {
@@ -46,7 +53,9 @@ async def rerank_candidates(
         "documents": [
             {
                 "id": candidate_id,
-                "text": _candidate_text(hit, max_chars=max_candidate_chars),
+                "text": _candidate_text(
+                    hit, max_chars=max_candidate_chars, mode=candidate_text_mode
+                ),
             }
             for candidate_id, hit in candidate_map.items()
         ],
@@ -131,8 +140,15 @@ def parse_cross_encoder_response(
     return parsed, model.strip()
 
 
-def _candidate_text(hit: DenseSearchHit, *, max_chars: int) -> str:
-    heading = " > ".join(hit.heading_path)
-    prefix = "\n".join(part for part in (hit.title, heading) if part)
+def _candidate_text(hit: DenseSearchHit, *, max_chars: int, mode: str) -> str:
+    if mode == "content":
+        parts: tuple[str, ...] = ()
+    elif mode == "heading_content":
+        parts = (" > ".join(hit.heading_path),)
+    elif mode == "title_heading_content":
+        parts = (hit.title, " > ".join(hit.heading_path))
+    else:
+        raise ValueError(f"未知的 rerank_candidate_text_mode: {mode}")
+    prefix = "\n".join(part for part in parts if part)
     content_budget = max(1, max_chars - len(prefix) - 1)
     return f"{prefix}\n{hit.content[:content_budget]}" if prefix else hit.content[:max_chars]

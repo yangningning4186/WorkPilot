@@ -97,6 +97,7 @@ async def answer_with_citations(
     reranker_model: str = "BAAI/bge-reranker-v2-m3",
     reranker_timeout_s: float = 10.0,
     rerank_max_candidate_chars: int = 1200,
+    rerank_candidate_text_mode: str = "title_heading_content",
     lexical_rrf_enabled: bool = True,
     rrf_k: int = 60,
     max_evidence_chars: int = 12000,
@@ -133,6 +134,7 @@ async def answer_with_citations(
             model=reranker_model,
             timeout_s=reranker_timeout_s,
             max_candidate_chars=rerank_max_candidate_chars,
+            candidate_text_mode=rerank_candidate_text_mode,
         )
     else:
         rerank_result = RerankResult(

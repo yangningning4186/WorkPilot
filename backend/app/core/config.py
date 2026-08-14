@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_timeout_s: float = Field(default=10.0, gt=0, le=120)
     rerank_max_candidate_chars: int = Field(default=1200, ge=100, le=8000)
+    rerank_candidate_text_mode: Literal["title_heading_content", "heading_content", "content"] = (
+        "title_heading_content"
+    )
     lexical_rrf_enabled: bool = True
     rrf_k: int = Field(default=60, ge=1, le=1000)
     answer_max_evidence_chars: int = Field(default=12000, ge=1000, le=100000)

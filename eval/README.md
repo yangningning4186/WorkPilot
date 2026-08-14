@@ -45,6 +45,14 @@ diagnostic-K、token budget、embedding identity 和 gold span 不变。
 带 rerank 的策略需要先启动本机 cross-encoder 服务（见 [reranker/README.md](../reranker/README.md)）；
 服务不可用时跑批直接失败，不会静默退回原顺序，避免把降级结果记成实验数字。
 
+送给 cross-encoder 的候选文本可作为单变量切换，用于复现 D6 的三档对照：
+
+```bash
+--rerank-candidate-text-mode title_heading_content   # 默认, D6 判定最优
+--rerank-candidate-text-mode heading_content
+--rerank-candidate-text-mode content
+```
+
 ## 独立留出集
 
 `multihop-test-v1` 是与 `core-dev` 不重叠的 PDF multi-hop 留出集，只用来验收调参后的策略，

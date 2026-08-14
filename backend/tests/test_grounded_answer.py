@@ -27,7 +27,9 @@ from app.services.grounded_answer import (
 from app.services.markdown_ingestion import ingest_markdown_file
 from app.services.query_decomposition import QueryDecompositionError, parse_query_plan
 from app.services.reranker import (
+    CANDIDATE_TEXT_MODES,
     RerankResponseError,
+    _candidate_text,
     parse_cross_encoder_response,
     rerank_candidates,
 )
@@ -165,6 +167,35 @@ def test_multi_query_fusion_keeps_head_evidence_from_each_query() -> None:
         right.chunk_id,
         shared.chunk_id,
     ]
+
+
+def test_candidate_text_modes_control_title_and_heading_prefix() -> None:
+    hit = DenseSearchHit(
+        chunk_id=uuid7(),
+        document_id=uuid7(),
+        version_id=uuid7(),
+        version_no=1,
+        title="09-答案库-推理部署与系统设计",
+        source_uri="09.md",
+        content="生成与评估分离, 独立评估器另开上下文。",
+        score=0.5,
+        heading_path=["第三章", "评估"],
+        blocks=[],
+    )
+
+    # title 与问题字面吻合时会主导 cross-encoder 打分, 因此必须能单独关掉(台账 D5)。
+    full = _candidate_text(hit, max_chars=1200, mode="title_heading_content")
+    heading_only = _candidate_text(hit, max_chars=1200, mode="heading_content")
+    content_only = _candidate_text(hit, max_chars=1200, mode="content")
+
+    assert full.startswith("09-答案库-推理部署与系统设计\n第三章 > 评估\n")
+    assert heading_only.startswith("第三章 > 评估\n")
+    assert hit.title not in heading_only
+    assert content_only == hit.content
+    assert all(hit.content in text for text in (full, heading_only, content_only))
+    with pytest.raises(ValueError, match="未知的 rerank_candidate_text_mode"):
+        _candidate_text(hit, max_chars=1200, mode="unknown")
+    assert CANDIDATE_TEXT_MODES[0] == "title_heading_content"
 
 
 def test_rerank_parser_requires_complete_unique_ranking() -> None:
