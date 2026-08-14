@@ -5,7 +5,26 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.llm.gateway import ModelGateway
+
+
+async def apply_hnsw_scan_settings(session: AsyncSession) -> None:
+    """按 docs/03 §4.1 设置本事务的 pgvector 扫描参数。
+
+    部分索引只覆盖 strategy 与 is_searchable, embedding 身份等条件仍在索引内过滤;
+    没有迭代扫描时这些过滤会在候选阶段丢行, 结果可能凑不满 top-k。
+
+    用 SET LOCAL 而不是 SET: 连接是池化的, 会话级设置会漏给后续无关查询。
+    """
+
+    settings = get_settings()
+    # SET 不接受绑定参数; 取值来自 Literal 与带边界的 int, 不存在注入面。
+    await session.execute(text(f"SET LOCAL hnsw.iterative_scan = {settings.hnsw_iterative_scan}"))
+    await session.execute(
+        text(f"SET LOCAL hnsw.max_scan_tuples = {settings.hnsw_max_scan_tuples:d}")
+    )
+    await session.execute(text(f"SET LOCAL hnsw.ef_search = {settings.hnsw_ef_search:d}"))
 
 
 @dataclass(frozen=True)
@@ -115,6 +134,7 @@ async def _dense_search_by_vector(
     embedding: list[float],
     top_k: int,
 ) -> list[DenseSearchHit]:
+    await apply_hnsw_scan_settings(session)
     vector = "[" + ",".join(format(value, ".9g") for value in embedding) + "]"
     rows = (
         (

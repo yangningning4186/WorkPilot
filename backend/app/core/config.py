@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     run_heartbeat_s: float = Field(default=15.0, gt=0)
     run_delta_flush_ms: int = Field(default=50, ge=10, le=1000)
     run_delta_flush_chars: int = Field(default=120, ge=1, le=4000)
+    # pgvector 扫描参数(docs/03 §4.1)。部分索引只覆盖 strategy + is_searchable,
+    # 其余过滤(embedding 身份、doc_type)仍在索引内进行, 靠迭代扫描兜底候选不足。
+    hnsw_iterative_scan: Literal["off", "relaxed_order", "strict_order"] = "relaxed_order"
+    hnsw_max_scan_tuples: int = Field(default=20_000, ge=1_000, le=1_000_000)
+    # ef_search 必须不小于 top_k, 否则召回会被候选队列长度截断。
+    hnsw_ef_search: int = Field(default=100, ge=1, le=1000)
     refusal_threshold: float = Field(default=0.35, ge=-1.0, le=1.0)
     refusal_margin_threshold: float = Field(default=0.03, ge=0.0, le=2.0)
     evidence_gate_max_chars: int = Field(default=3000, ge=500, le=20000)

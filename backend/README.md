@@ -136,6 +136,25 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.pdf_parsing_quality \
 RRF 与 dense 合并。远端步骤只发送问题及截断候选，不上传原始文件；部署时仍需按数据策略确认
 具体语料是否允许外发。默认阈值 `0.35` 只是工程初值，不能当成质量结论。
 
+## 向量索引：每策略一个部分 HNSW
+
+四种分块策略共用一个 HNSW 再按 `strategy` 过滤是错的——pgvector 在**候选扫描阶段**过滤，
+扫出的候选大部分会被丢掉，很可能凑不满 top-k。更要命的是 W3 的四策略对照会把索引退化的
+噪声混进结论里。因此每策略一个部分索引（`idx_chunk_vec_{fixed,heading,recursive,semantic}`），
+谓词是 `strategy = '<策略>' AND is_searchable`。
+
+**查询必须显式带 `is_searchable = true` 和 `strategy = '...'`，否则命不中部分索引。**
+剩余过滤（embedding 身份、`doc_type`）仍在索引内进行，靠迭代扫描兜底：每次检索前用
+`SET LOCAL` 设置 `hnsw.iterative_scan` / `hnsw.max_scan_tuples` / `hnsw.ef_search`。
+用 `SET LOCAL` 而不是 `SET` 是因为连接是池化的，会话级设置会漏给后续无关查询。
+`HNSW_EF_SEARCH` 必须不小于实际 `top_k`，否则召回会被候选队列长度悄悄截断。
+
+M0 只有 `heading` 有数据，其余三个是空分区、不产生写入开销，建在这里是为了 W3 建另外
+三套 chunk 时不必再改 schema。
+
+> 一次性导入大量语料时，HNSW 是逐行增量维护的，会明显慢于建好数据再建索引。
+> 200 篇规模无所谓；真要批量灌几万 chunk，先 `DROP INDEX` 再重建更快。
+
 ## run / SSE：任务不依附 HTTP 连接
 
 普通问答也走 run（[ADR-0007](../docs/adr/0007-agent幂等与事件溯源.md)）。接口只负责创建 run
