@@ -260,7 +260,7 @@ def test_all_strategies_share_one_resampling_universe(tmp_path: Path) -> None:
 
     assert first["vs_baseline"]["b"]["ci_low"] == second["vs_baseline"]["b"]["ci_low"]
     assert first["vs_baseline"]["b"]["ci_high"] == second["vs_baseline"]["b"]["ci_high"]
-    # 逐样本 Δ 恒定时任何种子都给同一个区间，这里用有差异的样本确认种子确实起作用
+    # 逐样本 Δ 恒定时任何种子都给同一个区间, 这里用有差异的样本确认种子确实起作用
     assert other_seed["vs_baseline"]["b"]["delta"] == first["vs_baseline"]["b"]["delta"]
 
 
@@ -281,7 +281,7 @@ def test_identical_strategies_are_all_tie_and_inconclusive(tmp_path: Path) -> No
 
 def test_common_eligible_sample_is_the_intersection(tmp_path: Path) -> None:
     reports = _strategy_reports({"a": [1.0, 1.0], "b": [1.0, 1.0]})
-    # b 在 item-1 上没有检索指标：该样本从两个策略里一起剔除
+    # b 在 item-1 上没有检索指标: 该样本从两个策略里一起剔除
     reports["b"]["items"][1]["retrieval"] = None
     reports["b"]["items"][1]["answerable"] = False
     reports["a"]["items"][1]["answerable"] = False
@@ -293,7 +293,7 @@ def test_common_eligible_sample_is_the_intersection(tmp_path: Path) -> None:
 
     assert recall["sample_size"] == 1
     assert recall["own_ineligible"] == {"a": 1, "b": 1}
-    # 不可答题没有检索指标，但仍然计入成本与延迟
+    # 不可答题没有检索指标, 但仍然计入成本与延迟
     assert tokens["sample_size"] == 2
 
 
@@ -318,7 +318,7 @@ def test_context_redundancy_counts_overlap_within_a_version(tmp_path: Path) -> N
         _chunk(100, 200),
         _chunk(0, 100, version=other_version),
     ]
-    # 同 version 内 50 字符重叠；跨 version 的相同区间不算重叠
+    # 同 version 内 50 字符重叠; 跨 version 的相同区间不算重叠
     reports["overlap"]["items"][0]["retrieved"] = [_chunk(0, 100), _chunk(50, 150)]
 
     payload = _matrix(tmp_path, reports, **VARY)
@@ -371,7 +371,7 @@ def test_cost_metric_is_computed_when_the_run_exports_it(tmp_path: Path) -> None
 
     assert cost["status"] == "ok"
     assert cost["by_strategy"]["b"] == pytest.approx(0.001)
-    # 成本越低越好：下降应判成提升
+    # 成本越低越好: 下降应判成提升
     assert cost["vs_baseline"]["b"]["delta"] == pytest.approx(-0.001)
     assert cost["vs_baseline"]["b"]["verdict"] == "improved"
 
@@ -597,9 +597,9 @@ def test_markdown_carries_sample_size_baseline_verdict_and_outliers(
 
     markdown = markdown_report(payload)
 
-    assert "# 策略对照矩阵：core-dev · 2 策略" in markdown
-    assert "配对样本：4 条（可答 4，不可答 0）" in markdown
-    assert "| `fixed`（基线）" in markdown
+    assert "# 策略对照矩阵：core-dev · 2 策略" in markdown  # noqa: RUF001
+    assert "配对样本：4 条（可答 4，不可答 0）" in markdown  # noqa: RUF001
+    assert "| `fixed`（基线）" in markdown  # noqa: RUF001
     assert "| 检查项 | 结果 |" in markdown
     assert "gold span 指纹一致" in markdown
     assert "| 策略 | Δ | 95% CI | 跨零 | 判定 | 胜 | 负 | 平 |" in markdown
@@ -641,7 +641,7 @@ def test_cli_writes_json_and_markdown(tmp_path: Path, monkeypatch: pytest.Monkey
     assert payload["bootstrap"]["seed"] == SEED
     assert (output_dir / "report.md").read_text(encoding="utf-8").startswith("# 策略对照矩阵")
 
-    # 输出目录不可覆盖：跑批结果只增不改
+    # 输出目录不可覆盖: 跑批结果只增不改
     with pytest.raises(FileExistsError):
         main()
 

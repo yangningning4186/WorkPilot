@@ -38,7 +38,7 @@ def _bootstrap(metrics: dict[str, MetricSamples], **kwargs: Any) -> dict[str, An
 
 
 def test_paired_bootstrap_is_deterministic_for_a_fixed_seed() -> None:
-    # 逐样本 Δ 必须有差异，否则任何重采样都给出同一个区间，测不出种子的作用
+    # 逐样本 Δ 必须有差异, 否则任何重采样都给出同一个区间, 测不出种子的作用
     metrics = {"recall": _samples([0.2, 0.4, 0.6, 0.8], [0.9, 0.4, 0.1, 1.0])}
 
     first = _bootstrap(metrics)["recall"]
@@ -69,7 +69,7 @@ def test_identical_arms_produce_zero_width_interval() -> None:
 
     assert result.delta == 0.0
     assert (result.ci_low, result.ci_high) == (0.0, 0.0)
-    # 区间退化成一个点也仍然包含 0，不能判成显著
+    # 区间退化成一个点也仍然包含 0, 不能判成显著
     assert result.verdict == "inconclusive"
 
 
@@ -291,7 +291,7 @@ def test_compare_pairs_by_item_id_not_by_position(tmp_path: Path) -> None:
         "item-2",
         "item-3",
     ]
-    # item-0 在 candidate 报告里排最后，配对必须按 item_id 而不是下标
+    # item-0 在 candidate 报告里排最后, 配对必须按 item_id 而不是下标
     assert per_item["item-0"]["metrics"]["span_recall_at_k"] == {
         "baseline": 0.0,
         "candidate": 0.5,
@@ -316,7 +316,7 @@ def test_compare_reports_category_slices_and_sample_classification(tmp_path: Pat
     assert sorted(categories) == ["multi_hop", "single_hop", "table"]
     assert categories["single_hop"]["item_count"] == 2
     assert categories["single_hop"]["metrics"]["budget_span_recall"]["delta"] == pytest.approx(0.25)
-    # 整体持平但类别互相抵消：single_hop 涨、multi_hop 跌
+    # 整体持平但类别互相抵消: single_hop 涨、multi_hop 跌
     assert categories["multi_hop"]["metrics"]["budget_span_recall"]["delta"] == pytest.approx(-1.0)
     assert payload["metrics"]["budget_span_recall"]["verdict"] == "inconclusive"
 
@@ -350,7 +350,7 @@ def test_unanswerable_items_only_join_the_metrics_that_apply(tmp_path: Path) -> 
 
     assert recall["sample_size"] == 1
     assert recall["baseline"] == pytest.approx(0.5)
-    # 不可答题没有检索指标，但仍然参与拒答正确率：baseline 误答，candidate 正确拒答
+    # 不可答题没有检索指标, 但仍然参与拒答正确率: baseline 误答, candidate 正确拒答
     assert refusal["sample_size"] == 2
     assert refusal["baseline"] == pytest.approx(0.5)
     assert refusal["candidate"] == pytest.approx(1.0)
@@ -377,7 +377,7 @@ def test_one_sided_eligibility_drops_both_arms_and_is_counted(tmp_path: Path) ->
     payload = _compare(tmp_path, baseline, candidate)
     validity = payload["metrics"]["citation_validity_non_refusal"]
 
-    # item-1 只在 candidate 侧作答，两侧一并剔除，避免拿不同样本比较
+    # item-1 只在 candidate 侧作答, 两侧一并剔除, 避免拿不同样本比较
     assert validity["sample_size"] == 1
     assert validity["dropped_candidate_only"] == 1
     assert validity["dropped_baseline_only"] == 0
@@ -546,12 +546,12 @@ def test_markdown_states_the_verdict_and_the_interpretation_limits(tmp_path: Pat
 
     markdown = markdown_report(payload)
 
-    assert "# 评测对照：base → cand" in markdown
+    assert "# 评测对照：base → cand" in markdown  # noqa: RUF001
     assert "budget span Recall" in markdown
     assert "显著提升" in markdown
     assert "置信区间跨 0 即无显著差异" in markdown
     assert "| `strategy` | `dense-only` | `dense-lexical-rrf` |" in markdown
-    assert "### multi_hop（1 条）" in markdown
+    assert "### multi_hop（1 条）" in markdown  # noqa: RUF001
 
 
 def test_cli_writes_json_and_markdown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -594,7 +594,7 @@ def test_cli_writes_json_and_markdown(tmp_path: Path, monkeypatch: pytest.Monkey
     assert payload["metrics"]["budget_span_recall"]["delta"] == pytest.approx(0.5)
     assert (output_dir / "report.md").read_text(encoding="utf-8").startswith("# 评测对照")
 
-    # 已存在的输出目录不允许被覆盖，跑批结果只增不改
+    # 已存在的输出目录不允许被覆盖, 跑批结果只增不改
     with pytest.raises(FileExistsError):
         main()
 
