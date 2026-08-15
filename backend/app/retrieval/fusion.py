@@ -2,6 +2,7 @@ from dataclasses import replace
 from uuid import UUID
 
 from app.retrieval.dense import DenseSearchHit
+from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
 
 
 def reciprocal_rank_fusion(
@@ -9,11 +10,20 @@ def reciprocal_rank_fusion(
     *,
     top_k: int = 50,
     rrf_k: int = 60,
+    strategy: ChunkStrategy = "heading",
 ) -> list[DenseSearchHit]:
     if not 1 <= top_k <= 50:
         raise ValueError("top_k 必须位于 1 到 50")
     if rrf_k < 1:
         raise ValueError("rrf_k 必须为正数")
+    strategy = validate_chunk_strategy(strategy)
+    mismatched = {
+        hit.strategy for ranking in rankings for hit in ranking if hit.strategy != strategy
+    }
+    if mismatched:
+        raise ValueError(
+            f"RRF 禁止混合 chunk strategy: expected={strategy}, actual={sorted(mismatched)}"
+        )
     fused: dict[UUID, tuple[DenseSearchHit, float]] = {}
     for ranking in rankings:
         for rank, hit in enumerate(ranking, start=1):

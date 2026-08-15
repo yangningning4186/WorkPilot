@@ -3,6 +3,7 @@ from dataclasses import dataclass, replace
 import httpx
 
 from app.retrieval.dense import DenseSearchHit
+from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
 
 # 送给 cross-encoder 的候选文本构造方式。title 前置会让标题与问题字面吻合的 chunk
 # 压过正文真正相关的 chunk, 见台账 D5; 因此做成可切换的单变量。第一项是当前默认值。
@@ -34,7 +35,9 @@ async def rerank_candidates(
     max_candidate_chars: int = 1200,
     candidate_text_mode: str = CANDIDATE_TEXT_MODES[0],
     client: httpx.AsyncClient | None = None,
+    strategy: ChunkStrategy = "heading",
 ) -> RerankResult:
+    strategy = validate_chunk_strategy(strategy)
     if not candidates:
         return RerankResult([], False, 0, "没有候选", None, None)
     if not query.strip():
@@ -45,6 +48,11 @@ async def rerank_candidates(
         raise ValueError("max_candidate_chars 必须位于 100 到 8000")
     if candidate_text_mode not in CANDIDATE_TEXT_MODES:
         raise ValueError(f"candidate_text_mode 必须是 {CANDIDATE_TEXT_MODES} 之一")
+    mismatched = {hit.strategy for hit in candidates if hit.strategy != strategy}
+    if mismatched:
+        raise ValueError(
+            f"rerank 禁止混合 chunk strategy: expected={strategy}, actual={sorted(mismatched)}"
+        )
 
     candidate_map = {f"C{index}": hit for index, hit in enumerate(candidates, start=1)}
     payload = {

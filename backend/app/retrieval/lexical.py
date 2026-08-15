@@ -4,6 +4,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.retrieval.dense import DenseSearchHit
+from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
 
 # 词法打分方式。coverage 是"命中词数 / 总词数", 无停用词表、无 IDF、子串匹配,
 # 英文自然语言查询下会被 the/is/in/how 这类词灌满(实测 in 命中 85% 的 chunk),
@@ -86,7 +87,7 @@ _COVERAGE_SQL = f"""
         ) > 0
     ) matches
     WHERE c.is_searchable=true
-      AND c.strategy='heading'
+      AND c.strategy='__CHUNK_STRATEGY__'
       AND d.deleted_at IS NULL
       AND v.invalid_at IS NULL
       AND matches.matched > 0
@@ -131,7 +132,7 @@ _RANKED_SQL_TEMPLATE = f"""
     JOIN documents d ON d.id=v.document_id
     CROSS JOIN q
     WHERE c.is_searchable=true
-      AND c.strategy='heading'
+      AND c.strategy='__CHUNK_STRATEGY__'
       AND d.deleted_at IS NULL
       AND v.invalid_at IS NULL
       AND (
@@ -149,6 +150,7 @@ async def lexical_search(
     query: str,
     top_k: int = 50,
     mode: str = LEXICAL_MODES[0],
+    strategy: ChunkStrategy = "heading",
 ) -> list[DenseSearchHit]:
     if not query.strip():
         raise ValueError("query 不能为空")
@@ -156,19 +158,22 @@ async def lexical_search(
         raise ValueError("top_k 必须位于 1 到 50")
     if mode not in LEXICAL_MODES:
         raise ValueError(f"未知的 lexical_mode: {mode}, 可选 {LEXICAL_MODES}")
+    strategy = validate_chunk_strategy(strategy)
 
     if mode == "coverage":
         terms = lexical_terms(query)
         if not terms:
             return []
-        sql = _COVERAGE_SQL
+        sql = _COVERAGE_SQL.replace("__CHUNK_STRATEGY__", strategy)
         params: dict[str, object] = {
             "terms": terms,
             "term_count": len(terms),
             "top_k": top_k,
         }
     else:
-        sql = _RANKED_SQL_TEMPLATE.format(rank=mode)
+        sql = _RANKED_SQL_TEMPLATE.format(rank=mode).replace(
+            "__CHUNK_STRATEGY__", strategy
+        )
         params = {"query": query, "top_k": top_k}
 
     rows = (await session.execute(text(sql), params)).mappings().all()
@@ -188,6 +193,7 @@ async def lexical_search(
             lexical_score=float(row["score"]),
             heading_path=list(row["heading_path"]),
             blocks=list(row["blocks"]),
+            strategy=strategy,
         )
         for row in rows
     ]

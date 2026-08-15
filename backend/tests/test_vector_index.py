@@ -12,12 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
 from app.retrieval.dense import apply_hnsw_scan_settings
+from app.retrieval.strategy import CHUNK_STRATEGIES, ChunkStrategy
 
 pytestmark = pytest.mark.integration
 
 DIMENSIONS = 1024
 # 够让规划器认真考虑索引, 又不至于把测试跑成分钟级。
-ROWS_PER_STRATEGY = 400
+ROWS_PER_STRATEGY = 250
 
 
 def _vector(rng: random.Random) -> list[float]:
@@ -61,7 +62,7 @@ async def _seed(session: AsyncSession, rng: random.Random) -> None:
 
     rows = []
     index = 0
-    for strategy in ("heading", "fixed"):
+    for strategy in CHUNK_STRATEGIES:
         for position in range(ROWS_PER_STRATEGY):
             rows.append(
                 {
@@ -96,8 +97,10 @@ async def _seed(session: AsyncSession, rng: random.Random) -> None:
     await session.execute(text("ANALYZE chunks"))
 
 
+@pytest.mark.parametrize("strategy", CHUNK_STRATEGIES)
 async def test_partial_index_is_used_and_scoped_to_its_strategy(
     db_session: AsyncSession,
+    strategy: ChunkStrategy,
 ) -> None:
     rng = random.Random(20260814)
     await _seed(db_session, rng)
@@ -115,10 +118,10 @@ async def test_partial_index_is_used_and_scoped_to_its_strategy(
         for line in (
             await db_session.execute(
                 text(
-                    """
+                    f"""
                     EXPLAIN
                     SELECT c.id FROM chunks c
-                    WHERE c.strategy = 'heading' AND c.is_searchable
+                    WHERE c.strategy = '{strategy}' AND c.is_searchable
                     ORDER BY c.embedding <=> CAST(:embedding AS vector)
                     LIMIT 10
                     """
@@ -132,8 +135,10 @@ async def test_partial_index_is_used_and_scoped_to_its_strategy(
     )
 
     # 命中的必须是 heading 自己的部分索引; 四策略共用一个索引正是 P1-c 那个错误。
-    assert "idx_chunk_vec_heading" in plan, plan
-    assert "idx_chunk_vec_fixed" not in plan, plan
+    assert f"idx_chunk_vec_{strategy}" in plan, plan
+    for other in CHUNK_STRATEGIES:
+        if other != strategy:
+            assert f"idx_chunk_vec_{other}" not in plan, plan
     # 走索引就不该再出现顺扫, 否则说明谓词没覆盖住查询条件。
     assert "Seq Scan" not in plan, plan
 

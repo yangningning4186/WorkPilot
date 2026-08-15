@@ -13,6 +13,8 @@ class RetrievalMetrics:
     mrr: float
     context_precision: float
     retrieved_tokens: int
+    budget_retrieved_tokens: int
+    budget_chunk_count: int
     relevant_chunks: int
 
     def to_dict(self) -> dict[str, float | int]:
@@ -65,6 +67,8 @@ def evaluate_retrieval(
         mrr=1 / first_relevant if first_relevant else 0.0,
         context_precision=relevant_chunks / len(ranked) if ranked else 0.0,
         retrieved_tokens=sum(chunk.content_tokens for chunk in ranked),
+        budget_retrieved_tokens=sum(chunk.content_tokens for chunk in budget_ranked),
+        budget_chunk_count=len(budget_ranked),
         relevant_chunks=relevant_chunks,
     )
 
@@ -93,7 +97,7 @@ def take_token_budget(
     selected: list[RetrievedChunk] = []
     consumed = 0
     for chunk in chunks:
-        if selected and consumed + chunk.content_tokens > budget:
+        if consumed + chunk.content_tokens > budget:
             break
         selected.append(chunk)
         consumed += chunk.content_tokens
