@@ -87,6 +87,7 @@ class ModelGateway:
         pricing: GatewayPricing | None = None,
         chars_per_token: float = 1.0,
         run_id: UUID | None = None,
+        eval_run_id: UUID | None = None,
     ) -> None:
         self._chat_provider = provider
         self._embedding_provider = embedding_provider or provider
@@ -103,6 +104,7 @@ class ModelGateway:
         self._pricing = pricing or GatewayPricing()
         self._chars_per_token = chars_per_token
         self._run_id = run_id
+        self._eval_run_id = eval_run_id
 
     async def complete(
         self,
@@ -341,6 +343,7 @@ class ModelGateway:
                 success=success,
                 cost_usd=cost_usd,
                 run_id=self._run_id,
+                eval_run_id=self._eval_run_id,
             )
         )
 
@@ -368,6 +371,7 @@ def build_model_gateway(
     audit_sink: AuditSink | None = None,
     budget_guard: BudgetGuard | None = None,
     run_id: UUID | None = None,
+    eval_run_id: UUID | None = None,
 ) -> ModelGateway:
     chat_provider = OpenAICompatibleProvider(
         base_url=settings.tier_main_base_url,
@@ -396,4 +400,5 @@ def build_model_gateway(
         pricing=gateway_pricing_from_settings(settings),
         chars_per_token=settings.cost_estimate_chars_per_token,
         run_id=run_id,
+        eval_run_id=eval_run_id,
     )

@@ -726,3 +726,154 @@ def test_every_declared_metric_is_extractable(tmp_path: Path) -> None:
     payload = _matrix(tmp_path, _strategy_reports({"a": [1.0], "b": [1.0]}), **VARY)
 
     assert set(payload["metrics"]["retrieval"]) == {spec.name for spec in RETRIEVAL_METRICS}
+
+
+# ------------------------------------------------- E1 生成轨接入矩阵的 fail-closed
+
+
+def _chunk_generation_reports(
+    *, constraint_passed: dict[str, bool] | None = None
+) -> dict[str, dict[str, Any]]:
+    """四套分块策略的生成报告, 除 chunk_strategy 外配置逐字相同。"""
+    passed = constraint_passed or {}
+    reports: dict[str, dict[str, Any]] = {}
+    for name in ("fixed", "heading", "recursive", "semantic"):
+        report = _generation_report(
+            [
+                _generation_item(
+                    "item-0",
+                    constraint_passed=passed.get(name, True),
+                    extra={"span_diagnostics": [_span()], "total_tokens": 900},
+                ),
+                _generation_item(
+                    "item-1", extra={"span_diagnostics": [_span()], "total_tokens": 900}
+                ),
+            ],
+            label=name,
+        )
+        report["config"].update(
+            {
+                "chunk_strategy": name,
+                "chunk_metadata": {"corpus_fingerprint": "same-corpus"},
+                "prompt_fingerprint": "p" * 64,
+                "chat_model": "qwen",
+                "answer_max_tokens": 1200,
+            }
+        )
+        reports[name] = report
+    return reports
+
+
+def test_generation_manifest_flows_into_the_four_strategy_matrix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    retrieval = _strategy_reports(
+        {
+            "fixed": [0.5, 1.0],
+            "heading": [1.0, 1.0],
+            "recursive": [0.5, 0.5],
+            "semantic": [1.0, 0.5],
+        }
+    )
+    generation = _chunk_generation_reports(constraint_passed={"fixed": False})
+
+    def _manifest(name: str, reports: dict[str, dict[str, Any]]) -> Path:
+        runs = {}
+        for strategy, report in reports.items():
+            report["config"].setdefault("chunk_metadata", {"corpus_fingerprint": "same-corpus"})
+            path = _write(tmp_path, f"{name}-{strategy}", report)
+            runs[strategy] = {"run_id": f"{name}-{strategy}", "report": str(path)}
+        manifest_path = tmp_path / f"{name}-manifest.json"
+        manifest_path.write_text(json.dumps({"runs": runs}, ensure_ascii=False), encoding="utf-8")
+        return manifest_path
+
+    output_dir = tmp_path / "e2e-matrix"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "eval.strategy_matrix",
+            "--manifest",
+            str(_manifest("retrieval", retrieval)),
+            "--generation-manifest",
+            str(_manifest("generation", generation)),
+            "--resamples",
+            str(RESAMPLES),
+            "--seed",
+            str(SEED),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    main()
+
+    payload = json.loads((output_dir / "report.json").read_text(encoding="utf-8"))
+    metrics = payload["metrics"]
+    assert set(metrics) == {"retrieval", "generation"}
+    # 端到端指标确实来自生成报告, 而不是被检索轨顶替
+    assert metrics["generation"]["constraint_pass"]["by_strategy"]["fixed"] == 0.5
+    assert metrics["generation"]["constraint_pass"]["by_strategy"]["heading"] == 1.0
+    # 逐条 token 已导出 ⇒ 成本代理指标可用, 不再是 "unavailable"
+    assert metrics["generation"]["total_tokens"]["status"] == "ok"
+    names = {check["name"] for check in payload["validation"]["checks"]}
+    assert any(name.startswith("生成配置一致") for name in names)
+    assert "生成报告的 chunk_strategy 与策略名一致" in names
+    assert "generation gold span 指纹一致" in names
+
+
+def test_matrix_rejects_generation_reports_that_drifted_apart(tmp_path: Path) -> None:
+    retrieval = _strategy_reports({name: [1.0, 1.0] for name in ("fixed", "heading")})
+
+    mutations: list[dict[str, Any]] = [
+        {"answer_max_tokens": 4096},
+        {"prompt_fingerprint": "q" * 64},
+        {"chat_model": "另一个模型"},
+    ]
+    for index, mutation in enumerate(mutations):
+        generation = _chunk_generation_reports()
+        pair = {"fixed": generation["fixed"], "heading": generation["heading"]}
+        pair["fixed"]["config"].update(mutation)
+        workdir = tmp_path / f"drift-{index}"
+        workdir.mkdir()
+        with pytest.raises(ValidationError, match="生成配置不一致"):
+            _matrix(workdir, retrieval, generations=pair, **VARY)
+
+
+def test_matrix_rejects_a_generation_report_hung_on_the_wrong_strategy(
+    tmp_path: Path,
+) -> None:
+    retrieval = _strategy_reports({name: [1.0, 1.0] for name in ("fixed", "heading")})
+    generation = _chunk_generation_reports()
+    pair = {"fixed": generation["fixed"], "heading": generation["heading"]}
+    # semantic 的报告被挂在 fixed 名下: 不拦下来, 四策略结论会整体错位
+    pair["fixed"]["config"]["chunk_strategy"] = "semantic"
+
+    with pytest.raises(ValidationError, match="报告挂错了位置"):
+        _matrix(tmp_path, retrieval, generations=pair, **VARY)
+
+
+def test_matrix_rejects_generation_reports_with_drifted_gold_spans(tmp_path: Path) -> None:
+    retrieval = _strategy_reports({name: [1.0, 1.0] for name in ("fixed", "heading")})
+    generation = _chunk_generation_reports()
+    pair = {"fixed": generation["fixed"], "heading": generation["heading"]}
+    # 重标过: 同一条 item 的 gold 区间变了, 两轨比较的已经不是同一批标注
+    pair["fixed"]["items"][0]["span_diagnostics"] = [_span(300, 400)]
+
+    with pytest.raises(ValidationError, match="gold span 指纹"):
+        _matrix(tmp_path, retrieval, generations=pair, **VARY)
+
+
+def test_four_chunk_strategy_matrix_demands_labelled_generation_reports(
+    tmp_path: Path,
+) -> None:
+    """四个策略名恰好是四套分块时, 生成报告必须自证跑在哪套 chunk 上。"""
+    retrieval = _strategy_reports(
+        {"fixed": [1.0], "heading": [1.0], "recursive": [1.0], "semantic": [1.0]}
+    )
+    generation = _chunk_generation_reports()
+    for report in generation.values():
+        report["config"].pop("chunk_strategy")
+
+    with pytest.raises(ValidationError, match="要求生成报告记录 chunk_strategy"):
+        _matrix(tmp_path, retrieval, generations=generation, **VARY)

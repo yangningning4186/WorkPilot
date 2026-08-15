@@ -17,6 +17,7 @@ from app.retrieval.citations import (
 from app.retrieval.dense import DenseSearchHit, multi_query_dense_search
 from app.retrieval.fusion import reciprocal_rank_fusion
 from app.retrieval.lexical import lexical_search
+from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
 from app.services.evidence_sufficiency import (
     EvidenceAssessment,
     EvidenceAssessmentError,
@@ -74,6 +75,9 @@ class GroundedAnswerResult:
     rerank_provider: str | None
     lexical_rrf_applied: bool
     lexical_candidate_count: int
+    # 这次回答的证据来自哪套分块产物。E1 四策略生成轨靠它证明"答案确实读的是这套 chunk",
+    # 否则报告里的策略名只是一个标签, 无法与实际检索链路对账。
+    chunk_strategy: ChunkStrategy
     model: str | None
     provider: str | None
 
@@ -97,6 +101,7 @@ class _GenerationContext:
     rerank_result: RerankResult
     lexical_rrf_applied: bool
     lexical_candidate_count: int
+    chunk_strategy: ChunkStrategy
 
 
 async def stream_answer_with_citations(
@@ -124,6 +129,7 @@ async def stream_answer_with_citations(
     lexical_rrf_enabled: bool = True,
     lexical_mode: str = "ts_rank",
     rrf_k: int = 60,
+    chunk_strategy: ChunkStrategy = "heading",
     max_evidence_chars: int = 12000,
     max_tokens: int = 1200,
 ) -> AsyncIterator[str | GroundedAnswerResult]:
@@ -158,6 +164,7 @@ async def stream_answer_with_citations(
         lexical_rrf_enabled=lexical_rrf_enabled,
         lexical_mode=lexical_mode,
         rrf_k=rrf_k,
+        chunk_strategy=chunk_strategy,
         max_evidence_chars=max_evidence_chars,
     )
     if isinstance(prepared, GroundedAnswerResult):
@@ -204,6 +211,7 @@ async def answer_with_citations(
     lexical_rrf_enabled: bool = True,
     lexical_mode: str = "ts_rank",
     rrf_k: int = 60,
+    chunk_strategy: ChunkStrategy = "heading",
     max_evidence_chars: int = 12000,
     max_tokens: int = 1200,
 ) -> GroundedAnswerResult:
@@ -238,6 +246,7 @@ async def answer_with_citations(
         lexical_rrf_enabled=lexical_rrf_enabled,
         lexical_mode=lexical_mode,
         rrf_k=rrf_k,
+        chunk_strategy=chunk_strategy,
         max_evidence_chars=max_evidence_chars,
         max_tokens=max_tokens,
     ):
@@ -273,10 +282,14 @@ async def _prepare_generation(
     lexical_rrf_enabled: bool,
     lexical_mode: str,
     rrf_k: int,
+    chunk_strategy: ChunkStrategy,
     max_evidence_chars: int,
 ) -> "_GenerationContext | GroundedAnswerResult":
     """检索 → 阈值拒答 → 证据门控。返回拒答结果, 或放行生成所需的上下文。"""
 
+    # 整条链路只认这一个 chunk strategy: dense、词法、RRF、rerank 全部显式传同一个值。
+    # 漏传会让 RRF/rerank 的"禁止混合"校验直接抛错, 这正是想要的——宁可失败, 不可静默混检索。
+    chunk_strategy = validate_chunk_strategy(chunk_strategy)
     query_plan = await _build_query_plan(
         gateway,
         query=query,
@@ -290,16 +303,22 @@ async def _prepare_generation(
         gateway,
         queries=query_plan.queries,
         top_k=candidate_k,
+        strategy=chunk_strategy,
     )
     lexical_hits: list[DenseSearchHit] = []
     if lexical_rrf_enabled:
         lexical_hits = await lexical_search(
-            session, query=query, top_k=candidate_k, mode=lexical_mode
+            session,
+            query=query,
+            top_k=candidate_k,
+            mode=lexical_mode,
+            strategy=chunk_strategy,
         )
         candidate_hits = reciprocal_rank_fusion(
             [candidate_hits, lexical_hits],
             top_k=candidate_k,
             rrf_k=rrf_k,
+            strategy=chunk_strategy,
         )
     if rerank_enabled and len(candidate_hits) > top_k:
         rerank_result = await rerank_candidates(
@@ -311,6 +330,7 @@ async def _prepare_generation(
             timeout_s=reranker_timeout_s,
             max_candidate_chars=rerank_max_candidate_chars,
             candidate_text_mode=rerank_candidate_text_mode,
+            strategy=chunk_strategy,
         )
     else:
         rerank_result = RerankResult(
@@ -340,6 +360,7 @@ async def _prepare_generation(
             rerank_result=rerank_result,
             lexical_rrf_applied=lexical_rrf_enabled,
             lexical_candidate_count=len(lexical_hits),
+            chunk_strategy=chunk_strategy,
         )
 
     evidence = build_evidence_segments(hits, max_chars=max_evidence_chars)
@@ -355,6 +376,7 @@ async def _prepare_generation(
             rerank_result=rerank_result,
             lexical_rrf_applied=lexical_rrf_enabled,
             lexical_candidate_count=len(lexical_hits),
+            chunk_strategy=chunk_strategy,
         )
 
     assert top_score is not None
@@ -389,6 +411,7 @@ async def _prepare_generation(
             rerank_result=rerank_result,
             lexical_rrf_applied=lexical_rrf_enabled,
             lexical_candidate_count=len(lexical_hits),
+            chunk_strategy=chunk_strategy,
         )
     if not assessment.sufficient:
         return _refusal_result(
@@ -406,6 +429,7 @@ async def _prepare_generation(
             rerank_result=rerank_result,
             lexical_rrf_applied=lexical_rrf_enabled,
             lexical_candidate_count=len(lexical_hits),
+            chunk_strategy=chunk_strategy,
         )
 
     return _GenerationContext(
@@ -420,6 +444,7 @@ async def _prepare_generation(
         rerank_result=rerank_result,
         lexical_rrf_applied=lexical_rrf_enabled,
         lexical_candidate_count=len(lexical_hits),
+        chunk_strategy=chunk_strategy,
     )
 
 
@@ -465,6 +490,7 @@ def _generated_result(
         rerank_provider=context.rerank_result.provider,
         lexical_rrf_applied=context.lexical_rrf_applied,
         lexical_candidate_count=context.lexical_candidate_count,
+        chunk_strategy=context.chunk_strategy,
         # 流式没有响应体可读, 身份取网关配置(gateway.chat_model/chat_provider)。
         model=gateway.chat_model,
         provider=gateway.chat_provider,
@@ -511,6 +537,7 @@ def _refusal_result(
     margin_threshold: float,
     query_plan: QueryPlan,
     rerank_result: RerankResult,
+    chunk_strategy: ChunkStrategy,
     lexical_rrf_applied: bool = False,
     lexical_candidate_count: int = 0,
     evidence_sufficient: bool | None = None,
@@ -546,6 +573,7 @@ def _refusal_result(
         rerank_provider=rerank_result.provider,
         lexical_rrf_applied=lexical_rrf_applied,
         lexical_candidate_count=lexical_candidate_count,
+        chunk_strategy=chunk_strategy,
         model=None,
         provider=None,
     )

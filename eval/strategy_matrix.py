@@ -116,9 +116,16 @@ def validate_runs(
     checks.append(_check_failed_runs(runs))
     config = _check_retrieval_config(runs, baseline=baseline, vary_keys=vary_keys)
     checks.append(config["check"])  # type: ignore[arg-type]
+    generation_diff: dict[str, dict[str, Any]] = {}
+    if all(has_generation):
+        generation = _check_generation_config(runs, baseline=baseline, vary_keys=vary_keys)
+        checks.append(generation["check"])  # type: ignore[arg-type]
+        generation_diff = generation["diff"]  # type: ignore[assignment]
+        checks.append(_check_generation_chunk_strategy(runs))
     return {
         "checks": checks,
         "config_diff": config["diff"],
+        "generation_config_diff": generation_diff,
         "vary_keys": list(vary_keys),
         "generation_included": all(has_generation),
     }
@@ -225,6 +232,87 @@ def _check_retrieval_config(
     }
 
 
+def _check_generation_config(
+    runs: Sequence[StrategyRun], *, baseline: str, vary_keys: Sequence[str]
+) -> dict[str, object]:
+    """生成轨也必须是单变量对照。
+
+    模型、prompt 指纹、token budget、拒答阈值任一不同, 端到端差异就不再只来自分块;
+    检索轨查过一遍不代表生成轨也一致——两轨的 config 是分别写的。
+    """
+    base = next(run for run in runs if run.name == baseline)
+    assert base.generation is not None
+    diffs: dict[str, dict[str, Any]] = {}
+    for run in runs:
+        if run.name == baseline or run.generation is None:
+            continue
+        diff = config_diff(
+            base.generation.config, run.generation.config, ignore=vary_keys
+        )
+        if diff:
+            detail = ", ".join(
+                f"{key}: {value['baseline']!r} → {value['candidate']!r}"
+                for key, value in diff.items()
+            )
+            raise ValidationError(
+                f"策略 {run.name} 与基线 {baseline} 的生成配置不一致，"
+                f"端到端差异无法归因到分块: {detail}。"
+                "确属被对照的变量请用 --vary-key 显式声明"
+            )
+        diffs[run.name] = config_diff(base.generation.config, run.generation.config)
+    return {
+        "check": {
+            "name": "生成配置一致（模型 / prompt / token budget / 阈值）",
+            "passed": True,
+            "detail": "仅声明的变量键不同",
+        },
+        "diff": diffs,
+    }
+
+
+def _check_generation_chunk_strategy(runs: Sequence[StrategyRun]) -> dict[str, object]:
+    """生成 run 的 config.chunk_strategy 必须与它挂的策略名一致。
+
+    否则 manifest 里的策略名只是标签, 可能把 semantic 的报告挂在 fixed 名下, 结论整体翻转。
+
+    只在"四个策略名恰好就是四套分块策略"时强制要求报告声明 chunk_strategy——
+    矩阵本身是通用的 N 策略工具, 拿它比 prompt 或阈值时策略名与分块无关。
+    其余情况下只要报告声明了, 就仍然核对是否自相矛盾。
+    """
+    is_chunk_matrix = {run.name for run in runs} == set(CHUNK_MANIFEST_STRATEGIES)
+    mismatched: list[str] = []
+    unlabeled: list[str] = []
+    for run in runs:
+        if run.generation is None:
+            continue
+        actual = run.generation.config.get("chunk_strategy")
+        if actual is None:
+            unlabeled.append(run.name)
+        elif str(actual) != run.name and str(actual) in CHUNK_MANIFEST_STRATEGIES:
+            mismatched.append(f"{run.name} 的报告实际跑在 {actual} 上")
+    if mismatched:
+        raise ValidationError(
+            "生成报告的 chunk_strategy 与策略名对不上，报告挂错了位置: "
+            + "; ".join(mismatched)
+        )
+    if is_chunk_matrix and unlabeled:
+        raise ValidationError(
+            "四分块策略对照要求生成报告记录 chunk_strategy，否则无法证明它跑在哪套分块上: "
+            f"{unlabeled}。请用当前版本的 runner 重跑"
+        )
+    if unlabeled:
+        return {
+            "name": "生成报告的 chunk_strategy 与策略名一致",
+            "passed": True,
+            "detail": f"非分块对照，{len(unlabeled)} 个 run 未声明 chunk_strategy",
+        }
+    return {
+        "name": "生成报告的 chunk_strategy 与策略名一致",
+        "passed": True,
+        "detail": "逐个 run 核对 config.chunk_strategy",
+    }
+
+
 def pair_matrix(
     runs: Sequence[StrategyRun], *, kind: str
 ) -> tuple[PairedMatrix, list[dict[str, object]]]:
@@ -265,9 +353,9 @@ def pair_matrix(
                         f"item {item_id} 的 {field} 在策略 {name} 与 {reference} 之间不一致，"
                         "标注已漂移，配对无效"
                     )
-            if kind == KIND_RETRIEVAL and gold_span_fingerprint(
-                item
-            ) != gold_span_fingerprint(base_item):
+            # 两轨的报告都带 span_diagnostics，所以指纹核对对生成轨同样生效；
+            # 旧报告没有这个字段时两侧同为空元组，不会误报。
+            if gold_span_fingerprint(item) != gold_span_fingerprint(base_item):
                 raise ValidationError(
                     f"item {item_id} 的 gold span 指纹在策略 {name} 与 {reference} 之间不一致："
                     "混了解析版本或重新标注过，跨策略比较无效"
@@ -286,15 +374,12 @@ def pair_matrix(
         {"name": f"{kind} item 集合一致", "passed": True, "detail": f"{len(ids)} 条"},
         {"name": f"{kind} 无重复 item_id", "passed": True, "detail": "唯一"},
         {"name": f"{kind} 类别与可答性一致", "passed": True, "detail": "逐条核对"},
+        {
+            "name": f"{kind} gold span 指纹一致",
+            "passed": True,
+            "detail": "version + 字符区间 + quote 逐条核对",
+        },
     ]
-    if kind == KIND_RETRIEVAL:
-        checks.append(
-            {
-                "name": "gold span 指纹一致",
-                "passed": True,
-                "detail": "version + 字符区间 + quote 逐条核对",
-            }
-        )
     return matrix, checks
 
 
@@ -624,6 +709,7 @@ def build_matrix_report(
         "validation": {
             "checks": checks,
             "config_diff": validation["config_diff"],
+            "generation_config_diff": validation["generation_config_diff"],
             "vary_keys": validation["vary_keys"],
         },
         "bootstrap": {
@@ -726,16 +812,22 @@ def _variable_section(validation: dict[str, Any]) -> list[str]:
         lines.append("差异只来自跑批之外的因素（分块产物本身）。")
         return lines
     lines.append(f"声明允许变动的配置键：{', '.join(f'`{key}`' for key in vary_keys)}")
-    lines.extend(["", "| 策略 | 变动的配置 |", "|---|---|"])
-    for name, entry in diff.items():
-        detail = (
-            "、".join(
-                f"`{key}`: {config_cell(value['baseline'])} → {config_cell(value['candidate'])}"
-                for key, value in entry.items()
+    for title, entries in (
+        ("检索轨", diff),
+        ("生成轨", validation.get("generation_config_diff") or {}),
+    ):
+        if not entries:
+            continue
+        lines.extend(["", f"**{title}**", "", "| 策略 | 变动的配置 |", "|---|---|"])
+        for name, entry in entries.items():
+            detail = (
+                "、".join(
+                    f"`{key}`: {config_cell(value['baseline'])} → {config_cell(value['candidate'])}"
+                    for key, value in entry.items()
+                )
+                or "无"
             )
-            or "无"
-        )
-        lines.append(f"| `{name}` | {detail} |")
+            lines.append(f"| `{name}` | {detail} |")
     return lines
 
 
@@ -890,17 +982,21 @@ def _parse_assignment(value: str) -> tuple[str, Path]:
     return name.strip(), Path(path.strip())
 
 
-def load_chunk_strategy_manifest(path: Path) -> list[tuple[str, Path]]:
-    """把 chunk strategy runner manifest 转成矩阵的四条检索报告输入。"""
+def load_chunk_strategy_manifest(path: Path, *, track: str = "retrieval") -> list[tuple[str, Path]]:
+    """把 runner manifest 转成矩阵的四条报告输入。
+
+    检索轨与生成轨的 manifest 结构相同(`runs.<策略>.report`), 所以共用一个读取器;
+    `track` 只用于把错误信息说清楚是哪一轨。
+    """
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or not isinstance(payload.get("runs"), dict):
-        raise ValidationError(f"chunk strategy manifest 缺少 runs 对象: {path}")
+        raise ValidationError(f"{track} manifest 缺少 runs 对象: {path}")
     entries = payload["runs"]
     actual = set(entries)
     expected = set(CHUNK_MANIFEST_STRATEGIES)
     if actual != expected:
         raise ValidationError(
-            "chunk strategy manifest 必须恰好包含四套策略: "
+            f"{track} manifest 必须恰好包含四套策略: "
             f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
         )
 
@@ -908,11 +1004,11 @@ def load_chunk_strategy_manifest(path: Path) -> list[tuple[str, Path]]:
     for strategy in CHUNK_MANIFEST_STRATEGIES:
         entry = entries[strategy]
         if not isinstance(entry, dict) or not entry.get("run_id"):
-            raise ValidationError(f"manifest 策略 {strategy} 缺少 run_id")
+            raise ValidationError(f"{track} manifest 策略 {strategy} 缺少 run_id")
         report_value = entry.get("report")
         if not isinstance(report_value, str) or not report_value.strip():
             raise ValidationError(
-                f"manifest 策略 {strategy} 没有 report.json; "
+                f"{track} manifest 策略 {strategy} 没有 report.json; "
                 "复用旧 run 时请重新执行 runner --no-reuse 以导出可比较报告"
             )
         report = Path(report_value)
@@ -921,7 +1017,7 @@ def load_chunk_strategy_manifest(path: Path) -> list[tuple[str, Path]]:
         if not report.exists() and not report.is_absolute():
             report = path.parent / report
         if not report.is_file():
-            raise ValidationError(f"manifest 策略 {strategy} 的报告不存在: {report}")
+            raise ValidationError(f"{track} manifest 策略 {strategy} 的报告不存在: {report}")
         runs.append((strategy, report))
     return runs
 
@@ -951,6 +1047,12 @@ def _parse_args() -> argparse.Namespace:
         default=[],
         metavar="NAME=PATH",
         help="策略名=生成跑批报告；给了就必须覆盖全部策略",
+    )
+    parser.add_argument(
+        "--generation-manifest",
+        type=Path,
+        default=None,
+        help="generation_strategy_runner 生成的 manifest.json; 自动载入四策略生成报告",
     )
     parser.add_argument("--baseline", default=None, help="基线策略名，默认第一个 --run")
     parser.add_argument(
@@ -996,10 +1098,17 @@ def main() -> None:
     run_inputs = (
         load_chunk_strategy_manifest(args.manifest) if args.manifest else args.run
     )
+    if args.generation and args.generation_manifest:
+        raise ValidationError("--generation 与 --generation-manifest 只能给一个")
+    generation_inputs = (
+        load_chunk_strategy_manifest(args.generation_manifest, track="generation")
+        if args.generation_manifest
+        else args.generation
+    )
     vary_keys = list(args.vary_key)
-    if args.manifest:
+    if args.manifest or args.generation_manifest:
         vary_keys = list(dict.fromkeys([*vary_keys, *CHUNK_MANIFEST_VARY_KEYS]))
-    runs = build_runs(run_inputs, args.generation)
+    runs = build_runs(run_inputs, generation_inputs)
     payload = build_matrix_report(
         runs,
         baseline=args.baseline or ("heading" if args.manifest else runs[0].name),

@@ -82,6 +82,9 @@ class AuditRecord:
     success: bool
     cost_usd: Decimal | None = None
     run_id: UUID | None = None
+    # 评测跑批的归属。与 run_id 是两张表的外键(agent_runs / eval_runs), 不能混用:
+    # 评测跑批的逐条 token 与成本就是靠它归集的。
+    eval_run_id: UUID | None = None
 
 
 class AuditSink(Protocol):

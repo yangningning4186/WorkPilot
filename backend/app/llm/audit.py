@@ -16,11 +16,12 @@ class SqlLlmCallAudit:
             text(
                 """
                 INSERT INTO llm_calls
-                    (id, trace_id, run_id, task_type, tier, model, provider,
+                    (id, trace_id, run_id, eval_run_id, task_type, tier, model, provider,
                      prompt_tokens, output_tokens, latency_ms, success, cost_usd)
                 VALUES
-                    (:id, :trace_id, :run_id, :task_type, :tier, :model, :provider,
-                     :input_tokens, :output_tokens, :latency_ms, :success, :cost_usd)
+                    (:id, :trace_id, :run_id, :eval_run_id, :task_type, :tier, :model,
+                     :provider, :input_tokens, :output_tokens, :latency_ms, :success,
+                     :cost_usd)
                 """
             ),
             {"id": uuid7(), **vars(call)},

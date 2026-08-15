@@ -13,12 +13,18 @@ from statistics import fmean
 from typing import Any
 from uuid import UUID
 
+import structlog
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import build_model_gateway
+from app.llm.gateway import ModelGateway, build_model_gateway
 from app.retrieval.citations import CitationValidationError
-from app.services.grounded_answer import GroundedAnswerResult, answer_with_citations
+from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
+from app.services.grounded_answer import (
+    SYSTEM_PROMPT,
+    GroundedAnswerResult,
+    answer_with_citations,
+)
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
@@ -31,6 +37,22 @@ from eval.metrics.generation import (
     evaluate_citation_validity,
     evaluate_constraints,
 )
+
+# 生成轨支持的检索链路。名字与 `eval.dense_baseline.RETRIEVAL_STRATEGIES` 对齐,
+# 这样"检索轨用哪条链路，生成轨就用哪条"可以在报告里直接对账。
+# `lexical-only` 不在其中: grounded_answer 没有纯词法链路, 硬凑等于换了一条实现,
+# 与检索轨同名却不同源, 比不了。
+GENERATION_RETRIEVAL_STRATEGIES: dict[str, dict[str, bool]] = {
+    "dense-only": {"decomposition": False, "lexical_rrf": False, "rerank": False},
+    "multi-query-dense": {"decomposition": True, "lexical_rrf": False, "rerank": False},
+    "dense-rerank": {"decomposition": False, "lexical_rrf": False, "rerank": True},
+    "dense-lexical-rrf": {"decomposition": False, "lexical_rrf": True, "rerank": False},
+    "dense-lexical-rrf-rerank": {
+        "decomposition": False,
+        "lexical_rrf": True,
+        "rerank": True,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -48,6 +70,30 @@ class GenerationItem:
 
 
 @dataclass(frozen=True)
+class ItemUsage:
+    """单条样本消耗的模型用量, 来自 `llm_calls` 按 trace_id 的归集。
+
+    一条样本会触发多次调用(query embedding、证据门控、正文生成), 全部计入。
+    `cost_usd` 为 None 表示价格表是 0(自部署), 报告里必须标"不可用"而不是 0.00——
+    0.00 会被读成"测过, 就是不要钱", 与"没有可用价格"是两件事。
+    """
+
+    call_count: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    cost_usd: float | None
+
+
+@dataclass(frozen=True)
+class GenerationRunResult:
+    run_id: UUID
+    config_hash: str
+    report_path: Path | None
+    reused: bool
+
+
+@dataclass(frozen=True)
 class GenerationItemResult:
     item: GenerationItem
     answer: str | None
@@ -61,6 +107,8 @@ class GenerationItemResult:
     latency_ms: int
     model: str | None
     provider: str | None
+    chunk_strategy: ChunkStrategy | None = None
+    usage: ItemUsage | None = None
     error: str | None = None
 
     @property
@@ -76,39 +124,115 @@ async def run_generation_baseline(
     top_k: int,
     theta: float,
     output_root: Path,
+    retrieval_strategy: str = "dense-only",
+    chunk_strategy: ChunkStrategy = "heading",
+    rerank_candidate_text_mode: str | None = None,
+    lexical_mode: str | None = None,
+    expected_dataset_fingerprint: str | None = None,
+    expected_annotation_fingerprint: str | None = None,
+    chunk_metadata: dict[str, object] | None = None,
+    reuse_completed: bool = False,
     settings: Settings | None = None,
-) -> Path:
+) -> GenerationRunResult:
     settings = settings or Settings()
     if not 1 <= top_k <= 50:
         raise ValueError("top_k 必须位于 1 到 50")
     if not 0 < theta <= 1:
         raise ValueError("theta 必须位于 0 到 1")
-    config: dict[str, object] = {
-        "dataset": dataset_name,
-        "origin": origin,
-        "strategy": "dense-only-generation",
-        "top_k": top_k,
-        "theta": theta,
-        "refusal_threshold": settings.refusal_threshold,
-        "refusal_margin_threshold": settings.refusal_margin_threshold,
-        "query_decomposition_enabled": False,
-        "rerank_enabled": False,
-        "lexical_rrf_enabled": False,
-        "embedding_model": settings.embedding_model,
-        "embedding_provider_base_url": settings.embedding_base_url,
-        "embedding_revision": settings.embedding_revision,
-        "chat_model": settings.tier_main_model,
-        "chat_provider_base_url": settings.tier_main_base_url,
-        "evidence_gate_max_chars": settings.evidence_gate_max_chars,
-        "answer_max_evidence_chars": settings.answer_max_evidence_chars,
-        "answer_max_tokens": settings.answer_max_tokens,
-    }
-    config_hash = hashlib.sha256(
-        json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    if retrieval_strategy not in GENERATION_RETRIEVAL_STRATEGIES:
+        raise ValueError(
+            f"生成轨不支持的检索策略: {retrieval_strategy}, "
+            f"可选 {sorted(GENERATION_RETRIEVAL_STRATEGIES)}"
+        )
+    chunk_strategy = validate_chunk_strategy(chunk_strategy)
+    flags = GENERATION_RETRIEVAL_STRATEGIES[retrieval_strategy]
+    text_mode = rerank_candidate_text_mode or settings.rerank_candidate_text_mode
+    lex_mode = lexical_mode or settings.lexical_mode
     git_sha = _git_sha()
     async with session_factory() as session:
         dataset_id, items = await _load_items(session, dataset_name, origin=origin)
+        dataset_fingerprint = _fingerprint_dataset(items)
+        annotation_fingerprint = _fingerprint_annotations(items)
+        # 检索轨与生成轨必须跑在同一批 gold span 上; 指纹对不上说明标注在两轨之间被改过,
+        # 端到端结论就不是同一个数据集的结论。宁可中止, 不做"大致相同"的比较。
+        for name, expected, actual in (
+            ("gold span", expected_dataset_fingerprint, dataset_fingerprint),
+            ("gold answer/constraints", expected_annotation_fingerprint, annotation_fingerprint),
+        ):
+            if expected is not None and expected != actual:
+                await session.rollback()
+                raise ValueError(
+                    f"评测数据在四策略跑批期间发生变化({name}): "
+                    f"expected={expected}, actual={actual}"
+                )
+        # 先建一个只用来读模型身份的网关: config_hash 依赖身份, 而带 run_id 的
+        # 审计网关又依赖 run_id, 两者互为前置, 只能拆成两步。
+        identity_gateway = build_model_gateway(settings)
+        try:
+            gateway_identity = {
+                "embedding_model": identity_gateway.embedding_model,
+                "embedding_provider": identity_gateway.embedding_provider,
+                "embedding_revision": identity_gateway.embedding_revision,
+                "embedding_dim": identity_gateway.embedding_dimensions,
+                "chat_model": identity_gateway.chat_model,
+                "chat_provider": identity_gateway.chat_provider,
+            }
+        finally:
+            await identity_gateway.aclose()
+        config: dict[str, object] = {
+            "dataset": dataset_name,
+            # 数据集内容与标注都进 config_hash: 同名数据集改过之后不得误复用旧 run。
+            "dataset_fingerprint": dataset_fingerprint,
+            "annotation_fingerprint": annotation_fingerprint,
+            "runner_git_sha": git_sha,
+            "origin": origin,
+            "track": "generation",
+            "strategy": retrieval_strategy,
+            "chunk_strategy": chunk_strategy,
+            "chunk_metadata": chunk_metadata or {},
+            "top_k": top_k,
+            "theta": theta,
+            # Prompt 是生成轨最容易被悄悄改掉的变量, 指纹进 config_hash:
+            # 改了 prompt 就必须重跑, 不能复用旧 run 冒充同一条件下的对照。
+            "prompt_fingerprint": prompt_fingerprint(),
+            "refusal_threshold": settings.refusal_threshold,
+            "refusal_margin_threshold": settings.refusal_margin_threshold,
+            "query_decomposition_enabled": flags["decomposition"],
+            "rerank_enabled": flags["rerank"],
+            "lexical_rrf_enabled": flags["lexical_rrf"],
+            **gateway_identity,
+            "embedding_provider_base_url": settings.embedding_base_url,
+            "chat_provider_base_url": settings.tier_main_base_url,
+            "evidence_gate_max_chars": settings.evidence_gate_max_chars,
+            "rerank_evidence_gate_max_chars": settings.rerank_evidence_gate_max_chars,
+            "evidence_gate_max_segment_chars": settings.evidence_gate_max_segment_chars,
+            "evidence_gate_max_tokens": settings.evidence_gate_max_tokens,
+            "query_decomposition_max_subqueries": settings.query_decomposition_max_subqueries,
+            "rerank_candidate_k": settings.rerank_candidate_k,
+            "reranker_base_url": settings.reranker_base_url,
+            "reranker_model": settings.reranker_model,
+            "rerank_candidate_text_mode": text_mode,
+            "lexical_mode": lex_mode,
+            "rrf_k": settings.rrf_k,
+            "answer_max_evidence_chars": settings.answer_max_evidence_chars,
+            "answer_max_tokens": settings.answer_max_tokens,
+        }
+        config_hash = hashlib.sha256(
+            json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if reuse_completed:
+            existing_run_id = await _find_completed_run(
+                session, dataset_id=dataset_id, config_hash=config_hash
+            )
+            if existing_run_id is not None:
+                await session.close()
+                await close_database()
+                return GenerationRunResult(
+                    run_id=existing_run_id,
+                    config_hash=config_hash,
+                    report_path=None,
+                    reused=True,
+                )
         run_id = await _create_run(
             session,
             dataset_id=dataset_id,
@@ -116,18 +240,27 @@ async def run_generation_baseline(
             git_sha=git_sha,
             config=config,
             config_hash=config_hash,
-            settings=settings,
+            identity=gateway_identity,
         )
-        gateway = build_model_gateway(settings, audit_sink=SqlLlmCallAudit(session))
+        # 用量归集按 eval_run_id + trace_id 过滤, 网关必须知道自己在哪个跑批里。
+        # 注意是 eval_run_id 不是 run_id: 后者的外键指向 agent_runs, 塞评测 run 会违反外键。
+        run_gateway = build_model_gateway(
+            settings, audit_sink=SqlLlmCallAudit(session), eval_run_id=run_id
+        )
         results: list[GenerationItemResult] = []
         try:
             for item in items:
                 result = await _evaluate_item(
                     session,
-                    gateway,
+                    run_gateway,
                     item=item,
+                    run_id=run_id,
                     top_k=top_k,
                     theta=theta,
+                    chunk_strategy=chunk_strategy,
+                    flags=flags,
+                    text_mode=text_mode,
+                    lex_mode=lex_mode,
                     settings=settings,
                 )
                 await _store_result(session, run_id, result)
@@ -138,7 +271,7 @@ async def run_generation_baseline(
             await session.rollback()
             raise
         finally:
-            await gateway.aclose()
+            await run_gateway.aclose()
     await close_database()
 
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -160,7 +293,85 @@ async def run_generation_baseline(
     report_path = run_dir / "report.md"
     report_path.write_text(_markdown_report(payload), encoding="utf-8")
     _write_review_csv(run_dir / "citation-review.csv", results)
-    return report_path
+    return GenerationRunResult(
+        run_id=run_id,
+        config_hash=config_hash,
+        report_path=report_path,
+        reused=False,
+    )
+
+
+def prompt_fingerprint() -> str:
+    """生成轨实际使用的 system prompt 的指纹。"""
+    return hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest()
+
+
+def _fingerprint_dataset(items: list[GenerationItem]) -> str:
+    """与 `eval.dense_baseline.fingerprint_eval_items` 同口径, 便于跨两轨核对。
+
+    只覆盖检索轨也看得见的字段(id / category / question / gold_spans),
+    所以生成轨可以直接拿检索 manifest 里的指纹做前置校验。
+    """
+    payload = [
+        {
+            "id": str(item.id),
+            "category": item.category,
+            "question": item.question,
+            "gold_spans": [
+                {
+                    "version_id": str(span.version_id),
+                    "char_start": span.char_start,
+                    "char_end": span.char_end,
+                    "quote": span.quote,
+                }
+                for span in item.gold_spans
+            ],
+        }
+        for item in items
+    ]
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _fingerprint_annotations(items: list[GenerationItem]) -> str:
+    """生成轨独有的标注: gold answer 与 constraints。
+
+    `constraint_pass` 直接由 constraints 决定, 改了约束却复用旧 run 会读出假结论,
+    所以它必须独立进 config_hash, 不能藏在 gold span 指纹里。
+    """
+    payload = [
+        {
+            "id": str(item.id),
+            "gold_answer": item.gold_answer,
+            "constraints": item.constraints,
+        }
+        for item in items
+    ]
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+async def _find_completed_run(
+    session: AsyncSession, *, dataset_id: UUID, config_hash: str
+) -> UUID | None:
+    run_id = (
+        await session.execute(
+            text(
+                """
+                SELECT id FROM eval_runs
+                WHERE dataset_id=:dataset_id
+                  AND config_hash=:config_hash
+                  AND finished_at IS NOT NULL
+                  AND metrics IS NOT NULL
+                ORDER BY finished_at DESC, id DESC
+                LIMIT 1
+                """
+            ),
+            {"dataset_id": dataset_id, "config_hash": config_hash},
+        )
+    ).scalar_one_or_none()
+    await session.rollback()
+    return run_id
 
 
 async def _load_items(
@@ -225,14 +436,23 @@ async def _load_items(
 
 async def _evaluate_item(
     session: AsyncSession,
-    gateway: Any,
+    gateway: ModelGateway,
     *,
     item: GenerationItem,
+    run_id: UUID,
     top_k: int,
     theta: float,
+    chunk_strategy: ChunkStrategy,
+    flags: dict[str, bool],
+    text_mode: str,
+    lex_mode: str,
     settings: Settings,
 ) -> GenerationItemResult:
     started = time.monotonic()
+    # 每条样本一个 trace_id, 网关审计据此把这条样本触发的所有调用(embedding、
+    # 证据门控、正文生成)归到一起, 逐条 token 与成本才有出处(约束 4 的日志口径)。
+    trace_id = f"{run_id}:{item.id}"
+    structlog.contextvars.bind_contextvars(trace_id=trace_id)
     try:
         generated: GroundedAnswerResult = await answer_with_citations(
             session,
@@ -245,9 +465,20 @@ async def _evaluate_item(
             rerank_evidence_gate_max_chars=settings.rerank_evidence_gate_max_chars,
             evidence_gate_max_segment_chars=settings.evidence_gate_max_segment_chars,
             evidence_gate_max_tokens=settings.evidence_gate_max_tokens,
-            query_decomposition_enabled=False,
-            rerank_enabled=False,
-            lexical_rrf_enabled=False,
+            query_decomposition_enabled=flags["decomposition"],
+            query_decomposition_max_subqueries=settings.query_decomposition_max_subqueries,
+            query_decomposition_max_tokens=settings.query_decomposition_max_tokens,
+            rerank_enabled=flags["rerank"],
+            rerank_candidate_k=settings.rerank_candidate_k,
+            reranker_base_url=settings.reranker_base_url,
+            reranker_model=settings.reranker_model,
+            reranker_timeout_s=settings.reranker_timeout_s,
+            rerank_max_candidate_chars=settings.rerank_max_candidate_chars,
+            rerank_candidate_text_mode=text_mode,
+            lexical_rrf_enabled=flags["lexical_rrf"],
+            lexical_mode=lex_mode,
+            rrf_k=settings.rrf_k,
+            chunk_strategy=chunk_strategy,
             max_evidence_chars=settings.answer_max_evidence_chars,
             max_tokens=settings.answer_max_tokens,
         )
@@ -275,9 +506,19 @@ async def _evaluate_item(
             latency_ms=latency_ms,
             model=None,
             provider=None,
+            chunk_strategy=chunk_strategy,
+            usage=await _load_item_usage(session, run_id=run_id, trace_id=trace_id),
             error=f"{type(error).__name__}: {error}",
         )
+    finally:
+        structlog.contextvars.unbind_contextvars("trace_id")
 
+    if generated.chunk_strategy != chunk_strategy:  # pragma: no cover - 防御性
+        raise RuntimeError(
+            "生成链路返回的 chunk strategy 与请求不一致: "
+            f"expected={chunk_strategy}, actual={generated.chunk_strategy}"
+        )
+    usage = await _load_item_usage(session, run_id=run_id, trace_id=trace_id)
     sources = await _load_citation_sources(session, generated)
     citation_validity = evaluate_citation_validity(
         answer=generated.answer,
@@ -303,6 +544,50 @@ async def _evaluate_item(
         latency_ms=max(0, round((time.monotonic() - started) * 1000)),
         model=generated.model,
         provider=generated.provider,
+        chunk_strategy=generated.chunk_strategy,
+        usage=usage,
+    )
+
+
+async def _load_item_usage(
+    session: AsyncSession, *, run_id: UUID, trace_id: str
+) -> ItemUsage:
+    """把这条样本触发的所有模型调用归集成一条用量记录。
+
+    审计行与业务写入同一个 session, 本条样本尚未提交时也能读到自己的调用。
+    价格表为 0(自部署)时 `cost_usd` 归零, 这里显式退回 None——报告宁可写"不可用",
+    也不能写 0.00 让人读成"测过成本"。
+    """
+    row = (
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT count(*) AS call_count,
+                           coalesce(sum(prompt_tokens), 0) AS input_tokens,
+                           coalesce(sum(output_tokens), 0) AS output_tokens,
+                           sum(cost_usd) AS cost_usd,
+                           count(*) FILTER (WHERE cost_usd IS NULL) AS unpriced
+                    FROM llm_calls
+                    WHERE eval_run_id=:run_id AND trace_id=:trace_id
+                    """
+                ),
+                {"run_id": run_id, "trace_id": trace_id},
+            )
+        )
+        .mappings()
+        .one()
+    )
+    input_tokens = int(row["input_tokens"])
+    output_tokens = int(row["output_tokens"])
+    cost = row["cost_usd"]
+    priced = cost is not None and int(row["unpriced"]) == 0 and float(cost) > 0
+    return ItemUsage(
+        call_count=int(row["call_count"]),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
+        cost_usd=float(cost) if priced else None,
     )
 
 
@@ -365,21 +650,21 @@ async def _create_run(
     git_sha: str,
     config: dict[str, object],
     config_hash: str,
-    settings: Settings,
+    identity: dict[str, object],
 ) -> UUID:
     run_id = uuid7()
     actual_models = {
         "query_embedding": [
             {
-                "provider": "openai_compatible",
-                "model": settings.embedding_model,
-                "revision": settings.embedding_revision,
+                "provider": identity["embedding_provider"],
+                "model": identity["embedding_model"],
+                "revision": identity["embedding_revision"],
             }
         ],
         "chat": [
             {
-                "provider": "openai_compatible",
-                "model": settings.tier_main_model,
+                "provider": identity["chat_provider"],
+                "model": identity["chat_model"],
                 "revision": "unversioned",
             }
         ],
@@ -421,6 +706,8 @@ async def _store_result(
             "aligned": result.aligned_citations,
             "total": result.citation_count,
         },
+        "chunk_strategy": result.chunk_strategy,
+        "usage": _usage_json(result.usage),
         "error": result.error,
     }
     await session.execute(
@@ -531,6 +818,7 @@ def _aggregate(results: list[GenerationItemResult]) -> dict[str, object]:
             "mean": fmean(latencies) if latencies else None,
             "max": max(latencies) if latencies else None,
         },
+        "usage": _aggregate_usage(completed),
         "actual_models": sorted(
             {
                 f"{result.provider}/{result.model}"
@@ -538,6 +826,33 @@ def _aggregate(results: list[GenerationItemResult]) -> dict[str, object]:
                 if result.model
             }
         ),
+    }
+
+
+def _aggregate_usage(completed: list[GenerationItemResult]) -> dict[str, object]:
+    """端到端 token 与成本。价格表为 0 时成本整体标不可用, 不写 0。"""
+    usages = [result.usage for result in completed if result.usage is not None]
+    if not usages:
+        return {
+            "status": "unavailable",
+            "reason": "跑批未记录逐条用量",
+            "measured_items": 0,
+        }
+    costs = [usage.cost_usd for usage in usages if usage.cost_usd is not None]
+    total_tokens = sum(usage.total_tokens for usage in usages)
+    return {
+        "status": "ok",
+        "measured_items": len(usages),
+        "call_count": sum(usage.call_count for usage in usages),
+        "input_tokens": sum(usage.input_tokens for usage in usages),
+        "output_tokens": sum(usage.output_tokens for usage in usages),
+        "total_tokens": total_tokens,
+        "mean_total_tokens": total_tokens / len(usages),
+        "cost_usd": sum(costs) if len(costs) == len(usages) else None,
+        "cost_status": "ok" if len(costs) == len(usages) else "unavailable",
+        "cost_reason": None
+        if len(costs) == len(usages)
+        else "当前模型价格表为 0(自部署), 没有可报告的金额; token 用量才是成本口径",
     }
 
 
@@ -559,7 +874,20 @@ def _serialize_citation(citation: Any) -> dict[str, object]:
     }
 
 
+def _usage_json(usage: ItemUsage | None) -> dict[str, object] | None:
+    if usage is None:
+        return None
+    return {
+        "call_count": usage.call_count,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "total_tokens": usage.total_tokens,
+        "cost_usd": usage.cost_usd,
+    }
+
+
 def _json_item(result: GenerationItemResult) -> dict[str, object]:
+    usage = result.usage
     return {
         "item_id": str(result.item.id),
         "category": result.item.category,
@@ -580,6 +908,21 @@ def _json_item(result: GenerationItemResult) -> dict[str, object]:
         "latency_ms": result.latency_ms,
         "model": result.model,
         "provider": result.provider,
+        "chunk_strategy": result.chunk_strategy,
+        "usage": _usage_json(usage),
+        # 矩阵的成本指标读顶层 total_tokens / cost_usd; 缺失即标"不可用"而不是 0。
+        "total_tokens": usage.total_tokens if usage else None,
+        "cost_usd": usage.cost_usd if usage else None,
+        # gold span 指纹的原料。检索轨报告里叫同一个名字, 两轨才能核对是不是同一批标注。
+        "span_diagnostics": [
+            {
+                "version_id": str(span.version_id),
+                "char_start": span.char_start,
+                "char_end": span.char_end,
+                "quote": span.quote,
+            }
+            for span in result.item.gold_spans
+        ],
         "error": result.error,
     }
 
@@ -625,14 +968,22 @@ def _markdown_report(payload: dict[str, object]) -> str:
     validity = metrics["citation_validity"]
     constraints = metrics["constraint_pass"]
     alignment = metrics["citation_gold_alignment"]
+    latency = metrics["latency_ms"]
+    config = payload["config"]
     assert isinstance(refusal, dict) and isinstance(validity, dict)
     assert isinstance(constraints, dict) and isinstance(alignment, dict)
+    assert isinstance(latency, dict) and isinstance(config, dict)
+    usage = metrics.get("usage")
+    assert isinstance(usage, dict)
     return f"""# {payload["label"]}
 
 - dataset: `{payload["dataset"]}`
 - run_id: `{payload["run_id"]}`
 - git_sha: `{payload["git_sha"]}`
 - config_hash: `{payload["config_hash"]}`
+- chunk_strategy: `{config["chunk_strategy"]}` ｜ 检索链路: `{config["strategy"]}`
+- prompt_fingerprint: `{str(config["prompt_fingerprint"])[:12]}` ｜ \
+answer_max_tokens: {config["answer_max_tokens"]}
 - completed: {metrics["completed_count"]}/{metrics["item_count"]}
 
 ## 指标
@@ -645,11 +996,29 @@ def _markdown_report(payload: dict[str, object]) -> str:
 | constraint_pass | {_percent(constraints["rate"])} ({constraints["passed"]}/{constraints["total"]}) |
 | citation_gold_alignment（自动代理） | {_percent(alignment["rate"])} ({alignment["aligned"]}/{alignment["total"]}) |
 | citation_accuracy（语义支撑） | 待人工复核 |
+| 端到端延迟均值(ms) | {_number(latency["mean"])} |
+| 端到端 token 均值 | {_number(usage.get("mean_total_tokens"))} |
+| 端到端成本(USD) | {_cost(usage)} |
 
 `citation_validity` 只证明标签格式、数据库对象与 quote 区间有效；
 `citation_gold_alignment` 只证明引用覆盖人工 gold span。两者都不能冒充语义引用准确率。
 人工复核工作表见同目录 `citation-review.csv`。
+
+延迟含检索、证据门控与生成全过程；token 覆盖本条样本触发的所有模型调用。
 """
+
+
+def _number(value: object) -> str:
+    if not isinstance(value, int | float):
+        return "N/A"
+    return f"{float(value):.1f}"
+
+
+def _cost(usage: dict[str, Any]) -> str:
+    value = usage.get("cost_usd")
+    if usage.get("cost_status") != "ok" or not isinstance(value, int | float):
+        return f"不可用（{usage.get('cost_reason') or usage.get('reason')}）"
+    return f"{float(value):.6f}"
 
 
 def _percent(value: object) -> str:
@@ -682,6 +1051,23 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--theta", type=float, default=0.5)
     parser.add_argument(
+        "--retrieval-strategy",
+        choices=sorted(GENERATION_RETRIEVAL_STRATEGIES),
+        default="dense-only",
+    )
+    parser.add_argument(
+        "--chunk-strategy",
+        choices=["fixed", "heading", "recursive", "semantic"],
+        default="heading",
+    )
+    parser.add_argument(
+        "--rerank-candidate-text-mode",
+        choices=["title_heading_content", "heading_content", "content"],
+        default=None,
+    )
+    parser.add_argument("--lexical-mode", default=None)
+    parser.add_argument("--reuse", action="store_true")
+    parser.add_argument(
         "--output-dir", type=Path, default=Path("eval/outputs/generation-baseline")
     )
     return parser.parse_args()
@@ -689,7 +1075,7 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    report = asyncio.run(
+    result = asyncio.run(
         run_generation_baseline(
             dataset_name=args.dataset,
             label=args.label,
@@ -697,9 +1083,24 @@ def main() -> None:
             top_k=args.top_k,
             theta=args.theta,
             output_root=args.output_dir,
+            retrieval_strategy=args.retrieval_strategy,
+            chunk_strategy=args.chunk_strategy,
+            rerank_candidate_text_mode=args.rerank_candidate_text_mode,
+            lexical_mode=args.lexical_mode,
+            reuse_completed=args.reuse,
         )
     )
-    print(report)
+    print(
+        json.dumps(
+            {
+                "run_id": str(result.run_id),
+                "config_hash": result.config_hash,
+                "report": str(result.report_path) if result.report_path else None,
+                "reused": result.reused,
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 if __name__ == "__main__":
