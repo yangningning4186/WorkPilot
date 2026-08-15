@@ -192,6 +192,38 @@ markdown 里各列几条，`report.json` 始终保留全部逐样本差值。
 一侧跑批报错），两侧就一起剔除，剔除数量记在「仅一侧适用」列——
 否则比较的是两批不同的样本。因此对照报告里的绝对值可能与单次跑批报告的聚合值不同。
 
+## E1 四策略生成轨
+
+检索轨证明"哪套分块更容易把 gold span 捞回来"，生成轨证明"捞回来之后答案与引用是不是更好"。
+两轨必须同源，所以生成跑批以**检索轨的 manifest 为基准**，继承 dataset、origin、Top-K、
+theta 与检索链路，只让 `chunk_strategy` 变：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.generation_strategy_runner \
+  --manifest eval/outputs/chunk-strategies/<batch>/manifest.json \
+  --label e1-generation-core-dev
+```
+
+跑批前置校验（任一不满足直接中止，不产出任何 run 或 manifest）：
+
+| 检查 | 拒绝理由 |
+|---|---|
+| 检索 manifest 缺策略或缺字段 | 不是完整的四策略批次 |
+| 当前 embedding 身份 ≠ manifest 记录 | 两轨读的不是同一份向量 |
+| 语料指纹漂移 | 中间重建过 chunk，端到端结论无法与检索轨对齐 |
+| gold span 指纹漂移 | 样本在两轨之间被改过 |
+| gold answer / constraints 指纹在批内漂移 | `constraint_pass` 的判据被换过 |
+| 四个 run 的受控配置不一致 | 不是单变量对照（回读数据库里的 config，不信内存变量） |
+| 检索链路生成轨无法复现（如 `lexical-only`） | 同名却不同源，比不了 |
+
+`prompt_fingerprint`（system prompt 的 sha256）与数据集、标注指纹一起进 `config_hash`：
+改了 prompt 就必须重跑，不能复用旧 run 冒充同一条件下的对照。同一份配置重复执行会
+**复用已完成的 run**，不重复烧钱；复用时不会导出 `report.json`，需要报告请加 `--no-reuse`。
+
+逐条用量按 `llm_calls.eval_run_id + trace_id` 归集（`trace_id = <run_id>:<item_id>`），
+覆盖一条样本触发的全部模型调用。注意是 `eval_run_id` 不是 `run_id`——后者外键指向
+`agent_runs`，塞评测 run 会直接违反外键。
+
 ## 多策略对照矩阵（E1 四分块策略）
 
 `strategy_matrix.py` 把上面的配对推广到 N 个策略，以其中一个为基线，
@@ -209,6 +241,16 @@ manifest 模式会严格要求 `fixed/heading/recursive/semantic` 四套报告�
 如 runner 复用了历史 run 而 manifest 中没有报告路径，请用 `--no-reuse` 重跑以导出报告。
 
 `--generation` 可选，但给了就必须覆盖全部策略，否则端到端指标比较的是不同子集。
+四策略生成轨可以直接用 `--generation-manifest` 传 `generation_strategy_runner` 的
+manifest，效果等同于逐个写 `--generation`（两者只能给一个）：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.strategy_matrix \
+  --manifest eval/outputs/chunk-strategies/<batch>/manifest.json \
+  --generation-manifest eval/outputs/generation-strategies/<batch>/manifest.json \
+  --baseline heading \
+  --output-dir eval/outputs/strategy-matrix/<label>
+```
 
 **fail-closed —— 下面任一条不满足直接拒绝出报告，不降级成"能算多少算多少"**：
 
@@ -220,6 +262,8 @@ manifest 模式会严格要求 `fixed/heading/recursive/semantic` 四套报告�
 | **gold span 指纹不一致** | version + 字符区间 + quote 有差异，说明混了解析版本或重标过 |
 | 跑批含失败样本（`error` / `error_count`），或可答题缺检索指标 | 结果不完整 |
 | 受控检索配置不一致 | 不是单变量对照；确属被对照的变量用 `--vary-key` 显式声明 |
+| **受控生成配置不一致** | 模型 / prompt 指纹 / token budget / 阈值有差异，端到端差异无法归因到分块 |
+| **生成报告的 `chunk_strategy` 与策略名对不上** | 报告挂错位置，四策略结论会整体错位 |
 | 主指标没有任何公共可比样本 | 对照无意义 |
 
 指标覆盖 span recall（Top-K 与固定 token budget 两个口径）、nDCG、α-nDCG、MRR、
@@ -232,8 +276,11 @@ context precision、**上下文冗余率**、**检索上下文 token**、拒答�
   该样本从这个指标的所有策略里一起剔除，否则矩阵的列不同源，横向比较没有意义。
 - 冗余率 = Top-K chunk 字符区间的重复覆盖占比（按 `version_id` 分组，跨版本不算重叠），
   越低越好；它把"大 chunk 靠包住 gold span 拿高 recall"的代价显性化。
-- **成本**目前只有检索侧口径（上下文 token）。生成侧 token 与金额需要跑批导出逐条用量，
-  当前 `generation_baseline` 未记录，报告里标记为 `unavailable` 并给出原因，**不写成 0**。
+- **成本**分两个口径。检索侧是上下文 token；生成侧由 `generation_baseline` 按
+  `llm_calls.eval_run_id + trace_id` 归集逐条用量，覆盖一条样本触发的全部调用
+  （query embedding、证据门控、正文生成），落在报告的 `total_tokens`。
+  金额只在价格表非 0 时才报；本机模型自部署价格为 0，`cost_usd` 一律标
+  `unavailable` 并给出原因，**不写成 0.00**——"没有可用价格"和"测过、就是不要钱"是两回事。
 - 端到端质量只含规则轨；语义正确性需要校准过的 Judge，M0 尚不具备。
 - 报告同时给出逐样本**胜/负/平**计数与**区间是否跨零**：前者是方向，后者才是显著性判定。
 - 异常样本单列：策略间分歧最大的、所有策略都未命中的（应归因语料或标注）、
