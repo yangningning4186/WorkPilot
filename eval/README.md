@@ -199,14 +199,14 @@ markdown 里各列几条，`report.json` 始终保留全部逐样本差值。
 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/python -m eval.strategy_matrix \
-  --run fixed-window=eval/outputs/dense-baseline/<run-a> \
-  --run heading-aware=eval/outputs/dense-baseline/<run-b> \
-  --run semantic=eval/outputs/dense-baseline/<run-c> \
-  --run late-chunking=eval/outputs/dense-baseline/<run-d> \
-  --generation fixed-window=eval/outputs/generation-baseline/<gen-a> \
-  --baseline fixed-window --vary-key chunk_strategy \
+  --manifest eval/outputs/chunk-strategies/<batch>/manifest.json \
+  --baseline heading \
   --output-dir eval/outputs/strategy-matrix/<label>
 ```
+
+manifest 模式会严格要求 `fixed/heading/recursive/semantic` 四套报告齐全，并自动把
+`chunk_strategy` 与对应的 `chunk_metadata` 声明为受控变量；其他检索配置仍必须完全一致。
+如 runner 复用了历史 run 而 manifest 中没有报告路径，请用 `--no-reuse` 重跑以导出报告。
 
 `--generation` 可选，但给了就必须覆盖全部策略，否则端到端指标比较的是不同子集。
 

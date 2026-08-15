@@ -341,7 +341,11 @@ async def run_chunk_strategy_batch(
         )
         run_ids[chunk_strategy] = result.run_id
         reused[chunk_strategy] = result.reused
-        reports[chunk_strategy] = str(result.report_path) if result.report_path else None
+        reports[chunk_strategy] = (
+            str(result.report_path.with_name("report.json").resolve())
+            if result.report_path
+            else None
+        )
 
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     manifest_dir = output_root / f"{timestamp}-{_slug(label)}"

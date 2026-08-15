@@ -5,11 +5,8 @@ E1 四分块策略对照就是这个工具的目标用法（docs/06 §2.1）：�
 冗余率 / 拒答 / 端到端质量 / 延迟 / 成本，并给出相对基线的配对 bootstrap 置信区间。
 
     PYTHONPATH=backend backend/.venv/bin/python -m eval.strategy_matrix \\
-      --run fixed-window=eval/outputs/dense-baseline/<run-a> \\
-      --run heading-aware=eval/outputs/dense-baseline/<run-b> \\
-      --run semantic=eval/outputs/dense-baseline/<run-c> \\
-      --run late-chunking=eval/outputs/dense-baseline/<run-d> \\
-      --baseline fixed-window --vary-key chunk_strategy \\
+      --manifest eval/outputs/chunk-strategies/<batch>/manifest.json \\
+      --baseline heading \\
       --output-dir eval/outputs/strategy-matrix/<label>
 
 只读已完成跑批导出的 report.json，不连数据库、不调模型、不重跑检索。
@@ -57,6 +54,8 @@ from eval.stats import (
 )
 
 DEFAULT_DIVERGENCE = 0.5
+CHUNK_MANIFEST_STRATEGIES = ("fixed", "heading", "recursive", "semantic")
+CHUNK_MANIFEST_VARY_KEYS = ("chunk_strategy", "chunk_metadata")
 
 
 class ValidationError(ValueError):
@@ -891,17 +890,59 @@ def _parse_assignment(value: str) -> tuple[str, Path]:
     return name.strip(), Path(path.strip())
 
 
+def load_chunk_strategy_manifest(path: Path) -> list[tuple[str, Path]]:
+    """把 chunk strategy runner manifest 转成矩阵的四条检索报告输入。"""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("runs"), dict):
+        raise ValidationError(f"chunk strategy manifest 缺少 runs 对象: {path}")
+    entries = payload["runs"]
+    actual = set(entries)
+    expected = set(CHUNK_MANIFEST_STRATEGIES)
+    if actual != expected:
+        raise ValidationError(
+            "chunk strategy manifest 必须恰好包含四套策略: "
+            f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+        )
+
+    runs: list[tuple[str, Path]] = []
+    for strategy in CHUNK_MANIFEST_STRATEGIES:
+        entry = entries[strategy]
+        if not isinstance(entry, dict) or not entry.get("run_id"):
+            raise ValidationError(f"manifest 策略 {strategy} 缺少 run_id")
+        report_value = entry.get("report")
+        if not isinstance(report_value, str) or not report_value.strip():
+            raise ValidationError(
+                f"manifest 策略 {strategy} 没有 report.json; "
+                "复用旧 run 时请重新执行 runner --no-reuse 以导出可比较报告"
+            )
+        report = Path(report_value)
+        if report.suffix == ".md":
+            report = report.with_name("report.json")
+        if not report.exists() and not report.is_absolute():
+            report = path.parent / report
+        if not report.is_file():
+            raise ValidationError(f"manifest 策略 {strategy} 的报告不存在: {report}")
+        runs.append((strategy, report))
+    return runs
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="多策略配对矩阵：严格配对 + 相对基线的 bootstrap 置信区间"
     )
-    parser.add_argument(
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
         "--run",
         type=_parse_assignment,
         action="append",
-        required=True,
+        default=[],
         metavar="NAME=PATH",
         help="策略名=检索跑批 report.json（或其目录），至少两个",
+    )
+    source.add_argument(
+        "--manifest",
+        type=Path,
+        help="chunk_strategy_runner 生成的 manifest.json; 自动载入四策略报告",
     )
     parser.add_argument(
         "--generation",
@@ -952,11 +993,17 @@ def build_runs(
 
 def main() -> None:
     args = _parse_args()
-    runs = build_runs(args.run, args.generation)
+    run_inputs = (
+        load_chunk_strategy_manifest(args.manifest) if args.manifest else args.run
+    )
+    vary_keys = list(args.vary_key)
+    if args.manifest:
+        vary_keys = list(dict.fromkeys([*vary_keys, *CHUNK_MANIFEST_VARY_KEYS]))
+    runs = build_runs(run_inputs, args.generation)
     payload = build_matrix_report(
         runs,
-        baseline=args.baseline or runs[0].name,
-        vary_keys=args.vary_key,
+        baseline=args.baseline or ("heading" if args.manifest else runs[0].name),
+        vary_keys=vary_keys,
         seed=args.seed,
         resamples=args.resamples,
         ci_level=args.ci_level,

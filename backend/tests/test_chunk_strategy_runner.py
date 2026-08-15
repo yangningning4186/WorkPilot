@@ -304,3 +304,7 @@ async def test_repeated_four_strategy_batch_reuses_the_same_run_ids(
     assert {key: value["run_id"] for key, value in manifest["runs"].items()} == {
         key: str(value) for key, value in first.run_ids.items()
     }
+    assert all(
+        value["report"] is None or value["report"].endswith("report.json")
+        for value in manifest["runs"].values()
+    )

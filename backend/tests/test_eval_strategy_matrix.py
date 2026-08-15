@@ -646,6 +646,61 @@ def test_cli_writes_json_and_markdown(tmp_path: Path, monkeypatch: pytest.Monkey
         main()
 
 
+def test_chunk_runner_manifest_flows_into_four_strategy_matrix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reports = _strategy_reports(
+        {
+            "fixed": [0.5, 1.0],
+            "heading": [1.0, 1.0],
+            "recursive": [0.5, 0.5],
+            "semantic": [1.0, 0.5],
+        }
+    )
+    manifest_runs = {}
+    for name, report in reports.items():
+        report["config"]["chunk_metadata"] = {
+            "corpus_fingerprint": "same-corpus",
+            "summary": {"strategy": name},
+        }
+        report_path = _write(tmp_path, name, report)
+        manifest_runs[name] = {
+            "run_id": f"run-{name}",
+            "reused": False,
+            "report": str(report_path),
+        }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"runs": manifest_runs}, ensure_ascii=False), encoding="utf-8"
+    )
+    output_dir = tmp_path / "manifest-matrix"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "eval.strategy_matrix",
+            "--manifest",
+            str(manifest_path),
+            "--resamples",
+            str(RESAMPLES),
+            "--seed",
+            str(SEED),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    main()
+
+    payload = json.loads((output_dir / "report.json").read_text(encoding="utf-8"))
+    assert payload["strategies"] == ["fixed", "heading", "recursive", "semantic"]
+    assert payload["baseline_strategy"] == "heading"
+    assert payload["validation"]["vary_keys"] == [
+        "chunk_strategy",
+        "chunk_metadata",
+    ]
+
+
 def test_cli_rejects_malformed_run_arguments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
