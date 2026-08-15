@@ -6,7 +6,7 @@ from eval.dense_baseline import ItemResult, _aggregate
 from eval.mapping import GoldSpan, RetrievedChunk, hits, overlap_ratio
 from eval.metrics.diagnostics import diagnose_spans, summarize_scores
 from eval.metrics.refusal import analyze_refusal
-from eval.metrics.retrieval import evaluate_retrieval
+from eval.metrics.retrieval import evaluate_retrieval, take_token_budget
 from eval.seed_english_dev import _CJK, _leaked_ngrams
 from eval.seed_english_dev import ITEMS as ENGLISH_ITEMS
 
@@ -67,6 +67,14 @@ def test_retrieval_metrics_cover_ranking_budget_and_duplicate_evidence() -> None
     assert metrics.context_precision == 0.75
     assert 0 < metrics.ndcg_at_k < 1
     assert 0 < metrics.alpha_ndcg_at_k < 1
+
+
+def test_token_budget_is_strict_and_repeatable() -> None:
+    chunks = [_chunk(1, 0, 100, tokens=120), _chunk(2, 100, 200, tokens=40)]
+
+    assert take_token_budget(chunks, 100) == []
+    assert take_token_budget(chunks, 160) == chunks
+    assert take_token_budget(chunks, 160) == take_token_budget(chunks, 160)
 
 
 def test_refusal_analysis_finds_separating_threshold() -> None:

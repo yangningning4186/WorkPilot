@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.llm.gateway import ModelGateway
+from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
 
 
 async def apply_hnsw_scan_settings(session: AsyncSession) -> None:
@@ -46,6 +47,7 @@ class DenseSearchHit:
     dense_score: float | None = None
     lexical_score: float | None = None
     fusion_score: float | None = None
+    strategy: ChunkStrategy = "heading"
 
 
 async def dense_search(
@@ -54,17 +56,20 @@ async def dense_search(
     *,
     query: str,
     top_k: int = 10,
+    strategy: ChunkStrategy = "heading",
 ) -> list[DenseSearchHit]:
     if not query.strip():
         raise ValueError("query 不能为空")
     if not 1 <= top_k <= 50:
         raise ValueError("top_k 必须位于 1 到 50")
+    strategy = validate_chunk_strategy(strategy)
     result = await gateway.embed([query], task_type="query_embedding")
     return await _dense_search_by_vector(
         session,
         gateway,
         embedding=result.embeddings[0],
         top_k=top_k,
+        strategy=strategy,
     )
 
 
@@ -75,6 +80,7 @@ async def multi_query_dense_search(
     queries: list[str],
     top_k: int = 10,
     per_query_top_k: int = 50,
+    strategy: ChunkStrategy = "heading",
 ) -> list[DenseSearchHit]:
     normalized = list(dict.fromkeys(" ".join(query.split()) for query in queries if query.strip()))
     if not normalized:
@@ -83,8 +89,15 @@ async def multi_query_dense_search(
         raise ValueError("top_k 必须位于 1 到 50")
     if not 1 <= per_query_top_k <= 50:
         raise ValueError("per_query_top_k 必须位于 1 到 50")
+    strategy = validate_chunk_strategy(strategy)
     if len(normalized) == 1:
-        return await dense_search(session, gateway, query=normalized[0], top_k=top_k)
+        return await dense_search(
+            session,
+            gateway,
+            query=normalized[0],
+            top_k=top_k,
+            strategy=strategy,
+        )
 
     result = await gateway.embed(normalized, task_type="multi_query_embedding")
     rankings = [
@@ -93,6 +106,7 @@ async def multi_query_dense_search(
             gateway,
             embedding=embedding,
             top_k=per_query_top_k,
+            strategy=strategy,
         )
         for embedding in result.embeddings
     ]
@@ -133,14 +147,19 @@ async def _dense_search_by_vector(
     *,
     embedding: list[float],
     top_k: int,
+    strategy: ChunkStrategy,
 ) -> list[DenseSearchHit]:
     await apply_hnsw_scan_settings(session)
+    strategy = validate_chunk_strategy(strategy)
     vector = "[" + ",".join(format(value, ".9g") for value in embedding) + "]"
+    # strategy 必须作为已校验的 SQL 字面量出现。绑定参数在 generic plan 下无法证明
+    # 部分索引谓词, 会退化为全表扫描或选错 HNSW 分区。
+    strategy_predicate = f"c.strategy='{strategy}'"
     rows = (
         (
             await session.execute(
                 text(
-                    """
+                    f"""
                     SELECT
                         c.id AS chunk_id,
                         d.id AS document_id,
@@ -194,7 +213,7 @@ async def _dense_search_by_vector(
                     JOIN document_versions v ON v.id=c.version_id
                     JOIN documents d ON d.id=v.document_id
                     WHERE c.is_searchable=true
-                      AND c.strategy='heading'
+                      AND {strategy_predicate}
                       AND c.embedding IS NOT NULL
                       AND c.embedding_model=:embedding_model
                       AND c.embedding_provider=:embedding_provider
@@ -233,6 +252,7 @@ async def _dense_search_by_vector(
             dense_score=float(row["score"]),
             heading_path=list(row["heading_path"]),
             blocks=list(row["blocks"]),
+            strategy=strategy,
         )
         for row in rows
     ]

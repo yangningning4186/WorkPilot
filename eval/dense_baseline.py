@@ -5,29 +5,46 @@ import json
 import subprocess
 import time
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import fmean
+from typing import Literal
 from uuid import UUID
-
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-from uuid6 import uuid7
 
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
+from app.ingest.chunk_strategies import count_tokens
 from app.llm.audit import SqlLlmCallAudit
 from app.llm.gateway import ModelGateway, build_model_gateway
 from app.retrieval.dense import DenseSearchHit, dense_search, multi_query_dense_search
 from app.retrieval.fusion import reciprocal_rank_fusion
 from app.retrieval.lexical import LEXICAL_MODES, lexical_search
+from app.retrieval.strategy import (
+    CHUNK_STRATEGIES,
+    ChunkStrategy,
+    validate_chunk_strategy,
+)
 from app.services.query_decomposition import plan_retrieval_queries
 from app.services.reranker import rerank_candidates
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from uuid6 import uuid7
+
 from eval.mapping import GoldSpan, RetrievedChunk
 from eval.metrics.diagnostics import diagnose_spans, percentile, summarize_scores
 from eval.metrics.refusal import RefusalAnalysis, analyze_refusal
 from eval.metrics.retrieval import RetrievalMetrics, evaluate_retrieval
+
+RETRIEVAL_STRATEGIES = (
+    "dense-only",
+    "lexical-only",
+    "multi-query-dense",
+    "dense-rerank",
+    "dense-lexical-rrf",
+    "dense-lexical-rrf-rerank",
+)
+TokenCountMode = Literal["stored", "unicode"]
 
 
 @dataclass(frozen=True)
@@ -55,6 +72,14 @@ class ItemResult:
     span_diagnostics: list[dict[str, object]]
 
 
+@dataclass(frozen=True)
+class BaselineRunResult:
+    run_id: UUID
+    config_hash: str
+    report_path: Path | None
+    reused: bool
+
+
 async def run_dense_baseline(
     *,
     dataset_name: str,
@@ -69,53 +94,85 @@ async def run_dense_baseline(
     strategy: str = "dense-only",
     rerank_candidate_text_mode: str | None = None,
     lexical_mode: str | None = None,
+    chunk_strategy: ChunkStrategy = "heading",
+    expected_dataset_fingerprint: str | None = None,
+    chunk_metadata: dict[str, object] | None = None,
+    token_count_mode: TokenCountMode = "stored",
+    reuse_completed: bool = False,
     settings: Settings | None = None,
-) -> Path:
+) -> BaselineRunResult:
     settings = settings or Settings()
     if not 1 <= top_k <= diagnostic_k <= 50:
         raise ValueError("必须满足 1 <= top_k <= diagnostic_k <= 50")
-    supported_strategies = {
-        "dense-only",
-        "lexical-only",
-        "multi-query-dense",
-        "dense-rerank",
-        "dense-lexical-rrf",
-        "dense-lexical-rrf-rerank",
-    }
-    if strategy not in supported_strategies:
+    if strategy not in RETRIEVAL_STRATEGIES:
         raise ValueError(f"不支持的检索策略: {strategy}")
+    if token_count_mode not in {"stored", "unicode"}:
+        raise ValueError("token_count_mode 必须是 stored 或 unicode")
+    chunk_strategy = validate_chunk_strategy(chunk_strategy)
     text_mode = rerank_candidate_text_mode or settings.rerank_candidate_text_mode
     lex_mode = lexical_mode or settings.lexical_mode
-    config: dict[str, object] = {
-        # dataset 必须进 config_hash: 否则同一套参数跑不同数据集会撞出同一个 hash,
-        # 台账里用 config_hash 当 run 句柄就会指错运行。
-        "dataset": dataset_name,
-        "strategy": strategy,
-        "top_k": top_k,
-        "diagnostic_k": diagnostic_k,
-        "token_budget": token_budget,
-        "theta": theta,
-        "alpha": alpha,
-        "origin": origin,
-        "refusal_threshold": settings.refusal_threshold,
-        "embedding_model": settings.embedding_model,
-        "embedding_provider_base_url": settings.embedding_base_url,
-        "embedding_revision": settings.embedding_revision,
-        "embedding_dim": settings.embedding_dim,
-        "chat_model": settings.tier_main_model,
-        "query_decomposition_max_subqueries": settings.query_decomposition_max_subqueries,
-        "reranker_base_url": settings.reranker_base_url,
-        "reranker_model": settings.reranker_model,
-        "rerank_candidate_text_mode": text_mode,
-        "lexical_mode": lex_mode,
-        "rrf_k": settings.rrf_k,
-    }
-    config_hash = hashlib.sha256(
-        json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
     git_sha = _git_sha()
     async with session_factory() as session:
         dataset_id, items = await _load_items(session, dataset_name, origin=origin)
+        dataset_fingerprint = fingerprint_eval_items(items)
+        if (
+            expected_dataset_fingerprint is not None
+            and dataset_fingerprint != expected_dataset_fingerprint
+        ):
+            raise ValueError(
+                "评测数据在四策略跑批期间发生变化: "
+                f"expected={expected_dataset_fingerprint}, actual={dataset_fingerprint}"
+            )
+        gateway = build_model_gateway(settings, audit_sink=SqlLlmCallAudit(session))
+        config: dict[str, object] = {
+            # dataset 与逐条内容指纹都进 config_hash, 防止同名数据集修改后误复用旧 run。
+            "dataset": dataset_name,
+            "dataset_fingerprint": dataset_fingerprint,
+            "runner_git_sha": git_sha,
+            "strategy": strategy,
+            "chunk_strategy": chunk_strategy,
+            "chunk_metadata": chunk_metadata or {},
+            "top_k": top_k,
+            "diagnostic_k": diagnostic_k,
+            "token_budget": token_budget,
+            "token_count_mode": token_count_mode,
+            "theta": theta,
+            "alpha": alpha,
+            "origin": origin,
+            "refusal_threshold": settings.refusal_threshold,
+            "embedding_model": gateway.embedding_model,
+            "embedding_provider": gateway.embedding_provider,
+            "embedding_provider_base_url": settings.embedding_base_url,
+            "embedding_revision": gateway.embedding_revision,
+            "embedding_dim": gateway.embedding_dimensions,
+            "chat_model": gateway.chat_model,
+            "chat_provider": gateway.chat_provider,
+            "query_decomposition_max_subqueries": settings.query_decomposition_max_subqueries,
+            "reranker_base_url": settings.reranker_base_url,
+            "reranker_model": settings.reranker_model,
+            "rerank_candidate_text_mode": text_mode,
+            "lexical_mode": lex_mode,
+            "rrf_k": settings.rrf_k,
+        }
+        config_hash = hashlib.sha256(
+            json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if reuse_completed:
+            existing_run_id = await _find_completed_run(
+                session,
+                dataset_id=dataset_id,
+                config_hash=config_hash,
+            )
+            if existing_run_id is not None:
+                await gateway.aclose()
+                await session.close()
+                await close_database()
+                return BaselineRunResult(
+                    run_id=existing_run_id,
+                    config_hash=config_hash,
+                    report_path=None,
+                    reused=True,
+                )
         run_id = await _create_run(
             session,
             dataset_id=dataset_id,
@@ -124,8 +181,8 @@ async def run_dense_baseline(
             config=config,
             config_hash=config_hash,
             settings=settings,
+            gateway=gateway,
         )
-        gateway = build_model_gateway(settings, audit_sink=SqlLlmCallAudit(session))
         try:
             results = await _evaluate_items(
                 session,
@@ -138,6 +195,8 @@ async def run_dense_baseline(
                 theta=theta,
                 alpha=alpha,
                 strategy=strategy,
+                chunk_strategy=chunk_strategy,
+                token_count_mode=token_count_mode,
                 settings=settings,
                 text_mode=text_mode,
                 lex_mode=lex_mode,
@@ -176,7 +235,12 @@ async def run_dense_baseline(
     )
     report = run_dir / "report.md"
     report.write_text(_markdown_report(payload), encoding="utf-8")
-    return report
+    return BaselineRunResult(
+        run_id=run_id,
+        config_hash=config_hash,
+        report_path=report,
+        reused=False,
+    )
 
 
 async def _load_items(
@@ -243,6 +307,54 @@ async def _load_items(
     return dataset_id, items
 
 
+def fingerprint_eval_items(items: list[EvalItem]) -> str:
+    payload = [
+        {
+            "id": str(item.id),
+            "category": item.category,
+            "question": item.question,
+            "gold_spans": [
+                {
+                    "version_id": str(span.version_id),
+                    "char_start": span.char_start,
+                    "char_end": span.char_end,
+                    "quote": span.quote,
+                }
+                for span in item.gold_spans
+            ],
+        }
+        for item in items
+    ]
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+async def _find_completed_run(
+    session: AsyncSession,
+    *,
+    dataset_id: UUID,
+    config_hash: str,
+) -> UUID | None:
+    run_id = (
+        await session.execute(
+            text(
+                """
+                SELECT id FROM eval_runs
+                WHERE dataset_id=:dataset_id
+                  AND config_hash=:config_hash
+                  AND finished_at IS NOT NULL
+                  AND metrics IS NOT NULL
+                ORDER BY finished_at DESC, id DESC
+                LIMIT 1
+                """
+            ),
+            {"dataset_id": dataset_id, "config_hash": config_hash},
+        )
+    ).scalar_one_or_none()
+    await session.rollback()
+    return run_id
+
+
 async def _create_run(
     session: AsyncSession,
     *,
@@ -252,22 +364,39 @@ async def _create_run(
     config: dict[str, object],
     config_hash: str,
     settings: Settings,
+    gateway: ModelGateway,
 ) -> UUID:
     run_id = uuid7()
     actual_models = {
         "query_embedding": [
             {
-                "provider": "openai_compatible",
-                "model": settings.embedding_model,
-                "revision": settings.embedding_revision,
+                "provider": gateway.embedding_provider,
+                "model": gateway.embedding_model,
+                "revision": gateway.embedding_revision,
             }
         ]
     }
+    actual_models["chunk_embedding"] = [
+        {
+            "provider": gateway.embedding_provider,
+            "model": gateway.embedding_model,
+            "revision": gateway.embedding_revision,
+            "chunk_strategy": str(config["chunk_strategy"]),
+        }
+    ]
     if config.get("strategy") in {"multi-query-dense", "dense-rerank"}:
         actual_models["chat"] = [
             {
-                "provider": "openai_compatible",
-                "model": settings.tier_main_model,
+                "provider": gateway.chat_provider,
+                "model": gateway.chat_model,
+                "revision": "unversioned",
+            }
+        ]
+    if str(config.get("strategy", "")).endswith("rerank"):
+        actual_models["rerank"] = [
+            {
+                "provider": "local_cross_encoder",
+                "model": settings.reranker_model,
                 "revision": "unversioned",
             }
         ]
@@ -308,6 +437,8 @@ async def _evaluate_items(
     theta: float,
     alpha: float,
     strategy: str,
+    chunk_strategy: ChunkStrategy,
+    token_count_mode: TokenCountMode,
     settings: Settings,
     text_mode: str,
     lex_mode: str,
@@ -320,6 +451,7 @@ async def _evaluate_items(
             gateway,
             query=item.question,
             strategy=strategy,
+            chunk_strategy=chunk_strategy,
             top_k=top_k,
             diagnostic_k=diagnostic_k,
             settings=settings,
@@ -327,6 +459,8 @@ async def _evaluate_items(
             lex_mode=lex_mode,
         )
         latency_ms = max(0, round((time.monotonic() - started) * 1000))
+        if token_count_mode == "unicode":
+            hits = [replace(hit, content_tokens=count_tokens(hit.content)) for hit in hits]
         retrieved = [_retrieved_chunk(hit) for hit in hits]
         metrics: RetrievalMetrics | None = None
         span_diagnostics: list[dict[str, object]] = []
@@ -337,6 +471,8 @@ async def _evaluate_items(
                 embedding_model=gateway.embedding_model,
                 embedding_provider=gateway.embedding_provider,
                 embedding_revision=gateway.embedding_revision,
+                chunk_strategy=chunk_strategy,
+                token_count_mode=token_count_mode,
             )
             metrics = evaluate_retrieval(
                 item.gold_spans,
@@ -380,6 +516,7 @@ async def _retrieve_with_strategy(
     *,
     query: str,
     strategy: str,
+    chunk_strategy: ChunkStrategy,
     top_k: int,
     diagnostic_k: int,
     settings: Settings,
@@ -387,10 +524,22 @@ async def _retrieve_with_strategy(
     lex_mode: str,
 ) -> list[DenseSearchHit]:
     if strategy == "dense-only":
-        return await dense_search(session, gateway, query=query, top_k=diagnostic_k)
+        return await dense_search(
+            session,
+            gateway,
+            query=query,
+            top_k=diagnostic_k,
+            strategy=chunk_strategy,
+        )
     if strategy == "lexical-only":
         # 单臂对照: RRF 里 dense 会兜住词法的失效, 只看融合结果无法归因词法打分的好坏。
-        return await lexical_search(session, query=query, top_k=diagnostic_k, mode=lex_mode)
+        return await lexical_search(
+            session,
+            query=query,
+            top_k=diagnostic_k,
+            mode=lex_mode,
+            strategy=chunk_strategy,
+        )
     if strategy == "multi-query-dense":
         plan = await plan_retrieval_queries(
             gateway,
@@ -404,9 +553,16 @@ async def _retrieve_with_strategy(
             queries=plan.queries,
             top_k=diagnostic_k,
             per_query_top_k=diagnostic_k,
+            strategy=chunk_strategy,
         )
     if strategy == "dense-rerank":
-        candidates = await dense_search(session, gateway, query=query, top_k=diagnostic_k)
+        candidates = await dense_search(
+            session,
+            gateway,
+            query=query,
+            top_k=diagnostic_k,
+            strategy=chunk_strategy,
+        )
         if len(candidates) <= top_k:
             return candidates
         # 返回精排后的完整排序而不是 Top-K: 正式指标仍按 top_k 截断(evaluate_retrieval
@@ -421,29 +577,52 @@ async def _retrieve_with_strategy(
             timeout_s=settings.reranker_timeout_s,
             max_candidate_chars=settings.rerank_max_candidate_chars,
             candidate_text_mode=text_mode,
+            strategy=chunk_strategy,
         )
         if not result.applied:
             raise RuntimeError(result.reason)
         return result.hits
     if strategy == "dense-lexical-rrf":
-        dense_hits = await dense_search(session, gateway, query=query, top_k=diagnostic_k)
+        dense_hits = await dense_search(
+            session,
+            gateway,
+            query=query,
+            top_k=diagnostic_k,
+            strategy=chunk_strategy,
+        )
         lexical_hits = await lexical_search(
-            session, query=query, top_k=diagnostic_k, mode=lex_mode
+            session,
+            query=query,
+            top_k=diagnostic_k,
+            mode=lex_mode,
+            strategy=chunk_strategy,
         )
         return reciprocal_rank_fusion(
             [dense_hits, lexical_hits],
             top_k=diagnostic_k,
             rrf_k=settings.rrf_k,
+            strategy=chunk_strategy,
         )
     if strategy == "dense-lexical-rrf-rerank":
-        dense_hits = await dense_search(session, gateway, query=query, top_k=diagnostic_k)
+        dense_hits = await dense_search(
+            session,
+            gateway,
+            query=query,
+            top_k=diagnostic_k,
+            strategy=chunk_strategy,
+        )
         lexical_hits = await lexical_search(
-            session, query=query, top_k=diagnostic_k, mode=lex_mode
+            session,
+            query=query,
+            top_k=diagnostic_k,
+            mode=lex_mode,
+            strategy=chunk_strategy,
         )
         candidates = reciprocal_rank_fusion(
             [dense_hits, lexical_hits],
             top_k=diagnostic_k,
             rrf_k=settings.rrf_k,
+            strategy=chunk_strategy,
         )
         if len(candidates) <= top_k:
             return candidates
@@ -459,6 +638,7 @@ async def _retrieve_with_strategy(
             timeout_s=settings.reranker_timeout_s,
             max_candidate_chars=settings.rerank_max_candidate_chars,
             candidate_text_mode=text_mode,
+            strategy=chunk_strategy,
         )
         if not result.applied:
             raise RuntimeError(result.reason)
@@ -473,6 +653,8 @@ async def _candidate_chunks(
     embedding_model: str,
     embedding_provider: str,
     embedding_revision: str,
+    chunk_strategy: ChunkStrategy,
+    token_count_mode: TokenCountMode,
 ) -> list[RetrievedChunk]:
     version_ids = list({span.version_id for span in spans})
     rows = (
@@ -480,10 +662,10 @@ async def _candidate_chunks(
             await session.execute(
                 text(
                     """
-                    SELECT id, version_id, char_start, char_end, content_tokens
+                    SELECT id, version_id, char_start, char_end, content, content_tokens
                     FROM chunks
                     WHERE version_id=ANY(:version_ids)
-                      AND strategy='heading'
+                      AND strategy=:chunk_strategy
                       AND embedding_model=:embedding_model
                       AND embedding_provider=:embedding_provider
                       AND embedding_revision=:embedding_revision
@@ -494,6 +676,7 @@ async def _candidate_chunks(
                     "embedding_model": embedding_model,
                     "embedding_provider": embedding_provider,
                     "embedding_revision": embedding_revision,
+                    "chunk_strategy": chunk_strategy,
                 },
             )
         )
@@ -506,7 +689,11 @@ async def _candidate_chunks(
             version_id=row["version_id"],
             char_start=row["char_start"],
             char_end=row["char_end"],
-            content_tokens=row["content_tokens"],
+            content_tokens=(
+                count_tokens(row["content"])
+                if token_count_mode == "unicode"
+                else row["content_tokens"]
+            ),
             score=0.0,
         )
         for row in rows
@@ -538,6 +725,7 @@ def _serialize_hit(hit: DenseSearchHit) -> dict[str, object]:
         "char_start": hit.char_start,
         "char_end": hit.char_end,
         "content_tokens": hit.content_tokens,
+        "chunk_strategy": hit.strategy,
     }
 
 
@@ -718,6 +906,8 @@ def _markdown_report(payload: dict[str, object]) -> str:
         f"- Git: `{payload['git_sha']}`",
         f"- Config hash: `{payload['config_hash']}`",
         f"- 策略: `{config['strategy']}`",
+        f"- Chunk strategy: `{config['chunk_strategy']}`",
+        f"- Token count mode: `{config['token_count_mode']}`",
         f"- 样本: {metrics['item_count']}（可答 {metrics['answerable_count']} / 不可答 {metrics['unanswerable_count']}）",
         f"- 排名口径: Top {config['top_k']}；漏召回诊断深度: Top {config['diagnostic_k']}；token budget: {config['token_budget']}",
         "",
@@ -931,19 +1121,24 @@ def _parse_args() -> argparse.Namespace:
         help="为漏召回归因保留的最大排名深度，必须不小于 top-k",
     )
     parser.add_argument("--token-budget", type=int, default=4000)
+    parser.add_argument(
+        "--token-count-mode",
+        choices=["stored", "unicode"],
+        default="stored",
+        help="E1 四策略公平比较应使用 unicode; stored 保留历史基线口径",
+    )
     parser.add_argument("--theta", type=float, default=0.5)
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument(
         "--strategy",
-        choices=[
-            "dense-only",
-            "lexical-only",
-            "multi-query-dense",
-            "dense-rerank",
-            "dense-lexical-rrf",
-            "dense-lexical-rrf-rerank",
-        ],
+        choices=list(RETRIEVAL_STRATEGIES),
         default="dense-only",
+    )
+    parser.add_argument(
+        "--chunk-strategy",
+        choices=list(CHUNK_STRATEGIES),
+        default="heading",
+        help="离线检索使用的 chunk strategy; 线上默认仍为 heading",
     )
     parser.add_argument(
         "--rerank-candidate-text-mode",
@@ -965,7 +1160,7 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    report = asyncio.run(
+    result = asyncio.run(
         run_dense_baseline(
             dataset_name=args.dataset,
             label=args.label,
@@ -979,9 +1174,11 @@ def main() -> None:
             strategy=args.strategy,
             rerank_candidate_text_mode=args.rerank_candidate_text_mode,
             lexical_mode=args.lexical_mode,
+            chunk_strategy=args.chunk_strategy,
+            token_count_mode=args.token_count_mode,
         )
     )
-    print(report)
+    print(result.report_path)
 
 
 if __name__ == "__main__":
