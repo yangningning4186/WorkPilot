@@ -15,12 +15,28 @@
 import argparse
 import json
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from eval.report_metrics import (
+    CONTROLLED_KEYS,
+    METRICS,
+    PRIMARY_METRIC,
+    VERDICT_LABELS,
+    LoadedReport,
+    MetricSpec,
+    as_dict,
+    config_cell,
+    config_diff,
+    format_delta,
+    format_value,
+    load_report,
+    short_hash,
+    truncate_question,
+)
 from eval.stats import (
     DEFAULT_CI_LEVEL,
     DEFAULT_RESAMPLES,
@@ -31,251 +47,6 @@ from eval.stats import (
     RatioPoint,
     paired_bootstrap,
 )
-
-KIND_RETRIEVAL = "retrieval"
-KIND_GENERATION = "generation"
-
-Extractor = Callable[[dict[str, Any], dict[str, Any]], RatioPoint]
-
-
-@dataclass(frozen=True)
-class MetricSpec:
-    name: str
-    title: str
-    unit: str
-    higher_is_better: bool
-    extract: Extractor
-
-
-def _retrieval_metric(field: str) -> Extractor:
-    def extract(item: dict[str, Any], config: dict[str, Any]) -> RatioPoint:
-        retrieval = item.get("retrieval")
-        # 不可答题没有 gold span，检索指标整体不适用
-        if not isinstance(retrieval, dict) or retrieval.get(field) is None:
-            return INELIGIBLE
-        return RatioPoint(float(retrieval[field]), 1.0)
-
-    return extract
-
-
-def _refusal_correct_by_score(
-    item: dict[str, Any], config: dict[str, Any]
-) -> RatioPoint:
-    threshold = config.get("refusal_threshold")
-    score = item.get("top_score")
-    if threshold is None or score is None:
-        return INELIGIBLE
-    # 各自用自己 config 里的阈值：换阈值本身就是被对照的变量
-    answered = float(score) >= float(threshold)
-    return RatioPoint(float(answered is bool(item["answerable"])), 1.0)
-
-
-def _latency(item: dict[str, Any], config: dict[str, Any]) -> RatioPoint:
-    latency = item.get("latency_ms")
-    if latency is None or item.get("error") is not None:
-        return INELIGIBLE
-    return RatioPoint(float(latency), 1.0)
-
-
-def _completed(item: dict[str, Any]) -> bool:
-    return item.get("error") is None
-
-
-def _generation_flag(
-    field: str,
-    subfield: str | None = None,
-    *,
-    non_refusal_only: bool = False,
-    answerable_only: bool = False,
-) -> Extractor:
-    def extract(item: dict[str, Any], config: dict[str, Any]) -> RatioPoint:
-        if not _completed(item):
-            return INELIGIBLE
-        # 一侧拒答一侧作答时，配对逻辑会把两侧一起剔除，不会拿拒答样本充数
-        if non_refusal_only and item.get("refused") is not False:
-            return INELIGIBLE
-        if answerable_only and not item.get("answerable"):
-            return INELIGIBLE
-        value = item[field]
-        flag = value[subfield] if subfield else value
-        return RatioPoint(float(bool(flag)), 1.0)
-
-    return extract
-
-
-def _citation_gold_alignment(
-    item: dict[str, Any], config: dict[str, Any]
-) -> RatioPoint:
-    if not _completed(item) or item.get("refused") is not False:
-        return INELIGIBLE
-    alignment = item["citation_gold_alignment"]
-    total = float(alignment["total"])
-    if not total:
-        return INELIGIBLE
-    # micro 口径：重采样时按引用条数加权，与单跑报告的聚合方式一致
-    return RatioPoint(float(alignment["aligned"]), total)
-
-
-_RETRIEVAL_METRICS: tuple[MetricSpec, ...] = (
-    MetricSpec(
-        "span_recall_at_k",
-        "span Recall@K",
-        "ratio",
-        True,
-        _retrieval_metric("span_recall_at_k"),
-    ),
-    MetricSpec(
-        "budget_span_recall",
-        "budget span Recall",
-        "ratio",
-        True,
-        _retrieval_metric("budget_span_recall"),
-    ),
-    MetricSpec("ndcg_at_k", "nDCG@K", "ratio", True, _retrieval_metric("ndcg_at_k")),
-    MetricSpec(
-        "alpha_ndcg_at_k",
-        "α-nDCG@K",
-        "ratio",
-        True,
-        _retrieval_metric("alpha_ndcg_at_k"),
-    ),
-    MetricSpec("mrr", "MRR", "ratio", True, _retrieval_metric("mrr")),
-    MetricSpec(
-        "context_precision",
-        "context precision",
-        "ratio",
-        True,
-        _retrieval_metric("context_precision"),
-    ),
-    MetricSpec(
-        "refusal_correct_at_threshold",
-        "配置阈值下拒答正确率",
-        "ratio",
-        True,
-        _refusal_correct_by_score,
-    ),
-    MetricSpec("latency_ms", "单题延迟均值(ms)", "ms", False, _latency),
-)
-
-_GENERATION_METRICS: tuple[MetricSpec, ...] = (
-    MetricSpec(
-        "refusal_correct",
-        "拒答正确率",
-        "ratio",
-        True,
-        _generation_flag("refusal_correct"),
-    ),
-    MetricSpec(
-        "citation_validity_non_refusal",
-        "citation_validity(非拒答)",
-        "ratio",
-        True,
-        _generation_flag("citation_validity", "valid", non_refusal_only=True),
-    ),
-    MetricSpec(
-        "constraint_pass",
-        "constraint_pass",
-        "ratio",
-        True,
-        _generation_flag("constraint_pass", "passed"),
-    ),
-    MetricSpec(
-        "constraint_pass_answerable",
-        "constraint_pass(可答题)",
-        "ratio",
-        True,
-        _generation_flag("constraint_pass", "passed", answerable_only=True),
-    ),
-    MetricSpec(
-        "citation_gold_alignment",
-        "引用 gold span 对齐率",
-        "ratio",
-        True,
-        _citation_gold_alignment,
-    ),
-    MetricSpec("latency_ms", "单题延迟均值(ms)", "ms", False, _latency),
-)
-
-_METRICS: dict[str, tuple[MetricSpec, ...]] = {
-    KIND_RETRIEVAL: _RETRIEVAL_METRICS,
-    KIND_GENERATION: _GENERATION_METRICS,
-}
-
-_PRIMARY_METRIC: dict[str, str] = {
-    # budget span recall 是跨策略比较的主口径（docs/06 §2.1）
-    KIND_RETRIEVAL: "budget_span_recall",
-    KIND_GENERATION: "constraint_pass",
-}
-
-# 这些配置项一旦不同，两份报告算的就不是同一个指标，默认拒绝比较。
-_CONTROLLED_KEYS: dict[str, tuple[str, ...]] = {
-    KIND_RETRIEVAL: ("origin", "top_k", "token_budget", "theta", "alpha"),
-    KIND_GENERATION: ("origin", "top_k", "theta"),
-}
-
-_VERDICT_LABELS = {
-    "improved": "显著提升",
-    "regressed": "显著下降",
-    "inconclusive": "无显著差异",
-    "not_applicable": "不适用",
-}
-
-
-@dataclass(frozen=True)
-class LoadedReport:
-    path: Path
-    payload: dict[str, Any]
-    kind: str
-
-    @property
-    def config(self) -> dict[str, Any]:
-        config = self.payload.get("config")
-        return config if isinstance(config, dict) else {}
-
-    @property
-    def items(self) -> list[dict[str, Any]]:
-        items = self.payload["items"]
-        if not isinstance(items, list):
-            raise TypeError(f"报告 items 必须是数组: {self.path}")
-        return items
-
-    def describe(self) -> dict[str, object]:
-        return {
-            "label": self.payload.get("label"),
-            "run_id": self.payload.get("run_id"),
-            "git_sha": self.payload.get("git_sha"),
-            "config_hash": self.payload.get("config_hash"),
-            "item_count": len(self.items),
-            "source_report": str(self.path),
-        }
-
-
-def load_report(path: Path) -> LoadedReport:
-    resolved = path / "report.json" if path.is_dir() else path
-    payload = json.loads(resolved.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise TypeError(f"报告根节点必须是对象: {resolved}")
-    items = payload.get("items")
-    if not isinstance(items, list) or not items:
-        raise ValueError(f"报告缺少逐样本 items，无法配对: {resolved}")
-    missing = [index for index, item in enumerate(items) if not item.get("item_id")]
-    if missing:
-        raise ValueError(
-            f"报告的 items 缺少 item_id，无法按样本配对（refusal_baseline 报告不支持）: {resolved}"
-        )
-    return LoadedReport(
-        path=resolved, payload=payload, kind=_detect_kind(items[0], resolved)
-    )
-
-
-def _detect_kind(item: dict[str, Any], path: Path) -> str:
-    if "citations" in item:
-        return KIND_GENERATION
-    if "retrieval" in item:
-        return KIND_RETRIEVAL
-    raise ValueError(
-        f"无法识别报告类型，仅支持 dense_baseline 与 generation_baseline 报告: {path}"
-    )
 
 
 @dataclass(frozen=True)
@@ -300,8 +71,8 @@ def check_compatibility(
             f"baseline={baseline.payload.get('dataset')}, "
             f"candidate={candidate.payload.get('dataset')}"
         )
-    diff = _config_diff(baseline.config, candidate.config)
-    controlled = sorted(set(diff) & set(_CONTROLLED_KEYS[baseline.kind]))
+    diff = config_diff(baseline.config, candidate.config)
+    controlled = sorted(set(diff) & set(CONTROLLED_KEYS[baseline.kind]))
     if controlled and not allow_config_drift:
         detail = ", ".join(
             f"{key}: {diff[key]['baseline']!r} → {diff[key]['candidate']!r}"
@@ -319,16 +90,6 @@ def check_compatibility(
         "config_drift_allowed": allow_config_drift,
         "identical_config": baseline.payload.get("config_hash")
         == candidate.payload.get("config_hash"),
-    }
-
-
-def _config_diff(
-    baseline: dict[str, Any], candidate: dict[str, Any]
-) -> dict[str, dict[str, Any]]:
-    return {
-        key: {"baseline": baseline.get(key), "candidate": candidate.get(key)}
-        for key in sorted(set(baseline) | set(candidate))
-        if baseline.get(key) != candidate.get(key)
     }
 
 
@@ -450,8 +211,8 @@ def build_comparison(
         baseline, candidate, allow_config_drift=allow_config_drift
     )
     pairs = pair_items(baseline, candidate)
-    specs = _METRICS[baseline.kind]
-    primary = primary_metric or _PRIMARY_METRIC[baseline.kind]
+    specs = METRICS[baseline.kind]
+    primary = primary_metric or PRIMARY_METRIC[baseline.kind]
     if primary not in {spec.name for spec in specs}:
         raise ValueError(
             f"未知的 primary metric: {primary}，可选: {sorted(spec.name for spec in specs)}"
@@ -612,13 +373,13 @@ def _item_payload(
 
 
 def markdown_report(payload: dict[str, object]) -> str:
-    baseline = _as_dict(payload["baseline"])
-    candidate = _as_dict(payload["candidate"])
-    compatibility = _as_dict(payload["compatibility"])
-    bootstrap = _as_dict(payload["bootstrap"])
-    metrics = _as_dict(payload["metrics"])
-    by_category = _as_dict(payload["by_category"])
-    samples = _as_dict(payload["samples"])
+    baseline = as_dict(payload["baseline"])
+    candidate = as_dict(payload["candidate"])
+    compatibility = as_dict(payload["compatibility"])
+    bootstrap = as_dict(payload["bootstrap"])
+    metrics = as_dict(payload["metrics"])
+    by_category = as_dict(payload["by_category"])
+    samples = as_dict(payload["samples"])
     primary = str(payload["primary_metric"])
     lines = [
         f"# 评测对照：{baseline['label']} → {candidate['label']}",
@@ -627,9 +388,9 @@ def markdown_report(payload: dict[str, object]) -> str:
         f"- 数据集：`{payload['dataset']}`｜报告类型：`{payload['kind']}`"
         f"｜配对样本：{payload['item_count']} 条",
         f"- baseline：`{baseline['label']}` run=`{baseline['run_id']}` "
-        f"git=`{baseline['git_sha']}` config=`{_short(baseline['config_hash'])}`",
+        f"git=`{baseline['git_sha']}` config=`{short_hash(baseline['config_hash'])}`",
         f"- candidate：`{candidate['label']}` run=`{candidate['run_id']}` "
-        f"git=`{candidate['git_sha']}` config=`{_short(candidate['config_hash'])}`",
+        f"git=`{candidate['git_sha']}` config=`{short_hash(candidate['config_hash'])}`",
         f"- 显著性：配对百分位 bootstrap，resamples={bootstrap['resamples']}，"
         f"seed={bootstrap['seed']}，CI={float(bootstrap['ci_level']):.0%}",
         "",
@@ -641,10 +402,10 @@ def markdown_report(payload: dict[str, object]) -> str:
     lines.extend(["", "## 分类别切片", ""])
     if by_category:
         for category, entry in by_category.items():
-            slice_entry = _as_dict(entry)
+            slice_entry = as_dict(entry)
             lines.append(f"### {category}（{slice_entry['item_count']} 条）")
             lines.append("")
-            lines.extend(_metric_table(_as_dict(slice_entry["metrics"])))
+            lines.extend(_metric_table(as_dict(slice_entry["metrics"])))
             lines.append("")
     else:
         lines.extend(["无类别信息。", ""])
@@ -678,7 +439,7 @@ def _config_section(compatibility: dict[str, Any]) -> list[str]:
         ]
     lines = ["| 配置项 | baseline | candidate |", "|---|---|---|"]
     lines.extend(
-        f"| `{key}` | {_cell(value['baseline'])} | {_cell(value['candidate'])} |"
+        f"| `{key}` | {config_cell(value['baseline'])} | {config_cell(value['candidate'])} |"
         for key, value in diff.items()
     )
     controlled = compatibility.get("controlled_diff") or []
@@ -705,10 +466,10 @@ def _metric_table(metrics: dict[str, Any]) -> list[str]:
             entry["dropped_candidate_only"]
         )
         lines.append(
-            f"| {entry['title']} | {_value(entry['baseline'], unit)} | "
-            f"{_value(entry['candidate'], unit)} | {_delta(entry['delta'], unit)} | "
-            f"[{_delta(entry['ci_low'], unit)}, {_delta(entry['ci_high'], unit)}] | "
-            f"{_VERDICT_LABELS[str(entry['verdict'])]} | {entry['sample_size']} | {dropped} |"
+            f"| {entry['title']} | {format_value(entry['baseline'], unit)} | "
+            f"{format_value(entry['candidate'], unit)} | {format_delta(entry['delta'], unit)} | "
+            f"[{format_delta(entry['ci_low'], unit)}, {format_delta(entry['ci_high'], unit)}] | "
+            f"{VERDICT_LABELS[str(entry['verdict'])]} | {entry['sample_size']} | {dropped} |"
         )
     return lines
 
@@ -717,7 +478,7 @@ def _sample_section(
     samples: dict[str, Any], primary: str, metrics: dict[str, Any]
 ) -> list[str]:
     counts = samples["counts"]
-    spec = _as_dict(metrics[primary])
+    spec = as_dict(metrics[primary])
     title = spec["title"]
     unit = str(spec["unit"])
     lines = [
@@ -737,47 +498,13 @@ def _sample_section(
         lines.append("| item_id | 类别 | 问题 | baseline | candidate | Δ |")
         lines.append("|---|---|---|---:|---:|---:|")
         lines.extend(
-            f"| `{row['item_id']}` | {row['category']} | {_question(row['question'])} | "
-            f"{_value(row['baseline'], unit)} | {_value(row['candidate'], unit)} | "
-            f"{_delta(row['delta'], unit)} |"
+            f"| `{row['item_id']}` | {row['category']} | {truncate_question(row['question'])} | "
+            f"{format_value(row['baseline'], unit)} | {format_value(row['candidate'], unit)} | "
+            f"{format_delta(row['delta'], unit)} |"
             for row in rows
         )
         lines.append("")
     return lines
-
-
-def _as_dict(value: object) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise TypeError("报告节点必须是对象")
-    return value
-
-
-def _short(value: Any) -> str:
-    return "N/A" if value is None else str(value)[:12]
-
-
-def _cell(value: Any) -> str:
-    return "—" if value is None else f"`{value}`"
-
-
-def _question(value: Any, limit: int = 32) -> str:
-    text = str(value).replace("|", "\\|").replace("\n", " ")
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def _value(value: Any, unit: str) -> str:
-    if value is None:
-        return "N/A"
-    number = float(value)
-    return f"{number:.1f}" if unit == "ms" else f"{number:.2%}"
-
-
-def _delta(value: Any, unit: str) -> str:
-    if value is None:
-        return "N/A"
-    # 浮点求和残差会渲染成 "-0.0"，先按展示精度归零，避免读成"下降"
-    number = round(float(value), 1 if unit == "ms" else 4) or 0.0
-    return f"{number:+.1f}" if unit == "ms" else f"{number:+.2%}"
 
 
 def _parse_args() -> argparse.Namespace:

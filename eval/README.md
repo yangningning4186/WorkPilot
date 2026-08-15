@@ -192,6 +192,53 @@ markdown 里各列几条，`report.json` 始终保留全部逐样本差值。
 一侧跑批报错），两侧就一起剔除，剔除数量记在「仅一侧适用」列——
 否则比较的是两批不同的样本。因此对照报告里的绝对值可能与单次跑批报告的聚合值不同。
 
+## 多策略对照矩阵（E1 四分块策略）
+
+`strategy_matrix.py` 把上面的配对推广到 N 个策略，以其中一个为基线，
+同样只读已完成跑批导出的 `report.json`：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.strategy_matrix \
+  --run fixed-window=eval/outputs/dense-baseline/<run-a> \
+  --run heading-aware=eval/outputs/dense-baseline/<run-b> \
+  --run semantic=eval/outputs/dense-baseline/<run-c> \
+  --run late-chunking=eval/outputs/dense-baseline/<run-d> \
+  --generation fixed-window=eval/outputs/generation-baseline/<gen-a> \
+  --baseline fixed-window --vary-key chunk_strategy \
+  --output-dir eval/outputs/strategy-matrix/<label>
+```
+
+`--generation` 可选，但给了就必须覆盖全部策略，否则端到端指标比较的是不同子集。
+
+**fail-closed —— 下面任一条不满足直接拒绝出报告，不降级成"能算多少算多少"**：
+
+| 检查 | 拒绝理由 |
+|---|---|
+| 数据集不一致 | 跨数据集比较无效 |
+| item_id 集合不一致 / 有重复 | 无法严格配对 |
+| category 或 answerable 逐条不一致 | 标注已漂移 |
+| **gold span 指纹不一致** | version + 字符区间 + quote 有差异，说明混了解析版本或重标过 |
+| 跑批含失败样本（`error` / `error_count`），或可答题缺检索指标 | 结果不完整 |
+| 受控检索配置不一致 | 不是单变量对照；确属被对照的变量用 `--vary-key` 显式声明 |
+| 主指标没有任何公共可比样本 | 对照无意义 |
+
+指标覆盖 span recall（Top-K 与固定 token budget 两个口径）、nDCG、α-nDCG、MRR、
+context precision、**上下文冗余率**、**检索上下文 token**、拒答正确率、检索延迟，
+以及可选生成轨的 constraint_pass、citation_validity、引用对齐、端到端延迟与成本。
+
+口径要点：
+
+- 每个指标取**所有策略的公共可比样本**（交集）。只要一个策略在某条样本上不适用，
+  该样本从这个指标的所有策略里一起剔除，否则矩阵的列不同源，横向比较没有意义。
+- 冗余率 = Top-K chunk 字符区间的重复覆盖占比（按 `version_id` 分组，跨版本不算重叠），
+  越低越好；它把"大 chunk 靠包住 gold span 拿高 recall"的代价显性化。
+- **成本**目前只有检索侧口径（上下文 token）。生成侧 token 与金额需要跑批导出逐条用量，
+  当前 `generation_baseline` 未记录，报告里标记为 `unavailable` 并给出原因，**不写成 0**。
+- 端到端质量只含规则轨；语义正确性需要校准过的 Judge，M0 尚不具备。
+- 报告同时给出逐样本**胜/负/平**计数与**区间是否跨零**：前者是方向，后者才是显著性判定。
+- 异常样本单列：策略间分歧最大的、所有策略都未命中的（应归因语料或标注）、
+  所有策略都满分的（该样本对本次对照没有分辨力）。
+
 组合拒答跑批只执行“检索分数 + margin + 证据充分性”, 不生成最终答案：
 
 ```bash
