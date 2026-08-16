@@ -9,6 +9,7 @@ import structlog
 from uuid6 import uuid7
 
 from app.core.config import Settings
+from app.llm.batch import current_batch_id
 from app.llm.cache import CompletionCache, completion_cache_key, is_cacheable
 from app.llm.pricing import GatewayPricing, ModelPricing, estimate_tokens, is_measured
 from app.llm.providers.openai_compatible import OpenAICompatibleProvider
@@ -560,6 +561,8 @@ class ModelGateway:
                 cached=cache_hit,
                 cache_type="exact" if cache_hit else None,
                 was_fallback=was_fallback,
+                # 只有显式开了批次才有值; 线上单条问答保持 NULL(docs/07 §7.2)。
+                batch_id=current_batch_id(),
                 run_id=self._run_id,
                 eval_run_id=self._eval_run_id,
             )

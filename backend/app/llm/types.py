@@ -90,6 +90,8 @@ class AuditRecord:
     # 评测跑批的归属。与 run_id 是两张表的外键(agent_runs / eval_runs), 不能混用:
     # 评测跑批的逐条 token 与成本就是靠它归集的。
     eval_run_id: UUID | None = None
+    # 同批并发调用共享一次 GPU 计时(docs/07 §7.2)。线上单条问答不是批次, 保持 NULL。
+    batch_id: UUID | None = None
 
 
 class AuditSink(Protocol):

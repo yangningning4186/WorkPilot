@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     # 根本没过模型, 却会被算进指标里。
     llm_cache_enabled: bool = True
     llm_cache_ttl_s: int = Field(default=24 * 60 * 60, ge=60, le=30 * 24 * 60 * 60)
+    # 自建模型的等价云单价(docs/07 §7.2-7.3)。默认留空是**故意的**:
+    # 编一个单价会让下游每一个成本数字都失去意义, 而且看不出来是编的。
+    # 开批次前必须显式配置, 且 GPU_PRICE_SOURCE 要写得能被追溯。
+    gpu_model: str = ""
+    gpu_price_usd_per_hour: Decimal = Field(default=Decimal("0"), ge=0)
+    gpu_price_source: str = ""
+    gpu_node_count: int = Field(default=1, ge=1, le=64)
     embedding_base_url: str = ""
     embedding_model: str = "local-embedding"
     embedding_revision: str = "unversioned"
