@@ -119,22 +119,15 @@ async def test_offline_chunk_build_coexists_with_heading_and_is_idempotent(
     assert first_rows == second_rows
     assert all(row["is_searchable"] for row in first_rows)
     assert all(
-        row["build_signature"] is not None
-        for row in first_rows
-        if row["strategy"] != "heading"
+        row["build_signature"] is not None for row in first_rows if row["strategy"] != "heading"
     )
-    assert all(
-        row["build_signature"] is None
-        for row in first_rows
-        if row["strategy"] == "heading"
-    )
+    assert all(row["build_signature"] is None for row in first_rows if row["strategy"] == "heading")
     for row in first_rows:
         assert version["full_text"][row["char_start"] : row["char_end"]] == row["content"]
         intersecting = [
             block
             for block in blocks
-            if block["char_start"] < row["char_end"]
-            and block["char_end"] > row["char_start"]
+            if block["char_start"] < row["char_end"] and block["char_end"] > row["char_start"]
         ]
         assert row["block_start_idx"] == intersecting[0]["block_idx"]
         assert row["block_end_idx"] == intersecting[-1]["block_idx"]

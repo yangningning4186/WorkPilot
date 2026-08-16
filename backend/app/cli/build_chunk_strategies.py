@@ -77,9 +77,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     strategies: list[ChunkStrategy] = args.strategy or list(CHUNK_STRATEGIES)
-    failures = asyncio.run(
-        build_offline_chunks(version_ids=args.version_id, strategies=strategies)
-    )
+    failures = asyncio.run(build_offline_chunks(version_ids=args.version_id, strategies=strategies))
     raise SystemExit(1 if failures else 0)
 
 

@@ -17,9 +17,7 @@ HARD_MAX_TOKENS = 8192
 _PARAGRAPH_SEPARATOR_RE = re.compile(r"\n[ \t]*\n+")
 _LINE_SEPARATOR_RE = re.compile(r"\n")
 _SENTENCE_TERMINATORS = frozenset(".!?。\uff01\uff1f;\uff1b")
-_SENTENCE_CLOSERS = frozenset(
-    "\"'\u201d\u2019\u300d\u300f\u3011\u300b\u3009\u3015\uff3d\uff09)"
-)
+_SENTENCE_CLOSERS = frozenset("\"'\u201d\u2019\u300d\u300f\u3011\u300b\u3009\u3015\uff3d\uff09)")
 
 
 @dataclass(frozen=True)
@@ -259,10 +257,7 @@ def _semantic_group_spans(
 ) -> list[TextSpan]:
     if not units:
         return []
-    distances = [
-        1.0 - _cosine_similarity(left, right)
-        for left, right in pairwise(embeddings)
-    ]
+    distances = [1.0 - _cosine_similarity(left, right) for left, right in pairwise(embeddings)]
     threshold = _semantic_threshold(distances)
     spans: list[TextSpan] = []
     start = 0

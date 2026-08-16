@@ -84,9 +84,7 @@ async def build_chunk_strategies(
         raise ValueError("embedding_batch_size 必须大于 0")
     source = await _load_version_source(session, version_id)
     _validate_embedding_identity(source, gateway)
-    signatures = {
-        strategy: _build_signature(strategy, source=source) for strategy in selected
-    }
+    signatures = {strategy: _build_signature(strategy, source=source) for strategy in selected}
     existing = {
         strategy: await _load_existing_chunks(session, source, strategy, signatures[strategy])
         for strategy in selected

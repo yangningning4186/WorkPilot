@@ -160,9 +160,7 @@ async def test_dense_and_lexical_queries_are_isolated_by_chunk_strategy(
         query="Alpha fixed budget",
         top_k=5,
     )
-    assert {hit.strategy for hit in [*default_dense_hits, *default_lexical_hits]} == {
-        "heading"
-    }
+    assert {hit.strategy for hit in [*default_dense_hits, *default_lexical_hits]} == {"heading"}
 
 
 @pytest.mark.asyncio
@@ -276,11 +274,7 @@ async def test_repeated_four_strategy_batch_reuses_the_same_run_ids(
         .mappings()
         .all()
     )
-    chunk_contents = dict(
-        (
-            await db_session.execute(text("SELECT id, content FROM chunks"))
-        ).all()
-    )
+    chunk_contents = dict((await db_session.execute(text("SELECT id, content FROM chunks"))).all())
     second = await chunk_runner.run_chunk_strategy_batch(**arguments)
 
     assert set(first.run_ids) == {"fixed", "heading", "recursive", "semantic"}
@@ -297,9 +291,7 @@ async def test_repeated_four_strategy_batch_reuses_the_same_run_ids(
         retrieval = row["scores"]["retrieval"]
         assert retrieval["budget_retrieved_tokens"] <= 32
         for hit in row["retrieved"]:
-            assert hit["content_tokens"] == count_tokens(
-                chunk_contents[UUID(hit["chunk_id"])]
-            )
+            assert hit["content_tokens"] == count_tokens(chunk_contents[UUID(hit["chunk_id"])])
     manifest = json.loads(second.manifest_path.read_text(encoding="utf-8"))
     assert {key: value["run_id"] for key, value in manifest["runs"].items()} == {
         key: str(value) for key, value in first.run_ids.items()

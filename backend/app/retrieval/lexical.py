@@ -171,9 +171,7 @@ async def lexical_search(
             "top_k": top_k,
         }
     else:
-        sql = _RANKED_SQL_TEMPLATE.format(rank=mode).replace(
-            "__CHUNK_STRATEGY__", strategy
-        )
+        sql = _RANKED_SQL_TEMPLATE.format(rank=mode).replace("__CHUNK_STRATEGY__", strategy)
         params = {"query": query, "top_k": top_k}
 
     rows = (await session.execute(text(sql), params)).mappings().all()
