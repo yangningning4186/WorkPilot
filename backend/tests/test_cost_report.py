@@ -24,13 +24,15 @@ def _cost(
     wall_s: str,
     task_count: int,
     busy_s: str,
-    price: str = "3.60",
+    price: str | None = "3.60",
     nodes: int = 1,
     total_tokens: int = 10_000,
 ) -> BatchCost:
     """price 默认取 3.60 USD/h —— 正好每秒 0.001 美元，手算校验一目了然。"""
 
-    gpu_cost = Decimal(price) / 3600 * Decimal(wall_s) * nodes
+    gpu_cost = (
+        None if price is None else Decimal(price) / 3600 * Decimal(wall_s) * nodes
+    )
     return BatchCost(
         batch_id=UUID(int=1),
         label="T",
@@ -38,14 +40,14 @@ def _cost(
         model="m",
         gpu_model="A100-80G",
         node_count=nodes,
-        price_usd_per_hour=Decimal(price),
-        price_source="测试固定值",
+        price_usd_per_hour=None if price is None else Decimal(price),
+        price_source=None if price is None else "测试固定值",
         wall_s=Decimal(wall_s),
         task_count=task_count,
         total_tokens=total_tokens,
         output_tokens=total_tokens // 2,
         busy_s=Decimal(busy_s),
-        gpu_cost_usd=gpu_cost.quantize(Decimal("0.000001")),
+        gpu_cost_usd=None if gpu_cost is None else gpu_cost.quantize(Decimal("0.000001")),
     )
 
 
@@ -107,8 +109,11 @@ def test_occupancy_divides_by_node_count() -> None:
 def test_empty_batch_does_not_divide_by_zero() -> None:
     batch = _cost(wall_s="0", task_count=0, busy_s="0", total_tokens=0)
 
-    assert batch.cost_per_task_usd == Decimal(0)
-    assert batch.cost_per_ktok_usd == Decimal(0)
+    # 没有任务时给 None 而不是 0：0 会被画进前沿图里，None 不会。
+    assert batch.cost_per_task_usd is None
+    assert batch.cost_per_ktok_usd is None
+    assert batch.gpu_s_per_task == Decimal(0)
+    assert batch.tokens_per_task == 0
     assert batch.tasks_per_s == Decimal(0)
     assert batch.mean_concurrency == Decimal(0)
     assert batch.client_occupancy == Decimal(0)
@@ -140,17 +145,28 @@ class _Settings:
     gpu_node_count = 1
 
 
-def test_missing_price_is_a_hard_failure_not_a_zero() -> None:
-    """单价缺省成 0 的话，报告照样能生成，但每个数字都是错的且看不出来。"""
+def test_no_price_is_the_normal_mode_not_an_error() -> None:
+    """默认不做美元折算：只报 GPU 秒与 token，这两个量可直接测量。"""
 
-    settings = _Settings()
+    spec = batch_spec_from_settings(_Settings(), tier="main", model="m", label="C1")  # type: ignore[arg-type]
 
-    with pytest.raises(BatchPricingNotConfiguredError, match="GPU_PRICE_USD_PER_HOUR"):
-        batch_spec_from_settings(settings, tier="main", model="m", label="C1")  # type: ignore[arg-type]
+    assert spec.price_usd_per_hour is None
+    assert spec.price_source is None
+
+
+def test_gpu_seconds_are_the_primary_cost_unit() -> None:
+    """不配单价时成本就是 GPU 秒×节点数，摊到每个任务上。"""
+
+    batch = _cost(wall_s="2", task_count=8, busy_s="16", nodes=2, price=None)
+
+    assert batch.gpu_cost_usd is None
+    assert batch.cost_per_task_usd is None
+    assert batch.gpu_s == Decimal("4.000")
+    assert batch.gpu_s_per_task == Decimal("0.5000")
 
 
 def test_price_without_a_source_is_rejected() -> None:
-    """§7.3 要求写出取值与来源；说不清口径的成本数字一问就露馅。"""
+    """填了单价就必须写来源；说不清口径的成本数字一问就露馅（§7.3）。"""
 
     settings = _Settings()
     settings.gpu_price_usd_per_hour = Decimal("3.60")

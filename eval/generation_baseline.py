@@ -13,6 +13,7 @@ from statistics import fmean
 from typing import Any
 from uuid import UUID
 
+import httpx
 import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,7 @@ from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.llm.audit import SqlLlmCallAudit
 from app.llm.gateway import ModelGateway, build_model_gateway
+from app.llm.providers.openai_compatible import ProviderResponseError
 from app.retrieval.citations import CitationValidationError
 from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
 from app.services.grounded_answer import (
@@ -252,8 +254,14 @@ async def run_generation_baseline(
         )
         # 用量归集按 eval_run_id + trace_id 过滤, 网关必须知道自己在哪个跑批里。
         # 注意是 eval_run_id 不是 run_id: 后者的外键指向 agent_runs, 塞评测 run 会违反外键。
+        # mode="evaluation" 是硬要求(docs/07 §7.4): 关掉档位 fallback 与精确缓存。
+        # 允许 fallback 会让 eval_runs.config 记着 heavy、实际因超时切到别的模型作答;
+        # 允许缓存则会让重复跑批直接命中上一次结果, 三次重复退化成一次。
         run_gateway = build_model_gateway(
-            settings, audit_sink=SqlLlmCallAudit(session), eval_run_id=run_id
+            settings,
+            audit_sink=SqlLlmCallAudit(session),
+            eval_run_id=run_id,
+            mode="evaluation",
         )
         results: list[GenerationItemResult] = []
         try:
@@ -489,7 +497,10 @@ async def _evaluate_item(
             max_evidence_chars=settings.answer_max_evidence_chars,
             max_tokens=settings.answer_max_tokens,
         )
-    except CitationValidationError as error:
+    # 模型侧失败按条记账, 不是整批丢弃: 20 条里第 3 条超上下文就丢掉整次跑批,
+    # 等于把"这个档位在哪些题上做不到"这个最有信息量的结果也一起丢了。
+    # 只收模型与引用校验的失败; 代码 bug 与数据库错误仍然上抛, 它们不是实验结果。
+    except (CitationValidationError, ProviderResponseError, httpx.HTTPError) as error:
         latency_ms = max(0, round((time.monotonic() - started) * 1000))
         invalid = CitationValidityResult(
             valid=False,

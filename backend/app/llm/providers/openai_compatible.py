@@ -38,6 +38,22 @@ def _dispatch_guard() -> Iterator[None]:
         raise ProviderNotDispatchedError(str(error)) from error
 
 
+def _raise_with_body(response: httpx.Response, body: str) -> None:
+    """把服务端的解释带进异常。
+
+    `raise_for_status()` 只给出 "Client error '400 Bad Request'"，而真正有用的信息
+    （超了多少 token、哪个参数非法）全在响应体里。少了它，一个 400 要靠 curl 复现
+    才能定位——这正是约束 4 说的"错误信息要写成可执行的下一步"。
+    """
+
+    detail = body.strip()
+    if len(detail) > 600:
+        detail = detail[:600] + "…"
+    raise ProviderResponseError(
+        f"模型服务返回 {response.status_code}：{detail or '（响应体为空）'}"
+    )
+
+
 class OpenAICompatibleProvider:
     """覆盖 OpenAI-compatible Chat Completions 与 Embeddings 接口。"""
 
@@ -96,7 +112,8 @@ class OpenAICompatibleProvider:
                 headers=self._headers,
                 json=request_payload,
             )
-        response.raise_for_status()
+        if response.is_error:
+            _raise_with_body(response, response.text)
         payload: dict[str, Any] = response.json()
         try:
             message = payload["choices"][0]["message"]
@@ -148,7 +165,9 @@ class OpenAICompatibleProvider:
             )
             response = await stream.__aenter__()
         try:
-            response.raise_for_status()
+            if response.is_error:
+                # 流式响应要先把体读出来才有内容, 否则拿到的是空串。
+                _raise_with_body(response, (await response.aread()).decode("utf-8", "replace"))
             async for line in response.aiter_lines():
                 if not line.startswith("data:"):
                     continue
@@ -169,7 +188,8 @@ class OpenAICompatibleProvider:
                 headers=self._headers,
                 json={"model": self.embedding_model, "input": texts},
             )
-        response.raise_for_status()
+        if response.is_error:
+            _raise_with_body(response, response.text)
         payload: dict[str, Any] = response.json()
         rows = sorted(payload.get("data", []), key=lambda row: int(row["index"]))
         embeddings = [[float(value) for value in row["embedding"]] for row in rows]

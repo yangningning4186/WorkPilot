@@ -22,33 +22,55 @@ class BatchCost:
     label: str
     tier: str
     model: str
-    gpu_model: str
+    gpu_model: str | None
     node_count: int
-    price_usd_per_hour: Decimal
-    price_source: str
+    price_usd_per_hour: Decimal | None
+    price_source: str | None
     wall_s: Decimal
     task_count: int
     total_tokens: int
     output_tokens: int
     busy_s: Decimal
-    gpu_cost_usd: Decimal
+    gpu_cost_usd: Decimal | None
 
     @property
-    def cost_per_task_usd(self) -> Decimal:
+    def gpu_s(self) -> Decimal:
+        """摊到本批的 GPU 秒数 = 墙钟 × 节点数。
+
+        不配单价时这就是成本本身。美元只是它乘一个常数，
+        而"哪个配置在前沿上"的结论对这个常数不敏感。
+        """
+
+        return (self.wall_s * self.node_count).quantize(Decimal("0.001"))
+
+    @property
+    def gpu_s_per_task(self) -> Decimal:
         if self.task_count == 0:
             return Decimal(0)
+        return (self.gpu_s / self.task_count).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+    @property
+    def tokens_per_task(self) -> int:
+        if self.task_count == 0:
+            return 0
+        return round(self.total_tokens / self.task_count)
+
+    @property
+    def cost_per_task_usd(self) -> Decimal | None:
+        if self.gpu_cost_usd is None or self.task_count == 0:
+            return None
         return (self.gpu_cost_usd / self.task_count).quantize(_QUANTUM, rounding=ROUND_HALF_UP)
 
     @property
-    def cost_per_ktok_usd(self) -> Decimal:
+    def cost_per_ktok_usd(self) -> Decimal | None:
         """按总 token（prompt + output）计。
 
         两种口径都给是 §7.3 的明确要求：每任务成本便于跟商用 API 的"一次问答多少钱"
         对齐，每千 token 成本便于跨任务长度比较。只给一种就没法横向比。
         """
 
-        if self.total_tokens == 0:
-            return Decimal(0)
+        if self.gpu_cost_usd is None or self.total_tokens == 0:
+            return None
         return (self.gpu_cost_usd / (Decimal(self.total_tokens) / 1000)).quantize(
             _QUANTUM, rounding=ROUND_HALF_UP
         )
@@ -139,9 +161,14 @@ async def load_batch_costs(session: AsyncSession, *, label: str | None = None) -
     results: list[BatchCost] = []
     for row in rows:
         wall_s = (Decimal(row["wall_ms"]) / 1000).quantize(Decimal("0.001"))
+        price = row["price_usd_per_hour"]
         gpu_cost = (
-            Decimal(row["price_usd_per_hour"]) / _SECONDS_PER_HOUR * wall_s * row["node_count"]
-        ).quantize(_QUANTUM, rounding=ROUND_HALF_UP)
+            None
+            if price is None
+            else (Decimal(price) / _SECONDS_PER_HOUR * wall_s * row["node_count"]).quantize(
+                _QUANTUM, rounding=ROUND_HALF_UP
+            )
+        )
         results.append(
             BatchCost(
                 batch_id=row["id"],
@@ -150,7 +177,7 @@ async def load_batch_costs(session: AsyncSession, *, label: str | None = None) -
                 model=row["model"],
                 gpu_model=row["gpu_model"],
                 node_count=row["node_count"],
-                price_usd_per_hour=Decimal(row["price_usd_per_hour"]),
+                price_usd_per_hour=None if price is None else Decimal(price),
                 price_source=row["price_source"],
                 wall_s=wall_s,
                 task_count=row["task_count"],
@@ -164,27 +191,44 @@ async def load_batch_costs(session: AsyncSession, *, label: str | None = None) -
 
 
 def format_batch_costs(batches: list[BatchCost]) -> str:
-    """给人看的报告。四个数必须同时出现，缺一个就没法解释成本（§7.3）。"""
+    """给人看的报告。
+
+    成本的**主口径是 GPU 秒与 token**，不是美元：美元只是 GPU 秒乘一个外部假设
+    （等价云单价），而"哪个配置在前沿上"这个结论对那个常数不敏感。配了单价才多两列。
+    吞吐与并发度必须同时出现——单任务成本强依赖当时的并发度，缺了它没法解释（§7.3）。
+    """
 
     if not batches:
         return "没有已收尾的批次。"
-    lines = [
-        f"{'label':<16}{'tier':<8}{'任务':>5}{'墙钟s':>9}{'并发':>7}{'占用':>7}"
-        f"{'task/s':>9}{'tok/s':>10}{'$/任务':>11}{'$/ktok':>11}",
-        "-" * 100,
-    ]
+    priced = [item for item in batches if item.gpu_cost_usd is not None]
+    header = (
+        f"{'label':<20}{'tier':<8}{'任务':>5}{'墙钟s':>9}{'并发':>7}{'占用':>7}"
+        f"{'task/s':>9}{'tok/s':>10}{'GPUs/任务':>11}{'tok/任务':>10}"
+    )
+    if priced:
+        header += f"{'$/任务':>11}{'$/ktok':>11}"
+    lines = [header, "-" * len(header)]
     for item in batches:
-        lines.append(
-            f"{item.label[:15]:<16}{item.tier:<8}{item.task_count:>5}"
+        row = (
+            f"{item.label[:19]:<20}{item.tier:<8}{item.task_count:>5}"
             f"{item.wall_s:>9}{item.mean_concurrency:>7}{item.client_occupancy:>7}"
             f"{item.tasks_per_s:>9}{item.tokens_per_s:>10}"
-            f"{item.cost_per_task_usd:>11}{item.cost_per_ktok_usd:>11}"
+            f"{item.gpu_s_per_task:>11}{item.tokens_per_task:>10}"
         )
-    sources = {item.price_source for item in batches}
-    gpus = {f"{item.gpu_model}×{item.node_count}" for item in batches}
+        if priced:
+            per_task = item.cost_per_task_usd
+            per_ktok = item.cost_per_ktok_usd
+            row += f"{'—' if per_task is None else per_task:>11}"
+            row += f"{'—' if per_ktok is None else per_ktok:>11}"
+        lines.append(row)
     lines.append("")
+    gpus = {f"{item.gpu_model or '未标注'}×{item.node_count}" for item in batches}
     lines.append(f"硬件口径：{', '.join(sorted(gpus))}")
-    lines.append(f"单价来源：{'; '.join(sorted(sources))}")
+    if priced:
+        sources = {item.price_source for item in priced if item.price_source}
+        lines.append(f"单价来源：{'; '.join(sorted(sources))}")
+    else:
+        lines.append("成本口径：GPU 秒 × 节点数与 token，未做美元折算（等价云单价是外部假设）。")
     lines.append(
         "占用率是客户端观测的端点占用（并发/节点数），不是 GPU SM 利用率——"
         "后者需要在推理机上采 nvidia-smi。"

@@ -45,49 +45,60 @@ def current_batch_id() -> UUID | None:
 
 @dataclass(frozen=True)
 class BatchSpec:
-    """一次跑批的硬件与计价口径。
+    """一次跑批的硬件口径。
 
-    `price_source` 必填且必须是能追溯的出处（§7.3：报告里要写出取值与来源）。
-    留空会被数据库的 check 约束挡下来。
+    单价是**可选**的：本项目决定不做美元折算。等价云单价是个外部假设，填不同的数
+    会得到不同的"成本"，而"哪个配置在前沿上"这个结论只取决于 token 与 GPU 时间的
+    相对关系。与其引入一个不可验证的假设，不如只报可直接测量的量。
+
+    真要填单价时，`price_source` 就变成必填——§7.3 要求报告里写出取值与出处，
+    数据库的 check 约束也会挡下没来源的单价。
     """
 
     tier: str
     model: str
     label: str
-    gpu_model: str
-    price_usd_per_hour: Decimal
-    price_source: str
     node_count: int = 1
+    gpu_model: str | None = None
+    price_usd_per_hour: Decimal | None = None
+    price_source: str | None = None
 
 
 class BatchPricingNotConfiguredError(RuntimeError):
-    """没配等价云单价就开批次。
+    """配了单价却没写来源。
 
-    是硬失败而不是默认 0：单价为 0 会让所有成本数字变成 0，报告照样能生成、
-    图照样能画，但每一个数字都是错的，且从结果里看不出来。
+    只在**主动填了单价**时才会抛：没填单价是正常模式（只报 token 与吞吐），
+    填了却说不清出处才是问题——§7.3 明确要求报告里写出取值与来源，
+    说不清口径的成本数字一问就露馅。
     """
 
 
 def batch_spec_from_settings(
     settings: "Settings", *, tier: str, model: str, label: str
 ) -> BatchSpec:
-    if settings.gpu_price_usd_per_hour <= 0 or not settings.gpu_price_source.strip():
-        raise BatchPricingNotConfiguredError(
-            "开跑批前必须配置等价云 GPU 单价与来源：在 .env 里设置 "
-            "GPU_MODEL、GPU_PRICE_USD_PER_HOUR、GPU_PRICE_SOURCE（写明取值出处，"
-            "例如某云 A100-80G 按需实例页面与查询日期）、GPU_NODE_COUNT。"
-            "docs/07 §7.3 要求报告里写出单价取值与来源。"
+    price = settings.gpu_price_usd_per_hour
+    if price <= 0:
+        # 默认路径：不做美元折算，只统计 token 与 GPU 时间。
+        return BatchSpec(
+            tier=tier,
+            model=model,
+            label=label,
+            node_count=settings.gpu_node_count,
+            gpu_model=settings.gpu_model.strip() or None,
         )
-    if not settings.gpu_model.strip():
-        raise BatchPricingNotConfiguredError("开跑批前必须配置 GPU_MODEL（等价云实例规格）")
+    if not settings.gpu_price_source.strip():
+        raise BatchPricingNotConfiguredError(
+            "配置了 GPU_PRICE_USD_PER_HOUR 就必须同时写 GPU_PRICE_SOURCE："
+            "写明取值出处（报价页面 + 查询日期）。docs/07 §7.3。"
+        )
     return BatchSpec(
         tier=tier,
         model=model,
         label=label,
-        gpu_model=settings.gpu_model.strip(),
-        price_usd_per_hour=settings.gpu_price_usd_per_hour,
-        price_source=settings.gpu_price_source.strip(),
         node_count=settings.gpu_node_count,
+        gpu_model=settings.gpu_model.strip() or None,
+        price_usd_per_hour=price,
+        price_source=settings.gpu_price_source.strip(),
     )
 
 
