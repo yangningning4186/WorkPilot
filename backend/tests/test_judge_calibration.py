@@ -7,9 +7,11 @@ import pytest
 from eval.judge_calibration import (
     EXPECTED_CATEGORIES,
     RUBRIC_ID,
+    SLICE_REPORT_ONLY_CAVEAT,
     CalibrationExample,
     HumanLabel,
     JudgePrediction,
+    _markdown,
     _merge_calibration_namespace,
     agreement_metrics,
     bootstrap_agreement,
@@ -347,79 +349,119 @@ def _gate_examples(
     return examples, human, predictions
 
 
-def test_small_category_slices_are_unavailable_rather_than_failed(tmp_path: Path) -> None:
-    """样本量不足的类别切片不判准确率, 但也不算通过。
+_SUPPORTED = tuple(category for category in EXPECTED_CATEGORIES if category != "agent_task")
 
-    2~3 条的切片上 accuracy 只能取到少数几个离散值, 错一条就必然跌破 0.70——
-    那反映的是样本量而不是 Judge 质量。把它记成"准确率不达标"是把抽样噪声
-    写成质量结论; 直接跳过又等于悄悄没测。所以标记为不可用 + 独立失败原因。
-    """
-    examples, human, predictions = _gate_examples(validation_per_category=3)
-    # 每个类别在 validation 上都错一条: 3 条里错 1 条 = 0.667 < 0.70
+
+def _break_one_per_validation_category(
+    examples: list[CalibrationExample],
+    human: dict[str, HumanLabel],
+    predictions: dict[str, JudgePrediction],
+    *,
+    only: str | None = None,
+    per_category: int = 1,
+) -> dict[str, JudgePrediction]:
     broken = dict(predictions)
     seen: dict[str, int] = {}
     for row in examples:
         if row.split != "validation":
             continue
+        if only is not None and row.category != only:
+            continue
         seen[row.category] = seen.get(row.category, 0) + 1
-        if seen[row.category] == 1:
+        if seen[row.category] <= per_category:
             broken[row.example_id] = replace(
                 broken[row.example_id], score=2 - human[row.example_id].score
             )
+    return broken
+
+
+def test_category_slices_are_diagnostic_and_never_block_acceptance(
+    tmp_path: Path,
+) -> None:
+    """方案 3: 验收只卡整体 QWK/accuracy, 类别切片只报告不设门禁。
+
+    7 类各要 5 条可解读样本 ⇒ validation 至少 35 条 ⇒ 约 140 个 Judge case,
+    超出 120 条数据集规划。在 2~3 条样本上判类别准确率, 报的是抽样噪声。
+    代价是类别级可靠性没有被验证, 所以报告必须强制带上那句 caveat。
+    """
+    examples, human, predictions = _gate_examples(validation_per_category=3)
+    broken = _break_one_per_validation_category(examples, human, predictions)
 
     report = calibration_report(
         examples=examples,
         human_labels=human,
         predictions=broken,
-        output_dir=tmp_path / "small-slices",
+        output_dir=tmp_path / "report-only",
         resamples=200,
-        required_categories=tuple(
-            category for category in EXPECTED_CATEGORIES if category != "agent_task"
-        ),
+        required_categories=_SUPPORTED,
     )
 
     failures = report["gate_failures"]
-    # 不能把小切片记成"准确率不达标"
     assert not any(reason.startswith("low_slice_accuracy") for reason in failures)
-    # 但也不能算通过: 必须有一条指向样本量的独立失败原因
-    assert any(reason.startswith("slice_sample_count<5") for reason in failures)
-    assert report["status"] == "failed"
+    assert not any(reason.startswith("slice_sample_count") for reason in failures)
 
     slice_gate = report["slice_gate"]
-    assert slice_gate["gated"] == []
-    assert len(slice_gate["insufficient_samples"]) == 6
-    for metrics in report["slices"].values():
-        if str(metrics.get("accuracy_gate")) == "unavailable":
-            assert metrics["sample_count"] < 5
+    assert slice_gate["policy"] == "report_only"
+    assert slice_gate["enforced"] is False
+    # 通过不代表逐类达标, 这句话必须跟着报告走
+    assert "类别级可靠性未验证" in str(slice_gate["caveat"])
+    assert len(slice_gate["insufficient_samples"]) == len(_SUPPORTED)
+    assert str(SLICE_REPORT_ONLY_CAVEAT) in _markdown(report)
 
 
-def test_large_slices_still_fail_on_genuine_low_accuracy(tmp_path: Path) -> None:
-    """切片样本够大时, 准确率不达标仍然要按质量问题报出来。"""
-    categories = tuple(category for category in EXPECTED_CATEGORIES if category != "agent_task")
+def test_enforce_policy_restores_both_slice_gates(tmp_path: Path) -> None:
+    """规模够了以后切 enforce, 判据一直在算, 两条门禁都会回来。"""
+    small, human, predictions = _gate_examples(validation_per_category=3)
+    broken = _break_one_per_validation_category(small, human, predictions)
+    enforced = calibration_report(
+        examples=small,
+        human_labels=human,
+        predictions=broken,
+        output_dir=tmp_path / "enforce-small",
+        resamples=200,
+        required_categories=_SUPPORTED,
+        slice_gate_policy="enforce",
+    )
+    assert enforced["status"] == "failed"
+    assert any(reason.startswith("slice_sample_count<5") for reason in enforced["gate_failures"])
+    assert enforced["slice_gate"]["caveat"] is None
+
+    # 切片够大时, 真实的低准确率仍然要作为质量问题拦下来
+    big, human, predictions = _gate_examples(validation_per_category=6)
+    broken = _break_one_per_validation_category(
+        big, human, predictions, only=_SUPPORTED[0], per_category=3
+    )
+    report = calibration_report(
+        examples=big,
+        human_labels=human,
+        predictions=broken,
+        output_dir=tmp_path / "enforce-big",
+        resamples=200,
+        required_categories=_SUPPORTED,
+        slice_gate_policy="enforce",
+    )
+    assert any(
+        reason.startswith("low_slice_accuracy") and _SUPPORTED[0] in reason
+        for reason in report["gate_failures"]
+    )
+    assert not any(reason.startswith("slice_sample_count") for reason in report["gate_failures"])
+
+
+def test_below_threshold_slices_stay_visible_under_report_only(tmp_path: Path) -> None:
+    """不设门禁不等于不报: 低于阈值的切片必须仍然出现在诊断里。"""
     examples, human, predictions = _gate_examples(validation_per_category=6)
-    broken = dict(predictions)
-    seen = 0
-    for row in examples:
-        # 只打坏一个类别, 且打坏到足以跌破 0.70
-        if row.split == "validation" and row.category == categories[0] and seen < 3:
-            broken[row.example_id] = replace(
-                broken[row.example_id], score=2 - human[row.example_id].score
-            )
-            seen += 1
-
+    broken = _break_one_per_validation_category(
+        examples, human, predictions, only=_SUPPORTED[0], per_category=3
+    )
     report = calibration_report(
         examples=examples,
         human_labels=human,
         predictions=broken,
-        output_dir=tmp_path / "large-slices",
+        output_dir=tmp_path / "visible",
         resamples=200,
-        required_categories=categories,
+        required_categories=_SUPPORTED,
     )
 
-    failures = report["gate_failures"]
-    assert any(
-        reason.startswith("low_slice_accuracy") and f"validation/category:{categories[0]}" in reason
-        for reason in failures
-    )
-    assert not any(reason.startswith("slice_sample_count") for reason in failures)
-    assert len(report["slice_gate"]["gated"]) == len(categories)
+    assert report["slice_gate"]["below_threshold"] == [f"validation/category:{_SUPPORTED[0]}"]
+    assert not any(reason.startswith("low_slice_accuracy") for reason in report["gate_failures"])
+    assert "低于阈值" in _markdown(report)

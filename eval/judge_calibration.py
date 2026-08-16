@@ -19,7 +19,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from app.core.db import close_database, session_factory
 from app.llm.gateway import ModelGateway
@@ -63,6 +63,14 @@ PROMPT_TEMPLATE = """Rubric:
 DEFAULT_SEED = 12345
 DEFAULT_RESAMPLES = 10_000
 DEFAULT_CI_LEVEL = 0.95
+# 类别切片是诊断线索还是验收门槛。当前数据规模撑不起逐类判定, 默认 report_only。
+SliceGatePolicy = Literal["report_only", "enforce"]
+SLICE_GATE_POLICIES: tuple[SliceGatePolicy, ...] = ("report_only", "enforce")
+# 只要类别切片不设门禁, 这句话就必须跟着报告走, 不允许把整体达标读成逐类达标。
+SLICE_REPORT_ONLY_CAVEAT = (
+    "类别级可靠性未验证：本次验收只卡整体 QWK/accuracy，"
+    "类别切片仅作诊断，通过不代表每个类别都达标。"
+)
 EXPECTED_CATEGORIES = (
     "single_hop",
     "multi_hop",
@@ -702,8 +710,10 @@ def calibration_report(
     min_qwk: float = 0.85,
     min_accuracy: float = 0.85,
     min_slice_accuracy: float = 0.70,
-    # 低于这个样本量的类别切片不判 accuracy(见下方切片保护的注释)。
+    # 低于这个样本量的类别切片不判 accuracy(见下方切片定位的注释)。
     min_slice_samples: int = 5,
+    # 类别切片默认只报告不设门禁; 数据规模够了再切 "enforce"。
+    slice_gate_policy: SliceGatePolicy = "report_only",
     required_categories: Sequence[str] = EXPECTED_CATEGORIES,
     seed: int = DEFAULT_SEED,
     resamples: int = DEFAULT_RESAMPLES,
@@ -773,12 +783,16 @@ def calibration_report(
     missing_validation_categories = sorted(
         set(required_categories) - validation_categories
     )
-    # 切片样本量保护: 2~3 条的切片上, accuracy 只能取 0 / 0.5 / 0.67 / 1 这几个值,
-    # 错一条就必然跌破 0.70。不设下限的话, 门禁报的是"Judge 在这个类别上不行",
-    # 实际说的只是"这个类别的样本太少, 判不了"——把抽样噪声写成质量结论。
-    # 所以样本不足的切片不判 accuracy, 但也**不当作通过**: 它是一条独立的、
-    # 指向"需要更多 validation 样本"的失败原因, 与"Judge 准确率不达标"分开。
-    # 同一口径见 strategy_matrix: 零分母指标标记为不可用, 永远不写成 0。
+    # 类别切片的定位: 诊断线索, 不是验收门槛(默认 report_only)。
+    #
+    # 为什么不设门禁: 7 类 × 每类至少 5 条 ⇒ validation 至少 35 条, 按 0.25 的比例
+    # 反推需要约 140 个 Judge case, 而整个数据集规划只有 120 条。在 2~3 条的切片上
+    # accuracy 只能取 0 / 0.5 / 0.67 / 1 几个值, 错一条就必然跌破 0.70——那报的是
+    # 样本量, 不是 Judge 质量。在噪声上硬凑一个数字, 比不报更糟。
+    #
+    # 代价必须写明: 通过验收**不代表**每个类别都可靠, 类别级可靠性在当前规模下
+    # 根本没有被验证。报告里因此强制带上这句话, 不允许读成"逐类都达标"。
+    # 数据规模上来后把 policy 切成 enforce 即可, 判据本身一直在算。
     gated_slices: list[str] = []
     insufficient_slices: dict[str, int] = {}
     for name, value in sorted(slices.items()):
@@ -787,12 +801,12 @@ def calibration_report(
         sample_count = int(value["sample_count"])  # type: ignore[call-overload]
         if sample_count < min_slice_samples:
             insufficient_slices[name] = sample_count
-            value["accuracy_gate"] = "unavailable"
-            value["accuracy_gate_reason"] = (
+            value["slice_status"] = "insufficient_samples"
+            value["slice_status_reason"] = (
                 f"validation 样本 {sample_count} < {min_slice_samples}, 不足以判定类别准确率"
             )
             continue
-        value["accuracy_gate"] = "ok"
+        value["slice_status"] = "interpretable"
         gated_slices.append(name)
     low_slices = sorted(
         name
@@ -800,6 +814,9 @@ def calibration_report(
         if isinstance(slices[name].get("accuracy"), int | float)
         and float(slices[name]["accuracy"]) < min_slice_accuracy  # type: ignore[arg-type]
     )
+    for name in low_slices:
+        slices[name]["slice_status"] = "below_threshold"
+    enforce_slices = slice_gate_policy == "enforce"
     failures: list[str] = []
     if len(examples) < min_samples:
         failures.append(f"sample_count<{min_samples}")
@@ -819,9 +836,9 @@ def calibration_report(
         failures.append(f"qwk<{min_qwk}")
     if float(gate_metrics["accuracy"]) < min_accuracy:
         failures.append(f"accuracy<{min_accuracy}")
-    if low_slices:
+    if enforce_slices and low_slices:
         failures.append(f"low_slice_accuracy:{','.join(low_slices)}")
-    if insufficient_slices:
+    if enforce_slices and insufficient_slices:
         detail = ",".join(
             f"{name.split(':', 1)[1]}={count}"
             for name, count in sorted(insufficient_slices.items())
@@ -852,13 +869,18 @@ def calibration_report(
             "min_accuracy": min_accuracy,
             "min_slice_accuracy": min_slice_accuracy,
             "min_slice_samples": min_slice_samples,
+            "slice_gate_policy": slice_gate_policy,
             "required_categories": list(required_categories),
         },
         "slice_gate": {
-            "gated": gated_slices,
+            "policy": slice_gate_policy,
+            "enforced": enforce_slices,
+            "interpretable": gated_slices,
+            "below_threshold": low_slices,
             "insufficient_samples": insufficient_slices,
-            "note": "样本量不足的切片不判准确率，但也不算通过；它是独立的失败原因，"
-            "指向需要更多 validation 样本，不能读成 Judge 在该类别上不合格。",
+            "caveat": None if enforce_slices else SLICE_REPORT_ONLY_CAVEAT,
+            "note": "样本量不足的切片不判准确率；样本足够但低于阈值的切片记为 "
+            "below_threshold。report_only 下两者都不进 gate_failures，只作诊断。",
         },
         "gate_failures": failures,
         "overall": overall,
@@ -1095,30 +1117,44 @@ def _markdown(payload: Mapping[str, object]) -> str:
     assert isinstance(slices, dict)
     for name, metrics in slices.items():
         assert isinstance(metrics, dict)
-        gate = metrics.get("accuracy_gate")
-        gate_cell = {"ok": "是", "unavailable": "样本不足"}.get(str(gate), "—")
+        status = str(metrics.get("slice_status", ""))
+        status_cell = {
+            "interpretable": "可解读",
+            "below_threshold": "低于阈值",
+            "insufficient_samples": "样本不足",
+        }.get(status, "—")
         lines.append(
             f"| {name} | {metrics['sample_count']} | {_fmt(metrics['accuracy'])} | "
-            f"{_fmt(metrics['qwk'])} | {gate_cell} |"
+            f"{_fmt(metrics['qwk'])} | {status_cell} |"
         )
     slice_gate = payload.get("slice_gate")
-    if isinstance(slice_gate, dict) and slice_gate.get("insufficient_samples"):
-        insufficient = slice_gate["insufficient_samples"]
-        assert isinstance(insufficient, dict)
-        detail = "、".join(
-            f"`{name.split(':', 1)[1]}`（n={count}）"
-            for name, count in sorted(insufficient.items())
-        )
-        lines.extend(
-            [
-                "",
-                f"**样本不足、未判定准确率的类别切片**：{detail}。",
-                "",
-                "这些切片标记为不可用而不是失败——2~3 条样本上 accuracy 只能取到少数几个离散值，",
-                "错一条就必然跌破阈值，那反映的是样本量而不是 Judge 质量。但它们也**不算通过**：",
-                "`gate_failures` 里有一条独立的 `slice_sample_count<N`，指向需要扩大 validation 规模。",
-            ]
-        )
+    if isinstance(slice_gate, dict):
+        caveat = slice_gate.get("caveat")
+        if caveat:
+            lines.extend(
+                [
+                    "",
+                    f"> **{caveat}**",
+                    "",
+                    "类别切片在当前规模下只作诊断，不进 `gate_failures`：7 类各要 5 条可解读样本，",
+                    "意味着 validation 至少 35 条、约 140 个 Judge case，超出 120 条数据集规划。",
+                    "在 2~3 条样本上判类别准确率，报出来的是抽样噪声而不是 Judge 质量。",
+                    "数据规模上来后用 `--slice-gate-policy enforce` 打开，判据一直在算。",
+                ]
+            )
+        insufficient = slice_gate.get("insufficient_samples")
+        if isinstance(insufficient, dict) and insufficient:
+            detail = "、".join(
+                f"`{name.split(':', 1)[1]}`（n={count}）"
+                for name, count in sorted(insufficient.items())
+            )
+            lines.extend(["", f"样本不足、未判定准确率的类别切片：{detail}。"])
+        below = slice_gate.get("below_threshold")
+        if isinstance(below, list) and below:
+            names = "、".join(f"`{name.split(':', 1)[1]}`" for name in below)
+            lines.extend(
+                ["", f"样本足够但准确率低于阈值的类别切片：{names}——诊断线索，需人工归因。"]
+            )
     lines.extend(
         [
             "",
@@ -1272,6 +1308,12 @@ def _parse_args() -> argparse.Namespace:
     calibrate.add_argument("--min-accuracy", type=float, default=0.85)
     calibrate.add_argument("--min-slice-accuracy", type=float, default=0.70)
     calibrate.add_argument("--min-slice-samples", type=int, default=5)
+    calibrate.add_argument(
+        "--slice-gate-policy",
+        choices=list(SLICE_GATE_POLICIES),
+        default="report_only",
+        help="类别切片是诊断(report_only)还是验收门槛(enforce); 样本量够了再切 enforce",
+    )
     calibrate.add_argument("--seed", type=int, default=DEFAULT_SEED)
     calibrate.add_argument("--resamples", type=int, default=DEFAULT_RESAMPLES)
     calibrate.add_argument("--ci-level", type=float, default=DEFAULT_CI_LEVEL)
@@ -1340,6 +1382,7 @@ def main() -> None:
             min_samples=args.min_samples,
             min_validation_samples=args.min_validation_samples,
             min_slice_samples=args.min_slice_samples,
+            slice_gate_policy=args.slice_gate_policy,
             min_qwk=args.min_qwk,
             min_accuracy=args.min_accuracy,
             min_slice_accuracy=args.min_slice_accuracy,
