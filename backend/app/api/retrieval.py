@@ -173,7 +173,6 @@ async def answer(
             refusal_margin_threshold=settings.refusal_margin_threshold,
             evidence_gate_max_chars=settings.evidence_gate_max_chars,
             rerank_evidence_gate_max_chars=settings.rerank_evidence_gate_max_chars,
-            evidence_gate_max_segment_chars=settings.evidence_gate_max_segment_chars,
             evidence_gate_max_tokens=settings.evidence_gate_max_tokens,
             query_decomposition_enabled=settings.query_decomposition_enabled,
             query_decomposition_max_subqueries=settings.query_decomposition_max_subqueries,

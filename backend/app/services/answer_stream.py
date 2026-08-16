@@ -20,7 +20,7 @@ from app.services.grounded_answer import (
 )
 
 # 中文按句号断句最自然; 英文与代码退化为定长切片。
-_BREAK_CHARS = "。！？；\n"  # noqa: RUF001 - 中文全角标点是断句依据, 不能替换成半角
+_BREAK_CHARS = "。！？；\n"
 
 
 @dataclass(frozen=True)

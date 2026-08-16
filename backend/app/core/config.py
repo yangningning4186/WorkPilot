@@ -90,7 +90,6 @@ class Settings(BaseSettings):
     refusal_margin_threshold: float = Field(default=0.03, ge=0.0, le=2.0)
     evidence_gate_max_chars: int = Field(default=3000, ge=500, le=20000)
     rerank_evidence_gate_max_chars: int = Field(default=6000, ge=500, le=20000)
-    evidence_gate_max_segment_chars: int = Field(default=1200, ge=100, le=4000)
     evidence_gate_max_tokens: int = Field(default=300, ge=64, le=2048)
     query_decomposition_enabled: bool = False
     query_decomposition_max_subqueries: int = Field(default=4, ge=2, le=8)

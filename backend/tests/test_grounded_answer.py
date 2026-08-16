@@ -12,16 +12,19 @@ from app.core.db import get_db_session
 from app.llm.audit import SqlLlmCallAudit
 from app.llm.gateway import ModelGateway
 from app.main import create_app
+from app.retrieval.citations import EvidenceSegment
 from app.retrieval.dense import DenseSearchHit, _merge_query_rankings
 from app.retrieval.fusion import reciprocal_rank_fusion
 from app.retrieval.lexical import lexical_search, lexical_terms
 from app.services.evidence_sufficiency import (
     EvidenceAssessmentError,
+    assess_evidence_sufficiency,
     parse_evidence_assessment,
 )
 from app.services.grounded_answer import (
     RetrievalRefusalSignals,
     answer_with_citations,
+    build_gate_evidence,
     evaluate_refusal,
 )
 from app.services.markdown_ingestion import ingest_markdown_file
@@ -102,6 +105,106 @@ def test_evidence_assessment_parser_is_strict_and_accepts_wrapped_json() -> None
             '{"sufficient":true,"reason":"证据明确","support_ids":["S99"],"missing_aspects":[]}',
             allowed_ids={"S1"},
         )
+
+
+@pytest.mark.asyncio
+async def test_evidence_gate_retries_one_invalid_json_response() -> None:
+    provider = DeterministicProvider(
+        completion_texts=[
+            "not-json",
+            '{"sufficient":true,"reason":"证据明确",'
+            '"support_ids":["S1"],"missing_aspects":[]}',
+        ]
+    )
+    gateway = ModelGateway(provider, embedding_dimensions=1024)
+    evidence = [
+        EvidenceSegment(
+            citation_id="S1",
+            block_id=uuid7(),
+            version_id=uuid7(),
+            document_id=uuid7(),
+            title="title",
+            source_uri="source.md",
+            quote="完整证据",
+            char_start=0,
+            char_end=4,
+            heading_path=[],
+            locations=[],
+        )
+    ]
+
+    assessment = await assess_evidence_sufficiency(
+        gateway,
+        query="问题",
+        evidence=evidence,
+        top_score=0.9,
+        second_score=0.8,
+        score_margin=0.1,
+        low_margin=False,
+    )
+
+    assert assessment.sufficient is True
+    assert provider.completion_texts == []
+    assert "上一条响应不符合" in provider.last_messages[-1].content
+
+
+def test_gate_evidence_keeps_rerank_order_and_later_blocks() -> None:
+    first = DenseSearchHit(
+        chunk_id=uuid7(),
+        document_id=uuid7(),
+        version_id=uuid7(),
+        version_no=1,
+        title="first",
+        source_uri="first.md",
+        content="first-a first-b",
+        score=0.9,
+        heading_path=[],
+        blocks=[
+            {
+                "block_id": str(uuid7()),
+                "block_type": "paragraph",
+                "text": "first-a",
+                "char_start": 0,
+                "heading_path": [],
+            },
+            {
+                "block_id": str(uuid7()),
+                "block_type": "paragraph",
+                "text": "first-b",
+                "char_start": 8,
+                "heading_path": [],
+            },
+        ],
+    )
+    second = DenseSearchHit(
+        chunk_id=uuid7(),
+        document_id=uuid7(),
+        version_id=uuid7(),
+        version_no=1,
+        title="second",
+        source_uri="second.md",
+        content="second-a",
+        score=0.8,
+        heading_path=[],
+        blocks=[
+            {
+                "block_id": str(uuid7()),
+                "block_type": "paragraph",
+                "text": "second-a",
+                "char_start": 0,
+                "heading_path": [],
+            }
+        ],
+    )
+
+    evidence = build_gate_evidence(
+        [first, second],
+        rerank_applied=True,
+        evidence_gate_max_chars=8,
+        rerank_evidence_gate_max_chars=14,
+    )
+
+    assert [item.quote for item in evidence] == ["first-a", "first-b"]
 
 
 def test_query_plan_parser_requires_two_distinct_subqueries() -> None:
@@ -362,6 +465,7 @@ async def test_lexical_search_matches_exact_identifier(
     assert hits[0].lexical_score is not None
 
 
+@pytest.mark.integration
 async def test_lexical_search_rejects_unknown_mode(db_session: AsyncSession) -> None:
     with pytest.raises(ValueError, match="未知的 lexical_mode"):
         await lexical_search(db_session, query="任意查询", mode="bm25")

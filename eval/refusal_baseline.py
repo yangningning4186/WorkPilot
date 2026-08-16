@@ -72,7 +72,6 @@ async def run_refusal_baseline(
         "refusal_margin_threshold": settings.refusal_margin_threshold,
         "evidence_gate_max_chars": settings.evidence_gate_max_chars,
         "rerank_evidence_gate_max_chars": settings.rerank_evidence_gate_max_chars,
-        "evidence_gate_max_segment_chars": settings.evidence_gate_max_segment_chars,
         "evidence_gate_max_tokens": settings.evidence_gate_max_tokens,
         "embedding_model": settings.embedding_model,
         "embedding_revision": settings.embedding_revision,
@@ -189,16 +188,12 @@ async def _evaluate_item(
     evidence_reason: str | None = None
     invalid = False
     if refusal_reason is None:
-        coverage_packing = strategy.endswith("rerank")
         evidence = build_evidence_segments(
             hits,
             max_chars=(
                 settings.rerank_evidence_gate_max_chars
-                if coverage_packing
+                if strategy.endswith("rerank")
                 else settings.evidence_gate_max_chars
-            ),
-            max_segment_chars=(
-                settings.evidence_gate_max_segment_chars if coverage_packing else None
             ),
         )
         if not evidence:

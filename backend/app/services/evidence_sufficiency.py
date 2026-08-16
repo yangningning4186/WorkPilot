@@ -15,6 +15,9 @@ SYSTEM_PROMPT = """你是知识库问答的证据充分性门控器。
 证据充分时 sufficient=true, support_ids 必须列出直接支撑答案的证据标签, missing_aspects 为空。
 证据不足时 sufficient=false, missing_aspects 列出问题要求但证据未明确提供的事实。"""
 
+REPAIR_PROMPT = """上一条响应不符合约定的 JSON schema。请重新判断同一问题和证据，
+只输出一个合法 JSON 对象；不要 Markdown、代码围栏或额外文字。"""
+
 
 class EvidenceAssessmentError(ValueError):
     pass
@@ -68,27 +71,44 @@ async def assess_evidence_sufficiency(
             for item in evidence
         ],
     }
-    completion = await gateway.complete(
-        [
-            Message(role="system", content=SYSTEM_PROMPT),
-            Message(
-                role="user",
-                content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-            ),
-        ],
-        task_type="evidence_sufficiency",
-        max_tokens=max_tokens,
-        temperature=0.0,
-    )
-    parsed = parse_evidence_assessment(
-        completion.text,
-        allowed_ids={item.citation_id for item in evidence},
-    )
-    return EvidenceAssessment(
-        **parsed,
-        model=completion.model,
-        provider=completion.provider,
-    )
+    messages = [
+        Message(role="system", content=SYSTEM_PROMPT),
+        Message(
+            role="user",
+            content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        ),
+    ]
+    allowed_ids = {item.citation_id for item in evidence}
+    last_error: EvidenceAssessmentError | None = None
+    for attempt in range(2):
+        completion = await gateway.complete(
+            messages,
+            task_type="evidence_sufficiency",
+            max_tokens=max_tokens,
+            temperature=0.0,
+        )
+        try:
+            parsed = parse_evidence_assessment(
+                completion.text,
+                allowed_ids=allowed_ids,
+            )
+        except EvidenceAssessmentError as error:
+            last_error = error
+            if attempt == 1:
+                raise
+            messages.extend(
+                (
+                    Message(role="assistant", content=completion.text),
+                    Message(role="user", content=REPAIR_PROMPT),
+                )
+            )
+            continue
+        return EvidenceAssessment(
+            **parsed,
+            model=completion.model,
+            provider=completion.provider,
+        )
+    raise last_error or EvidenceAssessmentError("证据门控未返回结果")  # pragma: no cover
 
 
 def parse_evidence_assessment(value: str, *, allowed_ids: set[str]) -> ParsedEvidenceAssessment:

@@ -114,7 +114,6 @@ async def stream_answer_with_citations(
     refusal_margin_threshold: float = 0.03,
     evidence_gate_max_chars: int = 3000,
     rerank_evidence_gate_max_chars: int = 6000,
-    evidence_gate_max_segment_chars: int = 1200,
     evidence_gate_max_tokens: int = 300,
     query_decomposition_enabled: bool = False,
     query_decomposition_max_subqueries: int = 4,
@@ -149,7 +148,6 @@ async def stream_answer_with_citations(
         refusal_margin_threshold=refusal_margin_threshold,
         evidence_gate_max_chars=evidence_gate_max_chars,
         rerank_evidence_gate_max_chars=rerank_evidence_gate_max_chars,
-        evidence_gate_max_segment_chars=evidence_gate_max_segment_chars,
         evidence_gate_max_tokens=evidence_gate_max_tokens,
         query_decomposition_enabled=query_decomposition_enabled,
         query_decomposition_max_subqueries=query_decomposition_max_subqueries,
@@ -196,7 +194,6 @@ async def answer_with_citations(
     refusal_margin_threshold: float = 0.03,
     evidence_gate_max_chars: int = 3000,
     rerank_evidence_gate_max_chars: int = 6000,
-    evidence_gate_max_segment_chars: int = 1200,
     evidence_gate_max_tokens: int = 300,
     query_decomposition_enabled: bool = False,
     query_decomposition_max_subqueries: int = 4,
@@ -231,7 +228,6 @@ async def answer_with_citations(
         refusal_margin_threshold=refusal_margin_threshold,
         evidence_gate_max_chars=evidence_gate_max_chars,
         rerank_evidence_gate_max_chars=rerank_evidence_gate_max_chars,
-        evidence_gate_max_segment_chars=evidence_gate_max_segment_chars,
         evidence_gate_max_tokens=evidence_gate_max_tokens,
         query_decomposition_enabled=query_decomposition_enabled,
         query_decomposition_max_subqueries=query_decomposition_max_subqueries,
@@ -267,7 +263,6 @@ async def _prepare_generation(
     refusal_margin_threshold: float,
     evidence_gate_max_chars: int,
     rerank_evidence_gate_max_chars: int,
-    evidence_gate_max_segment_chars: int,
     evidence_gate_max_tokens: int,
     query_decomposition_enabled: bool,
     query_decomposition_max_subqueries: int,
@@ -380,11 +375,11 @@ async def _prepare_generation(
         )
 
     assert top_score is not None
-    coverage_packing = rerank_result.applied
-    gate_evidence = build_evidence_segments(
+    gate_evidence = build_gate_evidence(
         hits,
-        max_chars=(rerank_evidence_gate_max_chars if coverage_packing else evidence_gate_max_chars),
-        max_segment_chars=evidence_gate_max_segment_chars if coverage_packing else None,
+        rerank_applied=rerank_result.applied,
+        evidence_gate_max_chars=evidence_gate_max_chars,
+        rerank_evidence_gate_max_chars=rerank_evidence_gate_max_chars,
     )
     try:
         assessment = await assess_evidence_sufficiency(
@@ -445,6 +440,27 @@ async def _prepare_generation(
         lexical_rrf_applied=lexical_rrf_enabled,
         lexical_candidate_count=len(lexical_hits),
         chunk_strategy=chunk_strategy,
+    )
+
+
+def build_gate_evidence(
+    hits: list[DenseSearchHit],
+    *,
+    rerank_applied: bool,
+    evidence_gate_max_chars: int,
+    rerank_evidence_gate_max_chars: int,
+) -> list[EvidenceSegment]:
+    """按最终排序连续打包门控证据，保持 rerank 的优先级语义。
+
+    旧实现跨候选轮询 block，在 6000 字符耗尽前经常只取每个 chunk 的第一个 block。
+    70-dev 反事实重建显示它挡掉 14/57 条已召回 gold；顺序打包新增覆盖 14 条，0 退化。
+    """
+
+    return build_evidence_segments(
+        hits,
+        max_chars=(
+            rerank_evidence_gate_max_chars if rerank_applied else evidence_gate_max_chars
+        ),
     )
 
 

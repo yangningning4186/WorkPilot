@@ -22,12 +22,12 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import text
+
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.llm.gateway import build_model_gateway
 from app.retrieval.strategy import CHUNK_STRATEGIES, ChunkStrategy
-from sqlalchemy import text
-
 from eval.chunk_strategy_runner import ChunkCorpusNotReadyError, preflight_chunk_corpus
 from eval.generation_baseline import (
     GENERATION_RETRIEVAL_STRATEGIES,
@@ -57,7 +57,6 @@ CONTROLLED_CONFIG_KEYS: tuple[str, ...] = (
     "chat_provider",
     "evidence_gate_max_chars",
     "rerank_evidence_gate_max_chars",
-    "evidence_gate_max_segment_chars",
     "evidence_gate_max_tokens",
     "rerank_candidate_k",
     "reranker_model",
