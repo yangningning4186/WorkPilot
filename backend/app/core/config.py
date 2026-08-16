@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     external_api_key: str = ""
     cluster_api_key: str = ""
     routing_config_path: Path = Path("../config/routing.yaml")
+    # 精确缓存(docs/07 §6)。评测模式无论这里怎么配都不缓存: 命中意味着这一条
+    # 根本没过模型, 却会被算进指标里。
+    llm_cache_enabled: bool = True
+    llm_cache_ttl_s: int = Field(default=24 * 60 * 60, ge=60, le=30 * 24 * 60 * 60)
     embedding_base_url: str = ""
     embedding_model: str = "local-embedding"
     embedding_revision: str = "unversioned"

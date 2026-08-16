@@ -2,7 +2,9 @@ import json
 from dataclasses import dataclass
 from typing import TypedDict
 
+from app.llm.escalation import EscalationRejected, run_with_escalation
 from app.llm.gateway import ModelGateway
+from app.llm.routing import Tier
 from app.llm.types import Message
 from app.retrieval.citations import EvidenceSegment
 
@@ -79,36 +81,55 @@ async def assess_evidence_sufficiency(
         ),
     ]
     allowed_ids = {item.citation_id for item in evidence}
-    last_error: EvidenceAssessmentError | None = None
-    for attempt in range(2):
-        completion = await gateway.complete(
-            messages,
-            task_type="evidence_sufficiency",
-            max_tokens=max_tokens,
-            temperature=0.0,
-        )
-        try:
-            parsed = parse_evidence_assessment(
-                completion.text,
-                allowed_ids=allowed_ids,
+
+    async def attempt_at(tier: Tier | None) -> EvidenceAssessment:
+        """在指定档位上跑完整一轮（含同档 repair）。
+
+        每轮都从原始 messages 开始：把上一档的错误输出带进下一档的上下文，
+        等于请更强的模型去模仿一个已知错误的样例。
+        """
+
+        conversation = list(messages)
+        for attempt in range(2):
+            completion = await gateway.complete(
+                conversation,
+                task_type="evidence_sufficiency",
+                max_tokens=max_tokens,
+                temperature=0.0,
+                tier_override=tier,
             )
-        except EvidenceAssessmentError as error:
-            last_error = error
-            if attempt == 1:
-                raise
-            messages.extend(
-                (
-                    Message(role="assistant", content=completion.text),
-                    Message(role="user", content=REPAIR_PROMPT),
+            try:
+                parsed = parse_evidence_assessment(completion.text, allowed_ids=allowed_ids)
+            except EvidenceAssessmentError as error:
+                if attempt == 1:
+                    # 同档修不好就交给升档；没有升档目标时会原样抛出去。
+                    raise EscalationRejected(f"schema_invalid: {error}") from error
+                conversation.extend(
+                    (
+                        Message(role="assistant", content=completion.text),
+                        Message(role="user", content=REPAIR_PROMPT),
+                    )
                 )
+                continue
+            return EvidenceAssessment(
+                **parsed,
+                model=completion.model,
+                provider=completion.provider,
             )
-            continue
-        return EvidenceAssessment(
-            **parsed,
-            model=completion.model,
-            provider=completion.provider,
+        raise EvidenceAssessmentError("证据门控未返回结果")  # pragma: no cover
+
+    start_tier, escalate_to = gateway.escalation_plan("evidence_sufficiency")
+    try:
+        outcome = await run_with_escalation(
+            attempt_at,
+            task_type="evidence_sufficiency",
+            start_tier=start_tier,
+            escalate_to=escalate_to,
         )
-    raise last_error or EvidenceAssessmentError("证据门控未返回结果")  # pragma: no cover
+    except EscalationRejected as rejection:
+        # 没有升档目标时保持原有契约：调用方看到的仍然是 EvidenceAssessmentError。
+        raise EvidenceAssessmentError(str(rejection)) from rejection
+    return outcome.value
 
 
 def parse_evidence_assessment(value: str, *, allowed_ids: set[str]) -> ParsedEvidenceAssessment:

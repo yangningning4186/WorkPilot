@@ -65,6 +65,16 @@ class OpenAICompatibleProvider:
             trust_env=trust_env,
         )
 
+    @property
+    def request_fingerprint(self) -> str:
+        """会改变输出、但不体现在 messages 里的请求参数。
+
+        精确缓存的键必须带上它：`enable_thinking` 一开一关，同一个 prompt 的输出
+        完全不同，而 base_url / model 都没变——不带就会拿到上一种设置下的答案。
+        """
+
+        return f"thinking={self._enable_thinking}"
+
     async def complete(
         self,
         messages: list[Message],

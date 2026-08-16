@@ -17,6 +17,7 @@ tiers:
       base_url: ${TIER_LIGHT_BASE_URL}
       api_key: ${CLUSTER_API_KEY}
       model: ${TIER_LIGHT_MODEL}
+      enable_thinking: ${TIER_LIGHT_ENABLE_THINKING}
     # fallback 不传递：每档写全自己的链路，别指望接上 main 的那一串。
     fallback: [main, heavy, external]
 
@@ -27,6 +28,7 @@ tiers:
       base_url: ${TIER_MAIN_BASE_URL}
       api_key: ${CLUSTER_API_KEY}
       model: ${TIER_MAIN_MODEL}
+      enable_thinking: ${TIER_MAIN_ENABLE_THINKING}
     fallback: [heavy, external]
 
   # 规划、反思、判分：这些环节错了会级联放大，省钱最不划算。
@@ -36,6 +38,7 @@ tiers:
       base_url: ${TIER_HEAVY_BASE_URL}
       api_key: ${CLUSTER_API_KEY}
       model: ${TIER_HEAVY_MODEL}
+      enable_thinking: ${TIER_HEAVY_ENABLE_THINKING}
     fallback: [main, external]
 
   # 商用 API：对照基线 + 集群整体不可用时的兜底。它自己不再 fallback。
@@ -69,6 +72,19 @@ routes:
 
   # —— 判分：错了会污染整个评测体系，最不该省钱的一档。
   judge: heavy
+
+# 置信度驱动的动态升档（§3）：起始档跑完、确定性检查不达标时换这一档重做。
+# 与 fallback 不同——fallback 处理"调用失败"，升档处理"调用成功但结果不可信"。
+#
+# 目标 == 上面 routes 里的起始档 = **已登记但未启用**。要启用就把 routes 里
+# 对应那行改成更低的档（例如 evidence_sufficiency: light），一处改动即刻生效。
+#
+# 现在刻意都是未启用状态：把主答路径的证据门控换到 4B 上是一次会改变线上答案的
+# 变更，必须先有对照数据（§3 要测的是升档率、质量增益、相比全走 main 的净省），
+# 不能顺手翻过去。另外 light 的 max_model_len 只有 8192，长证据会直接超上下文。
+escalation:
+  evidence_sufficiency: main
+  agent_extract_card: main
 
 # 未登记的 task_type 落到甜点档，并靠 llm_calls 的审计发现遗漏。
 default_route: main

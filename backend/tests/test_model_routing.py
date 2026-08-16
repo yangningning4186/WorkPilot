@@ -195,6 +195,37 @@ def test_unknown_variable_fails_at_load_instead_of_expanding_to_empty() -> None:
         _table(document)
 
 
+def test_enable_thinking_false_survives_expansion() -> None:
+    """`${...}` 展开出来是字符串 "false"，而 `bool("false")` 是 True。
+
+    踩中不会报错，只会让思考输出重新打开、结构化门控变不稳——正是分档之前
+    `.env` 里特意关掉的那个开关。
+    """
+
+    document = _minimal()
+    tiers = document["tiers"]
+    assert isinstance(tiers, dict)
+    tiers["main"]["primary"]["enable_thinking"] = "${TIER_MAIN_ENABLE_THINKING}"
+
+    table = parse_routing_table(document, {**ENV, "TIER_MAIN_ENABLE_THINKING": "false"})
+    assert table.tiers["main"].primary.enable_thinking is False
+
+    table = parse_routing_table(document, {**ENV, "TIER_MAIN_ENABLE_THINKING": "true"})
+    assert table.tiers["main"].primary.enable_thinking is True
+
+    # 留空 = 不指定，交给 provider 默认值，而不是当成 False。
+    table = parse_routing_table(document, {**ENV, "TIER_MAIN_ENABLE_THINKING": ""})
+    assert table.tiers["main"].primary.enable_thinking is None
+
+
+def test_repo_routing_table_forwards_enable_thinking_for_every_self_hosted_tier() -> None:
+    """漏掉任何一档，那一档的 .env 开关就静默失效。"""
+
+    table = load_routing_table(REPO_ROUTING, {**ENV, "TIER_MAIN_ENABLE_THINKING": "false"})
+
+    assert table.tiers["main"].primary.enable_thinking is False
+
+
 def test_route_to_undeclared_tier_is_rejected() -> None:
     with pytest.raises(RoutingConfigError, match="external"):
         _table(_minimal(routes={"generate": "external"}))

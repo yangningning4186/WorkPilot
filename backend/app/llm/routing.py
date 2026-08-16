@@ -14,7 +14,7 @@
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from re import findall, sub
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -26,6 +26,10 @@ if TYPE_CHECKING:
 
 Tier = Literal["light", "main", "heavy", "external"]
 TIERS: tuple[Tier, ...] = ("light", "main", "heavy", "external")
+
+# 能力序，只用于校验"升档确实是往上升"。external 排在最后是因为它在本项目里
+# 的角色是兜底与对照基线，不参与自建三档的能力比较。
+_ORDER: dict[Tier, int] = {"light": 0, "main": 1, "heavy": 2, "external": 3}
 
 # 评测模式禁用 fallback（docs/07 §7.4）：eval_runs.config 记的是 heavy，
 # 实际因超时切到别的模型的话，指标是另一个模型打出来的且没人知道。
@@ -72,6 +76,20 @@ class RoutingTable:
     routes: Mapping[str, Tier]
     default_tier: Tier
     fallback_modes: Mapping[RoutingMode, bool]
+    # task_type → 置信度不达标时的升档目标（docs/07 §3）。与 fallback 是两回事：
+    # fallback 处理"调用失败"，升档处理"调用成功但结果不可信"。
+    escalation: Mapping[str, Tier] = field(default_factory=dict)
+
+    def escalation_for(self, task_type: str) -> Tier | None:
+        """升档目标必须严格高于起始档，否则返回 None（等于不升档）。"""
+
+        target = self.escalation.get(task_type)
+        if target is None:
+            return None
+        start = self.tier_for(task_type)
+        if _ORDER[target] <= _ORDER[start]:
+            return None
+        return target
 
     def tier_for(self, task_type: str) -> Tier:
         """未登记的 task_type 落到默认档，而不是报错。
@@ -82,18 +100,29 @@ class RoutingTable:
 
         return self.routes.get(task_type, self.default_tier)
 
-    def chain(self, task_type: str, *, mode: RoutingMode = "online") -> tuple[EndpointSpec, ...]:
+    def chain(
+        self,
+        task_type: str,
+        *,
+        mode: RoutingMode = "online",
+        tier_override: Tier | None = None,
+    ) -> tuple[EndpointSpec, ...]:
         """按顺序返回可尝试的 endpoint：主档在前，fallback 档在后。
 
         **fallback 不传递**：`light.fallback: [main]` 不会自动接上 `main.fallback`。
         每个档位声明自己的完整链路，这样"某个任务失败后会依次走哪几档"只看它自己
         那一行就有答案，不必在档位之间跳着推导。
 
+        `tier_override` 绕开 routes 直接指定起始档（升档用），但该档自己声明的
+        fallback 链仍然有效——升档之后照样可能撞上集群故障。
+
         评测模式下只返回主档，且主档不可用时直接抛错——宁可跑不动，
         也不能让台账上写着 heavy、实际由别的模型作答。
         """
 
-        tier = self.tier_for(task_type)
+        tier = tier_override if tier_override is not None else self.tier_for(task_type)
+        if tier not in self.tiers:
+            raise TierUnavailableError(f"路由表里没有声明档位 {tier}")
         spec = self.tiers[tier]
         if not self.fallback_modes.get(mode, True):
             if not spec.primary.available:
@@ -151,13 +180,35 @@ def _expand(value: object, env: Mapping[str, str], *, where: str) -> str:
     return sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda match: env[match.group(1)], value)
 
 
+def _tristate(value: object, env: Mapping[str, str], *, where: str) -> bool | None:
+    """三态开关：未设置 / true / false。
+
+    必须显式解析字符串——`${TIER_MAIN_ENABLE_THINKING}` 展开出来是 `"false"`，
+    而 `bool("false")` 是 **True**。这个坑一旦踩中不会报错，只会让思考输出
+    重新打开、结构化门控变不稳，而且很难归因。
+    """
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = _expand(value, env, where=where).strip().lower()
+    if text == "":
+        return None
+    if text in ("true", "1", "yes", "on"):
+        return True
+    if text in ("false", "0", "no", "off"):
+        return False
+    raise RoutingConfigError(f"{where} 只能是 true / false / 空，实际是 {text!r}")
+
+
 def _endpoint(
     tier: Tier, raw: object, env: Mapping[str, str], *, default_timeout_s: float
 ) -> EndpointSpec:
     where = f"config/routing.yaml tiers.{tier}.primary"
     if not isinstance(raw, dict):
         raise RoutingConfigError(f"{where} 必须是一个映射，实际是 {type(raw).__name__}")
-    thinking = raw.get("enable_thinking")
+    thinking = _tristate(raw.get("enable_thinking"), env, where=f"{where}.enable_thinking")
     timeout = raw.get("timeout_s", default_timeout_s)
     if not isinstance(timeout, int | float) or timeout <= 0:
         raise RoutingConfigError(f"{where}.timeout_s 必须是正数，实际是 {timeout!r}")
@@ -167,7 +218,7 @@ def _endpoint(
         base_url=_expand(raw.get("base_url"), env, where=where).rstrip("/"),
         api_key=_expand(raw.get("api_key"), env, where=where),
         model=_expand(raw.get("model"), env, where=where),
-        enable_thinking=None if thinking is None else bool(thinking),
+        enable_thinking=thinking,
         timeout_s=float(timeout),
     )
 
@@ -259,12 +310,37 @@ def parse_routing_table(document: object, env: Mapping[str, str]) -> RoutingTabl
             "台账记录的档位与实际作答的模型不一致（docs/07 §7.4）"
         )
 
+    raw_escalation = document.get("escalation") or {}
+    if not isinstance(raw_escalation, dict):
+        raise RoutingConfigError("config/routing.yaml escalation 必须是一个映射")
+    escalation: dict[str, Tier] = {}
+    for task_type, raw_target in raw_escalation.items():
+        task = str(task_type)
+        if task not in routes:
+            raise RoutingConfigError(
+                f"escalation.{task} 没有对应的 routes 条目；"
+                "升档目标只有在起始档明确时才有意义"
+            )
+        target = _tier_name(raw_target, where=f"escalation.{task}")
+        if target not in tiers:
+            raise RoutingConfigError(f"escalation.{task} 指向未声明的档位 {target}")
+        if _ORDER[target] < _ORDER[routes[task]]:
+            raise RoutingConfigError(
+                f"escalation.{task} 的目标 {target} 低于起始档 {routes[task]}；"
+                "升档不能往下降"
+            )
+        # 目标 == 起始档是允许的，含义是"升档目标已登记但当前未启用"：
+        # 把 routes 改成更低的档即刻生效，不必同时改两处。escalation_for() 会
+        # 对这种情况返回 None。
+        escalation[task] = target
+
     return RoutingTable(
         version=1,
         tiers=tiers,
         routes=routes,
         default_tier=default_tier,
         fallback_modes=fallback_modes,
+        escalation=escalation,
     )
 
 

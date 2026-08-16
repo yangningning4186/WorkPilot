@@ -9,6 +9,7 @@ import structlog
 from uuid6 import uuid7
 
 from app.core.config import Settings
+from app.llm.cache import CompletionCache, completion_cache_key, is_cacheable
 from app.llm.pricing import GatewayPricing, ModelPricing, estimate_tokens, is_measured
 from app.llm.providers.openai_compatible import OpenAICompatibleProvider
 from app.llm.routing import (
@@ -112,12 +113,16 @@ class TierProviderPool:
         return cached
 
     def chain(
-        self, task_type: str, *, mode: RoutingMode
+        self, task_type: str, *, mode: RoutingMode, tier_override: Tier | None = None
     ) -> tuple[tuple[Tier, ModelProvider], ...]:
         return tuple(
             (endpoint.tier, self._provider(endpoint))
-            for endpoint in self._table.chain(task_type, mode=mode)
+            for endpoint in self._table.chain(task_type, mode=mode, tier_override=tier_override)
         )
+
+    @property
+    def table(self) -> RoutingTable:
+        return self._table
 
     async def aclose(self) -> None:
         for provider in self._providers.values():
@@ -168,10 +173,14 @@ class ModelGateway:
         eval_run_id: UUID | None = None,
         pool: TierProviderPool | None = None,
         mode: RoutingMode = "online",
+        completion_cache: CompletionCache | None = None,
+        cache_ttl_s: int = 24 * 60 * 60,
     ) -> None:
         self._chat_provider = provider
         self._pool = pool
         self._mode = mode
+        self._cache = completion_cache
+        self._cache_ttl_s = cache_ttl_s
         self._embedding_provider = embedding_provider or provider
         # 流式接口只吐文本, 拿不到响应里的 model 字段; 但"这条答案是谁生成的"必须能记录
         # (评测要报 actual_models), 所以在网关层暴露配置身份。
@@ -195,11 +204,49 @@ class ModelGateway:
         task_type: str = "generate",
         max_tokens: int = 1024,
         temperature: float = 0.0,
+        tier_override: Tier | None = None,
     ) -> CompletionResult:
-        attempts = self._chain(task_type)
+        attempts = self._chain(task_type, tier_override=tier_override)
+        cacheable = self._cache is not None and is_cacheable(
+            temperature=temperature, mode=self._mode
+        )
         for index, (tier, provider) in enumerate(attempts):
             is_last = index == len(attempts) - 1
             pricing = self._pricing.for_tier(tier)
+
+            cache_key: str | None = None
+            if cacheable:
+                assert self._cache is not None
+                cache_key = completion_cache_key(
+                    tier=tier,
+                    model=provider.chat_model,
+                    provider=provider.name,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    # 用 getattr 是为了不逼所有测试假 provider 都实现它；
+                    # 缺这个属性的假 provider 本来也不会改变请求参数。
+                    request_fingerprint=getattr(provider, "request_fingerprint", ""),
+                )
+                started = monotonic()
+                hit = await self._cache.get(cache_key)
+                if hit is not None:
+                    # 命中不预留也不结算: 这次调用没有发生, 成本就是 0。
+                    # 但审计要记, 否则看板算不出命中率(§9)。
+                    await self._audit(
+                        task_type=task_type,
+                        tier=tier,
+                        model=hit.model,
+                        provider=provider,
+                        usage=hit.usage,
+                        started=started,
+                        success=True,
+                        cost_usd=Decimal(0),
+                        cache_hit=True,
+                        was_fallback=index > 0,
+                    )
+                    return hit
+
             estimated_usage = Usage(
                 input_tokens=self._estimate_tokens(sum(len(item.content) for item in messages)),
                 output_tokens=max_tokens,
@@ -222,6 +269,7 @@ class ModelGateway:
                     started=started,
                     success=False,
                     cost_usd=Decimal(0),
+                    was_fallback=index > 0,
                 )
                 if is_last:
                     raise
@@ -240,6 +288,7 @@ class ModelGateway:
                     started=started,
                     success=False,
                     cost_usd=reservation.estimated_usd,
+                    was_fallback=index > 0,
                 )
                 if is_last:
                     raise
@@ -255,7 +304,11 @@ class ModelGateway:
                 started=started,
                 success=True,
                 cost_usd=charged,
+                was_fallback=index > 0,
             )
+            if cache_key is not None and self._cache is not None:
+                # 只写成功结果: 一次抖动被钉住 24 小时比不缓存糟得多。
+                await self._cache.set(cache_key, result, ttl_s=self._cache_ttl_s)
             return result
         raise AssertionError("路由链为空, chain() 应当已经抛出 TierUnavailableError")
 
@@ -396,6 +449,7 @@ class ModelGateway:
                     started=started,
                     success=success,
                     cost_usd=cost_usd,
+                    was_fallback=index > 0,
                 )
             if success:
                 return
@@ -406,16 +460,34 @@ class ModelGateway:
                 raise failure
             self._log_fallback(task_type, tier, attempts[index + 1][0], dispatched=dispatched)
 
-    def _chain(self, task_type: str) -> tuple[tuple[Tier, ModelProvider], ...]:
+    def _chain(
+        self, task_type: str, *, tier_override: Tier | None = None
+    ) -> tuple[tuple[Tier, ModelProvider], ...]:
         """按 task_type 解析出可尝试的 (档位, provider) 序列。
 
         没有路由表时退化成单档，行为与分档之前完全一致——测试和 CLI 直接塞
-        fake provider 的用法不该被路由表绑架。
+        fake provider 的用法不该被路由表绑架。此时 `tier_override` 只能被忽略，
+        因为根本没有第二个 provider 可选。
+
+        `tier_override` 用于升档（docs/07 §3）：绕开 routes 直接指定档位，
+        但该档位自己声明的 fallback 链仍然有效——升档之后照样可能遇到集群故障。
         """
 
         if self._pool is None:
             return (("main", self._chat_provider),)
-        return self._pool.chain(task_type, mode=self._mode)
+        return self._pool.chain(task_type, mode=self._mode, tier_override=tier_override)
+
+    def escalation_plan(self, task_type: str) -> tuple[Tier | None, Tier | None]:
+        """返回 (起始档, 升档目标)；没有路由表时是 (None, None)，即不升档。
+
+        调用方拿它喂给 `run_with_escalation`，这样"要不要升档、升到哪一档"
+        始终由 config/routing.yaml 说了算，业务代码里不出现档位常量。
+        """
+
+        if self._pool is None:
+            return (None, None)
+        table = self._pool.table
+        return (table.tier_for(task_type), table.escalation_for(task_type))
 
     def _log_fallback(self, task_type: str, source: Tier, target: Tier, *, dispatched: bool) -> None:
         logger.warning(
@@ -465,6 +537,8 @@ class ModelGateway:
         success: bool,
         cost_usd: Decimal | None = None,
         tier: Tier = "main",
+        cache_hit: bool = False,
+        was_fallback: bool = False,
     ) -> None:
         if self._audit_sink is None:
             return
@@ -483,6 +557,9 @@ class ModelGateway:
                 latency_ms=max(0, round((monotonic() - started) * 1000)),
                 success=success,
                 cost_usd=cost_usd,
+                cached=cache_hit,
+                cache_type="exact" if cache_hit else None,
+                was_fallback=was_fallback,
                 run_id=self._run_id,
                 eval_run_id=self._eval_run_id,
             )
@@ -556,6 +633,7 @@ def build_model_gateway(
     run_id: UUID | None = None,
     eval_run_id: UUID | None = None,
     mode: RoutingMode = "online",
+    completion_cache: CompletionCache | None = None,
 ) -> ModelGateway:
     chat_provider = OpenAICompatibleProvider(
         base_url=settings.tier_main_base_url,
@@ -574,6 +652,12 @@ def build_model_gateway(
         timeout_s=settings.model_timeout_s,
         trust_env=settings.model_trust_env,
     )
+    if completion_cache is None and settings.llm_cache_enabled and mode != "evaluation":
+        # 延迟到这里 import: eval 与 CLI 不该因为建个网关就被拖上 Redis 依赖。
+        from app.core.redis import redis_client
+        from app.llm.cache import RedisCompletionCache
+
+        completion_cache = RedisCompletionCache(redis_client)
     table = load_settings_routing_table(settings)
     pool = (
         None
@@ -597,4 +681,6 @@ def build_model_gateway(
         eval_run_id=eval_run_id,
         pool=pool,
         mode=mode,
+        completion_cache=completion_cache,
+        cache_ttl_s=settings.llm_cache_ttl_s,
     )
