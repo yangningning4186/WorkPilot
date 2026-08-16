@@ -8,14 +8,17 @@ validation 13/19（68.4%）、整体 53/70（75.7%）**。rubric 依据 calibrat
 （v1→v2，只增补两条边界澄清，未改变任何已给标签），随后**冻结**，validation 19 条在冻结
 之后才标。
 
-**这批标签是助手草稿，尚未进入 `human-labels.csv`，reviewer 字段全空。** 在作者逐条复核
-并署名之前，它们不构成人工标签，也不得用于运行 Judge 验收。
+**作者已于同日完成复核并署名，标签已落 `human-labels.csv`**（详见下文"复核完成"）。
+8 条争议样本由作者显式逐条裁定，结论与草稿逐条一致；其余 62 条为作者确认草稿。
 
-必须写在最前面的一条方法论警告：**如果作者只是通读一遍就批量接受这批草稿，后续算出来的
-QWK 衡量的是"两个大模型是否互相同意"，不是"Judge 是否与人一致"。** 助手（Claude）与
-Judge（DeepSeek heavy）虽是不同模型，但同读一份 rubric、同看一份 gold，其一致性天然高于
-真实人机一致性，QWK 会被系统性高估。复核必须是实质性的逐条判断，尤其是下文标出的
-7 条争议样本。
+Judge 跑批已完成（70/70），人工与 Judge **打分逐条相同，QWK=1.0，门禁 `status=failed`**——
+失败项是退化重采样导致的 `qwk_bootstrap_incomplete`，与一致性无关。但这个 1.0 的信息量很低：
+validation 19 条里只有 2 条真正需要判断力，其余是拒答类与逐字事实题，明显样本上一致属预期。
+**作者决定 Judge 层本轮到此为止，不宣布校准通过，也不据此出质量结论。**
+
+一条必须跟着数字走的说明：**标签由助手起草、作者确认，Judge 是另一个大模型读同一份
+rubric 判同一批答案。** 报告任何 QWK 时必须同时披露标签来源方式与区分度拆解，
+`human-labels-provenance.json` 已把前者写成产物。
 
 ## 变更一：rubric 改为二分类
 
@@ -117,7 +120,101 @@ validation 追加时回验了 calibration 标签摘要仍等于冻结记录里�
 且 13 条 `correct_refusal` 对应 13/13 的 unanswerable 正确拒答。已用脚本校验草稿标签与机械
 可推的拒答状态**零冲突**——这不是巧合，是这批标签内部自洽的证据。
 
-## 需要重点复核的 7 条
+## 复核完成（2026-08-16）
+
+作者复核后填入 `human-labels.csv`，`reviewer = xingzhi <ningzhi.yang@vim-technology.com>`，
+`reviewed_at = 2026-08-16T06:51:27Z`。填写只动 `score/reason/reviewer/reviewed_at`
+四列，fingerprint 与冻结内容逐字保留；`load_human_labels` 回验 70/70 通过
+（无内容漂移、归因字段完整、无空 reason）。
+
+**分数一条未变，53/70 与草稿完全相同。** 下表 8 条争议样本由作者显式逐条裁定，
+理由用作者自己的措辞（不是助手草稿的措辞）；其余 62 条为作者确认草稿理由。
+
+| 来源方式 | 条数 |
+|---|---:|
+| 作者显式逐条裁定 | 8 |
+| 作者确认助手草稿 | 62 |
+
+这个区分写进了 `human-labels-provenance.json`
+（`review_mode = "assistant-drafted, author-adjudicated"`）。**不要把它表述成
+"70 条全部由人独立标注"**——8 条是独立裁定，62 条是确认，二者对 QWK 的证据强度不同。
+
+8 条裁定结论与草稿逐条一致，这是判据本身站得住的正面证据，但它同时意味着
+上文的高估风险仍然存在，没有被这次复核消除。
+
+## Judge 跑批与验收（2026-08-16）
+
+作者授权后向自部署内网端点 `172.16.1.13:8002`（`deepseek-v4-flash`）发送 70 条
+`question` / `gold_answer` / `answer`（不含 citations 与文档标识，不访问隔离 test），
+70/70 完成、`repair_retries=0`、模型身份单一。
+
+### 结果：完全一致，但这批样本对 Judge 几乎没有区分度
+
+| 指标 | calibration (51) | validation (19) | 整体 (70) |
+|---|---:|---:|---:|
+| accuracy | 1.0000 | 1.0000 | 1.0000 |
+| QWK（=Cohen's kappa） | 1.0 | 1.0 | 1.0 |
+| 分歧条数 | 0 | 0 | **0** |
+
+已独立核对这不是接线错误：Judge 侧 17×0 / 53×1，与人工侧逐条相同；70 条理由去重后 61 条
+（非复制粘贴），输出 token 14,142，模型身份唯一，授权指纹唯一。Judge 确实独立跑了一遍。
+
+按判断难度拆开这 70 条，就知道这个 1.0 该怎么读：
+
+| | calibration (51) | validation (19) |
+|---|---:|---:|
+| 机械可判（拒答类；`answerable` 直接写在 prompt 里给了 Judge） | 18 | 8 |
+| 逐字事实题（数字 / 命令 / URL 对上即可） | 28 | 9 |
+| **真正需要判断力**（`borderline` / `partial`） | 5 | **2** |
+
+验收只看 validation：**19 条里只有 2 条真正考验 Judge**，其余 17 条是送分题。
+在明显的题上完全一致本来就是应该的，反过来才该担心。所以这个 1.0 既不能说明 Judge 可靠，
+也不构成 Judge 不可靠的证据——**它主要说明这批样本没有区分度**。
+
+还有一层需要记下来。4 条 `borderline` 上 Judge 给出的判据是：
+
+- `ad2a455a`：「100 tok/s 随后被具体数值限定，不构成冲突」
+- `39b99d4f`：「额外补充的内容与参考答案不冲突，不影响评分」
+- `0be55027`：「未提及 E2M1 和 Blackwell 属于非必要附带细节，不扣分」
+
+这三句正是 rubric 里的边界条款，其中前两条是助手在标 calibration 时撞出歧义后写进 v2 的。
+链条是"助手判这几条 → 把判据写成 rubric → Judge 读 rubric → 判这几条 → 一致"。
+条款只取自 calibration 样本，协议未被违反；但 calibration/validation 拆分能挡住
+"拿 validation 样本调参"，挡不住"把判断编码进标尺"。评估 rubric 自身的泛化性时要记得这一点。
+
+因此本轮**不宣布 Judge 校准通过**，也不据此开始用 Judge 出质量结论；但也不把它记为失败。
+
+### 门禁状态：failed（原因与一致性无关）
+
+`status = failed`，唯一失败项是 `qwk_bootstrap_incomplete`：validation 19 条中标签分布为
+6 个 0 / 13 个 1，10000 次配对重采样里有 **8 次**抽到全部同一类，此时两侧边际都是常量、
+chance agreement 分母为 0，kappa 无定义被丢弃，`effective_resamples=9992 < 10000` 即判失败。
+已用同分布模拟复现（约 9 次），确认是退化重采样的必然产物。
+
+这不是"一致性不达标"。但**不建议为此放宽门禁**：它实际上在说"这个样本量与标签分布撑不起
+稳健的 kappa 估计"，这个提醒是对的。真正的阻塞点在上一节，不在这个阈值。
+
+`--rubric-freeze` 校验通过，rubric 与 prompt 指纹自 06:21:31Z 冻结以来未被改动。
+
+产物：`eval/outputs/judge-calibration/m1-dev70-binary-20260816/`
+（`judge-predictions.jsonl`、`report/report.json`、`report/report.md`）。
+
+### 跑批中暴露并修复的网关 bug
+
+`OpenAICompatibleProvider.complete` 原实现为
+`text = str(payload["choices"][0]["message"]["content"])`。reasoning 模型在推理耗尽
+`max_tokens` 时返回 `content=null`，`str(None)` 得到字符串 `"None"` 而不抛异常——
+把"模型没给内容"静默伪装成内容，一路传到下游才在 JSON 解析处炸，报错指向错误的地方。
+
+按约束 1 所有 LLM 调用都经这个网关，因此该缺陷影响 evidence gate、生成轨与拒答判定，
+不只 Judge。已改为显式抛 `ProviderResponseError` 并带 `finish_reason`。
+
+同时：`JUDGE_MAX_TOKENS` 从 500 提到 2048（实测长样本上 500 会被推理 token 耗尽；该值不进
+`prompt_fingerprint`，发给模型的文本未变，故不违反冻结）；按 E5 对 evidence gate 的同一政策
+补一次重试后仍非法则 fail-closed；解析失败的报错补上 `example_id` / 类别 / split /
+已完成条数 / 原始输出。首次跑批即因该缺陷整批失败，重跑后 `repair_retries=0`。
+
+## 需要重点复核的 7 条（复核前）
 
 其余 63 条要么是逐字对得上的事实题，要么是明确拒答，复核成本很低。真正需要判断的是这些：
 
@@ -145,12 +242,17 @@ gold 给的是"相对 full-context 少 30 倍 token"。E5 已记为标注缺陷�
 ## 决策与下一步
 
 - 二分类 rubric 与冻结机制合入；`min_qwk` 数值不动，但在报告中必须标注其含义已变。
-- **草稿不入 `human-labels.csv`。** 作者逐条复核后，由作者署名填写
-  `score/reason/reviewer/reviewed_at`，重点是上表 7 条争议样本。
-- 复核完成前不运行 DeepSeek heavy Judge：Judge 包仍为 `model_send_authorized=false`，
-  端点健康可用不等于已获准发送 70 条项目数据。
-- 报告 QWK 时必须同时披露人工标签的来源方式（助手起草 / 作者逐条确认），
-  否则 QWK 会被读成人机一致性。
+- **Judge 层本轮到此为止**（作者 2026-08-16 决定）。跑批闭环已经打通、产物齐全，
+  在明显样本上完全一致属预期行为，不再为此追加工作。
+- 但**不宣布校准通过**：`status=failed` 且 validation 只有 2 条有区分度，
+  现阶段不用 Judge 出质量结论。恢复推进时的入口是补有区分度的样本
+  （"答了但有细节问题"这一类），而不是调门禁阈值。
+- 不为 `qwk_bootstrap_incomplete` 放宽门禁。它反映的是样本量与标签分布撑不起稳健
+  kappa 估计，这个提醒成立；样本量上去后自然消解。
+- 报告任何 QWK 时必须同时披露标签来源方式（8 条显式裁定 / 62 条确认草稿 / 0 条盲标）
+  与上表的区分度拆解，不能只报 1.0。
+- 网关 `content=null` 缺陷已修。已回查 E4/E5：扫描 140 条生成结果，`answer`
+  恰为字符串 `"None"` 的为 **0 条**，E4/E5 的数字未受该缺陷污染，不需要重跑。
 - `agent_task` 仍为 0，七类验收继续阻塞，与 J0 台账记录一致。
 
 ## 追溯

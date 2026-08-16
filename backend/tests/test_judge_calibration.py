@@ -4,6 +4,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+
+from app.llm.gateway import ModelGateway
 from eval.judge_calibration import (
     DEFAULT_JUDGE_CASES,
     INTERIM_JUDGE_CATEGORIES,
@@ -29,8 +31,6 @@ from eval.judge_calibration import (
     rubric_fingerprint,
     run_judge,
 )
-
-from app.llm.gateway import ModelGateway
 from tests.fakes import DeterministicProvider
 
 
@@ -580,3 +580,46 @@ def test_frozen_rubric_drift_blocks_acceptance(tmp_path: Path) -> None:
             resamples=200,
             required_categories=_SUPPORTED,
         )
+
+
+@pytest.mark.asyncio
+async def test_judge_repairs_one_flaky_response_but_still_fails_closed(tmp_path: Path) -> None:
+    """端点在连续批处理下即使 temperature=0 也会偶发抖动。
+
+    政策与 E5 的 evidence gate 一致：同问题最多补一次；补上了就继续，
+    补不上仍然 fail-closed，且报错必须能定位到是哪一条、已完成多少。
+    """
+    example = _example(1)
+    good = '{"reason":"核心结论正确","score":1}'
+
+    flaky = DeterministicProvider(completion_texts=["不是 JSON", good])
+    gateway = ModelGateway(flaky, embedding_dimensions=1024)
+    result = await run_judge(
+        [example],
+        tmp_path / "repaired.jsonl",
+        gateway=gateway,
+        allow_model_send=True,
+        authorization_note="授权说明",
+        expected_provider="deterministic_test",
+        expected_model="fake-chat",
+    )
+    assert result["prediction_count"] == 1
+    assert result["repair_retries"] == 1
+
+    broken = DeterministicProvider(completion_texts=["还是不是 JSON", "依然不是 JSON"])
+    gateway = ModelGateway(broken, embedding_dimensions=1024)
+    with pytest.raises(ValueError) as caught:
+        await run_judge(
+            [example],
+            tmp_path / "failed.jsonl",
+            gateway=gateway,
+            allow_model_send=True,
+            authorization_note="授权说明",
+            expected_provider="deterministic_test",
+            expected_model="fake-chat",
+        )
+    message = str(caught.value)
+    assert example.example_id in message
+    assert "已完成=0/1" in message
+    assert "依然不是 JSON" in message
+    assert not (tmp_path / "failed.jsonl").exists()

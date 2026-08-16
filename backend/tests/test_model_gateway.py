@@ -4,7 +4,10 @@ import httpx
 import pytest
 
 from app.llm.gateway import EmbeddingDimensionError, EmbeddingIdentityError, ModelGateway
-from app.llm.providers.openai_compatible import OpenAICompatibleProvider
+from app.llm.providers.openai_compatible import (
+    OpenAICompatibleProvider,
+    ProviderResponseError,
+)
 from app.llm.types import Message
 from tests.fakes import DeterministicProvider
 
@@ -92,3 +95,46 @@ async def test_openai_compatible_provider_maps_wire_format() -> None:
     assert requests[0].headers["authorization"] == "Bearer secret"
     assert json.loads(requests[0].content)["chat_template_kwargs"] == {"enable_thinking": False}
     assert json.loads(requests[1].content)["input"] == ["one", "two"]
+
+
+@pytest.mark.asyncio
+async def test_null_content_raises_instead_of_becoming_the_string_none() -> None:
+    """reasoning 模型推理耗尽 max_tokens 时回 content=null。
+
+    此前实现是 str(content)，会得到字符串 "None" 并当作正常回答返回，
+    把"模型没给内容"静默伪装成内容。调用方（Judge、evidence gate、生成轨）
+    拿到的都是假数据，且报错会指向下游解析而非真正的原因。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "reasoner",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "length",
+                        "message": {"role": "assistant", "content": None, "reasoning": "想了很久"},
+                    }
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 500},
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="reasoner",
+        embedding_model="embed",
+        client=client,
+    )
+
+    with pytest.raises(ProviderResponseError, match="空 content"):
+        await provider.complete(
+            [Message(role="user", content="question")], max_tokens=500, temperature=0.0
+        )
+    await client.aclose()

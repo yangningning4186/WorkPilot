@@ -89,9 +89,19 @@ class OpenAICompatibleProvider:
         response.raise_for_status()
         payload: dict[str, Any] = response.json()
         try:
-            text = str(payload["choices"][0]["message"]["content"])
+            message = payload["choices"][0]["message"]
+            content = message["content"]
         except (KeyError, IndexError, TypeError) as error:
             raise ProviderResponseError("模型响应缺少 choices[0].message.content") from error
+        # reasoning 模型在推理耗尽 max_tokens 时会回 content=null。此处若直接 str()
+        # 会得到字符串 "None"，把"模型没给内容"静默伪装成内容，调用方拿到的是假数据。
+        if content is None:
+            finish_reason = payload["choices"][0].get("finish_reason")
+            raise ProviderResponseError(
+                f"模型返回空 content(finish_reason={finish_reason})；"
+                "reasoning 模型可能已耗尽 max_tokens，调大后重试"
+            )
+        text = str(content)
         usage = payload.get("usage") or {}
         return CompletionResult(
             text=text,

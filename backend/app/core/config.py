@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     tier_main_base_url: str = "http://localhost:8000/v1"
     tier_main_model: str = "local-chat"
     tier_main_enable_thinking: bool | None = None
+    tier_heavy_base_url: str = ""
+    tier_heavy_model: str = ""
     cluster_api_key: str = ""
     embedding_base_url: str = ""
     embedding_model: str = "local-embedding"

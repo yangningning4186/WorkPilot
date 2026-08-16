@@ -26,7 +26,10 @@ from sqlalchemy import text
 
 from app.core.db import close_database, session_factory
 from app.llm.gateway import ModelGateway
-from app.llm.providers.openai_compatible import OpenAICompatibleProvider
+from app.llm.providers.openai_compatible import (
+    OpenAICompatibleProvider,
+    ProviderResponseError,
+)
 from app.llm.types import Message
 
 SCHEMA_VERSION = "judge-calibration.v1"
@@ -101,6 +104,13 @@ INTERIM_JUDGE_CATEGORIES = tuple(
 )
 DEFAULT_JUDGE_CASES = 70
 DEFAULT_MIN_VALIDATION_CASES = 17
+# heavy Judge 是 reasoning 模型：推理 token 先于 content 产出，且计入同一个 max_tokens。
+# 实测长样本上 500 会被推理耗尽，content 恒为 null，整批 fail-closed。2048 留足余量。
+# 该值不进 prompt_fingerprint（不改变发给模型的文本），但会影响能否拿到结构化输出，
+# 因此改动必须记账。
+JUDGE_MAX_TOKENS = 2048
+# 同问题最多补跑几次。与 E5 的 evidence gate 同政策：只吸收单点抖动，不放宽校验。
+JUDGE_REPAIR_ATTEMPTS = 1
 
 
 class JudgeGateway(Protocol):
@@ -675,23 +685,48 @@ async def run_judge(
     authorization_fingerprint = hashlib.sha256(
         authorization_note.strip().encode()
     ).hexdigest()
+    repairs = 0
     for example in examples:
-        result = await gateway.complete(
-            [
-                Message(role="system", content=SYSTEM_PROMPT),
-                Message(role="user", content=_render_prompt(example)),
-            ],
-            task_type="judge",
-            max_tokens=500,
-            temperature=0.0,
-        )
-        if result.provider != expected_provider or result.model != expected_model:
+        # 服务端在连续批处理下即使 temperature=0 也非严格确定，偶发空 content 或截断。
+        # 与 E5 的 evidence gate 同一条政策：同问题最多补一次，第二次仍非法继续
+        # fail-closed。不放宽校验，只吸收单点抖动。
+        result = None
+        failure: Exception | None = None
+        for attempt in range(1 + JUDGE_REPAIR_ATTEMPTS):
+            try:
+                result = await gateway.complete(
+                    [
+                        Message(role="system", content=SYSTEM_PROMPT),
+                        Message(role="user", content=_render_prompt(example)),
+                    ],
+                    task_type="judge",
+                    max_tokens=JUDGE_MAX_TOKENS,
+                    temperature=0.0,
+                )
+                if result.provider != expected_provider or result.model != expected_model:
+                    raise ValueError(
+                        "Judge 实际模型身份漂移，禁止 fallback 或混跑: "
+                        f"expected={expected_provider}/{expected_model}, "
+                        f"actual={result.provider}/{result.model}"
+                    )
+                reason, score = _parse_judge_response(result.text)
+                repairs += attempt
+                break
+            except ValueError as exc:
+                if "身份漂移" in str(exc):
+                    raise
+                failure = exc
+            except ProviderResponseError as exc:
+                failure = exc
+        else:
+            # 70 次串行调用死在第 N 条却不说是哪条，等于让人从头猜。
+            # 继续 fail-closed，但必须把定位信息和原始输出带出来。
             raise ValueError(
-                "Judge 实际模型身份漂移，禁止 fallback 或混跑: "
-                f"expected={expected_provider}/{expected_model}, "
-                f"actual={result.provider}/{result.model}"
-            )
-        reason, score = _parse_judge_response(result.text)
+                f"Judge 响应重试 {JUDGE_REPAIR_ATTEMPTS} 次后仍无法解析: "
+                f"example_id={example.example_id} category={example.category} "
+                f"split={example.split} 已完成={len(predictions)}/{len(examples)}；"
+                f"{failure}；raw={str(getattr(result, 'text', None))[:400]!r}"
+            ) from failure
         predictions.append(
             JudgePrediction(
                 example_id=example.example_id,
@@ -719,6 +754,8 @@ async def run_judge(
         "reused": False,
         "prediction_count": len(predictions),
         "actual_models": sorted(f"{p}/{m}" for p, m in identities),
+        # 补跑次数必须报出来：如果它不是 0，说明端点在抖，结论的可复现性要打折扣。
+        "repair_retries": repairs,
     }
 
 
@@ -1114,6 +1151,13 @@ def _bootstrap_summary(
 
 
 def _parse_judge_response(text: str) -> tuple[str, int]:
+    # reasoning 模型会把 content 留空、token 全花在推理上。这时报"不是 JSON"会把人
+    # 引到 prompt 上去查，真正的原因是 max_tokens 不够。所以单独识别这一种失败。
+    if not text or not text.strip():
+        raise ValueError(
+            f"Judge 返回空 content；reasoning 模型可能已耗尽 max_tokens"
+            f"（当前 {JUDGE_MAX_TOKENS}），调大后重跑"
+        )
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
