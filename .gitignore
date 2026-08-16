@@ -53,3 +53,6 @@ Thumbs.db
 # 日志
 *.log
 logs/
+
+# 实验跑批产物（体积大且可复现，台账里记结论即可）
+eval/outputs/pareto/

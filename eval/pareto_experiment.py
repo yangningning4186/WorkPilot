@@ -209,6 +209,35 @@ def _median(values: list[float]) -> float | None:
     return (ordered[middle - 1] + ordered[middle]) / 2
 
 
+# 汇总表里出现的每一个数值指标，都要按重复取中位数。
+_MEDIAN_PATHS: tuple[tuple[str, ...], ...] = (
+    ("refusal", "accuracy"),
+    ("citation_validity", "non_refusal_rate"),
+    ("citation_gold_alignment", "rate"),
+    ("constraint_pass", "rate"),
+    ("latency_ms", "mean"),
+    ("error_count",),
+)
+
+
+def _median_metrics(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for path in _MEDIAN_PATHS:
+        values = [
+            value
+            for run in runs
+            if isinstance(value := _dig(run, *path), int | float)
+        ]
+        median = _median([float(v) for v in values])
+        if median is None:
+            continue
+        target = merged
+        for key in path[:-1]:
+            target = target.setdefault(key, {})
+        target[path[-1]] = median
+    return merged
+
+
 def summarize(outcomes: list[ConfigOutcome]) -> str:
     """按配置聚合三次重复取中位数。
 
@@ -226,11 +255,14 @@ def summarize(outcomes: list[ConfigOutcome]) -> str:
             merged.append(group[0])
             continue
         head = usable[0]
+        # 质量指标同样要取中位数。只 median 墙钟、质量直接用 r1，会在
+        # 非确定性档位上把某一次的运气当成结论——heavy 在 temperature=0 下
+        # 三次跑批的引用对齐率能差 10 个百分点。
         merged.append(
             ConfigOutcome(
                 config=head.config,
                 repeat=0,
-                metrics=head.metrics,
+                metrics=_median_metrics([o.metrics for o in usable]),
                 cost={
                     **head.cost,
                     "wall_s": f"{_median([float(o.cost['wall_s']) for o in usable]):.1f}",
