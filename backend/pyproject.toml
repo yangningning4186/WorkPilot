@@ -13,6 +13,8 @@ dependencies = [
   "pgvector>=0.4,<1",
   "pydantic-settings>=2.10,<3",
   "pymupdf>=1.26,<2",
+  # config/routing.yaml 的解析。此前只是 langgraph 的传递依赖, 直接 import 就要显式声明。
+  "pyyaml>=6.0.3,<7",
   # arq 全系列都把 redis 卡在 <6, 因此从 6.x 回退到 5.x。
   # 用到的只有 from_url / publish / pubsub / aclose, 5.0.1+ 全部具备。
   "redis>=5.0.1,<6",
@@ -29,6 +31,7 @@ dev = [
   "pytest>=8.4,<9",
   "pytest-asyncio>=1.1,<2",
   "ruff>=0.12,<1",
+  "types-pyyaml>=6.0.12,<7",
 ]
 
 [tool.uv]

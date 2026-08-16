@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from decimal import Decimal
 from time import monotonic
+from typing import Protocol
 from uuid import UUID
 
 import structlog
@@ -10,6 +11,14 @@ from uuid6 import uuid7
 from app.core.config import Settings
 from app.llm.pricing import GatewayPricing, ModelPricing, estimate_tokens, is_measured
 from app.llm.providers.openai_compatible import OpenAICompatibleProvider
+from app.llm.routing import (
+    EndpointSpec,
+    RoutingMode,
+    RoutingTable,
+    Tier,
+    load_routing_table,
+    routing_env,
+)
 from app.llm.types import (
     AuditRecord,
     AuditSink,
@@ -72,6 +81,75 @@ class _Reservation:
             )
 
 
+class TierProviderPool:
+    """按档位持有 provider 实例。
+
+    同一档位复用同一个实例（也就是同一个 HTTP 连接池）；不同档位即使指向同一台机器
+    也分开，因为 `model` 不同，而 provider 的身份是 (base_url, model) 这一对。
+    """
+
+    def __init__(
+        self,
+        table: RoutingTable,
+        *,
+        embedding_model: str,
+        trust_env: bool,
+        factory: "ProviderFactory | None" = None,
+    ) -> None:
+        self._table = table
+        self._embedding_model = embedding_model
+        self._trust_env = trust_env
+        self._factory = factory or _default_provider_factory
+        self._providers: dict[Tier, ModelProvider] = {}
+
+    def _provider(self, endpoint: EndpointSpec) -> ModelProvider:
+        cached = self._providers.get(endpoint.tier)
+        if cached is None:
+            cached = self._factory(
+                endpoint, embedding_model=self._embedding_model, trust_env=self._trust_env
+            )
+            self._providers[endpoint.tier] = cached
+        return cached
+
+    def chain(
+        self, task_type: str, *, mode: RoutingMode
+    ) -> tuple[tuple[Tier, ModelProvider], ...]:
+        return tuple(
+            (endpoint.tier, self._provider(endpoint))
+            for endpoint in self._table.chain(task_type, mode=mode)
+        )
+
+    async def aclose(self) -> None:
+        for provider in self._providers.values():
+            await provider.aclose()
+        self._providers.clear()
+
+
+class ProviderFactory(Protocol):
+    def __call__(
+        self, endpoint: EndpointSpec, *, embedding_model: str, trust_env: bool
+    ) -> ModelProvider: ...
+
+
+def _default_provider_factory(
+    endpoint: EndpointSpec, *, embedding_model: str, trust_env: bool
+) -> ModelProvider:
+    if endpoint.provider != "openai_compatible":
+        raise ValueError(
+            f"档位 {endpoint.tier} 声明的 provider {endpoint.provider!r} 尚未实现；"
+            "当前只支持 openai_compatible。"
+        )
+    return OpenAICompatibleProvider(
+        base_url=endpoint.base_url,
+        api_key=endpoint.api_key,
+        chat_model=endpoint.model,
+        embedding_model=embedding_model,
+        enable_thinking=endpoint.enable_thinking,
+        timeout_s=endpoint.timeout_s,
+        trust_env=trust_env,
+    )
+
+
 class ModelGateway:
     """业务层唯一允许依赖的模型接口。"""
 
@@ -88,8 +166,12 @@ class ModelGateway:
         chars_per_token: float = 1.0,
         run_id: UUID | None = None,
         eval_run_id: UUID | None = None,
+        pool: TierProviderPool | None = None,
+        mode: RoutingMode = "online",
     ) -> None:
         self._chat_provider = provider
+        self._pool = pool
+        self._mode = mode
         self._embedding_provider = embedding_provider or provider
         # 流式接口只吐文本, 拿不到响应里的 model 字段; 但"这条答案是谁生成的"必须能记录
         # (评测要报 actual_models), 所以在网关层暴露配置身份。
@@ -114,51 +196,68 @@ class ModelGateway:
         max_tokens: int = 1024,
         temperature: float = 0.0,
     ) -> CompletionResult:
-        estimated_usage = Usage(
-            input_tokens=self._estimate_tokens(sum(len(item.content) for item in messages)),
-            output_tokens=max_tokens,
-        )
-        reservation = await self._reserve(self._pricing.chat, estimated_usage)
-        started = monotonic()
-        try:
-            result = await self._chat_provider.complete(
-                messages, max_tokens=max_tokens, temperature=temperature
+        attempts = self._chain(task_type)
+        for index, (tier, provider) in enumerate(attempts):
+            is_last = index == len(attempts) - 1
+            pricing = self._pricing.for_tier(tier)
+            estimated_usage = Usage(
+                input_tokens=self._estimate_tokens(sum(len(item.content) for item in messages)),
+                output_tokens=max_tokens,
             )
-        except ProviderNotDispatchedError:
-            await reservation.release()
+            # 预留在 try 之外: 预算不足要立刻抛出去, 换个档位重试只会更快烧完额度。
+            reservation = await self._reserve(pricing, estimated_usage)
+            started = monotonic()
+            try:
+                result = await provider.complete(
+                    messages, max_tokens=max_tokens, temperature=temperature
+                )
+            except ProviderNotDispatchedError:
+                await reservation.release()
+                await self._audit(
+                    task_type=task_type,
+                    tier=tier,
+                    model=provider.chat_model,
+                    provider=provider,
+                    usage=Usage(),
+                    started=started,
+                    success=False,
+                    cost_usd=Decimal(0),
+                )
+                if is_last:
+                    raise
+                self._log_fallback(task_type, tier, attempts[index + 1][0], dispatched=False)
+                continue
+            except Exception:
+                # 发出去之后失败可能已经计费, 保守记账。换档位重试是第二笔钱,
+                # 两笔都要留在 llm_calls 里, 否则成本曲线会把 fallback 抹平。
+                await reservation.abandon()
+                await self._audit(
+                    task_type=task_type,
+                    tier=tier,
+                    model=provider.chat_model,
+                    provider=provider,
+                    usage=Usage(),
+                    started=started,
+                    success=False,
+                    cost_usd=reservation.estimated_usd,
+                )
+                if is_last:
+                    raise
+                self._log_fallback(task_type, tier, attempts[index + 1][0], dispatched=True)
+                continue
+            charged = await self._settle(reservation, pricing, result.usage)
             await self._audit(
                 task_type=task_type,
-                model=self._chat_provider.chat_model,
-                provider=self._chat_provider,
-                usage=Usage(),
+                tier=tier,
+                model=result.model,
+                provider=provider,
+                usage=result.usage,
                 started=started,
-                success=False,
-                cost_usd=Decimal(0),
+                success=True,
+                cost_usd=charged,
             )
-            raise
-        except Exception:
-            await reservation.abandon()
-            await self._audit(
-                task_type=task_type,
-                model=self._chat_provider.chat_model,
-                provider=self._chat_provider,
-                usage=Usage(),
-                started=started,
-                success=False,
-                cost_usd=reservation.estimated_usd,
-            )
-            raise
-        charged = await self._settle(reservation, self._pricing.chat, result.usage)
-        await self._audit(
-            task_type=task_type,
-            model=result.model,
-            provider=self._chat_provider,
-            usage=result.usage,
-            started=started,
-            success=True,
-            cost_usd=charged,
-        )
-        return result
+            return result
+        raise AssertionError("路由链为空, chain() 应当已经抛出 TierUnavailableError")
 
     def stream(
         self,
@@ -246,48 +345,87 @@ class ModelGateway:
         max_tokens: int,
         temperature: float,
     ) -> AsyncIterator[str]:
-        estimated_usage = Usage(
-            input_tokens=self._estimate_tokens(sum(len(item.content) for item in messages)),
-            output_tokens=max_tokens,
+        attempts = self._chain(task_type)
+        for index, (tier, provider) in enumerate(attempts):
+            is_last = index == len(attempts) - 1
+            pricing = self._pricing.for_tier(tier)
+            estimated_usage = Usage(
+                input_tokens=self._estimate_tokens(sum(len(item.content) for item in messages)),
+                output_tokens=max_tokens,
+            )
+            reservation = await self._reserve(pricing, estimated_usage)
+            started = monotonic()
+            produced_chars = 0
+            emitted = False
+            success = False
+            dispatched = True
+            failure: Exception | None = None
+            try:
+                async for chunk in provider.stream(
+                    messages, max_tokens=max_tokens, temperature=temperature
+                ):
+                    emitted = True
+                    produced_chars += len(chunk)
+                    yield chunk
+                success = True
+            except ProviderNotDispatchedError as error:
+                dispatched = False
+                failure = error
+            except Exception as error:
+                failure = error
+            finally:
+                # 流式接口拿不到 provider 回报的用量, 按已产出文本估算并受预留上限约束。
+                usage = Usage(
+                    input_tokens=estimated_usage.input_tokens,
+                    output_tokens=min(self._estimate_tokens(produced_chars), max_tokens),
+                )
+                if not dispatched:
+                    await reservation.release()
+                    cost_usd = Decimal(0)
+                elif success:
+                    cost_usd = await reservation.settle(pricing.cost_usd(usage))
+                else:
+                    await reservation.abandon()
+                    cost_usd = reservation.estimated_usd
+                await self._audit(
+                    task_type=task_type,
+                    tier=tier,
+                    model=provider.chat_model,
+                    provider=provider,
+                    usage=usage if success else Usage(),
+                    started=started,
+                    success=success,
+                    cost_usd=cost_usd,
+                )
+            if success:
+                return
+            assert failure is not None
+            # 已经吐出去的文本收不回来。此时换档位会让同一条回答的前半段和后半段
+            # 由两个模型写成, 读起来是自相矛盾的一段话——比直接失败更糟。
+            if emitted or is_last:
+                raise failure
+            self._log_fallback(task_type, tier, attempts[index + 1][0], dispatched=dispatched)
+
+    def _chain(self, task_type: str) -> tuple[tuple[Tier, ModelProvider], ...]:
+        """按 task_type 解析出可尝试的 (档位, provider) 序列。
+
+        没有路由表时退化成单档，行为与分档之前完全一致——测试和 CLI 直接塞
+        fake provider 的用法不该被路由表绑架。
+        """
+
+        if self._pool is None:
+            return (("main", self._chat_provider),)
+        return self._pool.chain(task_type, mode=self._mode)
+
+    def _log_fallback(self, task_type: str, source: Tier, target: Tier, *, dispatched: bool) -> None:
+        logger.warning(
+            "档位 fallback",
+            task_type=task_type,
+            from_tier=source,
+            to_tier=target,
+            # 已发出的调用可能已经计费, 这一笔仍然记在 source 档位上。
+            source_may_be_charged=dispatched,
         )
-        reservation = await self._reserve(self._pricing.chat, estimated_usage)
-        started = monotonic()
-        produced_chars = 0
-        success = False
-        dispatched = True
-        try:
-            async for chunk in self._chat_provider.stream(
-                messages, max_tokens=max_tokens, temperature=temperature
-            ):
-                produced_chars += len(chunk)
-                yield chunk
-            success = True
-        except ProviderNotDispatchedError:
-            dispatched = False
-            raise
-        finally:
-            # 流式接口拿不到 provider 回报的用量, 按已产出文本估算并受预留上限约束。
-            usage = Usage(
-                input_tokens=estimated_usage.input_tokens,
-                output_tokens=min(self._estimate_tokens(produced_chars), max_tokens),
-            )
-            if not dispatched:
-                await reservation.release()
-                cost_usd = Decimal(0)
-            elif success:
-                cost_usd = await reservation.settle(self._pricing.chat.cost_usd(usage))
-            else:
-                await reservation.abandon()
-                cost_usd = reservation.estimated_usd
-            await self._audit(
-                task_type=task_type,
-                model=self._chat_provider.chat_model,
-                provider=self._chat_provider,
-                usage=usage if success else Usage(),
-                started=started,
-                success=success,
-                cost_usd=cost_usd,
-            )
 
     async def _reserve(self, pricing: ModelPricing, estimated_usage: Usage) -> _Reservation:
         estimated_usd = pricing.cost_usd(estimated_usage)
@@ -326,6 +464,7 @@ class ModelGateway:
         started: float,
         success: bool,
         cost_usd: Decimal | None = None,
+        tier: Tier = "main",
     ) -> None:
         if self._audit_sink is None:
             return
@@ -334,7 +473,9 @@ class ModelGateway:
             AuditRecord(
                 trace_id=trace_id,
                 task_type=task_type,
-                tier="main",
+                # 记实际作答的档位而不是路由表上写的档位: fallback 之后两者会不一致,
+                # 而成本与质量分析全靠这一列分组(docs/07 §9)。
+                tier=tier,
                 model=model,
                 provider=provider.name,
                 input_tokens=usage.input_tokens,
@@ -351,6 +492,8 @@ class ModelGateway:
         await self._chat_provider.aclose()
         if self._embedding_provider is not self._chat_provider:
             await self._embedding_provider.aclose()
+        if self._pool is not None:
+            await self._pool.aclose()
 
 
 def gateway_pricing_from_settings(settings: Settings) -> GatewayPricing:
@@ -362,7 +505,47 @@ def gateway_pricing_from_settings(settings: Settings) -> GatewayPricing:
         embedding=ModelPricing(
             input_usd_per_mtok=settings.price_embedding_input_usd_per_mtok,
         ),
+        by_tier={
+            "light": ModelPricing(
+                input_usd_per_mtok=settings.price_light_input_usd_per_mtok,
+                output_usd_per_mtok=settings.price_light_output_usd_per_mtok,
+            ),
+            "main": ModelPricing(
+                input_usd_per_mtok=settings.price_main_input_usd_per_mtok,
+                output_usd_per_mtok=settings.price_main_output_usd_per_mtok,
+            ),
+            "heavy": ModelPricing(
+                input_usd_per_mtok=settings.price_heavy_input_usd_per_mtok,
+                output_usd_per_mtok=settings.price_heavy_output_usd_per_mtok,
+            ),
+            "external": ModelPricing(
+                input_usd_per_mtok=settings.price_external_input_usd_per_mtok,
+                output_usd_per_mtok=settings.price_external_output_usd_per_mtok,
+            ),
+        },
     )
+
+
+def load_settings_routing_table(settings: Settings) -> RoutingTable | None:
+    """没有 routing.yaml 就退回单档。
+
+    路由表是可选的而不是必需的：M0/M1 的部署、CLI 与测试都只有一个 endpoint，
+    强制要求这个文件存在只会让它们平白多一个前置条件。
+    """
+
+    path = settings.routing_config_path
+    if not path.exists():
+        return None
+    table = load_routing_table(path, routing_env(settings))
+    drifted = table.unavailable_routes()
+    if drifted:
+        # 启动时说一次。静默降档不算错, 不说才是——尤其是 light 档没部署时,
+        # 所有"省钱"的路由其实都在跑 main。
+        logger.warning(
+            "部分档位未配置 endpoint, 线上按 fallback 链降级",
+            routes={task: f"{want}→{got}" for task, (want, got) in sorted(drifted.items())},
+        )
+    return table
 
 
 def build_model_gateway(
@@ -372,6 +555,7 @@ def build_model_gateway(
     budget_guard: BudgetGuard | None = None,
     run_id: UUID | None = None,
     eval_run_id: UUID | None = None,
+    mode: RoutingMode = "online",
 ) -> ModelGateway:
     chat_provider = OpenAICompatibleProvider(
         base_url=settings.tier_main_base_url,
@@ -390,6 +574,16 @@ def build_model_gateway(
         timeout_s=settings.model_timeout_s,
         trust_env=settings.model_trust_env,
     )
+    table = load_settings_routing_table(settings)
+    pool = (
+        None
+        if table is None
+        else TierProviderPool(
+            table,
+            embedding_model=settings.embedding_model,
+            trust_env=settings.model_trust_env,
+        )
+    )
     return ModelGateway(
         chat_provider,
         embedding_dimensions=settings.embedding_dim,
@@ -401,4 +595,6 @@ def build_model_gateway(
         chars_per_token=settings.cost_estimate_chars_per_token,
         run_id=run_id,
         eval_run_id=eval_run_id,
+        pool=pool,
+        mode=mode,
     )

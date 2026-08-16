@@ -1,4 +1,4 @@
-# 任务 → 模型档位路由表模板。仓库里已有可直接使用的 config/routing.yaml；
+# 任务 → 模型档位路由表，见 docs/07-模型路由与成本.md §1–2。
 #
 # 这个文件可以安全入 git：所有凭据与地址都写成 `${NAME}`，由 app/llm/routing.py
 # 从 Settings（即 .env）展开，变量白名单见该文件的 routing_env()。

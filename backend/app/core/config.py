@@ -37,18 +37,36 @@ class Settings(BaseSettings):
     # 1 字符 = 1 token 是保守上界; 预留偏大只会多占额度, 估小则会穿透每日上限。
     cost_estimate_chars_per_token: float = Field(default=1.0, gt=0, le=8)
     # 每百万 token 单价。默认 0 = 本地自部署模型, 此时网关跳过预留直接调用。
+    # 自建档位的"成本"不是 API 账单, 而是按整批 GPU wall time 摊销(docs/07 §7.2);
+    # 这里的单价只用于预算闸门, 填 0 表示不占用每日美元额度。
+    price_light_input_usd_per_mtok: Decimal = Field(default=Decimal("0"), ge=0)
+    price_light_output_usd_per_mtok: Decimal = Field(default=Decimal("0"), ge=0)
     price_main_input_usd_per_mtok: Decimal = Field(default=Decimal("0"), ge=0)
     price_main_output_usd_per_mtok: Decimal = Field(default=Decimal("0"), ge=0)
+    price_heavy_input_usd_per_mtok: Decimal = Field(default=Decimal("0"), ge=0)
+    price_heavy_output_usd_per_mtok: Decimal = Field(default=Decimal("0"), ge=0)
+    price_external_input_usd_per_mtok: Decimal = Field(default=Decimal("0"), ge=0)
+    price_external_output_usd_per_mtok: Decimal = Field(default=Decimal("0"), ge=0)
     price_embedding_input_usd_per_mtok: Decimal = Field(default=Decimal("0"), ge=0)
     local_library_path: Path = Path("../data/library")
     # Agent 写回与资料库导入目录物理隔离；output_path 只能是该根目录内的相对 .md 路径。
     agent_output_path: Path = Path("../data/agent-output")
+    # 三档 + external(docs/07 §1)。未部署的档位留空, 路由表加载时按"不可用"处理:
+    # 线上沿 fallback 链下移并在启动时告警, 评测模式直接失败, 绝不静默替换。
+    tier_light_base_url: str = ""
+    tier_light_model: str = ""
+    tier_light_enable_thinking: bool | None = None
     tier_main_base_url: str = "http://localhost:8000/v1"
     tier_main_model: str = "local-chat"
     tier_main_enable_thinking: bool | None = None
     tier_heavy_base_url: str = ""
     tier_heavy_model: str = ""
+    tier_heavy_enable_thinking: bool | None = None
+    tier_external_base_url: str = ""
+    tier_external_model: str = ""
+    external_api_key: str = ""
     cluster_api_key: str = ""
+    routing_config_path: Path = Path("../config/routing.yaml")
     embedding_base_url: str = ""
     embedding_model: str = "local-embedding"
     embedding_revision: str = "unversioned"

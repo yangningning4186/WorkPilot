@@ -1,5 +1,6 @@
 """模型价格与 token 估算；纯函数，不依赖数据库。"""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import ROUND_UP, Decimal
 from math import ceil
@@ -38,14 +39,27 @@ class ModelPricing:
 
 @dataclass(frozen=True)
 class GatewayPricing:
-    """网关当前档位的价格表。M0 只有 main 一档, 路由分档见 M2。"""
+    """网关的价格表。
+
+    `chat` 是未分档时的兜底单价; `by_tier` 覆盖它。fallback 会换档位,
+    换档位就换单价——按主档单价给 external 记账会把"集群挂了切商用 API"
+    这件事在成本曲线上抹平, 而那恰恰是最该看见的一笔。
+    """
 
     chat: ModelPricing = field(default_factory=ModelPricing)
     embedding: ModelPricing = field(default_factory=ModelPricing)
+    by_tier: Mapping[str, ModelPricing] = field(default_factory=dict)
+
+    def for_tier(self, tier: str) -> ModelPricing:
+        return self.by_tier.get(tier, self.chat)
 
     @property
     def is_free(self) -> bool:
-        return self.chat.is_free and self.embedding.is_free
+        return (
+            self.chat.is_free
+            and self.embedding.is_free
+            and all(pricing.is_free for pricing in self.by_tier.values())
+        )
 
 
 def estimate_tokens(chars: int, *, chars_per_token: float) -> int:
