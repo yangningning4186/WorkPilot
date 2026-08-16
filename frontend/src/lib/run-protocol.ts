@@ -73,6 +73,8 @@ export interface AgentPlanStepPayload {
   tool: string | null;
   depends_on: number[];
   status: AgentStepStatus;
+  /** 步骤完成/失败时的一句话说明，来自 step.update。 */
+  summary?: string;
 }
 
 export interface PlanPayload {
@@ -80,11 +82,16 @@ export interface PlanPayload {
   steps: AgentPlanStepPayload[];
 }
 
+/**
+ * step_id / step_idx 可缺省：watchdog 恢复失联 run 时发的是**run 级**通知
+ * （"正在从 checkpoint 恢复"），它不属于任何一个计划步骤。
+ */
 export interface StepUpdatePayload {
-  step_id: string;
-  step_idx: number;
-  status: AgentStepStatus;
+  step_id?: string;
+  step_idx?: number;
+  status: AgentStepStatus | "recovering";
   summary?: string;
+  recovery_count?: number;
 }
 
 export interface InterruptPayload {

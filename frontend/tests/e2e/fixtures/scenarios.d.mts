@@ -9,11 +9,10 @@
 
 import type { LibraryResponse } from "../../../src/lib/api";
 import type {
+  AgentPlanStepPayload,
   CitationPayload,
   ErrorPayload,
-  MessageDeltaPayload,
-  MessageDonePayload,
-  MessageStartPayload,
+  RunEventData,
   RunEventType,
 } from "../../../src/lib/run-protocol";
 
@@ -21,12 +20,7 @@ export interface ScriptedEvent {
   /** 发送该事件之前的等待时长。 */
   delay_ms: number;
   type: RunEventType;
-  data:
-    | MessageStartPayload
-    | MessageDeltaPayload
-    | CitationPayload
-    | MessageDonePayload
-    | ErrorPayload;
+  data: RunEventData;
 }
 
 export interface Scenario {
@@ -42,6 +36,8 @@ export interface Scenario {
 }
 
 export type ScenarioName =
+  | "review"
+  | "reviewRecovered"
   | "pdf"
   | "general"
   | "markdownRender"
@@ -73,6 +69,10 @@ export declare const PDF_CITATION_S1: CitationPayload;
 export declare const PDF_CITATION_S2: CitationPayload;
 export declare const MD_CITATION: CitationPayload;
 export declare const MD_FILE_CONTENT: string;
+export declare const REVIEW_PLAN: AgentPlanStepPayload[];
+export declare const REVIEW_DRAFT: string;
+export declare const REVIEW_RESUME_TOKEN: string;
+export declare const REVIEW_OUTPUT_PATH: string;
 export declare const SCENARIOS: Record<ScenarioName, Scenario>;
 export declare function pickScenario(query: string, mode?: "grounded" | "general"): ScenarioName;
 

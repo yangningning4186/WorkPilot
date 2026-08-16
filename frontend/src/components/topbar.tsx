@@ -17,6 +17,9 @@ export function Topbar() {
         <Link aria-current={pathname === "/" ? "page" : undefined} href="/">
           问答
         </Link>
+        <Link aria-current={pathname === "/review" ? "page" : undefined} href="/review">
+          综述
+        </Link>
         <Link aria-current={pathname === "/library" ? "page" : undefined} href="/library">
           资料库
         </Link>

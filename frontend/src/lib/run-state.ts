@@ -8,6 +8,7 @@
 
 import {
   type AgentPlanStepPayload,
+  type AgentStepStatus,
   type ArtifactPayload,
   type CitationPayload,
   type ErrorPayload,
@@ -50,6 +51,10 @@ export interface RunState {
   agentPlan: AgentPlanStepPayload[];
   interrupt: InterruptPayload | null;
   artifacts: ArtifactPayload[];
+  /** worker 失联后被 watchdog 自动恢复的次数。>0 时界面要说明发生过什么。 */
+  recoveryCount: number;
+  /** run 级提示（目前只有恢复通知），不挂在任何一个步骤上。 */
+  notice: string | null;
 }
 
 export function initialRunState(): RunState {
@@ -67,6 +72,8 @@ export function initialRunState(): RunState {
     agentPlan: [],
     interrupt: null,
     artifacts: [],
+    recoveryCount: 0,
+    notice: null,
   };
 }
 
@@ -123,8 +130,18 @@ export function applyEnvelope(state: RunState, envelope: StreamEnvelope): RunSta
     }
     case "step.update": {
       const data = envelope.data as StepUpdatePayload;
+      if (data.step_id === undefined) {
+        // run 级通知：watchdog 恢复。不改任何步骤状态，只把"发生过恢复"告诉用户——
+        // 界面上突然从头跑起来而不解释，看起来就像系统在重复劳动。
+        next.recoveryCount = data.recovery_count ?? state.recoveryCount + 1;
+        next.notice = data.summary ?? null;
+        next.phase = "executing";
+        return next;
+      }
       next.agentPlan = state.agentPlan.map((step) =>
-        step.id === data.step_id ? { ...step, status: data.status } : step,
+        step.id === data.step_id
+          ? { ...step, status: data.status as AgentStepStatus, summary: data.summary }
+          : step,
       );
       next.phase = "executing";
       return next;

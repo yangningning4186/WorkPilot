@@ -93,7 +93,8 @@ badcase 来自我每天的真实使用，不是编出来的测试用例。
   10 条 test 在最终评测前不跑、不调参
 - 固定综述 Agent 的可靠性骨架已落地：四张执行表、`literature_review` 固定 LangGraph、
   PostgreSQL checkpoint、新 SSE 事件、owner-only HITL，以及 effectively-once 的 Markdown 写回；
-  下一步补预算熔断、真实 worker 杀进程演示和前端交互页
+  三维预算熔断、真实 worker `SIGKILL` 自动恢复和前端创建/时间线/HITL 页面也已完成；
+  当前重点转为解决 `evidence_quotes` 与模型引用行为错配，再构造真实 `agent_task` 评测
 - 公网部署仍是全项目最后一步
 
 - 开发范围以 [11 MVP 边界](docs/11-MVP边界.md) 为准（设计文档描述完整蓝图，含 Backlog 内容）

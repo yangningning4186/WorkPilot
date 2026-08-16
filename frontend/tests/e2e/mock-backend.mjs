@@ -19,6 +19,8 @@ import { deflateSync } from "node:zlib";
 import {
   IDS,
   LIBRARY,
+  REVIEW_OUTPUT_PATH,
+  REVIEW_RESUME_TOKEN,
   MD_FILE_CONTENT,
   PAGE,
   SCENARIOS,
@@ -226,6 +228,32 @@ async function streamEvents(request, response, run) {
     }
   }
 
+  // 固定综述停在人工确认点时连接不能断：真后端此时 run 仍是 waiting_human，
+  // 客户端要挂在同一条流上等批准/拒绝的结果。断开再重连也能续，但那会让
+  // "确认后立刻看到写回结果"变成一次竞态。
+  if (run.workflow_type === "literature_review") {
+    let seq = scenario.events.length;
+    while (!closed) {
+      const pending = run.pending_events ?? [];
+      if (pending.length > 0) {
+        run.pending_events = [];
+        for (const event of pending) {
+          if (closed) return;
+          await sleep(event.delay_ms);
+          seq += 1;
+          response.write(sseFrame(run.id, seq, event.type, event.data));
+          run.last_sent_seq = Math.max(run.last_sent_seq, seq);
+        }
+        run.status = "done";
+        response.end();
+        return;
+      }
+      await sleep(50);
+      response.write(": keepalive\n\n");
+    }
+    return;
+  }
+
   run.status = "done";
   response.end();
 }
@@ -296,6 +324,109 @@ const server = createServer((request, response) => {
             }
           : {},
       );
+    });
+    return;
+  }
+
+  if (path === "/api/v1/runs/reviews" && request.method === "POST") {
+    void readBody(request).then((body) => {
+      const existingSession = currentSession(request);
+      const session = existingSession ?? createSession();
+      const documentIds = Array.isArray(body.document_ids) ? body.document_ids : [];
+      // 与后端 create_review_run 的前置校验对齐：少于两篇、路径非法都不该进队列。
+      if (documentIds.length < 2) {
+        json(response, 422, { detail: "固定综述至少需要两篇不同文档" });
+        return;
+      }
+      const outputPath = typeof body.output_path === "string" ? body.output_path : "";
+      if (!outputPath.endsWith(".md") || outputPath.startsWith("/") || outputPath.includes("..")) {
+        json(response, 422, { detail: "output_path 必须是输出目录内的相对 .md 路径" });
+        return;
+      }
+      const goal = typeof body.goal === "string" ? body.goal : "";
+      const run = {
+        id: nextRunId(),
+        conversation_id: session.conversation_id,
+        session_token: session.token,
+        goal,
+        answer_mode: "grounded",
+        workflow_type: "literature_review",
+        // 目标里带"恢复"就回放 watchdog 自动恢复那条剧本。
+        scenario: goal.includes("恢复") ? "reviewRecovered" : "review",
+        status: "queued",
+        cancelled: false,
+        dropped: false,
+        last_sent_seq: 0,
+        output_path: outputPath,
+      };
+      runs.set(run.id, run);
+      json(
+        response,
+        202,
+        {
+          run_id: run.id,
+          conversation_id: run.conversation_id,
+          status: "queued",
+          workflow_type: "literature_review",
+        },
+        existingSession === null
+          ? {
+              "set-cookie": `workpilot_session=${session.token}; Max-Age=1800; Path=/; HttpOnly; SameSite=Lax`,
+            }
+          : {},
+      );
+    });
+    return;
+  }
+
+  const resumeMatch = path.match(/^\/api\/v1\/runs\/([^/]+)\/resume$/);
+  if (resumeMatch && request.method === "POST") {
+    const run = runs.get(resumeMatch[1]);
+    if (run === undefined || currentSession(request)?.token !== run.session_token) {
+      json(response, 404, { detail: "run 不存在" });
+      return;
+    }
+    void readBody(request).then((body) => {
+      if (body.resume_token !== REVIEW_RESUME_TOKEN) {
+        json(response, 409, { detail: "resume_token 不匹配" });
+        return;
+      }
+      // 批准才产出 written_note；拒绝只把步骤标 skipped，磁盘零写入。
+      run.pending_events = body.approved === true
+        ? [
+            {
+              delay_ms: 60,
+              type: "artifact",
+              data: {
+                kind: "written_note",
+                title: "已写入笔记",
+                path: REVIEW_OUTPUT_PATH,
+                effect_ref: "note:1",
+                content_sha256: "a".repeat(64),
+                reused: run.resumed === true,
+              },
+            },
+            { delay_ms: 40, type: "step.update", data: { step_id: "s5", step_idx: 5, status: "done" } },
+            { delay_ms: 40, type: "run.done", data: { workflow_type: "literature_review", effect_ref: "note:1" } },
+          ]
+        : [
+            { delay_ms: 40, type: "step.update", data: { step_id: "s5", step_idx: 5, status: "skipped", summary: "用户拒绝写回" } },
+            { delay_ms: 40, type: "run.done", data: { workflow_type: "literature_review", effect_ref: null } },
+          ];
+      run.resumed = true;
+      json(response, 200, {
+        run_id: run.id,
+        conversation_id: run.conversation_id,
+        goal: run.goal,
+        answer_mode: run.answer_mode,
+        workflow_type: "literature_review",
+        status: body.approved === true ? "done" : "done",
+        cancel_requested: false,
+        used_tokens: 0,
+        used_calls: 0,
+        next_seq: 1,
+        error: null,
+      });
     });
     return;
   }

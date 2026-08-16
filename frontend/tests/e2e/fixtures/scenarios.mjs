@@ -128,7 +128,99 @@ const DONE_OK = {
  * 一个剧本 = 有序事件 + 每个事件之前的等待。
  * delay_ms 要够大，测试才能稳定观察到"正文写到一半"的中间态。
  */
+
+/** 固定综述的六步计划，与 review_graph.fixed_review_plan 一一对应。 */
+export const REVIEW_PLAN = [
+  { id: "s0", idx: 0, description: "筛选并校验文档", tool: "list_documents", depends_on: [], status: "pending" },
+  { id: "s1", idx: 1, description: "逐篇抽取结构化卡片", tool: "extract_card", depends_on: [0], status: "pending" },
+  { id: "s2", idx: 2, description: "按方法族分组", tool: "group_cards", depends_on: [1], status: "pending" },
+  { id: "s3", idx: 3, description: "横向比较文档", tool: "compare_docs", depends_on: [2], status: "pending" },
+  { id: "s4", idx: 4, description: "生成综述预览", tool: "generate_review", depends_on: [3], status: "pending" },
+  { id: "s5", idx: 5, description: "人工确认后写入笔记", tool: "write_note", depends_on: [4], status: "pending" },
+];
+
+export const REVIEW_DRAFT = "# 两种取向的对照\n\nAgentBench 关注评测，CODESKILL 关注技能自演化。";
+export const REVIEW_RESUME_TOKEN = "5c9d1e77-0000-4f00-8000-00000000abcd";
+export const REVIEW_OUTPUT_PATH = "reviews/agentbench-vs-codeskill.md";
+
+function reviewStep(idx, status, summary) {
+  return {
+    delay_ms: 120,
+    type: "step.update",
+    data: { step_id: `s${idx}`, step_idx: idx, status, ...(summary ? { summary } : {}) },
+  };
+}
+
 export const SCENARIOS = {
+  /**
+   * 固定综述：跑到人工确认点停住。
+   *
+   * 关键性质是**在 interrupt 之前没有 written_note artifact**——写回是唯一有副作用的
+   * 一步，界面必须能证明"确认前磁盘上什么都没有"（ADR-0007 的 HITL 边界）。
+   */
+  review: {
+    events: [
+      { delay_ms: 80, type: "plan", data: { workflow_type: "literature_review", steps: REVIEW_PLAN } },
+      reviewStep(0, "running"),
+      reviewStep(0, "done", "已确认 2 篇文档"),
+      reviewStep(1, "running"),
+      reviewStep(1, "done", "已抽取 2 张卡片"),
+      reviewStep(2, "done", "已形成 2 个方法组"),
+      reviewStep(3, "done", "已完成横向比较"),
+      { delay_ms: 400, ...reviewStep(4, "running") },
+      reviewStep(4, "done", "已生成待确认预览"),
+      {
+        delay_ms: 100,
+        type: "artifact",
+        data: { kind: "review_preview", title: "综述预览", content: REVIEW_DRAFT },
+      },
+      {
+        delay_ms: 80,
+        type: "interrupt",
+        data: {
+          kind: "write_confirm",
+          resume_token: REVIEW_RESUME_TOKEN,
+          payload: { title: "确认写入综述笔记", output_path: REVIEW_OUTPUT_PATH, preview: REVIEW_DRAFT },
+        },
+      },
+    ],
+  },
+
+  /** worker 被杀后由 watchdog 自动恢复：run 级 step.update 没有 step_id。 */
+  reviewRecovered: {
+    events: [
+      { delay_ms: 80, type: "plan", data: { workflow_type: "literature_review", steps: REVIEW_PLAN } },
+      reviewStep(0, "done", "已确认 2 篇文档"),
+      reviewStep(1, "done", "已抽取 2 张卡片"),
+      {
+        delay_ms: 150,
+        type: "step.update",
+        data: {
+          status: "recovering",
+          summary: "worker 失联，正在从最近 checkpoint 恢复（第 1 次）。",
+          recovery_count: 1,
+        },
+      },
+      reviewStep(2, "done", "已形成 2 个方法组"),
+      reviewStep(3, "done", "已完成横向比较"),
+      reviewStep(4, "done", "已生成待确认预览"),
+      {
+        delay_ms: 100,
+        type: "artifact",
+        data: { kind: "review_preview", title: "综述预览", content: REVIEW_DRAFT },
+      },
+      {
+        delay_ms: 80,
+        type: "interrupt",
+        data: {
+          kind: "write_confirm",
+          resume_token: REVIEW_RESUME_TOKEN,
+          payload: { title: "确认写入综述笔记", output_path: REVIEW_OUTPUT_PATH, preview: REVIEW_DRAFT },
+        },
+      },
+    ],
+  },
+
   pdf: {
     events: [
       { delay_ms: 120, type: "message.start", data: { message_id: IDS.message } },
