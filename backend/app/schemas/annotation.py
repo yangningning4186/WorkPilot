@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, JsonValue, model_validator
 
 EvalCategory = Literal[
     "single_hop",
@@ -115,12 +115,23 @@ class GoldSpanInput(BaseModel):
         return self
 
 
+class GoldToolInput(BaseModel):
+    """agent_task 的期望工具调用。
+
+    顺序即 gold 序列；arguments 只写必须匹配的参数子集，空对象表示只校验工具名。
+    """
+
+    name: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_.:-]+$")
+    arguments: dict[str, JsonValue] = Field(default_factory=dict)
+
+
 class AnnotationItemUpsert(BaseModel):
     dataset_id: UUID
     category: EvalCategory
     question: str = Field(min_length=1, max_length=4000)
     gold_answer: str | None = Field(default=None, max_length=20000)
     gold_spans: list[GoldSpanInput] = Field(default_factory=list, max_length=20)
+    gold_tools: list[GoldToolInput] = Field(default_factory=list, max_length=20)
     must_include: list[str] = Field(default_factory=list, max_length=30)
     must_not_include: list[str] = Field(default_factory=list, max_length=30)
     difficulty: int = Field(default=1, ge=1, le=3)
@@ -134,11 +145,27 @@ class AnnotationItemUpsert(BaseModel):
                 raise ValueError("unanswerable 样本不能包含 gold span")
             if self.gold_answer and self.gold_answer.strip():
                 raise ValueError("unanswerable 样本不能包含 gold answer")
-        elif self.category not in {"global", "agent_task"}:
-            if not self.gold_spans:
-                raise ValueError("可答检索样本至少需要一个 gold span")
-            if not self.gold_answer or not self.gold_answer.strip():
-                raise ValueError("可答检索样本需要 gold answer")
+            if self.gold_tools:
+                raise ValueError("unanswerable 样本不能包含 gold tools")
+        elif self.category == "agent_task":
+            if not self.gold_tools:
+                raise ValueError("agent_task 样本至少需要一个 gold tool")
+        else:
+            if self.gold_tools:
+                raise ValueError("只有 agent_task 样本可以包含 gold tools")
+            if self.category == "global":
+                if not self.gold_answer or not self.gold_answer.strip():
+                    raise ValueError("global 样本需要 gold answer")
+            else:
+                if not self.gold_spans:
+                    raise ValueError("可答检索样本至少需要一个 gold span")
+                if not self.gold_answer or not self.gold_answer.strip():
+                    raise ValueError("可答检索样本需要 gold answer")
+        if self.category == "temporal":
+            if self.temporal_ctx is None:
+                raise ValueError("temporal 样本需要 temporal_ctx")
+        elif self.temporal_ctx is not None:
+            raise ValueError("只有 temporal 样本可以设置 temporal_ctx")
         return self
 
 
@@ -149,6 +176,7 @@ class AnnotationItemResponse(BaseModel):
     question: str
     gold_answer: str | None
     gold_spans: list[GoldSpanInput]
+    gold_tools: list[GoldToolInput]
     must_include: list[str]
     must_not_include: list[str]
     difficulty: int

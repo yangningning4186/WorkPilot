@@ -85,7 +85,10 @@
             <label><input type="radio" name="category" value="single_hop" checked /><span>单跳</span></label>
             <label><input type="radio" name="category" value="multi_hop" /><span>多跳</span></label>
             <label><input type="radio" name="category" value="table" /><span>表格</span></label>
+            <label><input type="radio" name="category" value="temporal" /><span>时效</span></label>
             <label><input type="radio" name="category" value="unanswerable" /><span>不可答</span></label>
+            <label><input type="radio" name="category" value="global" /><span>全局</span></label>
+            <label><input type="radio" name="category" value="agent_task" /><span>Agent 任务</span></label>
           </fieldset>
 
           <label class="field-label" for="question">问题 <em>必填</em></label>
@@ -100,12 +103,17 @@
           <label class="field-label" for="goldAnswer">Gold answer <em id="answerRequirement">必填</em></label>
           <textarea id="goldAnswer" rows="5" placeholder="只写被所选证据完整支撑的答案…"></textarea>
 
+          <label class="field-label hidden" id="goldToolsLabel" for="goldTools">Gold tools <em>必填 JSON</em></label>
+          <textarea class="hidden" id="goldTools" rows="4" placeholder='[{"name":"search_knowledge","arguments":{}},{"name":"write_note","arguments":{}}]'></textarea>
+
           <details class="advanced-fields">
             <summary>约束与难度 <span>可选</span></summary>
             <label class="field-label" for="mustInclude">必须包含</label>
             <input id="mustInclude" placeholder="用逗号分隔，例如 queue, batch" />
             <label class="field-label" for="mustNotInclude">不得包含</label>
             <input id="mustNotInclude" placeholder="常见幻觉词，用逗号分隔" />
+            <label class="field-label hidden" id="temporalCtxLabel" for="temporalCtx">时效基准</label>
+            <input class="hidden" id="temporalCtx" type="datetime-local" />
             <div class="two-fields">
               <label>难度<select id="difficulty"><option value="1">1 · 直接</option><option value="2">2 · 组合</option><option value="3">3 · 困难</option></select></label>
               <label>来源<select id="origin"><option value="human">人工</option><option value="badcase">Badcase</option><option value="synthetic">合成候选</option></select></label>

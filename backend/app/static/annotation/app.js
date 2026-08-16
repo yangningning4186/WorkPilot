@@ -16,6 +16,12 @@ async function api(path, options = {}) {
 function escapeHtml(value = "") { const node = document.createElement("div"); node.textContent = value; return node.innerHTML; }
 function short(value = "") { return value.length > 120 ? `${value.slice(0, 120)}…` : value; }
 function terms(value) { return value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean); }
+function parseGoldTools(value) {
+  if (!value.trim()) return [];
+  const tools = JSON.parse(value);
+  if (!Array.isArray(tools)) throw new Error("Gold tools 必须是 JSON 数组");
+  return tools;
+}
 function toast(message) { const node = $("#toast"); node.textContent = message; node.classList.add("show"); clearTimeout(toast.timer); toast.timer = setTimeout(() => node.classList.remove("show"), 2600); }
 function setSaveState(label, kind) { const node = $("#saveState"); node.textContent = label; node.className = `save-state ${kind}`; }
 function setError(message = "") { $("#formError").textContent = message; $("#formError").classList.toggle("hidden", !message); if (message) setSaveState("需要修正", "error"); }
@@ -141,6 +147,8 @@ function editItem(itemId) {
   state.editingId = item.id; state.spans = item.gold_spans.map((span) => ({ ...span, title: "已保存证据" }));
   $("#itemId").value = item.id; $(`input[name="category"][value="${item.category}"]`).checked = true;
   $("#question").value = item.question; $("#goldAnswer").value = item.gold_answer || "";
+  $("#goldTools").value = item.gold_tools.length ? JSON.stringify(item.gold_tools, null, 2) : "";
+  $("#temporalCtx").value = item.temporal_ctx ? item.temporal_ctx.slice(0, 16) : "";
   $("#mustInclude").value = item.must_include.join(", "); $("#mustNotInclude").value = item.must_not_include.join(", ");
   $("#difficulty").value = item.difficulty; $("#origin").value = item.origin;
   $("#deleteButton").classList.remove("hidden"); renderSpans(); syncAnswerability(); setSaveState(item.status === "stale" ? "证据失效" : "已保存", item.status === "stale" ? "error" : "saved");
@@ -152,16 +160,24 @@ function resetForm() {
 }
 
 function syncAnswerability() {
-  const category = $('input[name="category"]:checked').value; const unavailable = category === "unanswerable";
-  $("#spanRequirement").textContent = unavailable ? "必须为空" : "至少 1 条"; $("#answerRequirement").textContent = unavailable ? "留空" : "必填";
-  $("#goldAnswer").disabled = unavailable; $("#goldAnswer").placeholder = unavailable ? "不可答样本不填写答案" : "只写被所选证据完整支撑的答案…";
+  const category = $('input[name="category"]:checked').value;
+  const unavailable = category === "unanswerable"; const optionalSpan = category === "global" || category === "agent_task";
+  const agentTask = category === "agent_task"; const temporal = category === "temporal";
+  $("#spanRequirement").textContent = unavailable ? "必须为空" : (optionalSpan ? "可选" : "至少 1 条");
+  $("#answerRequirement").textContent = unavailable ? "留空" : (agentTask ? "可选" : "必填");
+  $("#goldAnswer").disabled = unavailable;
+  $("#goldAnswer").placeholder = unavailable ? "不可答样本不填写答案" : (agentTask ? "可选：填写预期产物摘要" : "只写被所选证据完整支撑的答案…");
+  $("#goldToolsLabel").classList.toggle("hidden", !agentTask); $("#goldTools").classList.toggle("hidden", !agentTask);
+  $("#temporalCtxLabel").classList.toggle("hidden", !temporal); $("#temporalCtx").classList.toggle("hidden", !temporal);
   setSaveState("未保存", "idle");
 }
 
 async function saveItem(event) {
   event.preventDefault(); setError(""); setSaveState("保存中", "saving");
   const category = $('input[name="category"]:checked').value;
-  const payload = { dataset_id: state.dataset.id, category, question: $("#question").value, gold_answer: category === "unanswerable" ? null : $("#goldAnswer").value, gold_spans: state.spans.map(({version_id,char_start,char_end,quote,note}) => ({version_id,char_start,char_end,quote,note})), must_include: terms($("#mustInclude").value), must_not_include: terms($("#mustNotInclude").value), difficulty: Number($("#difficulty").value), origin: $("#origin").value };
+  let goldTools;
+  try { goldTools = parseGoldTools($("#goldTools").value); } catch (error) { setError(error.message); return; }
+  const payload = { dataset_id: state.dataset.id, category, question: $("#question").value, gold_answer: category === "unanswerable" ? null : $("#goldAnswer").value, gold_spans: state.spans.map(({version_id,char_start,char_end,quote,note}) => ({version_id,char_start,char_end,quote,note})), gold_tools: category === "agent_task" ? goldTools : [], must_include: terms($("#mustInclude").value), must_not_include: terms($("#mustNotInclude").value), difficulty: Number($("#difficulty").value), origin: $("#origin").value, temporal_ctx: category === "temporal" && $("#temporalCtx").value ? new Date($("#temporalCtx").value).toISOString() : null };
   try {
     const path = state.editingId ? `/items/${state.editingId}` : "/items"; const method = state.editingId ? "PUT" : "POST";
     const saved = await api(path, { method, body: JSON.stringify(payload) }); state.editingId = saved.id; $("#itemId").value = saved.id; $("#deleteButton").classList.remove("hidden"); setSaveState("已保存", "saved"); await loadItems(); toast("金标已保存并通过 quote 校验");
@@ -184,7 +200,7 @@ function bindEvents() {
   $$('input[name="category"]').forEach((input) => input.addEventListener("change", syncAnswerability));
   $$(".rail-tabs button").forEach((button) => button.addEventListener("click", () => { state.tab = button.dataset.tab; $$(".rail-tabs button").forEach((item) => item.classList.toggle("active", item === button)); $("#documentList").classList.toggle("hidden", state.tab !== "documents"); $("#itemList").classList.toggle("hidden", state.tab !== "items"); }));
   document.addEventListener("keydown", (event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") $("#annotationForm").requestSubmit(); });
-  $$('textarea, #mustInclude, #mustNotInclude, #difficulty, #origin').forEach((input) => input.addEventListener("input", () => setSaveState("未保存", "idle")));
+  $$('textarea, #mustInclude, #mustNotInclude, #temporalCtx, #difficulty, #origin').forEach((input) => input.addEventListener("input", () => setSaveState("未保存", "idle")));
 }
 
 bindEvents(); initialize();

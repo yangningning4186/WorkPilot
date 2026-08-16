@@ -58,7 +58,9 @@ GENERIC_PATTERNS = (
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for line_number, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), 1
+    ):
         try:
             records.append(json.loads(line))
         except json.JSONDecodeError as error:
@@ -135,8 +137,13 @@ async def audit(output_dir: Path) -> dict[str, Any]:
             generic_questions.append(key)
         if re.search(r"\bblock\s+\d+\b", question, re.IGNORECASE):
             placeholder_questions.append(key)
-        if item.get("origin") != "synthetic" or item.get("review_status") != "pending_human":
-            failures.append(f"{key}: candidate provenance is not synthetic/pending_human")
+        if (
+            item.get("origin") != "synthetic"
+            or item.get("review_status") != "pending_human"
+        ):
+            failures.append(
+                f"{key}: candidate provenance is not synthetic/pending_human"
+            )
         if not partition_version:
             missing_partition_versions.append(key)
         if category == "unanswerable":
@@ -153,7 +160,9 @@ async def audit(output_dir: Path) -> dict[str, Any]:
             failures.append(f"{key}: answerable retrieval item lacks span/answer")
         if (category == "temporal") != bool(item.get("temporal_ctx")):
             failures.append(f"{key}: temporal_ctx contract violated")
-        if spans and answer == "\n\n".join(str(span.get("quote", "")) for span in spans):
+        if spans and answer == "\n\n".join(
+            str(span.get("quote", "")) for span in spans
+        ):
             raw_block_answers.append(key)
         if partition_version:
             version_splits[partition_version].add(split)
@@ -167,7 +176,9 @@ async def audit(output_dir: Path) -> dict[str, Any]:
             span_records.append((version_id, start, end, quote, split, key))
 
     duplicate_questions = {
-        question: keys for question, keys in normalized_questions.items() if len(keys) > 1
+        question: keys
+        for question, keys in normalized_questions.items()
+        if len(keys) > 1
     }
     if duplicate_questions:
         failures.append(f"exact normalized duplicate questions: {duplicate_questions}")
@@ -203,7 +214,11 @@ async def audit(output_dir: Path) -> dict[str, Any]:
         """
     )
     async with session_factory() as session:
-        rows = (await session.execute(statement, {"version_ids": version_ids})).mappings().all()
+        rows = (
+            (await session.execute(statement, {"version_ids": version_ids}))
+            .mappings()
+            .all()
+        )
         human_rows = (await session.execute(human_statement)).mappings().all()
         await session.rollback()
     await close_database()
@@ -227,7 +242,12 @@ async def audit(output_dir: Path) -> dict[str, Any]:
     outside_blocks: list[str] = []
     for version_id, start, end, quote, _split, key in span_records:
         full_text = full_text_by_version.get(version_id)
-        if full_text is None or start < 0 or end <= start or full_text[start:end] != quote:
+        if (
+            full_text is None
+            or start < 0
+            or end <= start
+            or full_text[start:end] != quote
+        ):
             bad_quotes.append(key)
             continue
         containing = [
@@ -244,7 +264,9 @@ async def audit(output_dir: Path) -> dict[str, Any]:
     if bad_quotes:
         failures.append(f"invalid full_text quote/range: {sorted(set(bad_quotes))}")
     if outside_blocks:
-        failures.append(f"span not contained in parsed block: {sorted(set(outside_blocks))}")
+        failures.append(
+            f"span not contained in parsed block: {sorted(set(outside_blocks))}"
+        )
 
     human_questions = {_normalize_question(str(row["question"])) for row in human_rows}
     copied_questions = sorted(
@@ -268,7 +290,9 @@ async def audit(output_dir: Path) -> dict[str, Any]:
     }
     overlap_human_test = sorted(human_versions & test_versions)
     if overlap_human_test:
-        failures.append(f"test versions overlap existing dev human versions: {overlap_human_test}")
+        failures.append(
+            f"test versions overlap existing dev human versions: {overlap_human_test}"
+        )
 
     if generic_questions:
         failures.append(f"generic template questions: {len(generic_questions)}")
@@ -277,7 +301,9 @@ async def audit(output_dir: Path) -> dict[str, Any]:
             f"missing partition_version_id: {len(missing_partition_versions)}"
         )
     if placeholder_questions:
-        failures.append(f"placeholder block labels in questions: {placeholder_questions}")
+        failures.append(
+            f"placeholder block labels in questions: {placeholder_questions}"
+        )
     if raw_block_answers:
         failures.append(
             f"gold_answer is raw concatenated evidence block: {len(raw_block_answers)}"

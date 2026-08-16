@@ -21,6 +21,7 @@ from app.schemas.annotation import (
     AnnotationLocationResponse,
     GoldSpanInput,
     GoldSpanResponse,
+    GoldToolInput,
     ResolveSpanRequest,
 )
 
@@ -41,12 +42,33 @@ async def list_datasets(session: AsyncSession) -> list[AnnotationDatasetResponse
                     """
                     SELECT ds.id, ds.name, ds.split, ds.version, ds.description,
                            count(i.id) AS item_count,
-                           count(i.id) FILTER (
-                               WHERE (i.category='unanswerable'
-                                      AND jsonb_array_length(i.gold_spans)=0)
-                                  OR (i.category<>'unanswerable'
-                                      AND jsonb_array_length(i.gold_spans)>0
-                                      AND validate_eval_spans(i.gold_spans))
+                           count(i.id) FILTER (WHERE
+                               CASE i.category
+                                 WHEN 'unanswerable' THEN
+                                   jsonb_array_length(i.gold_spans)=0
+                                   AND jsonb_array_length(i.gold_tools)=0
+                                   AND COALESCE(btrim(i.gold_answer), '')=''
+                                 WHEN 'global' THEN
+                                   COALESCE(btrim(i.gold_answer), '')<>''
+                                   AND jsonb_array_length(i.gold_tools)=0
+                                   AND (jsonb_array_length(i.gold_spans)=0
+                                        OR validate_eval_spans(i.gold_spans))
+                                 WHEN 'agent_task' THEN
+                                   jsonb_array_length(i.gold_tools)>0
+                                   AND (jsonb_array_length(i.gold_spans)=0
+                                        OR validate_eval_spans(i.gold_spans))
+                                 WHEN 'temporal' THEN
+                                   jsonb_array_length(i.gold_spans)>0
+                                   AND validate_eval_spans(i.gold_spans)
+                                   AND COALESCE(btrim(i.gold_answer), '')<>''
+                                   AND i.temporal_ctx IS NOT NULL
+                                   AND jsonb_array_length(i.gold_tools)=0
+                                 ELSE
+                                   jsonb_array_length(i.gold_spans)>0
+                                   AND validate_eval_spans(i.gold_spans)
+                                   AND COALESCE(btrim(i.gold_answer), '')<>''
+                                   AND jsonb_array_length(i.gold_tools)=0
+                               END
                            ) AS valid_count,
                            count(i.id) FILTER (
                                WHERE jsonb_array_length(i.gold_spans) > 0
@@ -390,6 +412,10 @@ async def _write_item(
         "question": request.question.strip(),
         "gold_answer": request.gold_answer.strip() if request.gold_answer else None,
         "gold_spans": json.dumps(spans, ensure_ascii=False),
+        "gold_tools": json.dumps(
+            [tool.model_dump(mode="json") for tool in request.gold_tools],
+            ensure_ascii=False,
+        ),
         "constraints": json.dumps(constraints, ensure_ascii=False),
         "temporal_ctx": request.temporal_ctx,
         "difficulty": request.difficulty,
@@ -409,10 +435,11 @@ async def _write_item(
                     """
                     INSERT INTO eval_items
                         (id, dataset_id, category, question, gold_answer, gold_spans,
-                         constraints, difficulty, origin, temporal_ctx)
+                         gold_tools, constraints, difficulty, origin, temporal_ctx)
                     VALUES
                         (:id, :dataset_id, :category, :question, :gold_answer,
-                         CAST(:gold_spans AS jsonb), CAST(:constraints AS jsonb),
+                         CAST(:gold_spans AS jsonb), CAST(:gold_tools AS jsonb),
+                         CAST(:constraints AS jsonb),
                          :difficulty, :origin, :temporal_ctx)
                     """
                 ),
@@ -426,6 +453,7 @@ async def _write_item(
                     UPDATE eval_items SET
                         dataset_id=:dataset_id, category=:category, question=:question,
                         gold_answer=:gold_answer, gold_spans=CAST(:gold_spans AS jsonb),
+                        gold_tools=CAST(:gold_tools AS jsonb),
                         constraints=CAST(:constraints AS jsonb), difficulty=:difficulty,
                         origin=:origin, temporal_ctx=:temporal_ctx
                     WHERE id=:id
@@ -441,10 +469,36 @@ async def _write_item(
 
 def _item_response(row: Any) -> AnnotationItemResponse:
     spans = [GoldSpanInput.model_validate(item) for item in row["gold_spans"]]
+    tools = [GoldToolInput.model_validate(item) for item in row["gold_tools"]]
     issues: list[str] = []
     spans_valid = bool(row["spans_valid"])
-    if row["category"] != "unanswerable" and not spans:
-        issues.append("missing_gold_spans")
+    category = row["category"]
+    has_answer = bool((row["gold_answer"] or "").strip())
+    if category == "unanswerable":
+        if spans:
+            issues.append("unexpected_gold_spans")
+        if has_answer:
+            issues.append("unexpected_gold_answer")
+        if tools:
+            issues.append("unexpected_gold_tools")
+    elif category == "agent_task":
+        if not tools:
+            issues.append("missing_gold_tools")
+    else:
+        if tools:
+            issues.append("unexpected_gold_tools")
+        if category == "global":
+            if not has_answer:
+                issues.append("missing_gold_answer")
+        else:
+            if not spans:
+                issues.append("missing_gold_spans")
+            if not has_answer:
+                issues.append("missing_gold_answer")
+    if row["category"] == "temporal" and row["temporal_ctx"] is None:
+        issues.append("missing_temporal_ctx")
+    elif row["category"] != "temporal" and row["temporal_ctx"] is not None:
+        issues.append("unexpected_temporal_ctx")
     if spans and not spans_valid:
         issues.append("stale_gold_spans")
     status: Literal["valid", "stale", "invalid"] = (
@@ -458,6 +512,7 @@ def _item_response(row: Any) -> AnnotationItemResponse:
         question=row["question"],
         gold_answer=row["gold_answer"],
         gold_spans=spans,
+        gold_tools=tools,
         must_include=list(constraints.get("must_include") or []),
         must_not_include=list(constraints.get("must_not_include") or []),
         difficulty=row["difficulty"],

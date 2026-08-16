@@ -10,6 +10,7 @@ from app.schemas.annotation import (
     AnnotationDatasetCreate,
     AnnotationItemUpsert,
     GoldSpanInput,
+    GoldToolInput,
     ResolveSpanRequest,
 )
 from app.services.annotation import (
@@ -132,6 +133,58 @@ def test_unanswerable_contract_rejects_spans() -> None:
                     quote="x",
                 )
             ],
+        )
+
+
+def test_global_and_agent_task_have_explicit_empty_span_contracts() -> None:
+    dataset_id = "00000000-0000-0000-0000-000000000001"
+
+    global_item = AnnotationItemUpsert(
+        dataset_id=dataset_id,
+        category="global",
+        question="Summarize the corpus.",
+        gold_answer="Two recurring themes.",
+    )
+    agent_item = AnnotationItemUpsert(
+        dataset_id=dataset_id,
+        category="agent_task",
+        question="Save a note.",
+        gold_tools=[GoldToolInput(name="search_knowledge"), GoldToolInput(name="write_note")],
+    )
+
+    assert global_item.gold_spans == []
+    assert [tool.name for tool in agent_item.gold_tools] == ["search_knowledge", "write_note"]
+    with pytest.raises(ValueError, match="global 样本需要 gold answer"):
+        AnnotationItemUpsert(dataset_id=dataset_id, category="global", question="Summarize")
+    with pytest.raises(ValueError, match="agent_task 样本至少需要一个 gold tool"):
+        AnnotationItemUpsert(dataset_id=dataset_id, category="agent_task", question="Save")
+
+
+def test_temporal_and_gold_tool_contracts_fail_closed() -> None:
+    dataset_id = "00000000-0000-0000-0000-000000000001"
+    span = GoldSpanInput(
+        version_id="00000000-0000-0000-0000-000000000002",
+        char_start=0,
+        char_end=1,
+        quote="x",
+    )
+
+    with pytest.raises(ValueError, match="temporal 样本需要 temporal_ctx"):
+        AnnotationItemUpsert(
+            dataset_id=dataset_id,
+            category="temporal",
+            question="What changed?",
+            gold_answer="x",
+            gold_spans=[span],
+        )
+    with pytest.raises(ValueError, match="只有 agent_task"):
+        AnnotationItemUpsert(
+            dataset_id=dataset_id,
+            category="single_hop",
+            question="What?",
+            gold_answer="x",
+            gold_spans=[span],
+            gold_tools=[GoldToolInput(name="search_knowledge")],
         )
 
 

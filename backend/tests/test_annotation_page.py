@@ -20,6 +20,11 @@ async def test_local_annotation_page_and_assets_are_available() -> None:
     assert "Gold Span Lab" in page.text
     assert script.status_code == 200
     assert "utf16_start" in script.text
+    assert 'value="temporal"' in page.text
+    assert 'value="global"' in page.text
+    assert 'value="agent_task"' in page.text
+    assert "gold_tools" in script.text
+    assert "temporal_ctx" in script.text
 
 
 async def test_annotation_page_is_disabled_in_production() -> None:
