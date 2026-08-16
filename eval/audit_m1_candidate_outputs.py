@@ -44,6 +44,26 @@ EXPECTED_LANGUAGE_COUNTS = {
     ("test", "en"): 10,
 }
 ANSWERABLE_WITH_SPANS = {"single_hop", "multi_hop", "table", "temporal"}
+REQUIRED_REVIEW_FIELDS = {
+    "item_key",
+    "dataset",
+    "split",
+    "language",
+    "category",
+    "question",
+    "gold_answer",
+    "gold_spans",
+    "gold_tools",
+    "constraints",
+    "difficulty",
+    "temporal_ctx",
+    "partition_version_id",
+    "origin",
+    "review_status",
+    "reviewer",
+    "reviewed_at",
+    "review_note",
+}
 GENERIC_PATTERNS = (
     re.compile(r"核心结论是什么"),
     re.compile(r"可以得到什么结论"),
@@ -117,7 +137,9 @@ async def audit(output_dir: Path) -> dict[str, Any]:
     generic_questions: list[str] = []
     placeholder_questions: list[str] = []
     missing_partition_versions: list[str] = []
+    incomplete_schema: list[str] = []
     empty_tool_arguments: list[str] = []
+    partition_version_ids: set[str] = set()
     version_splits: dict[str, set[str]] = defaultdict(set)
     span_keys: dict[tuple[str, int, int], list[tuple[str, str]]] = defaultdict(list)
     span_records: list[tuple[str, int, int, str, str, str]] = []
@@ -131,12 +153,19 @@ async def audit(output_dir: Path) -> dict[str, Any]:
         spans = item.get("gold_spans") or []
         tools = item.get("gold_tools") or []
         partition_version = str(item.get("partition_version_id") or "")
+        missing_fields = REQUIRED_REVIEW_FIELDS - set(item)
+        if missing_fields:
+            incomplete_schema.append(f"{key}:{','.join(sorted(missing_fields))}")
         normalized_questions[_normalize_question(question)].append(key)
         skeletons[_question_skeleton(question)] += 1
         if any(pattern.search(question) for pattern in GENERIC_PATTERNS):
             generic_questions.append(key)
         if re.search(r"\bblock\s+\d+\b", question, re.IGNORECASE):
             placeholder_questions.append(key)
+        if item.get("language") == "en" and re.search(r"[\u3400-\u9fff]", question):
+            failures.append(f"{key}: English question contains CJK")
+        if item.get("language") == "zh" and not re.search(r"[\u3400-\u9fff]", question):
+            failures.append(f"{key}: Chinese question lacks CJK")
         if (
             item.get("origin") != "synthetic"
             or item.get("review_status") != "pending_human"
@@ -144,15 +173,36 @@ async def audit(output_dir: Path) -> dict[str, Any]:
             failures.append(
                 f"{key}: candidate provenance is not synthetic/pending_human"
             )
+        if item.get("reviewer") or item.get("reviewed_at") or item.get("review_note"):
+            failures.append(f"{key}: pending candidate contains review approval")
         if not partition_version:
             missing_partition_versions.append(key)
+        else:
+            partition_version_ids.add(partition_version)
+        difficulty = item.get("difficulty")
+        if not isinstance(difficulty, int) or not 1 <= difficulty <= 3:
+            failures.append(f"{key}: missing or invalid difficulty")
+        constraints = item.get("constraints")
+        if not isinstance(constraints, dict):
+            failures.append(f"{key}: missing constraints")
+        else:
+            review = constraints.get("candidate_review")
+            if not isinstance(review, dict) or review.get("status") != "pending_human":
+                failures.append(f"{key}: candidate_review provenance is incomplete")
         if category == "unanswerable":
             if spans or answer is not None or tools:
                 failures.append(f"{key}: unanswerable contract violated")
         elif category == "agent_task":
             if not tools:
                 failures.append(f"{key}: agent_task lacks gold_tools")
-            elif any(not tool.get("arguments") for tool in tools):
+            elif any(
+                not isinstance(tool, dict)
+                or not tool.get("name")
+                or not isinstance(tool.get("arguments"), dict)
+                for tool in tools
+            ):
+                failures.append(f"{key}: malformed agent_task gold_tools")
+            elif any(not tool["arguments"] for tool in tools):
                 empty_tool_arguments.append(key)
         elif category in ANSWERABLE_WITH_SPANS and (
             not spans or not isinstance(answer, str) or not answer.strip()
@@ -195,7 +245,7 @@ async def audit(output_dir: Path) -> dict[str, Any]:
     if cross_split_spans:
         failures.append(f"cross-split spans: {cross_split_spans}")
 
-    version_ids = sorted({record[0] for record in span_records})
+    version_ids = sorted({record[0] for record in span_records} | partition_version_ids)
     statement = text(
         """
         SELECT v.id::text AS version_id, v.full_text, v.activated_at, v.invalid_at,
@@ -208,7 +258,7 @@ async def audit(output_dir: Path) -> dict[str, Any]:
     ).bindparams(bindparam("version_ids", expanding=True))
     human_statement = text(
         """
-        SELECT i.question, i.gold_spans
+        SELECT d.split, i.question, i.gold_spans
         FROM eval_items i JOIN eval_datasets d ON d.id=i.dataset_id
         WHERE d.name IN ('core-dev', 'english-dev') AND i.origin='human'
         """
@@ -269,6 +319,9 @@ async def audit(output_dir: Path) -> dict[str, Any]:
         )
 
     human_questions = {_normalize_question(str(row["question"])) for row in human_rows}
+    non_dev_human = sum(str(row["split"]) != "dev" for row in human_rows)
+    if non_dev_human:
+        failures.append(f"existing 40 human items outside dev split: {non_dev_human}")
     copied_questions = sorted(
         key
         for normalized, keys in normalized_questions.items()
@@ -300,6 +353,8 @@ async def audit(output_dir: Path) -> dict[str, Any]:
         failures.append(
             f"missing partition_version_id: {len(missing_partition_versions)}"
         )
+    if incomplete_schema:
+        failures.append(f"incomplete review schema: {len(incomplete_schema)}")
     if placeholder_questions:
         failures.append(
             f"placeholder block labels in questions: {placeholder_questions}"
@@ -330,6 +385,7 @@ async def audit(output_dir: Path) -> dict[str, Any]:
         "generic_question_count": len(generic_questions),
         "placeholder_question_keys": placeholder_questions,
         "missing_partition_version_count": len(missing_partition_versions),
+        "incomplete_schema_count": len(incomplete_schema),
         "raw_block_answer_count": len(raw_block_answers),
         "failures": failures,
         "warnings": warnings,
