@@ -4,7 +4,11 @@ from app.agent.review_tools import (
     DatabaseModelReviewTools,
     ReviewToolResponseError,
     _bounded_document,
+    anchor_evidence_quote,
+    build_evidence_catalog,
     parse_card_payload,
+    resolve_card_evidence,
+    resolve_evidence_quotes,
 )
 from app.agent.state import ReviewCard
 from app.llm.types import CompletionResult, Message, Usage
@@ -22,6 +26,12 @@ def test_card_parser_is_schema_strict() -> None:
             '{"core_problem":"P","method_family":"memory","method":"M",'
             '"findings":[],"limitations":[],"evidence_quotes":["Q"],"extra":1}'
         )
+
+    parsed_ref = parse_card_payload(
+        '{"core_problem":"P","method_family":"memory","method":"M",'
+        '"findings":["F"],"limitations":[],"evidence_refs":["E00003"]}'
+    )
+    assert parsed_ref.evidence_refs == ["E00003"]
 
 
 async def test_group_cards_is_deterministic() -> None:
@@ -58,6 +68,71 @@ def test_bounded_document_preserves_head_and_tail() -> None:
     assert bounded.startswith("A" * 40)
     assert bounded.endswith("B" * 20)
     assert "预算截断" in bounded
+
+
+def test_evidence_quote_anchor_rehydrates_layout_differences() -> None:
+    source = "结论：吞吐量为１２８。\n延迟低于 20 ms。"
+
+    anchor = anchor_evidence_quote("吞吐量为128。 延迟低于20 ms。", source)
+
+    assert anchor is not None
+    assert anchor.match_kind == "layout_normalized"
+    assert anchor.quote == "吞吐量为１２８。\n延迟低于 20 ms。"
+    assert source[anchor.char_start : anchor.char_end] == anchor.quote
+
+
+def test_evidence_quote_anchor_rejects_semantic_or_punctuation_rewrite() -> None:
+    source = "该方法显著降低延迟，但没有提高吞吐量。"
+
+    assert anchor_evidence_quote("该方法降低了延迟，但吞吐量未提高。", source) is None
+    assert anchor_evidence_quote("该方法显著降低延迟；但没有提高吞吐量。", source) is None
+
+
+def test_evidence_quote_anchor_rejects_ambiguous_normalized_match() -> None:
+    source = "相同 片段。另一处相同　片段。"
+
+    assert anchor_evidence_quote("相同片段", source) is None
+
+
+def test_resolve_evidence_quotes_returns_only_source_slices() -> None:
+    source = "原文有ＡＢＣ，也有精确证据。"
+
+    resolved = resolve_evidence_quotes(["ABC", "精确证据"], source)
+
+    assert resolved == ["ＡＢＣ", "精确证据"]
+    assert all(quote in source for quote in resolved)
+
+
+def test_evidence_catalog_uses_source_offsets_and_resolves_refs() -> None:
+    source = "标题\n\n  第一条证据。\n第二条证据。\n"
+    catalog = build_evidence_catalog(source)
+    by_ref = {item.ref: item for item in catalog}
+    payload = parse_card_payload(
+        '{"core_problem":"P","method_family":"memory","method":"M",'
+        '"findings":["F"],"limitations":[],"evidence_refs":["E00006"]}'
+    )
+
+    assert [(item.ref, item.quote) for item in catalog] == [
+        ("E00000", "标题"),
+        ("E00006", "第一条证据。"),
+        ("E00013", "第二条证据。"),
+    ]
+    assert resolve_card_evidence(payload, source, evidence_catalog=by_ref) == [
+        "第一条证据。"
+    ]
+
+
+def test_unknown_or_duplicate_evidence_refs_fail_closed() -> None:
+    source = "唯一证据。"
+    catalog = build_evidence_catalog(source)
+    by_ref = {item.ref: item for item in catalog}
+    payload = parse_card_payload(
+        '{"core_problem":"P","method_family":"memory","method":"M",'
+        '"findings":["F"],"limitations":[],"evidence_refs":["E99999"]}'
+    )
+
+    with pytest.raises(ReviewToolResponseError, match="无法解析"):
+        resolve_card_evidence(payload, source, evidence_catalog=by_ref)
 
 
 CARD_JSON = (
@@ -118,6 +193,31 @@ async def test_model_facing_repair_names_the_offending_quote() -> None:
     assert "这句原文里没有" in repair
     assert "逐字复制" in repair
     assert tools.card_trace == [["卡片 evidence_quotes 不是文档逐字摘录", "ok"]]
+
+
+async def test_extract_payload_resolves_refs_to_legacy_review_card_quotes() -> None:
+    gateway = ScriptedGateway(
+        [
+            '{"core_problem":"P","method_family":"memory","method":"M",'
+            '"findings":["F"],"limitations":[],"evidence_refs":["E00002"]}'
+        ]
+    )
+    tools = _tools(gateway, "none")
+    source = "前缀真实证据。"
+    catalog = {item.ref: item for item in build_evidence_catalog(source)}
+    # 用字符偏移 2 的子 catalog 模拟生产中的离散证据项。
+    anchor = anchor_evidence_quote("真实证据。", source)
+    assert anchor is not None
+    catalog["E00002"] = anchor
+
+    payload = await tools._extract_card_payload(
+        [Message(role="user", content="首轮")],
+        source,
+        evidence_catalog=catalog,
+    )
+
+    assert payload.evidence_refs == []
+    assert payload.evidence_quotes == ["真实证据。"]
 
 
 async def test_generic_repair_withholds_the_specifics() -> None:

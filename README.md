@@ -83,18 +83,19 @@ badcase 来自我每天的真实使用，不是编出来的测试用例。
 ✅ M0 本地闭环与正式基线已收口；🚧 M1 进行中。
 
 - 入库、流式问答、引用高亮、拒答、安全边界、混合检索、rerank 与四策略对照已完成
-- 评测基线为 **80 条 human（70 dev + 10 隔离 test）**；当前 Judge 先做六类中间校准，
-  `agent_task` 等固定 Agent 工作流形成真实执行闭环后再补
+- 评测基线为 **80 条 human（70 dev + 10 隔离 test）**；当前 Judge 先做六类中间校准；
+  固定 Agent 已产出首个真实 `agent_task` 种子，待人工复核后再扩充并升级七类
 - 70 条 dev 扩展检索与两轮 heading 生成已经收口（均 70/70、0 error），10 条 test 未访问；
   evidence gate 修复后拒答正确率从 49/70 提升到 57/70，可答题实际回答从 36/57 提升到 44/57
 - 修复后六类 Judge 包已冻结为 70 个唯一 case，人工标签表/复核指南和 DeepSeek heavy
-  健康检查均已准备；正式 Judge 仍等待真实人工标签与该数据范围的模型发送授权
+  健康检查均已准备；该数据范围的内网模型发送已获授权，正式 Judge 只等待人工标签收口
 - 当前主线转为剩余 11 条 retrieval miss、1 条证据预算缺失和固定综述工作流；
   10 条 test 在最终评测前不跑、不调参
 - 固定综述 Agent 的可靠性骨架已落地：四张执行表、`literature_review` 固定 LangGraph、
   PostgreSQL checkpoint、新 SSE 事件、owner-only HITL，以及 effectively-once 的 Markdown 写回；
   三维预算熔断、真实 worker `SIGKILL` 自动恢复和前端创建/时间线/HITL 页面也已完成；
-  当前重点转为解决 `evidence_quotes` 与模型引用行为错配，再构造真实 `agent_task` 评测
+  `evidence_quotes` 已改为模型选编号、服务端回填原文，20 篇最终 20/20；真实
+  `agent_task` 种子已启动构造，但仍保持待人工复核，不冒充七类正式基线
 - 公网部署仍是全项目最后一步
 
 - 开发范围以 [11 MVP 边界](docs/11-MVP边界.md) 为准（设计文档描述完整蓝图，含 Backlog 内容）

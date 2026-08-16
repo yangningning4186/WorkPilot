@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import unicodedata
+from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,8 +18,9 @@ from app.llm.types import Message
 
 CARD_SYSTEM_PROMPT = """你是论文卡片抽取器。只能使用给定文档，不得补充外部知识。
 输出一个 JSON 对象，字段固定为：
-{"core_problem":"","method_family":"","method":"","findings":[],"limitations":[],"evidence_quotes":[]}
-findings/limitations 是简洁字符串数组；evidence_quotes 必须逐字摘自文档，用来审计卡片结论。
+{"core_problem":"","method_family":"","method":"","findings":[],"limitations":[],"evidence_refs":[]}
+findings 为 1-10 条、limitations 为 0-10 条简洁字符串；evidence_refs 为 1-8 个文档中
+真实存在的 E 编号。只选择编号，不要复制或改写证据文本；服务端会按编号回填逐字原文。
 不要输出 Markdown、代码围栏或额外文字。"""
 
 COMPARE_SYSTEM_PROMPT = """你是严谨的文献比较器。只根据结构化卡片，比较共同问题、方法差异、
@@ -35,7 +38,16 @@ class CardPayload(BaseModel):
     method: str = Field(min_length=1, max_length=2000)
     findings: list[str] = Field(min_length=1, max_length=10)
     limitations: list[str] = Field(default_factory=list, max_length=10)
-    evidence_quotes: list[str] = Field(min_length=1, max_length=8)
+    # `evidence_refs` 是线上协议：模型只做离散选择，服务端负责回填原文。
+    # `evidence_quotes` 仅保留给旧 checkpoint / A1、A2 实验回放使用。
+    evidence_refs: list[str] = Field(default_factory=list, max_length=8)
+    evidence_quotes: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def require_one_evidence_protocol(self) -> CardPayload:
+        if bool(self.evidence_refs) == bool(self.evidence_quotes):
+            raise ValueError("evidence_refs 与 evidence_quotes 必须且只能填写一个")
+        return self
 
 
 CardErrorStyle = Literal["none", "generic", "model_facing"]
@@ -144,12 +156,19 @@ class DatabaseModelReviewTools:
         if not isinstance(full_text, str) or not full_text.strip():
             raise LookupError(f"文档没有可抽取正文: {document['document_id']}")
         excerpt = _bounded_document(full_text, self.max_document_chars)
+        evidence_catalog = build_evidence_catalog(excerpt)
         messages = [
             Message(role="system", content=self.card_system_prompt),
             Message(
                 role="user",
                 content=json.dumps(
-                    {"title": document["title"], "document": excerpt},
+                    {
+                        "title": document["title"],
+                        "document": [
+                            {"ref": item.ref, "text": item.text}
+                            for item in evidence_catalog
+                        ],
+                    },
                     ensure_ascii=False,
                     separators=(",", ":"),
                 ),
@@ -157,7 +176,11 @@ class DatabaseModelReviewTools:
         ]
         # 逐字校验只对模型真正看过的那段文本成立：拿全文去核对，会把"截断没给它看"
         # 的部分也算成模型编造，冤枉的是工具而不是模型。
-        payload = await self._extract_card_payload(messages, excerpt)
+        payload = await self._extract_card_payload(
+            messages,
+            excerpt,
+            evidence_catalog={item.ref: item for item in evidence_catalog},
+        )
         return {
             "document_id": document["document_id"],
             "title": document["title"],
@@ -170,7 +193,11 @@ class DatabaseModelReviewTools:
         }
 
     async def _extract_card_payload(
-        self, messages: list[Message], source_text: str
+        self,
+        messages: list[Message],
+        source_text: str,
+        *,
+        evidence_catalog: dict[str, EvidenceAnchor] | None = None,
     ) -> CardPayload:
         """抽卡 + 失败后补救。补救信息的风格是 A1 的唯一自变量。"""
 
@@ -187,7 +214,12 @@ class DatabaseModelReviewTools:
             )
             try:
                 payload = parse_card_payload(result.text)
-                _assert_verbatim_quotes(payload, source_text)
+                resolved_quotes = resolve_card_evidence(
+                    payload, source_text, evidence_catalog=evidence_catalog
+                )
+                # 进入图状态前统一降解成既有 ReviewCard 协议，避免新旧字段同时非空。
+                payload.evidence_refs = []
+                payload.evidence_quotes = resolved_quotes
             except ReviewToolResponseError as error:
                 trace.append(str(error))
                 last_error = error
@@ -328,32 +360,177 @@ _FIELD_HINTS = {
     "method": "写具体做法，不要只写方法名。",
     "findings": "至少 1 条、最多 10 条结论。",
     "limitations": "最多 10 条局限；确实没有可以给空数组。",
-    "evidence_quotes": "至少 1 条、最多 8 条，逐字摘自文档。",
+    "evidence_refs": "至少 1 个、最多 8 个，只能填写文档中真实存在的 E 编号。",
+    "evidence_quotes": "兼容字段；新输出不要填写，改用 evidence_refs。",
 }
 
 
+@dataclass(frozen=True)
+class EvidenceAnchor:
+    """模型 quote 在原文中的可审计锚点。"""
+
+    quote: str
+    char_start: int
+    char_end: int
+    match_kind: Literal["exact", "layout_normalized"]
+
+    @property
+    def ref(self) -> str:
+        return f"E{self.char_start:05d}"
+
+    @property
+    def text(self) -> str:
+        return self.quote
+
+
+def build_evidence_catalog(
+    source_text: str, *, max_entry_chars: int = 400
+) -> list[EvidenceAnchor]:
+    """把正文切成带稳定字符偏移编号的原文候选，不制造任何新文本。"""
+
+    entries: list[EvidenceAnchor] = []
+    cursor = 0
+    for line in source_text.splitlines(keepends=True):
+        content_end = len(line.rstrip("\r\n"))
+        stripped = line[:content_end].strip()
+        if not stripped or stripped == "[中间正文因预算截断]":
+            cursor += len(line)
+            continue
+        left_padding = len(line[:content_end]) - len(line[:content_end].lstrip())
+        start = cursor + left_padding
+        remaining = stripped
+        while remaining:
+            piece = remaining[:max_entry_chars]
+            piece_start = start
+            piece_end = piece_start + len(piece)
+            entries.append(
+                EvidenceAnchor(
+                    quote=source_text[piece_start:piece_end],
+                    char_start=piece_start,
+                    char_end=piece_end,
+                    match_kind="exact",
+                )
+            )
+            remaining = remaining[len(piece) :]
+            start = piece_end
+        cursor += len(line)
+    return entries
+
+
+def _layout_key_with_offsets(value: str) -> tuple[str, list[tuple[int, int]]]:
+    """只消除无语义的版式差异，同时保留归一化字符到原文区间的映射。
+
+    NFKC 处理全角/半角等 Unicode 兼容形式；空白和软连字符属于排版产物，
+    可以忽略。标点、数字和正文字符仍必须相同，绝不做语义相似匹配。
+    """
+
+    normalized: list[str] = []
+    offsets: list[tuple[int, int]] = []
+    for index, character in enumerate(value):
+        if character.isspace() or character == "\u00ad":
+            continue
+        for normalized_character in unicodedata.normalize("NFKC", character):
+            normalized.append(normalized_character)
+            offsets.append((index, index + 1))
+    return "".join(normalized), offsets
+
+
+def anchor_evidence_quote(quote: str, source_text: str) -> EvidenceAnchor | None:
+    """把一条 quote 映射回模型可见正文的精确字符区间。"""
+
+    candidate = quote.strip()
+    if not candidate:
+        return None
+    exact_start = source_text.find(candidate)
+    if exact_start >= 0:
+        return EvidenceAnchor(
+            quote=source_text[exact_start : exact_start + len(candidate)],
+            char_start=exact_start,
+            char_end=exact_start + len(candidate),
+            match_kind="exact",
+        )
+
+    source_key, source_offsets = _layout_key_with_offsets(source_text)
+    quote_key, _ = _layout_key_with_offsets(candidate)
+    if not quote_key:
+        return None
+    normalized_start = source_key.find(quote_key)
+    if normalized_start < 0:
+        return None
+    # 归一化匹配若落到多个位置，不能确定模型指向哪一段原文，fail closed。
+    if source_key.find(quote_key, normalized_start + 1) >= 0:
+        return None
+    normalized_end = normalized_start + len(quote_key) - 1
+    char_start = source_offsets[normalized_start][0]
+    char_end = source_offsets[normalized_end][1]
+    return EvidenceAnchor(
+        quote=source_text[char_start:char_end],
+        char_start=char_start,
+        char_end=char_end,
+        match_kind="layout_normalized",
+    )
+
+
+def resolve_evidence_quotes(quotes: list[str], source_text: str) -> list[str]:
+    """校验并回填原文切片；返回值中的每一条都可用精确区间审计。"""
+
+    anchors = [anchor_evidence_quote(quote, source_text) for quote in quotes]
+    missing = [quote for quote, anchor in zip(quotes, anchors, strict=True) if anchor is None]
+    if not missing:
+        return [anchor.quote for anchor in anchors if anchor is not None]
+
+    listed = "\n".join(f"- {quote}" for quote in missing)
+    raise ReviewToolResponseError(
+        "卡片 evidence_quotes 不是文档逐字摘录",
+        model_message=(
+            f"下面 {len(missing)} 条 evidence_quotes 无法锚定到文档原文：\n"
+            f"{listed}\n"
+            "请只保留能从文档中逐字复制的原样片段：不得改写、合并两处、补全或删节。"
+            "空白、换行和全角/半角差异可以由工具还原，除此之外的标点、数字与正文字符"
+            "必须一致。如果某条结论找不到原文，就换一条能引用的结论。"
+            "其余字段保持不变，重新输出完整 JSON 对象。"
+        ),
+    )
+
+
+def resolve_card_evidence(
+    payload: CardPayload,
+    source_text: str,
+    *,
+    evidence_catalog: dict[str, EvidenceAnchor] | None = None,
+) -> list[str]:
+    """解析新编号协议或兼容旧 quote 协议，最终只返回原文切片。"""
+
+    if payload.evidence_refs:
+        catalog = evidence_catalog or {}
+        unknown = [ref for ref in payload.evidence_refs if ref not in catalog]
+        duplicate = len(set(payload.evidence_refs)) != len(payload.evidence_refs)
+        if unknown or duplicate:
+            details = []
+            if unknown:
+                details.append("不存在的编号：" + "、".join(unknown))
+            if duplicate:
+                details.append("编号有重复")
+            raise ReviewToolResponseError(
+                "卡片 evidence_refs 无法解析",
+                model_message=(
+                    "；".join(details)
+                    + "。请从当前文档给出的 E 编号中选择 1-8 个不同编号，"
+                    "不要创造编号，也不要填写 evidence_quotes；重新输出完整 JSON 对象。"
+                ),
+            )
+        return [catalog[ref].quote for ref in payload.evidence_refs]
+    return resolve_evidence_quotes(payload.evidence_quotes, source_text)
+
+
 def _assert_verbatim_quotes(payload: CardPayload, source_text: str) -> None:
-    """`evidence_quotes` 必须逐字摘自模型看过的正文。
+    """兼容旧调用点；校验成功时把 quote 回填成精确原文切片。
 
     这条校验是卡片可审计性的地基：quote 一旦允许改写，卡片结论就没法回到原文核对，
     整条综述链路的溯源承诺随之作废。
     """
 
-    missing = [quote for quote in payload.evidence_quotes if quote not in source_text]
-    if not missing:
-        return
-    listed = "\n".join(f"- {quote}" for quote in missing)
-    raise ReviewToolResponseError(
-        "卡片 evidence_quotes 不是文档逐字摘录",
-        model_message=(
-            f"下面 {len(missing)} 条 evidence_quotes 在文档里找不到完全相同的文本：\n"
-            f"{listed}\n"
-            "请只保留能从文档中原样复制的片段：逐字复制，包括标点、空格、大小写与数字格式，"
-            "不要改写、不要合并两处、不要补全或删节。"
-            "如果某条结论找不到可逐字引用的原文，就换一条能引用的结论，"
-            "而不是把它改写成近似的句子。其余字段保持不变，重新输出完整 JSON 对象。"
-        ),
-    )
+    payload.evidence_quotes = resolve_evidence_quotes(payload.evidence_quotes, source_text)
 
 
 def _bounded_document(value: str, max_chars: int) -> str:
@@ -362,4 +539,3 @@ def _bounded_document(value: str, max_chars: int) -> str:
     head = max_chars * 2 // 3
     tail = max_chars - head
     return f"{value[:head]}\n\n[中间正文因预算截断]\n\n{value[-tail:]}"
-
