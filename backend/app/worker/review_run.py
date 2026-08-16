@@ -9,8 +9,10 @@ from uuid import UUID
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agent.budget import BudgetedGateway, BudgetMeter
 from app.agent.review_graph import run_readonly_review
 from app.agent.review_tools import DatabaseModelReviewTools
+from app.agent.state import BudgetState
 from app.core.config import Settings, get_settings
 from app.core.run_bus import RunBus
 from app.llm.audit import SqlLlmCallAudit
@@ -56,8 +58,22 @@ async def review_run(ctx: dict[str, Any], run_id_raw: str) -> None:
             lease_s=settings.run_lease_s,
         )
     )
+    # 三维预算来自 run 行；墙钟已耗时长在 checkpoint 里，由 run_readonly_review 接管。
+    budget: BudgetState = {
+        "max_tokens": run.budget_tokens,
+        "used_tokens": run.used_tokens,
+        "max_calls": run.budget_calls,
+        "used_calls": run.used_calls,
+        "max_wall_ms": run.budget_wall_ms,
+        "used_wall_ms": 0,
+        "started_at_ms": 0,
+    }
+    meter = BudgetMeter(
+        budget, chars_per_token=settings.cost_estimate_chars_per_token
+    )
     try:
         # 每次失败都会先落 checkpoint；重试只从失败节点开始，不重跑已完成步骤。
+        # 预算熔断不走这条重试路径：它在图内部落终态后正常返回，不会抛到这里。
         for attempt in range(3):
             try:
                 async with session_factory() as session:
@@ -68,9 +84,11 @@ async def review_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                         run_id=run_id,
                     )
                     try:
-                        tools = DatabaseModelReviewTools(session, gateway)
+                        tools = DatabaseModelReviewTools(
+                            session, BudgetedGateway(gateway, meter)
+                        )
                         await run_readonly_review(
-                            session, run_id=run_id, tools=tools, bus=bus
+                            session, run_id=run_id, tools=tools, meter=meter, bus=bus
                         )
                     finally:
                         await gateway.aclose()

@@ -3,6 +3,7 @@ import math
 import re
 from collections.abc import AsyncIterator
 
+from app.agent.state import BudgetState
 from app.llm.types import CompletionResult, EmbeddingResult, Message, Usage
 
 
@@ -88,3 +89,38 @@ class DeterministicProvider:
             vector[slot] += 1.0
         norm = math.sqrt(sum(value * value for value in vector)) or 1.0
         return [value / norm for value in vector]
+
+
+def review_budget(
+    *,
+    max_tokens: int = 10_000,
+    max_calls: int = 20,
+    max_wall_ms: int = 60_000,
+    used_tokens: int = 0,
+    used_calls: int = 0,
+    used_wall_ms: int = 0,
+) -> BudgetState:
+    """固定综述测试用的预算快照；默认额度宽到不会误触熔断。"""
+
+    return {
+        "max_tokens": max_tokens,
+        "used_tokens": used_tokens,
+        "max_calls": max_calls,
+        "used_calls": used_calls,
+        "max_wall_ms": max_wall_ms,
+        "used_wall_ms": used_wall_ms,
+        "started_at_ms": 0,
+    }
+
+
+class FrozenClock:
+    """手控毫秒时钟；墙钟熔断不能靠 sleep 去等真实时间。"""
+
+    def __init__(self, now_ms: int = 0) -> None:
+        self.now_ms = now_ms
+
+    def __call__(self) -> int:
+        return self.now_ms
+
+    def advance(self, delta_ms: int) -> None:
+        self.now_ms += delta_ms

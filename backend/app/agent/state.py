@@ -21,6 +21,9 @@ class BudgetState(TypedDict):
     max_calls: int
     used_calls: int
     max_wall_ms: int
+    # 累计"执行中"墙钟。只累加执行分段的时长, 因此 waiting_human 的人工思考时间与
+    # 两次 worker 之间的空档都不计入——墙钟预算防的是失控执行, 不是人的犹豫。
+    used_wall_ms: int
     started_at_ms: int
 
 
@@ -79,6 +82,20 @@ class AgentState(TypedDict):
         "budget_exceeded",
     ]
     error: str | None
+
+
+def normalize_budget(state: AgentState) -> AgentState:
+    """给早于预算熔断的 checkpoint 补上缺失的预算字段。
+
+    `used_wall_ms` 是在 A0 骨架之后才加的。老 checkpoint 反序列化回来会缺这个键,
+    TypedDict 不做运行时校验, 缺键要到第一次累加时才炸。这里显式补 0:
+    老 run 的已耗墙钟无法追认, 按 0 起算是唯一诚实的选择, 且只会让预算更宽松而不是更严。
+    """
+
+    budget = state["budget"]
+    if "used_wall_ms" not in budget:
+        budget["used_wall_ms"] = 0
+    return state
 
 
 def json_state(state: AgentState) -> AgentState:

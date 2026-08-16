@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.budget import BudgetMeter
 from app.agent.review_graph import ReviewTools, initialize_review_state, run_readonly_review
 from app.agent.state import ReviewCard, ReviewDocument, ReviewGroup
 from app.agent.write_note import (
@@ -15,6 +16,7 @@ from app.agent.write_note import (
     write_note,
 )
 from app.services.runs import create_run, ensure_conversation, get_run, list_events
+from tests.fakes import review_budget
 
 pytestmark = pytest.mark.integration
 
@@ -79,7 +81,9 @@ async def _waiting_review(session: AsyncSession) -> tuple[UUID, str]:
         document_ids=[uuid4(), uuid4()],
         output_path="reviews/memory.md",
     )
-    state = await run_readonly_review(session, run_id=run.id, tools=ReadyReviewTools())
+    state = await run_readonly_review(
+        session, run_id=run.id, tools=ReadyReviewTools(), meter=BudgetMeter(review_budget())
+    )
     assert state["status"] == "waiting_human"
     return run.id, state["draft"]
 

@@ -9,8 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.budget import CompletionClient
 from app.agent.state import ReviewCard, ReviewDocument, ReviewGroup
-from app.llm.gateway import ModelGateway
 from app.llm.types import Message
 
 CARD_SYSTEM_PROMPT = """你是论文卡片抽取器。只能使用给定文档，不得补充外部知识。
@@ -42,12 +42,16 @@ class ReviewToolResponseError(ValueError):
 
 
 class DatabaseModelReviewTools:
-    """真实只读工具；所有模型调用仍经过统一 ModelGateway。"""
+    """真实只读工具；所有模型调用仍经过统一 ModelGateway。
+
+    这里声明的是 `CompletionClient` 而不是 `ModelGateway`，为的是强制注入
+    `BudgetedGateway`——工具层拿不到未计量的网关，任何新增节点都自动被熔断覆盖。
+    """
 
     def __init__(
         self,
         session: AsyncSession,
-        gateway: ModelGateway,
+        gateway: CompletionClient,
         *,
         max_document_chars: int = 30_000,
     ) -> None:

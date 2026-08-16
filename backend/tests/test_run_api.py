@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from app.agent.budget import BudgetMeter
 from app.agent.review_graph import run_readonly_review
 from app.agent.write_note import review_resume_token
 from app.api.dependencies import (
@@ -19,6 +20,7 @@ from app.core.run_bus import InMemoryRunBus
 from app.main import create_app
 from app.services.demo_sessions import hash_session_token
 from app.services.runs import append_events, claim_run, finish_run, get_run
+from tests.fakes import review_budget
 from tests.test_write_note import ReadyReviewTools
 
 pytestmark = pytest.mark.integration
@@ -100,7 +102,10 @@ async def test_review_run_api_enqueues_pauses_and_resumes_once(
         assert queue.enqueued_reviews == [run_id]
 
         state = await run_readonly_review(
-            db_session, run_id=run_id, tools=ReadyReviewTools()
+            db_session,
+            run_id=run_id,
+            tools=ReadyReviewTools(),
+            meter=BudgetMeter(review_budget()),
         )
         assert state["status"] == "waiting_human"
         response = await client.post(

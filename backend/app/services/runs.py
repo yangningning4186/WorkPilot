@@ -422,6 +422,38 @@ async def renew_lease(
     return None if row is None else RunRecord(**row)
 
 
+async def add_run_usage(
+    session: AsyncSession,
+    *,
+    run_id: UUID,
+    used_tokens: int,
+    used_calls: int,
+) -> None:
+    """把一段执行的实际消耗累加进 run 行。
+
+    只累加增量, 由调用方保证与 checkpoint 在同一个事务里提交: 节点中途崩溃时
+    消耗与 checkpoint 一起回滚, 恢复后重跑该节点会重新计费——漏记上限是一个节点,
+    而不是整个 run。
+    """
+
+    if used_tokens < 0 or used_calls < 0:
+        raise ValueError("run 用量增量不能为负")
+    if used_tokens == 0 and used_calls == 0:
+        return
+    await session.execute(
+        text(
+            """
+            UPDATE agent_runs
+            SET used_tokens = used_tokens + :used_tokens,
+                used_calls = used_calls + :used_calls,
+                updated_at = now()
+            WHERE id = :run_id
+            """
+        ),
+        {"run_id": run_id, "used_tokens": used_tokens, "used_calls": used_calls},
+    )
+
+
 async def finish_run(
     session: AsyncSession,
     *,
