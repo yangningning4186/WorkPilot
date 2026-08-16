@@ -120,11 +120,17 @@ class BatchCost:
         )
 
 
-async def load_batch_costs(session: AsyncSession, *, label: str | None = None) -> list[BatchCost]:
+async def load_batch_costs(
+    session: AsyncSession, *, label: str | None = None, batch_id: UUID | None = None
+) -> list[BatchCost]:
     """按批聚合并摊销。
 
     只统计**已收尾**的批次（`wall_ms IS NOT NULL`）：进程中途被杀的批次拿不到
     完整墙钟，用半个墙钟摊出来的单价是错的，宁可缺一条也不要错一条。
+
+    **按 label 查会撞车。** label 是人给的名字，重跑同一个实验就会出现同名批次，
+    取第一条会拿到上一次（可能是被中断的那次）的数据，而且看不出来。程序化取用
+    一律传 `batch_id`；`label` 只用于人看报告时的过滤。
 
     缓存命中不计入任务数与 token：它们没有消耗 GPU 时间，算进去会把摊销分母
     撑大、单任务成本虚低——那正好把缓存的收益重复计算了一遍。
@@ -150,11 +156,12 @@ async def load_batch_costs(session: AsyncSession, *, label: str | None = None) -
                 -- 会抛 AmbiguousParameterError。
                 WHERE b.wall_ms IS NOT NULL
                   AND (CAST(:label AS TEXT) IS NULL OR b.label = CAST(:label AS TEXT))
+                  AND (CAST(:batch_id AS UUID) IS NULL OR b.id = CAST(:batch_id AS UUID))
                 GROUP BY b.id
                 ORDER BY b.started_at
                 """
             ),
-            {"label": label},
+            {"label": label, "batch_id": batch_id},
         )
     ).mappings()
 

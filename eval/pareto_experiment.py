@@ -173,7 +173,9 @@ async def run_one(
                 return outcome
 
     async with session_factory() as session:
-        costs = await load_batch_costs(session, label=label)
+        # 按 batch_id 而不是 label：重跑实验会产生同名批次，按 label 取第一条
+        # 会拿到上一次（可能是被中断的那次）的数据，而且从结果里完全看不出来。
+        costs = await load_batch_costs(session, batch_id=batch_id)
 
     if result.report_path is not None:
         # report_path 指向 report.md（给人看的），机器读的指标在同目录的 report.json。
@@ -197,10 +199,52 @@ async def run_one(
     return outcome
 
 
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
 def summarize(outcomes: list[ConfigOutcome]) -> str:
+    """按配置聚合三次重复取中位数。
+
+    只看 r1 会把单次抖动（或一条脏数据）当成结论——§4 要求 3 次重复正是为此。
+    中位数而不是均值：三次里有一次异常时，中位数不会被它拖走。
+    """
+
+    by_config: dict[str, list[ConfigOutcome]] = {}
+    for outcome in outcomes:
+        by_config.setdefault(outcome.config.name, []).append(outcome)
+    merged: list[ConfigOutcome] = []
+    for group in by_config.values():
+        usable = [o for o in group if o.metrics and o.cost]
+        if not usable:
+            merged.append(group[0])
+            continue
+        head = usable[0]
+        merged.append(
+            ConfigOutcome(
+                config=head.config,
+                repeat=0,
+                metrics=head.metrics,
+                cost={
+                    **head.cost,
+                    "wall_s": f"{_median([float(o.cost['wall_s']) for o in usable]):.1f}",
+                    "repeats": len(usable),
+                },
+            )
+        )
+    return _render(merged)
+
+
+def _render(outcomes: list[ConfigOutcome]) -> str:
     header = (
         f"{'配置':<5}{'generate':<9}{'gate':<9}{'拒答':>8}{'引用有效':>9}{'引用对齐':>9}"
-        f"{'约束':>8}{'错误':>6}{'墙钟s':>9}{'tok/题':>9}{'延迟ms':>9}"
+        f"{'约束':>8}{'错误':>6}{'墙钟s中位':>10}{'tok/题':>9}{'延迟ms':>9}{'重复':>5}"
     )
     lines = [header, "-" * len(header)]
     for outcome in outcomes:
@@ -225,9 +269,10 @@ def summarize(outcomes: list[ConfigOutcome]) -> str:
             f"{_pct(_dig(metrics, 'citation_gold_alignment', 'rate')):>9}"
             f"{_pct(_dig(metrics, 'constraint_pass', 'rate')):>8}"
             f"{metrics.get('error_count', 0):>6}"
-            f"{outcome.cost.get('wall_s', '—'):>9}"
+            f"{outcome.cost.get('wall_s', '—'):>10}"
             f"{outcome.cost.get('tokens_per_task', '—'):>9}"
             f"{_num(_dig(metrics, 'latency_ms', 'mean')):>9}"
+            f"{outcome.cost.get('repeats', '—'):>5}"
         )
     lines.append("")
     lines.append("配置说明：" + "；".join(f"{c.name}={c.description}" for c in CONFIGS))
@@ -335,7 +380,7 @@ async def main() -> None:
     (output_root / "matrix.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    summary = summarize([o for o in outcomes if o.repeat <= 1])
+    summary = summarize(outcomes)
     (output_root / "summary.txt").write_text(summary, encoding="utf-8")
     print()
     print(summary)

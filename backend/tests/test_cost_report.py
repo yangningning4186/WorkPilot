@@ -9,14 +9,17 @@ from decimal import Decimal
 from uuid import UUID
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+from uuid6 import uuid7
 
 from app.llm.batch import (
     BatchPricingNotConfiguredError,
     BatchSpec,
     batch_spec_from_settings,
     current_batch_id,
+    gpu_batch,
 )
-from app.services.cost_report import BatchCost, format_batch_costs
+from app.services.cost_report import BatchCost, format_batch_costs, load_batch_costs
 
 
 def _cost(
@@ -194,3 +197,33 @@ def test_no_batch_context_means_no_batch_id() -> None:
     """线上单条问答不是批次：给它打 batch_id 会把整段墙钟摊到一次调用上。"""
 
     assert current_batch_id() is None
+
+
+# ------------------------------------------------- 同名批次（真实数据库）
+
+
+async def test_same_label_from_a_rerun_does_not_contaminate_lookups(
+    db_session: AsyncSession,
+) -> None:
+    """label 会撞车，`batch_id` 不会。
+
+    实测踩到过：一次跑批被中断后留下 `pareto-C3-r1` 的空批次，重跑产生同名批次，
+    按 label 取第一条拿到的是被中断那次的数据（墙钟 1.6s、0 次调用），
+    而它在报告里长得和正常数据一模一样。程序化取用一律按 batch_id。
+    """
+
+    # 测试库跨用例累积数据，label 必须每次唯一，否则断言会被历史行污染
+    # ——这正好又是本用例要说的那件事。
+    label = f"dup-label-{uuid7()}"
+    spec = BatchSpec(tier="main", model="m", label=label)
+    async with gpu_batch(db_session, spec) as first_id:
+        pass
+    async with gpu_batch(db_session, spec) as second_id:
+        pass
+
+    by_label = await load_batch_costs(db_session, label=label)
+    assert len(by_label) == 2, "同名批次必须都被看到，而不是悄悄只取一条"
+
+    by_id = await load_batch_costs(db_session, batch_id=second_id)
+    assert [item.batch_id for item in by_id] == [second_id]
+    assert first_id != second_id
