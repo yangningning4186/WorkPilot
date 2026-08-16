@@ -23,7 +23,7 @@ uv run fastapi dev app/main.py
 
 | 表面 | 权限 |
 |---|---|
-| `/api/v1/runs/**` | 匿名 demo session，只能操作自己的 conversation/run/SSE |
+| `/api/v1/runs/**` | 匿名 demo session，只能操作自己的 conversation/run/SSE；固定综述的创建与 resume 额外要求 demo admin |
 | `/api/v1/documents/{version_id}/**` | demo session，且该版本必须被自己的 run 引用过 |
 | `/api/v1/sources/**`、入库、直接检索、同步回答 | demo admin |
 | `/api/v1/annotation/**`、`/annotation` | demo admin；生产环境仍固定关闭标注工具 |
@@ -93,6 +93,10 @@ curl -X POST http://127.0.0.1:8000/api/v1/sources/<source_id>/sync \
 同步游标持久化为 `size_bytes + mtime_ns + content_hash`。未变文件直接跳过，更新文件建新版本并
 在全部成功后激活，消失文件软删除并退出检索。单文件失败只记录该文件，不会阻断整个目录。
 隐藏目录、非白名单后缀和符号链接不会入库；注册根目录与每个文件都做 realpath 边界校验。
+
+固定综述写回使用独立的 `AGENT_OUTPUT_PATH`，只接受该目录内的相对 `.md` 路径。
+只读图生成预览后进入 `waiting_human`；owner 调用 `POST /api/v1/runs/{run_id}/resume`
+批准后才执行 `write_note`。写回不会直接触碰 `LOCAL_LIBRARY_PATH`，如需入库由后续同步显式完成。
 
 **批量导入不要走上面的 HTTP 接口。** 本机实测 MinerU 约 166s/篇（7.4s/页），百篇量级要跑数
 小时，既超过 Arq 的 `job_timeout`，也违反"worker 不依附 HTTP 连接"。用脱离连接的 CLI，
@@ -178,7 +182,8 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.pdf_parsing_quality \
 复杂问题可由远端模型分解为最多 4 个自包含子查询，批量 embedding 后融合召回；规划失败自动
 退回原 query。Top-50 候选发送到本机 `RERANKER_BASE_URL` 的专用 cross-encoder 做一次批量精排，
 失败时保留原排序，不再用 35B 生成模型做 listwise rerank。门控证据按 Top-K 候选轮询打包，并以
-`EVIDENCE_GATE_MAX_SEGMENT_CHARS` 限制单段长度，避免第一个长 block 挤掉第二跳证据。
+rerank 门控按精排顺序连续打包 block；`RERANK_EVIDENCE_GATE_MAX_CHARS` 控制总预算。
+旧的跨候选轮询会只取多个 chunk 的首 block，可能把高排名 chunk 内的关键后续 block 截掉。
 `LEXICAL_RRF_ENABLED` 默认开启，会用英文标识符与中文双字词做本地词法召回，再以
 RRF 与 dense 合并。查询分解和证据充分性门控仍是远端步骤，只发送问题及截断候选，不上传原始
 文件；部署时仍需按数据策略确认具体语料是否允许外发。默认阈值 `0.35` 只是工程初值，不能当成

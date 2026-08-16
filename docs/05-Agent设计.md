@@ -12,45 +12,53 @@
 > 固定流程能关掉 planner 的不确定性，让 HITL、幂等、断点续跑这些**可靠性机制先被验证正确**。
 > 通用 Agent 在 [Backlog #2](11-MVP边界.md)。本文档描述完整设计，实现按 MVP 边界分批。
 
+> **实现快照（2026-08-16）**：M1 固定综述可靠性骨架已落地。实际图固定为
+> `select_documents → extract_cards → group_cards → compare_documents → generate_preview`
+>，随后发出 `write_confirm` 中断；只有 owner 明确批准才进入 `write_note`。
+> 每个只读步骤都写 `agent_attempts`、`run_events` 和完整 PostgreSQL checkpoint，恢复时按
+> `cursor` 跳过已完成节点。这里没有自由 planner / reflection，不把未来蓝图伪装成当前能力。
+
 ---
 
 ## 1. 状态定义
 
 ```python
-class PlanStep(TypedDict):
+class PlanStepState(TypedDict):
+    id: str
     idx: int
-    desc: str                    # 人类可读的步骤描述，直接渲染到前端时间线
+    description: str             # 人类可读的步骤描述，直接渲染到前端时间线
     tool: str | None
     depends_on: list[int]
     status: Literal["pending", "running", "done", "failed", "skipped"]
 
-class Budget(TypedDict):
-    """预算与熔断（CLAUDE.md 约束 5）——防止反思循环烧钱"""
+class BudgetState(TypedDict):
     max_tokens: int; used_tokens: int
     max_calls: int;  used_calls: int
-    max_wall_ms: int; started_at: float
-    max_retries_per_step: int
-    max_replans: int; used_replans: int
+    max_wall_ms: int; started_at_ms: int
 
-class Interrupt(TypedDict):
-    kind: Literal["plan_approval", "write_confirm", "external_confirm", "clarify"]
+class InterruptState(TypedDict):
+    kind: Literal["write_confirm"]
     payload: dict                # 展示给用户的内容
     resume_token: str
 
 class AgentState(TypedDict):
+    schema_version: Literal["literature-review.v1"]
     run_id: str
-    user_id: str
     conversation_id: str
     goal: str
-    plan: list[PlanStep]
+    document_ids: list[str]
+    plan: list[PlanStepState]
     cursor: int                  # 当前执行到第几步
-    scratchpad: list[dict]       # 中间产物（工具结果摘要），不放原始大对象
-    artifacts: dict[str, str]    # 大产物存 MinIO，这里只放引用 key
-    memory_ctx: list[str]        # 本次注入的长期记忆
-    budget: Budget
-    interrupt: Interrupt | None
-    status: Literal["planning", "awaiting_approval", "executing",
-                    "reflecting", "waiting_human", "done", "failed",
+    documents: list[ReviewDocument]
+    cards: list[ReviewCard]
+    groups: list[ReviewGroup]
+    comparison: str
+    draft: str
+    output_path: str | None
+    artifacts: dict[str, str]
+    budget: BudgetState
+    interrupt: InterruptState | None
+    status: Literal["executing", "waiting_human", "done", "failed",
                     "cancelled", "budget_exceeded"]
     error: str | None
 ```
@@ -58,12 +66,28 @@ class AgentState(TypedDict):
 **禁止塞进 state 的东西**：数据库连接、HTTP 客户端、闭包、模型实例。
 一旦不可序列化，checkpoint 就废了，整个恢复能力随之崩塌。
 
-**大产物走 artifacts 引用而非内联**：综述正文可能几千 token，
-内联进 state 会让每次 checkpoint 写入膨胀，也会污染后续 prompt 的上下文。
+当前固定图把受预算约束的综述草稿内联进 checkpoint，确保恢复与 HITL 预览读取同一份内容；
+后续若产物规模超过单篇 Markdown 的边界，再迁移为对象引用，不能只存临时文件路径。
 
 ---
 
 ## 2. 图结构
+
+### 2.1 当前 M1 固定图
+
+```text
+START → 筛选文档 → 抽取卡片 → 方法分组 → 横向比较 → 生成预览
+                                                        ↓
+                                            interrupt(write_confirm)
+                                               ├─ 拒绝 → 跳过写入 → END
+                                               └─ 批准 → write_note → END
+```
+
+节点顺序和 plan ID 都是确定性的；`run_id + step_idx` 生成稳定步骤标识。只读节点失败后，
+新的执行器读取最近 checkpoint，从原 `cursor` 重跑失败节点，不重跑已经完成的前置节点。
+`write_note` 的去重不依赖 cursor，而依赖 `tool_invocations` 的稳定幂等键。
+
+### 2.2 通用 Agent 蓝图（Backlog，当前未实现）
 
 ```
                     ┌─────────┐
