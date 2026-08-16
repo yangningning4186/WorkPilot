@@ -35,9 +35,16 @@ const runs = new Map();
 const sessions = new Map();
 /** 供测试断言的请求流水（例如"取消接口确实被调用过"）。 */
 const requestLog = [];
+/** 已签发的 admin token。真后端存在 Redis，这里内存等价。 */
+const adminTokens = new Set();
+/** 后端是否配了 DEMO_ADMIN_PASSWORD_HASH；关掉用来验收 503 的提示文案。 */
+let adminConfigured = true;
+
+const ADMIN_PASSWORD = "demo-admin-pw";
 
 let runCounter = 0;
 let sessionCounter = 0;
+let adminCounter = 0;
 
 function nextRunId() {
   runCounter += 1;
@@ -67,6 +74,12 @@ function currentSession(request) {
   const token = cookies(request).workpilot_session;
   const session = token === undefined ? undefined : sessions.get(token);
   return session === undefined ? null : { token, ...session };
+}
+
+/** 与真后端一致：admin 凭据只认 httpOnly cookie，前端 JS 读不到。 */
+function isAdmin(request) {
+  const token = cookies(request).workpilot_admin_session;
+  return token !== undefined && adminTokens.has(token);
 }
 
 function createSession() {
@@ -278,8 +291,65 @@ const server = createServer((request, response) => {
   if (path === "/__reset" && request.method === "POST") {
     runs.clear();
     sessions.clear();
+    adminTokens.clear();
+    adminConfigured = true;
     requestLog.length = 0;
     json(response, 200, { status: "reset" });
+    return;
+  }
+
+  // 单独开关，不连带清空 runs：用例改完要能原样改回去，免得污染后续用例。
+  if (path === "/__admin_configured" && request.method === "POST") {
+    adminConfigured = url.searchParams.get("value") !== "false";
+    json(response, 200, { admin_configured: adminConfigured });
+    return;
+  }
+
+  // ------------------------------------------------------------ admin 会话
+  // 写操作（创建综述、批准写回、触发同步）在真后端都挂着 require_admin_session，
+  // 假后端必须照抄这个门，否则验收测的是一个不存在的宽松后端。
+
+  if (path === "/api/v1/auth/admin/session" && request.method === "GET") {
+    if (isAdmin(request)) {
+      json(response, 200, { authenticated: true });
+    } else {
+      json(response, 401, { detail: "需要 admin 登录" });
+    }
+    return;
+  }
+
+  if (path === "/api/v1/auth/admin/login" && request.method === "POST") {
+    void readBody(request).then((body) => {
+      if (!adminConfigured) {
+        json(response, 503, { detail: "demo admin 尚未配置" });
+        return;
+      }
+      if (body.password !== ADMIN_PASSWORD) {
+        json(response, 401, { detail: "密码错误" });
+        return;
+      }
+      adminCounter += 1;
+      const token = `mock-admin-${String(adminCounter).padStart(12, "0")}`;
+      adminTokens.add(token);
+      json(
+        response,
+        200,
+        { authenticated: true },
+        {
+          "set-cookie": `workpilot_admin_session=${token}; Max-Age=28800; Path=/; HttpOnly; SameSite=Lax`,
+        },
+      );
+    });
+    return;
+  }
+
+  if (path === "/api/v1/auth/admin/logout" && request.method === "POST") {
+    const token = cookies(request).workpilot_admin_session;
+    if (token !== undefined) adminTokens.delete(token);
+    response.writeHead(204, {
+      "set-cookie": "workpilot_admin_session=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax",
+    });
+    response.end();
     return;
   }
 
@@ -329,6 +399,10 @@ const server = createServer((request, response) => {
   }
 
   if (path === "/api/v1/runs/reviews" && request.method === "POST") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要 admin 登录" });
+      return;
+    }
     void readBody(request).then((body) => {
       const existingSession = currentSession(request);
       const session = existingSession ?? createSession();
@@ -381,6 +455,11 @@ const server = createServer((request, response) => {
 
   const resumeMatch = path.match(/^\/api\/v1\/runs\/([^/]+)\/resume$/);
   if (resumeMatch && request.method === "POST") {
+    // 批准写回是整条工作流唯一有副作用的一步，admin 门必须在所有权检查之前。
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要 admin 登录" });
+      return;
+    }
     const run = runs.get(resumeMatch[1]);
     if (run === undefined || currentSession(request)?.token !== run.session_token) {
       json(response, 404, { detail: "run 不存在" });

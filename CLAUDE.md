@@ -51,7 +51,8 @@ workpilot/
 cd deploy && docker compose up -d
 
 # 后端
-cd backend && uv sync && uv run fastapi dev app/main.py
+# 依赖里是 fastapi 而不是 fastapi[standard]，没有 `fastapi dev` 这个 CLI
+cd backend && uv sync && uv run uvicorn app.main:app --reload
 
 # 前端
 cd frontend && npm install && npm run dev

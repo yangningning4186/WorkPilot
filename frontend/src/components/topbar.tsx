@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { AdminSessionControl } from "@/components/admin-session";
+
 /** 两个页面共用的顶栏。当前页高亮由 pathname 决定，不用各自维护状态。 */
 export function Topbar() {
   const pathname = usePathname();
@@ -24,9 +26,12 @@ export function Topbar() {
           资料库
         </Link>
       </nav>
-      <div className="product-note">
-        <span />
-        本地资料库已连接
+      <div className="topbar-right">
+        <div className="product-note">
+          <span />
+          本地资料库已连接
+        </div>
+        <AdminSessionControl />
       </div>
     </header>
   );

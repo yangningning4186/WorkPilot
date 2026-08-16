@@ -62,6 +62,31 @@ export async function expectHighlightMatchesBbox(
   );
 }
 
+/** 假后端认的 demo 口令，与 mock-backend.mjs 的 ADMIN_PASSWORD 一致。 */
+export const ADMIN_PASSWORD = "demo-admin-pw";
+
+/**
+ * 走顶栏登录入口拿到 admin session。
+ *
+ * 刻意不直接塞 cookie：cookie 是 httpOnly 的，用例要验的正是"浏览器里有路可走"，
+ * 绕过 UI 注入等于把这个入口本身排除在验收之外。
+ */
+export async function loginAsAdmin(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "admin 登录" }).click();
+  await page.getByLabel("管理员密码").fill(ADMIN_PASSWORD);
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await expect(page.locator(".admin-badge")).toHaveText("admin");
+}
+
+/** 切换假后端的 DEMO_ADMIN_PASSWORD_HASH 配置状态。 */
+export async function setAdminConfigured(
+  request: APIRequestContext,
+  configured: boolean,
+): Promise<void> {
+  const response = await request.post(`${MOCK_BASE}/__admin_configured?value=${String(configured)}`);
+  expect(response.ok()).toBe(true);
+}
+
 /** 假后端记下的请求流水，用来断言"某个接口确实被调用过"。 */
 export async function mockRequests(
   request: APIRequestContext,

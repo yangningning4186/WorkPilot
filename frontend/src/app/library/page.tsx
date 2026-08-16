@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { useAdminSession } from "@/components/admin-session";
 import { Topbar } from "@/components/topbar";
 import {
   ApiError,
@@ -80,6 +81,7 @@ function DocumentRow({ document }: { document: LibraryDocument }) {
 }
 
 export default function LibraryPage() {
+  const { invalidate: invalidateAdmin } = useAdminSession();
   const [data, setData] = useState<LibraryResponse | null>(null);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -119,14 +121,16 @@ export default function LibraryPage() {
         setNotice("同步已触发，解析状态会在下方刷新。");
         await load(query);
       } catch (reason) {
-        setNotice(
-          reason instanceof ApiError && reason.status === 401
-            ? "触发同步需要 admin 登录；资料维护接口不对只读会话开放。"
-            : "同步触发失败，请检查后端日志。",
-        );
+        if (reason instanceof ApiError && reason.status === 401) {
+          // 顶栏可能还显示着已登录（session 刚过期），拉回未登录才对得上。
+          invalidateAdmin();
+          setNotice("触发同步需要 admin 登录；请在右上角登录后重试。");
+        } else {
+          setNotice("同步触发失败，请检查后端日志。");
+        }
       }
     },
-    [load, query],
+    [load, query, invalidateAdmin],
   );
 
   return (

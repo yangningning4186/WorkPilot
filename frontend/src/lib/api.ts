@@ -71,6 +71,53 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+/** 204 之类没有响应体的接口；套用 request 会在 response.json() 上炸掉。 */
+async function requestVoid(path: string, init?: RequestInit): Promise<void> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    credentials: "include",
+    headers: { "content-type": "application/json", ...init?.headers },
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await response.text());
+  }
+}
+
+/**
+ * admin 会话状态。
+ *
+ * cookie 是 httpOnly 的，前端读不到，唯一可靠的判据就是问后端。
+ * `unconfigured` 单独成一档：后端没配 `DEMO_ADMIN_PASSWORD_HASH` 时任何密码都登不进去，
+ * 这时候提示"密码错误"会把人往错误方向带（约束 4 同样适用于面向人的错误）。
+ */
+export type AdminAuthState = "authenticated" | "anonymous" | "unconfigured";
+
+export async function fetchAdminSession(): Promise<AdminAuthState> {
+  const response = await fetch(`${API_BASE}/api/v1/auth/admin/session`, {
+    credentials: "include",
+    // 会话状态绝不能吃缓存，否则登出后顶栏还显示已登录。
+    cache: "no-store",
+  });
+  if (response.ok) {
+    return "authenticated";
+  }
+  if (response.status === 401 || response.status === 403) {
+    return "anonymous";
+  }
+  throw new ApiError(response.status, await response.text());
+}
+
+export function loginAdmin(password: string): Promise<{ authenticated: boolean }> {
+  return request<{ authenticated: boolean }>("/api/v1/auth/admin/login", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function logoutAdmin(): Promise<void> {
+  return requestVoid("/api/v1/auth/admin/logout", { method: "POST" });
+}
+
 export function createRun(body: CreateRunRequest): Promise<CreateRunResponse> {
   return request<CreateRunResponse>("/api/v1/runs", {
     method: "POST",

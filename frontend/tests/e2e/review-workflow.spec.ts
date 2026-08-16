@@ -1,7 +1,7 @@
 import { type Page, expect, test } from "@playwright/test";
 
 import { LIBRARY, REVIEW_DRAFT, REVIEW_OUTPUT_PATH } from "./fixtures/scenarios.mjs";
-import { mockRequests } from "./helpers";
+import { loginAsAdmin, mockRequests } from "./helpers";
 
 /**
  * 固定综述页验收。
@@ -16,8 +16,14 @@ const REVIEWABLE_DOCS = LIBRARY.documents.filter(
   (item) => item.version_id !== null && item.searchable_chunk_count > 0,
 );
 
-async function fillForm(page: Page, goal: string): Promise<void> {
+/** 创建综述要 admin session，所有正向用例都得先过这道门。 */
+async function gotoReview(page: Page): Promise<void> {
   await page.goto("/review");
+  await loginAsAdmin(page);
+}
+
+async function fillForm(page: Page, goal: string): Promise<void> {
+  await gotoReview(page);
   await page.getByRole("textbox", { name: "综述目标" }).fill(goal);
   await page.getByRole("textbox", { name: "写回路径" }).fill(REVIEW_OUTPUT_PATH);
   const boxes = page.locator(".doc-picker input[type=checkbox]");
@@ -34,7 +40,7 @@ async function startReview(page: Page, goal: string): Promise<string> {
 
 test.describe("固定综述页", () => {
   test("只能选可检索文档，且不足两篇时开不了工", async ({ page }) => {
-    await page.goto("/review");
+    await gotoReview(page);
 
     // 按真实能力过滤：新版失败但旧激活版仍在服务的文档可以选；没有激活版本或
     // 没有可检索块的文档不能选。
@@ -55,7 +61,7 @@ test.describe("固定综述页", () => {
   });
 
   test("写回路径非法时前端就拦下，不往后端发", async ({ page, request }) => {
-    await page.goto("/review");
+    await gotoReview(page);
     await page.getByRole("textbox", { name: "综述目标" }).fill("比较两篇的取舍");
     await page.locator(".doc-picker input[type=checkbox]").nth(0).check();
     await page.locator(".doc-picker input[type=checkbox]").nth(1).check();

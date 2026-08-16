@@ -12,7 +12,7 @@ cd ../deploy && docker compose up -d
 cd ../backend
 uv sync
 uv run alembic upgrade head
-uv run fastapi dev app/main.py
+uv run uvicorn app.main:app --reload
 ```
 
 健康检查：`GET /health/live` 只检查进程，`GET /health/ready` 同时检查 PostgreSQL 与 Redis。
@@ -43,6 +43,11 @@ curl -c /tmp/workpilot-admin.cookie \
 
 维护接口的后续 curl 请求使用 `-b /tmp/workpilot-admin.cookie`。未配置 hash 时 admin 登录
 fail-closed 返回 `503`，不会在开发环境隐式放行。
+
+浏览器里走前端顶栏右上角的 **admin 登录**，不必再 curl 换 cookie。cookie 是 httpOnly 的，
+前端读不到，登录态一律以 `GET /api/v1/auth/admin/session` 为准。写操作拿到 `401` 时前端会
+就地把顶栏拉回未登录并提示重新登录；固定综述停在确认点的 run 不受影响，重登后原地再点一次
+即可，`resume_token` 仍然有效。
 
 生产环境默认启用两层滥用防护：Redis 原子 token bucket 按 `request.client.host` 限制每 IP
 每分钟 20 次、突发 5 次；PostgreSQL 条件更新限制每个 30 分钟 demo session 最多提问 20 次。

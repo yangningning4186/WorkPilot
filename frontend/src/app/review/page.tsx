@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
+import { useAdminSession } from "@/components/admin-session";
 import { Topbar } from "@/components/topbar";
 import {
   ApiError,
@@ -113,6 +114,7 @@ function ReviewWorkspace() {
    * 把它只存在组件内存里，等于自己把这条已经付过工程代价的性质丢掉。
    */
   const initialRunId = useSearchParams().get("run");
+  const { state: adminState, invalidate: invalidateAdmin } = useAdminSession();
   const [documents, setDocuments] = useState<LibraryDocument[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [goal, setGoal] = useState("");
@@ -155,8 +157,16 @@ function ReviewWorkspace() {
   }, []);
 
   const pathError = useMemo(() => outputPathError(outputPath), [outputPath]);
+  // 创建和批准写回都要 admin session。与其让用户填完整张表再吃一个 401，
+  // 不如一开始就说清楚缺什么——写回是有副作用的一步，不该靠试错才发现开不了工。
+  const needsLogin = adminState !== "authenticated";
   const canSubmit =
-    !submitting && runId === null && selected.size >= 2 && goal.trim() !== "" && pathError === null;
+    !submitting &&
+    !needsLogin &&
+    runId === null &&
+    selected.size >= 2 &&
+    goal.trim() !== "" &&
+    pathError === null;
 
   const submit = useCallback(async () => {
     setFormError(null);
@@ -170,13 +180,19 @@ function ReviewWorkspace() {
       setRunId(created.run_id);
       window.history.replaceState(null, "", `?run=${created.run_id}`);
     } catch (error) {
-      setFormError(
-        error instanceof ApiError ? `创建失败（${error.status}）：${error.message}` : "创建失败",
-      );
+      if (error instanceof ApiError && error.status === 401) {
+        // session 可能是刚过期的，把顶栏拉回未登录，用户能就地重新登录。
+        invalidateAdmin();
+        setFormError("admin 会话已失效，请在右上角重新登录后重试。");
+      } else {
+        setFormError(
+          error instanceof ApiError ? `创建失败（${error.status}）：${error.message}` : "创建失败",
+        );
+      }
     } finally {
       setSubmitting(false);
     }
-  }, [goal, outputPath, selected]);
+  }, [goal, outputPath, selected, invalidateAdmin]);
 
   const decide = useCallback(
     async (approved: boolean) => {
@@ -190,16 +206,23 @@ function ReviewWorkspace() {
           approved,
         });
       } catch (error) {
-        setFormError(
-          error instanceof ApiError
-            ? `提交决定失败（${error.status}）：${error.message}`
-            : "提交决定失败",
-        );
+        if (error instanceof ApiError && error.status === 401) {
+          // 走到这一步说明只读部分已经跑完了，run 还停在 waiting_human。
+          // 重新登录后原地再点一次即可，resume_token 仍然有效，不必从头再跑一遍。
+          invalidateAdmin();
+          setFormError("admin 会话已失效。请在右上角重新登录，run 仍停在确认点，可直接再点一次。");
+        } else {
+          setFormError(
+            error instanceof ApiError
+              ? `提交决定失败（${error.status}）：${error.message}`
+              : "提交决定失败",
+          );
+        }
       } finally {
         setResuming(false);
       }
     },
-    [runId, state.interrupt],
+    [runId, state.interrupt, invalidateAdmin],
   );
 
   const preview = state.artifacts.find((item) => item.kind === "review_preview");
@@ -243,6 +266,13 @@ function ReviewWorkspace() {
             </span>
             <DocumentPicker documents={documents} onToggle={toggle} selected={selected} />
           </div>
+
+          {adminState === "anonymous" && (
+            <p className="login-required">
+              创建综述和批准写回属于写操作，需要先在右上角完成 admin 登录。
+              浏览资料库和问答不受影响。
+            </p>
+          )}
 
           {formError !== null && <p className="form-error">{formError}</p>}
 
