@@ -34,7 +34,7 @@ class RecordingQueue:
     async def enqueue_answer_run(self, run_id: UUID, *, top_k: int) -> None:
         self.enqueued.append((run_id, top_k))
 
-    async def enqueue_review_run(self, run_id: UUID) -> None:
+    async def enqueue_review_run(self, run_id: UUID, *, attempt: int = 0) -> None:
         self.enqueued_reviews.append(run_id)
 
 
@@ -42,7 +42,7 @@ class BrokenQueue:
     async def enqueue_answer_run(self, run_id: UUID, *, top_k: int) -> None:
         raise ConnectionError("redis 不可达")
 
-    async def enqueue_review_run(self, run_id: UUID) -> None:
+    async def enqueue_review_run(self, run_id: UUID, *, attempt: int = 0) -> None:
         raise ConnectionError("redis 不可达")
 
 

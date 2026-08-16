@@ -19,7 +19,7 @@ REVIEW_RUN_TASK = "review_run"
 class RunQueue(Protocol):
     async def enqueue_answer_run(self, run_id: UUID, *, top_k: int) -> None: ...
 
-    async def enqueue_review_run(self, run_id: UUID) -> None: ...
+    async def enqueue_review_run(self, run_id: UUID, *, attempt: int = 0) -> None: ...
 
 
 class ArqRunQueue:
@@ -36,12 +36,14 @@ class ArqRunQueue:
             _job_id=f"{ANSWER_RUN_TASK}:{run_id}",
         )
 
-    async def enqueue_review_run(self, run_id: UUID) -> None:
-        await self._pool.enqueue_job(
-            REVIEW_RUN_TASK,
-            str(run_id),
-            _job_id=f"{REVIEW_RUN_TASK}:{run_id}",
-        )
+    async def enqueue_review_run(self, run_id: UUID, *, attempt: int = 0) -> None:
+        # watchdog 重投必须换一个 job_id: arq 按 job_id 去重, 被 SIGKILL 的那个作业
+        # 在 result/in-progress 键过期前一直占着原 id, 沿用会被静默丢弃, 恢复就永远不发生。
+        # 双跑防线仍然是 claim_run 的条件 UPDATE, 换 id 不会放松它。
+        job_id = f"{REVIEW_RUN_TASK}:{run_id}"
+        if attempt > 0:
+            job_id = f"{job_id}:r{attempt}"
+        await self._pool.enqueue_job(REVIEW_RUN_TASK, str(run_id), _job_id=job_id)
 
 
 _pool: ArqRedis | None = None

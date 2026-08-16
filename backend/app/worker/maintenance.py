@@ -4,6 +4,7 @@ from typing import Any
 
 import structlog
 
+from app.core.queue import get_run_queue
 from app.core.run_bus import RunBus
 from app.services.cost_budget import sweep_expired_reservations
 from app.services.runs import reap_expired_runs
@@ -12,23 +13,34 @@ logger = structlog.get_logger(__name__)
 
 
 async def watchdog_tick(ctx: dict[str, Any]) -> int:
-    """把租约过期的 run 明确标记为失败。
+    """回收租约过期的 run: 可恢复的重新入队, 其余标记为失败。
 
-    不自动重跑: 一次已经发出去的模型调用是否计费无法确认, 静默重放等于重复计费。
-    能自动恢复的只有带 checkpoint 且工具满足幂等边界的 Agent run(ADR-0007)。
+    普通回答不自动重跑: 一次已经发出去的模型调用是否计费无法确认, 静默重放等于重复计费。
+    自动恢复只给带 checkpoint 且工具满足幂等边界的固定综述 run(ADR-0007) ——
+    它从最近 checkpoint 继续, 写回走 `tool_invocations` 幂等协议, 重放不会产生第二份笔记。
     """
 
     bus: RunBus = ctx["bus"]
     session_factory = ctx["session_factory"]
+    settings = ctx["settings"]
     async with session_factory() as session:
-        run_ids = await reap_expired_runs(session)
+        reaped = await reap_expired_runs(
+            session, max_recovery=settings.run_max_recovery
+        )
         await session.commit()
-    for run_id in run_ids:
+    queue = await get_run_queue()
+    for run_id, attempt in reaped.recovered:
+        # 先入队再唤醒: 客户端读到"正在恢复"时任务已经在队列里, 不会看到一段空窗。
+        await queue.enqueue_review_run(run_id, attempt=attempt)
+        await bus.publish(run_id)
+    for run_id in reaped.failed:
         # 唤醒还挂在 SSE 上的客户端, 让它们立刻读到 error 事件而不是干等心跳。
         await bus.publish(run_id)
-    if run_ids:
-        logger.warning("回收失联 run", count=len(run_ids))
-    return len(run_ids)
+    if reaped.recovered:
+        logger.warning("重新入队失联的固定综述 run", count=len(reaped.recovered))
+    if reaped.failed:
+        logger.warning("回收失联 run", count=len(reaped.failed))
+    return len(reaped.failed) + len(reaped.recovered)
 
 
 async def cost_sweeper_tick(ctx: dict[str, Any]) -> int:

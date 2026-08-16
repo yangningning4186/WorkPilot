@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     run_lease_s: int = Field(default=60, ge=5, le=3600)
     # 心跳必须明显短于租约, 否则正常执行中的 run 会被 watchdog 误判为失联。
     run_heartbeat_s: float = Field(default=15.0, gt=0)
+    # 自动恢复次数上限。稳定把 worker 拖垮的 run 必须停下来交给人, 不能无限重投。
+    run_max_recovery: int = Field(default=3, ge=0, le=20)
     run_delta_flush_ms: int = Field(default=50, ge=10, le=1000)
     run_delta_flush_chars: int = Field(default=120, ge=1, le=4000)
     # pgvector 扫描参数(docs/03 §4.1)。部分索引只覆盖 strategy + is_searchable,

@@ -545,15 +545,96 @@ async def request_cancel(
     return RunRecord(**row)
 
 
-async def reap_expired_runs(session: AsyncSession, *, limit: int = 50) -> list[UUID]:
-    """回收租约过期的 run, 明确标记为失败。
+@dataclass(frozen=True)
+class ReapedRuns:
+    """一次 watchdog 扫描的两类结果。
+
+    `recovered` 被退回 `queued` 并计数, 等待重新入队后由 `claim_run` 抢占;
+    `failed` 已经落终态。
+
+    退回 `queued` 而不是只清空 `lease_until`: `claim_run` 的条件是
+    `status = 'queued' OR (非终态 AND lease_until < now())`, 而 `NULL < now()` 是 NULL
+    不是 true —— 只清租约会让 run 变成谁都抢不到的僵尸。
+    """
+
+    failed: list[UUID]
+    recovered: list[tuple[UUID, int]]
+
+
+async def reap_expired_runs(
+    session: AsyncSession, *, limit: int = 50, max_recovery: int = 3
+) -> ReapedRuns:
+    """回收租约过期的 run: 可恢复的松开租约等待重投, 其余明确标记为失败。
 
     普通流式回答不自动重试: 一次已经发出去的模型调用是否计费无法确认, 静默重放
-    等于重复计费(docs/08 §3.1)。能自动恢复的只有带 checkpoint 且工具幂等的 Agent run。
+    等于重复计费(docs/08 §3.1)。能自动恢复的只有**同时**满足三个条件的 run:
+    `literature_review` 工作流、已经落过 checkpoint、且自动恢复次数没用完
+    (ADR-0007)。前两条保证重跑从最近 checkpoint 继续且副作用走幂等协议,
+    第三条保证一个稳定把 worker 拖垮的 run 不会被无限重投。
     """
 
     if limit < 1:
         raise ValueError("limit 必须大于 0")
+    if max_recovery < 0:
+        raise ValueError("自动恢复次数上限不能为负")
+    recoverable_predicate = """
+        ar.workflow_type = 'literature_review'
+        AND ar.recovery_count < :max_recovery
+        AND EXISTS (
+            SELECT 1 FROM agent_checkpoints ac WHERE ac.run_id = ar.id
+        )
+    """
+    recovered = [
+        (UUID(str(row["id"])), int(row["recovery_count"]))
+        for row in (
+            (
+                await session.execute(
+                    text(
+                        f"""
+                        UPDATE agent_runs
+                        SET status = 'queued',
+                            recovery_count = recovery_count + 1,
+                            worker_id = NULL,
+                            lease_until = NULL,
+                            heartbeat_at = NULL,
+                            updated_at = now()
+                        WHERE id IN (
+                            SELECT ar.id FROM agent_runs ar
+                            WHERE ar.status NOT IN {_TERMINAL_SQL}
+                              AND ar.lease_until IS NOT NULL
+                              AND ar.lease_until < now()
+                              AND {recoverable_predicate}
+                            ORDER BY ar.lease_until
+                            LIMIT :limit
+                            FOR UPDATE SKIP LOCKED
+                        )
+                        RETURNING id, recovery_count
+                        """
+                    ),
+                    {"limit": limit, "max_recovery": max_recovery},
+                )
+            )
+            .mappings()
+            .all()
+        )
+    ]
+    for run_id, attempt in recovered:
+        await append_events(
+            session,
+            run_id=run_id,
+            events=[
+                (
+                    "step.update",
+                    {
+                        "status": "recovering",
+                        "summary": (
+                            f"worker 失联，正在从最近 checkpoint 恢复（第 {attempt} 次）。"
+                        ),
+                        "recovery_count": attempt,
+                    },
+                )
+            ],
+        )
     run_ids = list(
         (
             await session.execute(
@@ -566,18 +647,19 @@ async def reap_expired_runs(session: AsyncSession, *, limit: int = 50) -> list[U
                         lease_until = NULL,
                         updated_at = now()
                     WHERE id IN (
-                        SELECT id FROM agent_runs
-                        WHERE status NOT IN {_TERMINAL_SQL}
-                          AND lease_until IS NOT NULL
-                          AND lease_until < now()
-                        ORDER BY lease_until
+                        SELECT ar.id FROM agent_runs ar
+                        WHERE ar.status NOT IN {_TERMINAL_SQL}
+                          AND ar.lease_until IS NOT NULL
+                          AND ar.lease_until < now()
+                          AND NOT ({recoverable_predicate})
+                        ORDER BY ar.lease_until
                         LIMIT :limit
                         FOR UPDATE SKIP LOCKED
                     )
                     RETURNING id
                     """
                 ),
-                {"limit": limit},
+                {"limit": limit, "max_recovery": max_recovery},
             )
         )
         .scalars()
@@ -608,7 +690,9 @@ async def reap_expired_runs(session: AsyncSession, *, limit: int = 50) -> list[U
             ),
             {"run_id": run_id},
         )
-    return [UUID(str(run_id)) for run_id in run_ids]
+    return ReapedRuns(
+        failed=[UUID(str(run_id)) for run_id in run_ids], recovered=recovered
+    )
 
 
 async def append_message(

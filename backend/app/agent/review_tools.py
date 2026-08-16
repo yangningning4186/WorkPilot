@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -37,8 +38,28 @@ class CardPayload(BaseModel):
     evidence_quotes: list[str] = Field(min_length=1, max_length=8)
 
 
+CardErrorStyle = Literal["none", "generic", "model_facing"]
+
+# 通用错误：只说"错了"，不说错在哪、也不说怎么改。A1 的对照组。
+_GENERIC_REPAIR = "上一次输出不合法，请重新输出。"
+
+
 class ReviewToolResponseError(ValueError):
-    pass
+    """工具校验失败。
+
+    `model_message` 是写给模型看的可执行指令（约束 4）：指出**哪一条**不合法、
+    违反了哪条约束、下一步具体怎么做。`str(error)` 仍是给人和日志看的简述。
+    """
+
+    def __init__(self, message: str, *, model_message: str | None = None) -> None:
+        super().__init__(message)
+        self.model_message = model_message or message
+
+
+def repair_instruction(error: ReviewToolResponseError, style: CardErrorStyle) -> str:
+    if style == "model_facing":
+        return error.model_message
+    return _GENERIC_REPAIR
 
 
 class DatabaseModelReviewTools:
@@ -54,10 +75,23 @@ class DatabaseModelReviewTools:
         gateway: CompletionClient,
         *,
         max_document_chars: int = 30_000,
+        card_repair_attempts: int = 2,
+        card_error_style: CardErrorStyle = "model_facing",
+        card_system_prompt: str = CARD_SYSTEM_PROMPT,
+        card_max_tokens: int = 2400,
     ) -> None:
         self.session = session
         self.gateway = gateway
         self.max_document_chars = max_document_chars
+        # A1 实测：1200 会把长文档的卡片截断在半句话上，报出来是"不是 JSON 对象"，
+        # 看着像模型不听话，其实是预算不够。与 E6 的 Judge max_tokens 是同一类坑。
+        self.card_max_tokens = card_max_tokens
+        self.card_system_prompt = card_system_prompt
+        # 补救轮数与错误信息风格是 A1 的两个旋钮；线上默认走面向模型的错误信息。
+        self.card_repair_attempts = card_repair_attempts
+        self.card_error_style = card_error_style
+        # 每次 extract_card 的逐轮结果，供实验按轮次统计 recovery_rate。
+        self.card_trace: list[list[str]] = []
 
     async def list_documents(self, document_ids: list[str]) -> list[ReviewDocument]:
         ids = [UUID(item) for item in document_ids]
@@ -110,26 +144,20 @@ class DatabaseModelReviewTools:
         if not isinstance(full_text, str) or not full_text.strip():
             raise LookupError(f"文档没有可抽取正文: {document['document_id']}")
         excerpt = _bounded_document(full_text, self.max_document_chars)
-        result = await self.gateway.complete(
-            [
-                Message(role="system", content=CARD_SYSTEM_PROMPT),
-                Message(
-                    role="user",
-                    content=json.dumps(
-                        {"title": document["title"], "document": excerpt},
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
+        messages = [
+            Message(role="system", content=self.card_system_prompt),
+            Message(
+                role="user",
+                content=json.dumps(
+                    {"title": document["title"], "document": excerpt},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
                 ),
-            ],
-            task_type="agent_extract_card",
-            max_tokens=1200,
-            temperature=0.0,
-        )
-        payload = parse_card_payload(result.text)
-        missing_quotes = [quote for quote in payload.evidence_quotes if quote not in full_text]
-        if missing_quotes:
-            raise ReviewToolResponseError("卡片 evidence_quotes 不是文档逐字摘录")
+            ),
+        ]
+        # 逐字校验只对模型真正看过的那段文本成立：拿全文去核对，会把"截断没给它看"
+        # 的部分也算成模型编造，冤枉的是工具而不是模型。
+        payload = await self._extract_card_payload(messages, excerpt)
         return {
             "document_id": document["document_id"],
             "title": document["title"],
@@ -140,6 +168,44 @@ class DatabaseModelReviewTools:
             "limitations": [item.strip() for item in payload.limitations if item.strip()],
             "evidence_quotes": [item.strip() for item in payload.evidence_quotes if item.strip()],
         }
+
+    async def _extract_card_payload(
+        self, messages: list[Message], source_text: str
+    ) -> CardPayload:
+        """抽卡 + 失败后补救。补救信息的风格是 A1 的唯一自变量。"""
+
+        attempts = 0 if self.card_error_style == "none" else self.card_repair_attempts
+        trace: list[str] = []
+        conversation = list(messages)
+        last_error: ReviewToolResponseError | None = None
+        for _ in range(attempts + 1):
+            result = await self.gateway.complete(
+                conversation,
+                task_type="agent_extract_card",
+                max_tokens=self.card_max_tokens,
+                temperature=0.0,
+            )
+            try:
+                payload = parse_card_payload(result.text)
+                _assert_verbatim_quotes(payload, source_text)
+            except ReviewToolResponseError as error:
+                trace.append(str(error))
+                last_error = error
+                conversation = [
+                    *conversation,
+                    Message(role="assistant", content=result.text),
+                    Message(
+                        role="user",
+                        content=repair_instruction(error, self.card_error_style),
+                    ),
+                ]
+                continue
+            trace.append("ok")
+            self.card_trace.append(trace)
+            return payload
+        self.card_trace.append(trace)
+        assert last_error is not None
+        raise last_error
 
     async def group_cards(self, cards: list[ReviewCard]) -> list[ReviewGroup]:
         groups: dict[str, list[str]] = {}
@@ -222,8 +288,72 @@ def parse_card_payload(value: str) -> CardPayload:
         try:
             return CardPayload.model_validate(payload)
         except ValidationError as error:
-            raise ReviewToolResponseError(f"卡片响应 schema 非法: {error}") from error
-    raise ReviewToolResponseError("卡片响应不是 JSON 对象")
+            raise ReviewToolResponseError(
+                f"卡片响应 schema 非法: {error}",
+                model_message=_schema_repair_message(error),
+            ) from error
+    raise ReviewToolResponseError(
+        "卡片响应不是 JSON 对象",
+        model_message=(
+            "上一次输出里没有找到可解析的 JSON 对象。"
+            "请只输出一个 JSON 对象，不要加 Markdown 代码围栏、说明文字或前后缀。"
+        ),
+    )
+
+
+def _schema_repair_message(error: ValidationError) -> str:
+    """把 pydantic 的报错翻译成模型能照做的指令（约束 4）。
+
+    直接把 `ValidationError` 塞回去是最省事也最没用的做法：它讲的是 Python 类型系统，
+    而模型需要知道的是"哪个字段、要填什么、填多少条"。
+    """
+
+    lines: list[str] = []
+    for item in error.errors():
+        field = ".".join(str(part) for part in item["loc"]) or "(根对象)"
+        hint = _FIELD_HINTS.get(str(item["loc"][0]) if item["loc"] else "", "")
+        lines.append(f"- {field}：{item['msg']}。{hint}".rstrip())
+    listed = "\n".join(lines)
+    return (
+        f"上一次输出有 {len(error.errors())} 处不符合要求：\n{listed}\n"
+        "注意 system 提示里的 JSON 是**字段模板**，不是要照抄的内容——"
+        "每个字段都必须换成你从文档中读到的真实内容，不能留空字符串或空数组。"
+        "重新输出完整的 JSON 对象。"
+    )
+
+
+_FIELD_HINTS = {
+    "core_problem": "用一句话写这篇文档要解决的核心问题。",
+    "method_family": "写方法所属的大类，例如“检索增强”“多智能体”。",
+    "method": "写具体做法，不要只写方法名。",
+    "findings": "至少 1 条、最多 10 条结论。",
+    "limitations": "最多 10 条局限；确实没有可以给空数组。",
+    "evidence_quotes": "至少 1 条、最多 8 条，逐字摘自文档。",
+}
+
+
+def _assert_verbatim_quotes(payload: CardPayload, source_text: str) -> None:
+    """`evidence_quotes` 必须逐字摘自模型看过的正文。
+
+    这条校验是卡片可审计性的地基：quote 一旦允许改写，卡片结论就没法回到原文核对，
+    整条综述链路的溯源承诺随之作废。
+    """
+
+    missing = [quote for quote in payload.evidence_quotes if quote not in source_text]
+    if not missing:
+        return
+    listed = "\n".join(f"- {quote}" for quote in missing)
+    raise ReviewToolResponseError(
+        "卡片 evidence_quotes 不是文档逐字摘录",
+        model_message=(
+            f"下面 {len(missing)} 条 evidence_quotes 在文档里找不到完全相同的文本：\n"
+            f"{listed}\n"
+            "请只保留能从文档中原样复制的片段：逐字复制，包括标点、空格、大小写与数字格式，"
+            "不要改写、不要合并两处、不要补全或删节。"
+            "如果某条结论找不到可逐字引用的原文，就换一条能引用的结论，"
+            "而不是把它改写成近似的句子。其余字段保持不变，重新输出完整 JSON 对象。"
+        ),
+    )
 
 
 def _bounded_document(value: str, max_chars: int) -> str:

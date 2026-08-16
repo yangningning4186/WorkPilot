@@ -1,9 +1,11 @@
 import asyncio
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from app.agent.review_graph import initialize_review_state
 from app.services.runs import (
     append_events,
     append_message,
@@ -122,7 +124,9 @@ async def test_watchdog_fails_expired_runs_and_marks_message(db_session: AsyncSe
     )
 
     reaped = await reap_expired_runs(db_session)
-    assert reaped == [run.id]
+    # 普通回答不可自动恢复: 已发出的模型调用是否计费无法确认。
+    assert reaped.failed == [run.id]
+    assert reaped.recovered == []
 
     refreshed = await get_run(db_session, run.id)
     assert refreshed is not None
@@ -145,7 +149,8 @@ async def test_watchdog_fails_expired_runs_and_marks_message(db_session: AsyncSe
 async def test_watchdog_ignores_runs_with_live_lease(db_session: AsyncSession) -> None:
     run = await _new_run(db_session)
     await claim_run(db_session, run_id=run.id, worker_id="worker-a", lease_s=600)
-    assert await reap_expired_runs(db_session) == []
+    reaped = await reap_expired_runs(db_session)
+    assert reaped.failed == [] and reaped.recovered == []
 
 
 async def test_cancel_is_immediate_only_before_pickup(db_session: AsyncSession) -> None:
@@ -194,3 +199,91 @@ async def test_messages_get_sequential_seq_per_conversation(db_session: AsyncSes
         .all()
     )
     assert seqs == [1, 2]
+
+
+async def _expired_review_run(
+    session: AsyncSession, *, with_checkpoint: bool = True
+) -> UUID:
+    conversation_id = await ensure_conversation(session)
+    run = await create_run(
+        session,
+        conversation_id=conversation_id,
+        goal="比较记忆方法",
+        budget_tokens=10_000,
+        budget_calls=20,
+        budget_wall_ms=60_000,
+        workflow_type="literature_review",
+    )
+    if with_checkpoint:
+        await initialize_review_state(
+            session,
+            run_id=run.id,
+            document_ids=[uuid4(), uuid4()],
+            output_path="reviews/memory.md",
+        )
+    await claim_run(session, run_id=run.id, worker_id="worker-a", lease_s=60)
+    await session.execute(
+        text("UPDATE agent_runs SET lease_until = now() - interval '1 second' WHERE id = :id"),
+        {"id": run.id},
+    )
+    return run.id
+
+
+async def test_watchdog_recovers_review_run_instead_of_failing_it(
+    db_session: AsyncSession,
+) -> None:
+    """带 checkpoint 的固定综述 run 被 SIGKILL 后应重新入队，而不是判死。"""
+
+    run_id = await _expired_review_run(db_session)
+
+    reaped = await reap_expired_runs(db_session)
+    assert reaped.failed == []
+    assert reaped.recovered == [(run_id, 1)]
+
+    refreshed = await get_run(db_session, run_id)
+    assert refreshed is not None
+    # 关键: 必须退回 queued 而不是只清租约, 否则 claim_run 的条件谁都命中不了。
+    assert refreshed.status == "queued"
+    assert refreshed.lease_until is None
+
+    reclaimed = await claim_run(
+        db_session, run_id=run_id, worker_id="worker-b", lease_s=60
+    )
+    assert reclaimed is not None
+    assert reclaimed.worker_id == "worker-b"
+
+
+async def test_watchdog_fails_review_run_without_checkpoint(
+    db_session: AsyncSession,
+) -> None:
+    """没有 checkpoint 就没有可恢复的进度，重跑等于从头再烧一遍预算。"""
+
+    run_id = await _expired_review_run(db_session, with_checkpoint=False)
+
+    reaped = await reap_expired_runs(db_session)
+    assert reaped.recovered == []
+    assert reaped.failed == [run_id]
+
+
+async def test_watchdog_stops_recovering_after_the_cap(
+    db_session: AsyncSession,
+) -> None:
+    """稳定把 worker 拖垮的 run 必须停下来交给人，不能无限重投。"""
+
+    run_id = await _expired_review_run(db_session)
+
+    for attempt in (1, 2):
+        reaped = await reap_expired_runs(db_session, max_recovery=2)
+        assert reaped.recovered == [(run_id, attempt)]
+        await claim_run(db_session, run_id=run_id, worker_id="worker-a", lease_s=60)
+        await db_session.execute(
+            text(
+                "UPDATE agent_runs SET lease_until = now() - interval '1 second' "
+                "WHERE id = :id"
+            ),
+            {"id": run_id},
+        )
+
+    exhausted = await reap_expired_runs(db_session, max_recovery=2)
+    assert exhausted.recovered == []
+    assert exhausted.failed == [run_id]
