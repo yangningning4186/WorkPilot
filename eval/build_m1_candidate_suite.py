@@ -809,27 +809,37 @@ def audit_content_quality(items: list[CandidateItem]) -> dict[str, Any]:
 
 
 async def import_candidates(
-    session: AsyncSession, items: list[CandidateItem]
+    session: AsyncSession,
+    items: list[CandidateItem],
+    *,
+    datasets: dict[tuple[Split, Language], str] | None = None,
+    suite_name: str = SUITE_NAME,
+    version: str = "candidate-1",
 ) -> dict[str, Any]:
-    """只向隔离 staging dataset 插入确定性 ID；冲突或漂移直接失败。"""
+    """只向隔离 staging dataset 插入确定性 ID；冲突或漂移直接失败。
 
+    `datasets` / `suite_name` / `version` 可换，让不同来源的候选套件共用同一套
+    幂等与漂移校验，而不是各写一份导入逻辑——导入纪律只能有一处实现。
+    """
+
+    target_datasets = datasets or TARGET_DATASETS
     result: dict[str, Any] = {}
     async with session.begin():
-        for (split, language), name in TARGET_DATASETS.items():
+        for (split, language), name in target_datasets.items():
             expected_items = sorted(
                 [item for item in items if item.dataset == name],
                 key=lambda item: item.item_key,
             )
             dataset_id = uuid5(NAMESPACE, f"dataset:{name}")
             description = (
-                f"{SUITE_NAME} {language} {split} 增量候选；全部 synthetic/pending，"
+                f"{suite_name} {language} {split} 增量候选；全部 synthetic/pending，"
                 "人工逐条复核前不得用于正式结论"
             )
             await session.execute(
                 text(
                     """
                     INSERT INTO eval_datasets (id, name, split, version, description)
-                    VALUES (:id, :name, :split, 'candidate-1', :description)
+                    VALUES (:id, :name, :split, :version, :description)
                     ON CONFLICT (name) DO NOTHING
                     """
                 ),
@@ -837,6 +847,7 @@ async def import_candidates(
                     "id": dataset_id,
                     "name": name,
                     "split": split,
+                    "version": version,
                     "description": description,
                 },
             )
@@ -854,7 +865,7 @@ async def import_candidates(
             )
             if (
                 stored_dataset["split"] != split
-                or stored_dataset["version"] != "candidate-1"
+                or stored_dataset["version"] != version
                 or stored_dataset["description"] != description
             ):
                 raise CandidateSuiteError(f"staging dataset 元数据冲突: {name}")
