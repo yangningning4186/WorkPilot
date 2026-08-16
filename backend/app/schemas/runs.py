@@ -3,18 +3,23 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-# 与 docs/08 §3.2 的 EventType 对齐。plan / step.update / interrupt 随 M1 的
-# LangGraph 工作流一起引入, 现在发不出来就先不进契约。
+# 与 docs/08 §3.2 的 EventType 对齐。
 RunEventType = Literal[
     "message.start",
     "message.delta",
     "citation",
     "message.done",
+    "plan",
+    "step.update",
+    "interrupt",
+    "artifact",
+    "run.done",
     "error",
 ]
 
 
 AnswerMode = Literal["grounded", "general"]
+WorkflowType = Literal["answer", "literature_review"]
 
 
 class CreateRunRequest(BaseModel):
@@ -25,10 +30,23 @@ class CreateRunRequest(BaseModel):
     mode: AnswerMode = "grounded"
 
 
+class CreateReviewRunRequest(BaseModel):
+    goal: str = Field(min_length=1, max_length=4000)
+    document_ids: list[UUID] = Field(min_length=2, max_length=50)
+    output_path: str = Field(min_length=4, max_length=500)
+    conversation_id: UUID | None = None
+
+
+class ResumeRunRequest(BaseModel):
+    resume_token: str = Field(min_length=1, max_length=200)
+    approved: bool
+
+
 class CreateRunResponse(BaseModel):
     run_id: UUID
     conversation_id: UUID
     status: str
+    workflow_type: WorkflowType
 
 
 class RunStatusResponse(BaseModel):
@@ -36,6 +54,7 @@ class RunStatusResponse(BaseModel):
     conversation_id: UUID
     goal: str
     answer_mode: AnswerMode
+    workflow_type: WorkflowType
     status: str
     cancel_requested: bool
     used_tokens: int

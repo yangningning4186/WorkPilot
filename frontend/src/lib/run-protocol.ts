@@ -9,6 +9,11 @@ export type RunEventType =
   | "message.delta"
   | "citation"
   | "message.done"
+  | "plan"
+  | "step.update"
+  | "interrupt"
+  | "artifact"
+  | "run.done"
   | "error";
 
 /** 引用的完整定位元数据。只有 bbox 四个数不够，换个渲染器就会高亮错位（约束 3）。 */
@@ -59,11 +64,60 @@ export interface ErrorPayload {
   code: string;
 }
 
+export type AgentStepStatus = "pending" | "running" | "done" | "failed" | "skipped";
+
+export interface AgentPlanStepPayload {
+  id: string;
+  idx: number;
+  description: string;
+  tool: string | null;
+  depends_on: number[];
+  status: AgentStepStatus;
+}
+
+export interface PlanPayload {
+  workflow_type: "literature_review";
+  steps: AgentPlanStepPayload[];
+}
+
+export interface StepUpdatePayload {
+  step_id: string;
+  step_idx: number;
+  status: AgentStepStatus;
+  summary?: string;
+}
+
+export interface InterruptPayload {
+  kind: "write_confirm";
+  resume_token: string;
+  payload: Record<string, unknown>;
+}
+
+export interface ArtifactPayload {
+  kind: "review_preview" | "written_note";
+  title: string;
+  content?: string;
+  effect_ref?: string;
+  path?: string;
+  content_sha256?: string;
+  reused?: boolean;
+}
+
+export interface RunDonePayload {
+  workflow_type: "literature_review";
+  effect_ref: string | null;
+}
+
 export type RunEventData =
   | MessageStartPayload
   | MessageDeltaPayload
   | CitationPayload
   | MessageDonePayload
+  | PlanPayload
+  | StepUpdatePayload
+  | InterruptPayload
+  | ArtifactPayload
+  | RunDonePayload
   | ErrorPayload;
 
 /**
@@ -86,7 +140,7 @@ export function envelopeSeq(envelope: StreamEnvelope): bigint {
 
 /** 事件已经在终态，SSE 不会再有后续。 */
 export function isTerminalEvent(type: RunEventType): boolean {
-  return type === "message.done" || type === "error";
+  return type === "message.done" || type === "run.done" || type === "error";
 }
 
 function hasStringField(value: Record<string, unknown>, key: string): boolean {

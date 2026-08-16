@@ -21,6 +21,7 @@ TERMINAL_RUN_STATUSES = frozenset({"done", "failed", "cancelled", "budget_exceed
 # 内联进 SQL 的常量白名单, 不接受外部输入。
 _TERMINAL_SQL = "(" + ", ".join(f"'{status}'" for status in sorted(TERMINAL_RUN_STATUSES)) + ")"
 MESSAGE_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+WorkflowType = Literal["answer", "literature_review"]
 
 
 class RunNotFoundError(LookupError):
@@ -68,6 +69,7 @@ class RunRecord:
     used_calls: int
     next_seq: int
     error: str | None
+    workflow_type: WorkflowType = "answer"
     # grounded = 依据资料库回答; general = 用户显式选择的通用知识回答(不可溯源)。
     answer_mode: Literal["grounded", "general"] = "grounded"
 
@@ -83,7 +85,7 @@ class RunRecord:
 _RUN_COLUMNS = """
     id, conversation_id, goal, status, worker_id, lease_until, cancel_requested_at,
     budget_tokens, budget_calls, budget_wall_ms, used_tokens, used_calls, next_seq, error,
-    answer_mode
+    answer_mode, workflow_type
 """
 _RUN_COLUMNS_QUALIFIED = ", ".join(f"ar.{column.strip()}" for column in _RUN_COLUMNS.split(","))
 
@@ -140,20 +142,24 @@ async def create_run(
     budget_calls: int,
     budget_wall_ms: int,
     answer_mode: str = "grounded",
+    workflow_type: WorkflowType = "answer",
 ) -> RunRecord:
     if not goal.strip():
         raise ValueError("run 目标不能为空")
     if answer_mode not in {"grounded", "general"}:
         raise ValueError("answer_mode 只能是 grounded 或 general")
+    if workflow_type not in {"answer", "literature_review"}:
+        raise ValueError("workflow_type 只能是 answer 或 literature_review")
     run_id = uuid7()
     await session.execute(
         text(
             """
             INSERT INTO agent_runs
                 (id, conversation_id, goal, status,
-                 budget_tokens, budget_calls, budget_wall_ms, answer_mode)
+                 budget_tokens, budget_calls, budget_wall_ms, answer_mode, workflow_type)
             VALUES (:id, :conversation_id, :goal, 'queued',
-                    :budget_tokens, :budget_calls, :budget_wall_ms, :answer_mode)
+                    :budget_tokens, :budget_calls, :budget_wall_ms, :answer_mode,
+                    :workflow_type)
             """
         ),
         {
@@ -164,6 +170,7 @@ async def create_run(
             "budget_calls": budget_calls,
             "budget_wall_ms": budget_wall_ms,
             "answer_mode": answer_mode,
+            "workflow_type": workflow_type,
         },
     )
     run = await get_run(session, run_id)

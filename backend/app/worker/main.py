@@ -12,6 +12,7 @@ from app.core.redis import close_redis, redis_client
 from app.core.run_bus import RedisRunBus
 from app.worker.answer_run import answer_run
 from app.worker.maintenance import cost_sweeper_tick, watchdog_tick
+from app.worker.review_run import review_run
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -28,7 +29,7 @@ async def shutdown(ctx: dict[str, Any]) -> None:
 
 
 class WorkerSettings:
-    functions: ClassVar = [answer_run]
+    functions: ClassVar = [answer_run, review_run]
     cron_jobs: ClassVar = [
         # watchdog 频率要明显高于租约时长, 否则失联的 run 会长时间停在"正在回答"。
         cron(watchdog_tick, second={0, 20, 40}, run_at_startup=True),

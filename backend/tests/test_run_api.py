@@ -5,13 +5,21 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.api.dependencies import get_run_bus, get_run_queue_dependency, get_session_factory
+from app.agent.review_graph import run_readonly_review
+from app.agent.write_note import review_resume_token
+from app.api.dependencies import (
+    get_run_bus,
+    get_run_queue_dependency,
+    get_session_factory,
+    require_admin_session,
+)
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
 from app.core.run_bus import InMemoryRunBus
 from app.main import create_app
 from app.services.demo_sessions import hash_session_token
 from app.services.runs import append_events, claim_run, finish_run, get_run
+from tests.test_write_note import ReadyReviewTools
 
 pytestmark = pytest.mark.integration
 
@@ -19,13 +27,20 @@ pytestmark = pytest.mark.integration
 class RecordingQueue:
     def __init__(self) -> None:
         self.enqueued: list[tuple[UUID, int]] = []
+        self.enqueued_reviews: list[UUID] = []
 
     async def enqueue_answer_run(self, run_id: UUID, *, top_k: int) -> None:
         self.enqueued.append((run_id, top_k))
 
+    async def enqueue_review_run(self, run_id: UUID) -> None:
+        self.enqueued_reviews.append(run_id)
+
 
 class BrokenQueue:
     async def enqueue_answer_run(self, run_id: UUID, *, top_k: int) -> None:
+        raise ConnectionError("redis 不可达")
+
+    async def enqueue_review_run(self, run_id: UUID) -> None:
         raise ConnectionError("redis 不可达")
 
 
@@ -35,6 +50,7 @@ def _client(
     db_engine: AsyncEngine | None = None,
     *,
     settings: Settings | None = None,
+    admin: bool = False,
 ) -> tuple[httpx.AsyncClient, InMemoryRunBus]:
     async def override_session():
         yield db_session
@@ -46,6 +62,8 @@ def _client(
     app.dependency_overrides[get_run_bus] = lambda: bus
     if settings is not None:
         app.dependency_overrides[get_settings] = lambda: settings
+    if admin:
+        app.dependency_overrides[require_admin_session] = lambda: None
     if db_engine is not None:
         factory = async_sessionmaker(db_engine, expire_on_commit=False)
         app.dependency_overrides[get_session_factory] = lambda: factory
@@ -53,6 +71,50 @@ def _client(
         httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test"),
         bus,
     )
+
+
+async def test_review_run_api_enqueues_pauses_and_resumes_once(
+    db_session: AsyncSession, tmp_path
+) -> None:
+    queue = RecordingQueue()
+    client, _ = _client(
+        db_session,
+        queue,
+        settings=Settings(app_env="test", agent_output_path=tmp_path),
+        admin=True,
+    )
+    document_ids = [uuid4(), uuid4()]
+    async with client:
+        created_response = await client.post(
+            "/api/v1/runs/reviews",
+            json={
+                "goal": "比较记忆方法",
+                "document_ids": [str(item) for item in document_ids],
+                "output_path": "reviews/memory.md",
+            },
+        )
+        assert created_response.status_code == 202
+        created = created_response.json()
+        run_id = UUID(created["run_id"])
+        assert created["workflow_type"] == "literature_review"
+        assert queue.enqueued_reviews == [run_id]
+
+        state = await run_readonly_review(
+            db_session, run_id=run_id, tools=ReadyReviewTools()
+        )
+        assert state["status"] == "waiting_human"
+        response = await client.post(
+            f"/api/v1/runs/{run_id}/resume",
+            json={"resume_token": review_resume_token(run_id), "approved": True},
+        )
+        repeated = await client.post(
+            f"/api/v1/runs/{run_id}/resume",
+            json={"resume_token": review_resume_token(run_id), "approved": True},
+        )
+
+    assert response.status_code == repeated.status_code == 200
+    assert response.json()["status"] == "done"
+    assert (tmp_path / "reviews/memory.md").is_file()
 
 
 async def _create_http_run(client: httpx.AsyncClient, query: str = "问题") -> dict[str, str]:

@@ -6,6 +6,7 @@ export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "").replace(/\/$/, 
 
 /** grounded = 依据资料库回答；general = 用户在拒答后显式选择的通用知识回答。 */
 export type AnswerMode = "grounded" | "general";
+export type WorkflowType = "answer" | "literature_review";
 
 export interface CreateRunRequest {
   query: string;
@@ -14,10 +15,23 @@ export interface CreateRunRequest {
   mode?: AnswerMode;
 }
 
+export interface CreateReviewRunRequest {
+  goal: string;
+  document_ids: string[];
+  output_path: string;
+  conversation_id?: string;
+}
+
+export interface ResumeRunRequest {
+  resume_token: string;
+  approved: boolean;
+}
+
 export interface CreateRunResponse {
   run_id: string;
   conversation_id: string;
   status: string;
+  workflow_type: WorkflowType;
 }
 
 export interface RunStatusResponse {
@@ -25,6 +39,7 @@ export interface RunStatusResponse {
   conversation_id: string;
   goal: string;
   answer_mode: AnswerMode;
+  workflow_type: WorkflowType;
   status: string;
   cancel_requested: boolean;
   used_tokens: number;
@@ -58,6 +73,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function createRun(body: CreateRunRequest): Promise<CreateRunResponse> {
   return request<CreateRunResponse>("/api/v1/runs", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function createReviewRun(body: CreateReviewRunRequest): Promise<CreateRunResponse> {
+  return request<CreateRunResponse>("/api/v1/runs/reviews", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function resumeRun(
+  runId: string,
+  body: ResumeRunRequest,
+): Promise<RunStatusResponse> {
+  return request<RunStatusResponse>(`/api/v1/runs/${runId}/resume`, {
     method: "POST",
     body: JSON.stringify(body),
   });

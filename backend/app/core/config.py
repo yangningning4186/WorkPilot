@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     price_main_output_usd_per_mtok: Decimal = Field(default=Decimal("0"), ge=0)
     price_embedding_input_usd_per_mtok: Decimal = Field(default=Decimal("0"), ge=0)
     local_library_path: Path = Path("../data/library")
+    # Agent 写回与资料库导入目录物理隔离；output_path 只能是该根目录内的相对 .md 路径。
+    agent_output_path: Path = Path("../data/agent-output")
     tier_main_base_url: str = "http://localhost:8000/v1"
     tier_main_model: str = "local-chat"
     tier_main_enable_thinking: bool | None = None

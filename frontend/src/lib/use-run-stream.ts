@@ -11,6 +11,11 @@ const EVENT_TYPES: RunEventType[] = [
   "message.delta",
   "citation",
   "message.done",
+  "plan",
+  "step.update",
+  "interrupt",
+  "artifact",
+  "run.done",
   "error",
 ];
 

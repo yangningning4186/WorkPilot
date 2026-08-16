@@ -13,10 +13,13 @@ from arq.connections import ArqRedis, RedisSettings
 from app.core.config import get_settings
 
 ANSWER_RUN_TASK = "answer_run"
+REVIEW_RUN_TASK = "review_run"
 
 
 class RunQueue(Protocol):
     async def enqueue_answer_run(self, run_id: UUID, *, top_k: int) -> None: ...
+
+    async def enqueue_review_run(self, run_id: UUID) -> None: ...
 
 
 class ArqRunQueue:
@@ -31,6 +34,13 @@ class ArqRunQueue:
             str(run_id),
             top_k,
             _job_id=f"{ANSWER_RUN_TASK}:{run_id}",
+        )
+
+    async def enqueue_review_run(self, run_id: UUID) -> None:
+        await self._pool.enqueue_job(
+            REVIEW_RUN_TASK,
+            str(run_id),
+            _job_id=f"{REVIEW_RUN_TASK}:{run_id}",
         )
 
 

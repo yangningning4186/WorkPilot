@@ -6,17 +6,30 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agent.review_graph import initialize_review_state
+from app.agent.write_note import (
+    InvocationInFlightError,
+    resolve_note_path,
+    resume_review_after_human,
+)
 from app.api.dependencies import (
     get_demo_session,
     get_run_bus,
     get_run_queue_dependency,
     get_session_factory,
+    require_admin_session,
 )
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
 from app.core.queue import RunQueue
 from app.core.run_bus import RunBus
-from app.schemas.runs import CreateRunRequest, CreateRunResponse, RunStatusResponse
+from app.schemas.runs import (
+    CreateReviewRunRequest,
+    CreateRunRequest,
+    CreateRunResponse,
+    ResumeRunRequest,
+    RunStatusResponse,
+)
 from app.services.demo_sessions import DemoSession, consume_question_quota
 from app.services.run_stream import parse_last_event_id, stream_run_events
 from app.services.runs import (
@@ -113,7 +126,147 @@ async def create_answer_run(
         await session.commit()
         raise HTTPException(status_code=503, detail="任务队列不可用") from error
 
-    return CreateRunResponse(run_id=run.id, conversation_id=conversation_id, status=run.status)
+    return CreateRunResponse(
+        run_id=run.id,
+        conversation_id=conversation_id,
+        status=run.status,
+        workflow_type=run.workflow_type,
+    )
+
+
+@router.post(
+    "/reviews",
+    response_model=CreateRunResponse,
+    status_code=202,
+    dependencies=[Depends(require_admin_session)],
+)
+async def create_review_run(
+    request: CreateReviewRunRequest,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    queue: Annotated[RunQueue, Depends(get_run_queue_dependency)],
+    bus: Annotated[RunBus, Depends(get_run_bus)],
+    demo_session: Annotated[DemoSession, Depends(get_demo_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> CreateRunResponse:
+    """创建固定综述；只允许已登录的个人 owner 选择文档和写回目标。"""
+
+    if len(set(request.document_ids)) != len(request.document_ids):
+        raise HTTPException(status_code=422, detail="document_ids 不能重复")
+    try:
+        resolve_note_path(settings.agent_output_path, request.output_path)
+        conversation_id = await ensure_conversation(
+            session,
+            conversation_id=request.conversation_id,
+            scope="demo",
+            demo_session_id=demo_session.id,
+        )
+    except (LookupError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    run = await create_run(
+        session,
+        conversation_id=conversation_id,
+        goal=request.goal,
+        budget_tokens=settings.run_budget_tokens,
+        budget_calls=settings.run_budget_calls,
+        budget_wall_ms=settings.run_budget_wall_ms,
+        workflow_type="literature_review",
+    )
+    trace_id = str(structlog.contextvars.get_contextvars().get("trace_id") or "local")
+    await append_message(
+        session,
+        conversation_id=conversation_id,
+        role="user",
+        content=request.goal,
+        status="completed",
+        run_id=run.id,
+        trace_id=trace_id,
+    )
+    await initialize_review_state(
+        session,
+        run_id=run.id,
+        document_ids=request.document_ids,
+        output_path=request.output_path,
+        bus=bus,
+    )
+    try:
+        await queue.enqueue_review_run(run.id)
+    except Exception as error:
+        logger.exception("固定综述 run 入队失败", run_id=str(run.id))
+        await append_events(
+            session,
+            run_id=run.id,
+            events=[
+                (
+                    "error",
+                    {
+                        "user_message": "固定综述未能进入队列，请稍后重试。",
+                        "retryable": True,
+                        "code": "enqueue_failed",
+                    },
+                )
+            ],
+        )
+        await finish_run(session, run_id=run.id, status="failed", error="入队失败")
+        await session.commit()
+        await bus.publish(run.id)
+        raise HTTPException(status_code=503, detail="任务队列不可用") from error
+    return CreateRunResponse(
+        run_id=run.id,
+        conversation_id=conversation_id,
+        status=run.status,
+        workflow_type=run.workflow_type,
+    )
+
+
+@router.post(
+    "/{run_id}/resume",
+    response_model=RunStatusResponse,
+    dependencies=[Depends(require_admin_session)],
+)
+async def resume_review_run(
+    run_id: UUID,
+    request: ResumeRunRequest,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    bus: Annotated[RunBus, Depends(get_run_bus)],
+    demo_session: Annotated[DemoSession, Depends(get_demo_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> RunStatusResponse:
+    run = await get_run_for_demo_session(
+        session, run_id=run_id, demo_session_id=demo_session.id
+    )
+    if run is None or run.workflow_type != "literature_review":
+        raise HTTPException(status_code=404, detail="固定综述 run 不存在")
+    trace_id = str(structlog.contextvars.get_contextvars().get("trace_id") or "local")
+    try:
+        await resume_review_after_human(
+            session,
+            run_id=run_id,
+            resume_token=request.resume_token,
+            approved=request.approved,
+            output_root=settings.agent_output_path,
+            worker_id=f"api:{trace_id}",
+            bus=bus,
+        )
+    except (InvocationInFlightError, LookupError, ValueError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    refreshed = await get_run_for_demo_session(
+        session, run_id=run_id, demo_session_id=demo_session.id
+    )
+    if refreshed is None:  # pragma: no cover - 同一事务内 run 不会消失
+        raise HTTPException(status_code=404, detail="固定综述 run 不存在")
+    return RunStatusResponse(
+        run_id=refreshed.id,
+        conversation_id=refreshed.conversation_id,
+        goal=refreshed.goal,
+        answer_mode=refreshed.answer_mode,
+        workflow_type=refreshed.workflow_type,
+        status=refreshed.status,
+        cancel_requested=refreshed.cancel_requested,
+        used_tokens=refreshed.used_tokens,
+        used_calls=refreshed.used_calls,
+        next_seq=refreshed.next_seq,
+        error=refreshed.error,
+    )
 
 
 @router.get("/{run_id}", response_model=RunStatusResponse)
@@ -130,6 +283,7 @@ async def read_run(
         conversation_id=run.conversation_id,
         goal=run.goal,
         answer_mode=run.answer_mode,
+        workflow_type=run.workflow_type,
         status=run.status,
         cancel_requested=run.cancel_requested,
         used_tokens=run.used_tokens,
@@ -195,6 +349,7 @@ async def cancel_run(
         conversation_id=run.conversation_id,
         goal=run.goal,
         answer_mode=run.answer_mode,
+        workflow_type=run.workflow_type,
         status=run.status,
         cancel_requested=run.cancel_requested,
         used_tokens=run.used_tokens,

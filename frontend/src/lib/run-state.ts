@@ -7,16 +7,28 @@
  */
 
 import {
+  type AgentPlanStepPayload,
+  type ArtifactPayload,
   type CitationPayload,
   type ErrorPayload,
+  type InterruptPayload,
   type MessageDeltaPayload,
   type MessageDonePayload,
   type MessageStartPayload,
+  type PlanPayload,
+  type StepUpdatePayload,
   type StreamEnvelope,
   envelopeSeq,
 } from "./run-protocol";
 
-export type RunPhase = "connecting" | "streaming" | "done" | "refused" | "error";
+export type RunPhase =
+  | "connecting"
+  | "streaming"
+  | "executing"
+  | "waiting_human"
+  | "done"
+  | "refused"
+  | "error";
 
 export interface RunState {
   /** 已消费的最大 seq，续传游标。0 表示还没收到任何事件。 */
@@ -35,6 +47,9 @@ export interface RunState {
   grounded: boolean;
   latencyMs: number | null;
   costUsd: string | null;
+  agentPlan: AgentPlanStepPayload[];
+  interrupt: InterruptPayload | null;
+  artifacts: ArtifactPayload[];
 }
 
 export function initialRunState(): RunState {
@@ -49,6 +64,9 @@ export function initialRunState(): RunState {
     grounded: true,
     latencyMs: null,
     costUsd: null,
+    agentPlan: [],
+    interrupt: null,
+    artifacts: [],
   };
 }
 
@@ -95,6 +113,35 @@ export function applyEnvelope(state: RunState, envelope: StreamEnvelope): RunSta
       next.grounded = data.grounded !== false;
       next.latencyMs = data.latency_ms;
       next.costUsd = data.cost_usd;
+      return next;
+    }
+    case "plan": {
+      const data = envelope.data as PlanPayload;
+      next.agentPlan = data.steps;
+      next.phase = "executing";
+      return next;
+    }
+    case "step.update": {
+      const data = envelope.data as StepUpdatePayload;
+      next.agentPlan = state.agentPlan.map((step) =>
+        step.id === data.step_id ? { ...step, status: data.status } : step,
+      );
+      next.phase = "executing";
+      return next;
+    }
+    case "interrupt": {
+      next.interrupt = envelope.data as InterruptPayload;
+      next.phase = "waiting_human";
+      return next;
+    }
+    case "artifact": {
+      const data = envelope.data as ArtifactPayload;
+      next.artifacts = [...state.artifacts, data];
+      return next;
+    }
+    case "run.done": {
+      next.interrupt = null;
+      next.phase = "done";
       return next;
     }
     case "error": {
