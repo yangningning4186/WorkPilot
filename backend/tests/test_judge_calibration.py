@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 from eval.judge_calibration import (
-    EXPECTED_CATEGORIES,
+    DEFAULT_JUDGE_CASES,
+    INTERIM_JUDGE_CATEGORIES,
     RUBRIC_ID,
     SLICE_REPORT_ONLY_CAVEAT,
     CalibrationExample,
@@ -14,9 +15,11 @@ from eval.judge_calibration import (
     _markdown,
     _merge_calibration_namespace,
     agreement_metrics,
+    assert_rubric_frozen,
     bootstrap_agreement,
     build_import_rows,
     calibration_report,
+    freeze_rubric,
     load_examples,
     load_human_labels,
     load_judge_predictions,
@@ -133,9 +136,32 @@ def test_prepare_is_reproducible_and_fails_closed_on_missing_categories(tmp_path
     assert first == second
     assert snapshot == {name: (output / name).read_bytes() for name in snapshot}
     assert first["example_count"] == 2
+    assert first["minimum_unique_cases"] == DEFAULT_JUDGE_CASES
+    assert first["expected_categories"] == list(INTERIM_JUDGE_CATEGORIES)
     assert first["category_coverage_ready"] is False
     assert "temporal" in first["missing_categories"]
+    assert "agent_task" not in first["missing_categories"]
     assert first["model_send_authorized"] is False
+
+
+def test_prepare_accepts_current_70_case_six_category_baseline(tmp_path: Path) -> None:
+    report = _generation_report(
+        tmp_path / "report.json",
+        run_id="00000000-0000-0000-0000-000000000070",
+        items=[
+            _item(index, INTERIM_JUDGE_CATEGORIES[index % len(INTERIM_JUDGE_CATEGORIES)])
+            for index in range(DEFAULT_JUDGE_CASES)
+        ],
+    )
+
+    manifest = prepare_bundle([report], tmp_path / "bundle")
+
+    assert manifest["example_count"] == DEFAULT_JUDGE_CASES
+    assert manifest["unique_case_count_ready"] is True
+    assert manifest["category_coverage_ready"] is True
+    assert manifest["execution_closure_ready"] is True
+    assert manifest["unsupported_categories"] == []
+    assert manifest["status"] == "awaiting_human_labels_and_model_authorization"
 
 
 def test_prepare_rejects_same_item_repeated_across_strategy_reports(tmp_path: Path) -> None:
@@ -176,7 +202,7 @@ def test_human_label_import_rejects_missing_and_duplicate_labels(tmp_path: Path)
     labels = tmp_path / "labels.csv"
     labels.write_text(
         "example_id,example_fingerprint,score,reason,reviewer,reviewed_at\n"
-        "example-1,fingerprint-1,2,正确,Alice,2026-08-16T12:00:00+08:00\n",
+        "example-1,fingerprint-1,1,正确,Alice,2026-08-16T12:00:00+08:00\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="人工标签不完整"):
@@ -187,7 +213,7 @@ def test_human_label_import_rejects_missing_and_duplicate_labels(tmp_path: Path)
         writer.writerow(
             ["example_id", "example_fingerprint", "score", "reason", "reviewer", "reviewed_at"]
         )
-        row = ["example-1", "fingerprint-1", "2", "正确", "Alice", "2026-08-16"]
+        row = ["example-1", "fingerprint-1", "1", "正确", "Alice", "2026-08-16"]
         writer.writerow(row)
         writer.writerow(row)
     with pytest.raises(ValueError, match="重复人工标签"):
@@ -196,7 +222,7 @@ def test_human_label_import_rejects_missing_and_duplicate_labels(tmp_path: Path)
 
 @pytest.mark.asyncio
 async def test_runner_requires_explicit_authorization_before_any_model_call(tmp_path: Path) -> None:
-    provider = DeterministicProvider(completion_text='{"reason":"正确","score":2}')
+    provider = DeterministicProvider(completion_text='{"reason":"正确","score":1}')
     gateway = ModelGateway(provider, embedding_dimensions=1024)
     with pytest.raises(PermissionError, match="未获得模型发送授权"):
         await run_judge(
@@ -213,7 +239,7 @@ async def test_runner_requires_explicit_authorization_before_any_model_call(tmp_
 
 @pytest.mark.asyncio
 async def test_runner_records_identity_raw_output_and_reuses_exact_output(tmp_path: Path) -> None:
-    provider = DeterministicProvider(completion_text='{"reason":"核心结论正确","score":2}')
+    provider = DeterministicProvider(completion_text='{"reason":"核心结论正确","score":1}')
     gateway = ModelGateway(provider, embedding_dimensions=1024)
     example = _example(1)
     output = tmp_path / "predictions.jsonl"
@@ -240,39 +266,56 @@ async def test_runner_records_identity_raw_output_and_reuses_exact_output(tmp_pa
 
     assert first["reused"] is False
     assert second["reused"] is True
-    assert loaded.raw_output == '{"reason":"核心结论正确","score":2}'
+    assert loaded.raw_output == '{"reason":"核心结论正确","score":1}'
     assert loaded.input_tokens == 3
     assert loaded.output_tokens == 2
     assert loaded.model == "fake-chat"
 
 
 def test_qwk_confusion_and_bootstrap_are_deterministic() -> None:
-    human = [0, 0, 1, 1, 2, 2]
-    judge = [0, 1, 1, 2, 2, 0]
+    human = [0, 0, 0, 1, 1, 1]
+    judge = [0, 0, 1, 0, 1, 1]
     metrics = agreement_metrics(human, judge)
     first = bootstrap_agreement(human, judge, seed=7, resamples=200)
     second = bootstrap_agreement(human, judge, seed=7, resamples=200)
 
-    assert metrics["confusion_matrix"]["values"] == [[1, 1, 0], [0, 1, 1], [1, 0, 1]]
-    assert metrics["confusion_matrix"]["human_marginal"] == [2, 2, 2]
-    assert metrics["confusion_matrix"]["judge_marginal"] == [2, 2, 2]
-    assert quadratic_weighted_kappa([0, 1, 2], [0, 1, 2]) == 1.0
-    assert quadratic_weighted_kappa([2, 2], [2, 2]) is None
+    assert metrics["confusion_matrix"]["labels"] == [0, 1]
+    assert metrics["confusion_matrix"]["values"] == [[2, 1], [1, 2]]
+    assert metrics["confusion_matrix"]["human_marginal"] == [3, 3]
+    assert metrics["confusion_matrix"]["judge_marginal"] == [3, 3]
+    assert quadratic_weighted_kappa([0, 1], [0, 1]) == 1.0
+    assert quadratic_weighted_kappa([1, 1], [1, 1]) is None
     assert first == second
+
+
+def test_binary_qwk_equals_cohen_kappa_and_rejects_off_scale_labels() -> None:
+    """二分类下 QWK 必须恒等于无权重 Cohen's kappa。
+
+    改 rubric 档数时最容易出的错是权重分母仍按旧档数算，指标会静默偏移；
+    这里用手算的 Cohen's kappa 钉死，而不是只测"能跑通"。
+    """
+    human = [0, 0, 0, 1, 1, 1]
+    judge = [0, 0, 1, 0, 1, 1]
+    observed_agreement = 4 / 6
+    chance_agreement = (3 / 6) * (3 / 6) + (3 / 6) * (3 / 6)
+    cohen = (observed_agreement - chance_agreement) / (1 - chance_agreement)
+    assert quadratic_weighted_kappa(human, judge) == pytest.approx(cohen)
+
+    # 旧三档标签必须被拒绝，不能悄悄落进二分类统计
+    with pytest.raises(ValueError, match="score 必须是整数 0/1"):
+        quadratic_weighted_kappa([0, 2], [0, 1])
 
 
 def test_calibration_gate_uses_untuned_validation_split(tmp_path: Path) -> None:
     examples: list[CalibrationExample] = []
-    supported_categories = tuple(
-        category for category in EXPECTED_CATEGORIES if category != "agent_task"
-    )
+    supported_categories = INTERIM_JUDGE_CATEGORIES
     for index in range(84):
         category = supported_categories[index % len(supported_categories)]
         split = "validation" if index < 30 else "calibration"
         examples.append(_example(index, split=split, category=category))
-    human = {row.example_id: _human(row, index % 3) for index, row in enumerate(examples)}
+    human = {row.example_id: _human(row, index % 2) for index, row in enumerate(examples)}
     predictions = {
-        row.example_id: _prediction(row, index % 3) for index, row in enumerate(examples)
+        row.example_id: _prediction(row, index % 2) for index, row in enumerate(examples)
     }
 
     passed = calibration_report(
@@ -290,7 +333,7 @@ def test_calibration_gate_uses_untuned_validation_split(tmp_path: Path) -> None:
     broken = dict(predictions)
     for row in examples[:14]:
         broken[row.example_id] = replace(
-            broken[row.example_id], score=2 - human[row.example_id].score
+            broken[row.example_id], score=1 - human[row.example_id].score
         )
     failed = calibration_report(
         examples=examples,
@@ -308,8 +351,8 @@ def test_versioned_import_payload_preserves_existing_citation_review() -> None:
     example = _example(1)
     rows = build_import_rows(
         [example],
-        {example.example_id: _human(example, 2)},
-        {example.example_id: _prediction(example, 2)},
+        {example.example_id: _human(example, 1)},
+        {example.example_id: _prediction(example, 1)},
     )
     existing: dict[str, object] = {"citation_accuracy": {"rate": 0.95}}
 
@@ -329,14 +372,14 @@ def test_versioned_import_payload_preserves_existing_citation_review() -> None:
     assert changed is True
     assert reused is False
     assert existing["citation_accuracy"] == {"rate": 0.95}
-    assert existing["judge_calibration"][RUBRIC_ID]["answer_correctness"]["score"] == 2
+    assert existing["judge_calibration"][RUBRIC_ID]["answer_correctness"]["score"] == 1
 
 
 def _gate_examples(
     validation_per_category: int, total_per_category: int = 14
 ) -> tuple[list[CalibrationExample], dict[str, HumanLabel], dict[str, JudgePrediction]]:
     """每个类别造相同数量的样本, 只调 validation 切片的大小。"""
-    categories = tuple(category for category in EXPECTED_CATEGORIES if category != "agent_task")
+    categories = INTERIM_JUDGE_CATEGORIES
     examples: list[CalibrationExample] = []
     index = 0
     for category in categories:
@@ -344,12 +387,12 @@ def _gate_examples(
             split = "validation" if position < validation_per_category else "calibration"
             examples.append(_example(index, split=split, category=category))
             index += 1
-    human = {row.example_id: _human(row, i % 3) for i, row in enumerate(examples)}
-    predictions = {row.example_id: _prediction(row, i % 3) for i, row in enumerate(examples)}
+    human = {row.example_id: _human(row, i % 2) for i, row in enumerate(examples)}
+    predictions = {row.example_id: _prediction(row, i % 2) for i, row in enumerate(examples)}
     return examples, human, predictions
 
 
-_SUPPORTED = tuple(category for category in EXPECTED_CATEGORIES if category != "agent_task")
+_SUPPORTED = INTERIM_JUDGE_CATEGORIES
 
 
 def _break_one_per_validation_category(
@@ -370,7 +413,7 @@ def _break_one_per_validation_category(
         seen[row.category] = seen.get(row.category, 0) + 1
         if seen[row.category] <= per_category:
             broken[row.example_id] = replace(
-                broken[row.example_id], score=2 - human[row.example_id].score
+                broken[row.example_id], score=1 - human[row.example_id].score
             )
     return broken
 
@@ -380,8 +423,8 @@ def test_category_slices_are_diagnostic_and_never_block_acceptance(
 ) -> None:
     """方案 3: 验收只卡整体 QWK/accuracy, 类别切片只报告不设门禁。
 
-    7 类各要 5 条可解读样本 ⇒ validation 至少 35 条 ⇒ 约 140 个 Judge case,
-    超出 120 条数据集规划。在 2~3 条样本上判类别准确率, 报的是抽样噪声。
+    6 类各要 5 条可解读样本 ⇒ validation 至少 30 条 ⇒ 约 120 个 Judge case,
+    超出 70 条 dev 基线。在 2~3 条样本上判类别准确率, 报的是抽样噪声。
     代价是类别级可靠性没有被验证, 所以报告必须强制带上那句 caveat。
     """
     examples, human, predictions = _gate_examples(validation_per_category=3)
@@ -465,3 +508,75 @@ def test_below_threshold_slices_stay_visible_under_report_only(tmp_path: Path) -
     assert report["slice_gate"]["below_threshold"] == [f"validation/category:{_SUPPORTED[0]}"]
     assert not any(reason.startswith("low_slice_accuracy") for reason in report["gate_failures"])
     assert "低于阈值" in _markdown(report)
+
+
+def _bundle_with_labels(
+    tmp_path: Path, *, labeled_splits: tuple[str, ...]
+) -> tuple[Path, Path]:
+    """造一个 bundle，并按 split 决定哪些行已经填了 score。"""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    report = _generation_report(
+        tmp_path / "report.json",
+        run_id="00000000-0000-0000-0000-000000000070",
+        items=[
+            _item(index, INTERIM_JUDGE_CATEGORIES[index % len(INTERIM_JUDGE_CATEGORIES)])
+            for index in range(DEFAULT_JUDGE_CASES)
+        ],
+    )
+    bundle = tmp_path / "bundle"
+    prepare_bundle([report], bundle)
+    labels = bundle / "draft.csv"
+    with labels.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["example_id", "example_fingerprint", "score"])
+        for line in (bundle / "examples.jsonl").read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            score = "1" if row["split"] in labeled_splits else ""
+            writer.writerow([row["example_id"], row["example_fingerprint"], score])
+    return bundle, labels
+
+
+def test_freeze_requires_complete_calibration_and_untouched_validation(tmp_path: Path) -> None:
+    """冻结的全部意义在于顺序: calibration 标完、validation 还没碰。"""
+    bundle, partial = _bundle_with_labels(tmp_path / "partial", labeled_splits=())
+    with pytest.raises(ValueError, match="calibration 尚未标完"):
+        freeze_rubric(bundle, note="", labels_path=partial)
+
+    peeked_bundle, peeked = _bundle_with_labels(
+        tmp_path / "peeked", labeled_splits=("calibration", "validation")
+    )
+    with pytest.raises(ValueError, match="validation 已有标签"):
+        freeze_rubric(peeked_bundle, note="", labels_path=peeked)
+
+    ok_bundle, ok_labels = _bundle_with_labels(tmp_path / "ok", labeled_splits=("calibration",))
+    record = freeze_rubric(ok_bundle, note="二分类冻结", labels_path=ok_labels)
+    assert record["rubric_id"] == RUBRIC_ID
+    assert record["rubric_fingerprint"] == rubric_fingerprint()
+    assert record["validation_labeled_at_freeze"] == 0
+    assert (ok_bundle / "rubric-freeze.json").exists()
+
+
+def test_frozen_rubric_drift_blocks_acceptance(tmp_path: Path) -> None:
+    """rubric 冻结后被改动，验收必须拒绝出数，而不是照常给一个 QWK。"""
+    bundle, labels = _bundle_with_labels(tmp_path / "drift", labeled_splits=("calibration",))
+    freeze_rubric(bundle, note="", labels_path=labels)
+    freeze_path = bundle / "rubric-freeze.json"
+    assert assert_rubric_frozen(freeze_path)["rubric_id"] == RUBRIC_ID
+
+    tampered = json.loads(freeze_path.read_text(encoding="utf-8"))
+    tampered["rubric_fingerprint"] = "0" * 64
+    freeze_path.write_text(json.dumps(tampered, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="rubric 内容自冻结后已变更"):
+        assert_rubric_frozen(freeze_path)
+
+    examples, human, predictions = _gate_examples(validation_per_category=4)
+    with pytest.raises(ValueError, match="rubric 内容自冻结后已变更"):
+        calibration_report(
+            examples=examples,
+            human_labels=human,
+            predictions=predictions,
+            output_dir=tmp_path / "blocked",
+            rubric_freeze=freeze_path,
+            resamples=200,
+            required_categories=_SUPPORTED,
+        )

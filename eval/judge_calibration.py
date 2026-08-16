@@ -18,32 +18,47 @@ import sys
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
+
+from sqlalchemy import text
 
 from app.core.db import close_database, session_factory
 from app.llm.gateway import ModelGateway
 from app.llm.providers.openai_compatible import OpenAICompatibleProvider
 from app.llm.types import Message
-from sqlalchemy import text
 
 SCHEMA_VERSION = "judge-calibration.v1"
-RUBRIC_ID = "answer-correctness-3-level.v1"
-RUBRIC = """评价实际答案相对问题与参考答案的正确性，只能使用以下有序三档：
-2（正确）：核心结论正确且覆盖参考答案的必要要点；允许措辞和非关键细节不同。
-1（部分正确）：至少一个核心要点正确，但有重要遗漏、含糊或局部错误，仍有实质帮助。
-0（错误）：核心结论错误、与问题无关、在可回答时拒答，或在不可回答时编造答案。
+# v2 相对 v1 只增加两条边界澄清，是在 calibration 51 条上标注时撞出来的歧义；
+# 两条都不改变 v1 下已给出的任何一个标签，只是把当时的口头判据写成规则。
+# validation 19 条在 v2 冻结之后才标，不得反向用于再改 rubric。
+RUBRIC_ID = "answer-correctness-binary.v2"
+# 二分类标签集。按升序排列，最后一个是"正确"。
+# 注意：标签只有两档时，quadratic weighted kappa 退化为无权重的 Cohen's kappa
+# ——相邻分歧不再被平方权重折价，因此同一个 min_qwk 数值比三档时**更难**达标。
+LABELS: tuple[int, ...] = (0, 1)
+LABEL_COUNT = len(LABELS)
+RUBRIC = """评价实际答案相对问题与参考答案的正确性，只能使用以下两档：
+1（正确）：核心结论正确且覆盖参考答案的全部必要要点；允许措辞和非关键细节不同。
+0（不正确）：核心结论错误、遗漏任一必要要点、与问题无关、在可回答时拒答，
+或在不可回答时编造答案。
 
 边界规则：
 - 参考答案用于确定事实与必要要点，不按表面词语重合打分。
-- 不因答案更长而加分；多出的错误主张必须降分。
-- 对标记为不可回答的问题，明确且合适的拒答计 2，编造事实计 0。
+- "必要要点"指回答问题所问的那部分事实；参考答案里问题没问到的附带细节缺失不降分。
+- 部分正确一律记 0：核心方向对但缺关键事实、比较对象错、数值错，都不算正确。
+- 不因答案更长而加分；出现与参考答案冲突的主张记 0。概括或四舍五入本身不算冲突：
+  若概括值紧接着被正确数值限定，不因此记 0；与参考答案矛盾的数值才记 0。
+- 清单类问题：覆盖参考答案的全部条目即记 1；额外补充的、与参考答案不冲突的正确内容
+  既不加分也不减分。漏掉任一条目记 0。
+- 对标记为不可回答的问题，明确且合适的拒答计 1，编造事实计 0。
 - 先形成可复核理由，再给分；不得从已有自动指标推断分数。
 """
 SYSTEM_PROMPT = """你是评测校准 Judge。严格按给定 rubric 独立判断答案正确性。
 只输出一个 JSON 对象，字段顺序必须为 reason、score：
 {"reason":"具体说明命中、遗漏或错误的要点","score":0}
-reason 不得为空；score 只能是整数 0、1、2。不要输出 Markdown 或额外文字。
+reason 不得为空；score 只能是整数 0、1。不要输出 Markdown 或额外文字。
 """
 PROMPT_TEMPLATE = """Rubric:
 {rubric}
@@ -80,6 +95,12 @@ EXPECTED_CATEGORIES = (
     "global",
     "agent_task",
 )
+# 当前 70 条 dev 基线只覆盖六类；agent_task 必须等真实 Agent 执行闭环后显式加入。
+INTERIM_JUDGE_CATEGORIES = tuple(
+    category for category in EXPECTED_CATEGORIES if category != "agent_task"
+)
+DEFAULT_JUDGE_CASES = 70
+DEFAULT_MIN_VALIDATION_CASES = 17
 
 
 class JudgeGateway(Protocol):
@@ -164,10 +185,10 @@ def prepare_bundle(
     report_paths: Sequence[Path],
     output_dir: Path,
     *,
-    expected_categories: Sequence[str] = EXPECTED_CATEGORIES,
+    expected_categories: Sequence[str] = INTERIM_JUDGE_CATEGORIES,
     seed: int = DEFAULT_SEED,
     validation_ratio: float = 0.25,
-    min_cases: int = 80,
+    min_cases: int = DEFAULT_JUDGE_CASES,
 ) -> dict[str, object]:
     if not report_paths:
         raise ValueError("至少需要一份 generation report")
@@ -179,7 +200,7 @@ def prepare_bundle(
     if min_cases < 1:
         raise ValueError("min_cases 必须是正整数")
     # 校准 case 的唯一性由底层 eval item 决定。同一题在四个策略 report 中出现四次，
-    # 仍然只是一个 case，不能把重复 metric 行凑成“80 条”。直接拒绝比静默去重更可审计。
+    # 仍然只是一个 case，不能把重复 metric 行凑到门槛。直接拒绝比静默去重更可审计。
     seen: dict[tuple[str, str], str] = {}
     for path in report_paths:
         raw = path.read_bytes()
@@ -293,7 +314,7 @@ def prepare_bundle(
         if ready
         else "pending",
         "metric": "answer_correctness",
-        "label_scale": [0, 1, 2],
+        "label_scale": list(LABELS),
         "rubric_id": RUBRIC_ID,
         "rubric_fingerprint": rubric_fingerprint(),
         "prompt_fingerprint": prompt_fingerprint(),
@@ -327,12 +348,14 @@ def prepare_bundle(
         "files": {
             "examples": "examples.jsonl",
             "human_labels": "human-labels.csv",
+            "human_review_guide": "human-review-guide.md",
             "judge_predictions": "judge-predictions.jsonl",
         },
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_jsonl(output_dir / "examples.jsonl", (asdict(row) for row in examples))
     _write_label_template(output_dir / "human-labels.csv", examples)
+    _write_human_review_guide(output_dir / "human-review-guide.md", examples)
     (output_dir / "rubric.txt").write_text(RUBRIC, encoding="utf-8")
     _write_json(output_dir / "manifest.json", manifest)
     return manifest
@@ -400,8 +423,8 @@ def load_human_labels(
             if fingerprint != expected[example_id].example_fingerprint:
                 raise ValueError(f"{path}:{line}: example 内容已漂移 {example_id}")
             value = (row.get("score") or "").strip()
-            if value not in {"0", "1", "2"}:
-                raise ValueError(f"{path}:{line}: score 必须是 0/1/2")
+            if value not in {str(label) for label in LABELS}:
+                raise ValueError(f"{path}:{line}: score 必须是 {_label_hint()}")
             label = HumanLabel(
                 example_id=example_id,
                 example_fingerprint=fingerprint,
@@ -699,14 +722,81 @@ async def run_judge(
     }
 
 
+FREEZE_FILENAME = "rubric-freeze.json"
+
+
+def freeze_rubric(bundle_dir: Path, *, note: str, labels_path: Path) -> dict[str, object]:
+    """把 "rubric 已冻结" 从一句声明变成可校验的产物。
+
+    冻结的意义在于：rubric 只能依据 calibration 修，改完就锁死，validation 必须在
+    锁死之后独立标注，不能反过来调 rubric。所以这里 fail-closed 两件事：
+
+    - 冻结时 calibration 必须已经标完（否则"依据 calibration 修 rubric"无从谈起）；
+    - 冻结时 validation 一条都不能有标签（否则等于先看答案再定标尺）。
+    """
+    manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+    if manifest["rubric_fingerprint"] != rubric_fingerprint():
+        raise ValueError("bundle 的 rubric 指纹与当前代码不一致，先重新 prepare 再冻结")
+    examples = {row.example_id: row for row in load_examples(bundle_dir / "examples.jsonl")}
+    labeled: dict[str, str] = {}
+    with labels_path.open(encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle):
+            example_id = (row.get("example_id") or "").strip()
+            if (row.get("score") or "").strip():
+                labeled[example_id] = (row.get("score") or "").strip()
+    calibration = {i for i, row in examples.items() if row.split == "calibration"}
+    validation = {i for i, row in examples.items() if row.split == "validation"}
+    unlabeled = sorted(calibration - set(labeled))
+    if unlabeled:
+        raise ValueError(f"calibration 尚未标完，不能冻结: 缺 {len(unlabeled)} 条 {unlabeled[:3]}")
+    peeked = sorted(validation & set(labeled))
+    if peeked:
+        raise ValueError(f"validation 已有标签，冻结失去意义: {peeked[:3]}")
+    record = {
+        "schema_version": SCHEMA_VERSION,
+        "frozen_at": datetime.now(UTC).isoformat(),
+        "rubric_id": RUBRIC_ID,
+        "rubric_fingerprint": rubric_fingerprint(),
+        "prompt_fingerprint": prompt_fingerprint(),
+        "example_set_fingerprint": manifest["example_set_fingerprint"],
+        "label_scale": list(LABELS),
+        "frozen_on": {
+            "split": "calibration",
+            "labeled": len(labeled),
+            "source": labels_path.name,
+            "label_digest": sha256_json(sorted(labeled.items())),
+        },
+        "validation_labeled_at_freeze": 0,
+        "note": note,
+        "rule": "validation 只能在本记录之后标注，且不得反向用于修改 rubric 或 Judge prompt",
+    }
+    (bundle_dir / FREEZE_FILENAME).write_text(
+        json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return record
+
+
+def assert_rubric_frozen(freeze_path: Path) -> dict[str, object]:
+    """验收前确认 rubric 自冻结以来没被动过。"""
+    record = json.loads(freeze_path.read_text(encoding="utf-8"))
+    if record["rubric_id"] != RUBRIC_ID:
+        raise ValueError(f"rubric_id 自冻结后已变更: {record['rubric_id']} -> {RUBRIC_ID}")
+    if record["rubric_fingerprint"] != rubric_fingerprint():
+        raise ValueError("rubric 内容自冻结后已变更，验收结果不可信")
+    if record["prompt_fingerprint"] != prompt_fingerprint():
+        raise ValueError("Judge prompt 自冻结后已变更，验收结果不可信")
+    return record
+
+
 def calibration_report(
     *,
     examples: Sequence[CalibrationExample],
     human_labels: Mapping[str, HumanLabel],
     predictions: Mapping[str, JudgePrediction],
     output_dir: Path,
-    min_samples: int = 80,
-    min_validation_samples: int = 20,
+    rubric_freeze: Path | None = None,
+    min_samples: int = DEFAULT_JUDGE_CASES,
+    min_validation_samples: int = DEFAULT_MIN_VALIDATION_CASES,
     min_qwk: float = 0.85,
     min_accuracy: float = 0.85,
     min_slice_accuracy: float = 0.70,
@@ -714,7 +804,7 @@ def calibration_report(
     min_slice_samples: int = 5,
     # 类别切片默认只报告不设门禁; 数据规模够了再切 "enforce"。
     slice_gate_policy: SliceGatePolicy = "report_only",
-    required_categories: Sequence[str] = EXPECTED_CATEGORIES,
+    required_categories: Sequence[str] = INTERIM_JUDGE_CATEGORIES,
     seed: int = DEFAULT_SEED,
     resamples: int = DEFAULT_RESAMPLES,
     ci_level: float = DEFAULT_CI_LEVEL,
@@ -722,6 +812,7 @@ def calibration_report(
     _validate_thresholds(
         min_samples, min_qwk, min_accuracy, min_slice_accuracy, resamples, ci_level
     )
+    freeze = assert_rubric_frozen(rubric_freeze) if rubric_freeze else None
     ids = [row.example_id for row in examples]
     if set(human_labels) != set(ids) or set(predictions) != set(ids):
         raise ValueError("example / human / judge 集合不一致，拒绝生成部分覆盖报告")
@@ -785,8 +876,8 @@ def calibration_report(
     )
     # 类别切片的定位: 诊断线索, 不是验收门槛(默认 report_only)。
     #
-    # 为什么不设门禁: 7 类 × 每类至少 5 条 ⇒ validation 至少 35 条, 按 0.25 的比例
-    # 反推需要约 140 个 Judge case, 而整个数据集规划只有 120 条。在 2~3 条的切片上
+    # 为什么不设门禁: 6 类 × 每类至少 5 条 ⇒ validation 至少 30 条, 按 0.25 的比例
+    # 反推需要约 120 个 Judge case, 而当前 dev 基线只有 70 条。在 2~3 条的切片上
     # accuracy 只能取 0 / 0.5 / 0.67 / 1 几个值, 错一条就必然跌破 0.70——那报的是
     # 样本量, 不是 Judge 质量。在噪声上硬凑一个数字, 比不报更糟。
     #
@@ -862,6 +953,9 @@ def calibration_report(
             {f"{row.provider}/{row.model}" for row in predictions.values()}
         ),
         "fallback_enabled": False,
+        "rubric_freeze": {"frozen_at": freeze["frozen_at"], "path": str(rubric_freeze)}
+        if freeze
+        else None,
         "thresholds": {
             "min_samples": min_samples,
             "min_validation_samples": min_validation_samples,
@@ -913,7 +1007,7 @@ def agreement_metrics(human: Sequence[int], judge: Sequence[int]) -> dict[str, o
         raise ValueError("一致率需要数量相同且非空的配对标签")
     for value in (*human, *judge):
         _score(value)
-    matrix = [[0, 0, 0] for _ in range(3)]
+    matrix = [[0] * LABEL_COUNT for _ in range(LABEL_COUNT)]
     for actual, predicted in zip(human, judge, strict=True):
         matrix[actual][predicted] += 1
     return {
@@ -923,10 +1017,13 @@ def agreement_metrics(human: Sequence[int], judge: Sequence[int]) -> dict[str, o
         "confusion_matrix": {
             "rows": "human",
             "columns": "judge",
-            "labels": [0, 1, 2],
+            "labels": list(LABELS),
             "values": matrix,
             "human_marginal": [sum(row) for row in matrix],
-            "judge_marginal": [sum(matrix[i][j] for i in range(3)) for j in range(3)],
+            "judge_marginal": [
+                sum(matrix[i][j] for i in range(LABEL_COUNT))
+                for j in range(LABEL_COUNT)
+            ],
         },
     }
 
@@ -934,12 +1031,17 @@ def agreement_metrics(human: Sequence[int], judge: Sequence[int]) -> dict[str, o
 def quadratic_weighted_kappa(
     human: Sequence[int], judge: Sequence[int]
 ) -> float | None:
+    """二次加权 kappa。
+
+    标签只有两档时权重矩阵退化为 0/1，本函数等价于无权重的 Cohen's kappa；
+    这不是近似，是数学恒等——不要因为名字里有 quadratic 就以为二分类下仍有折价。
+    """
     if len(human) != len(judge) or not human:
         raise ValueError("QWK 需要数量相同且非空的配对标签")
     count = len(human)
-    observed = [[0 for _ in range(3)] for _ in range(3)]
-    human_hist = [0, 0, 0]
-    judge_hist = [0, 0, 0]
+    observed = [[0] * LABEL_COUNT for _ in range(LABEL_COUNT)]
+    human_hist = [0] * LABEL_COUNT
+    judge_hist = [0] * LABEL_COUNT
     for actual, predicted in zip(human, judge, strict=True):
         actual = _score(actual)
         predicted = _score(predicted)
@@ -948,9 +1050,10 @@ def quadratic_weighted_kappa(
         judge_hist[predicted] += 1
     observed_disagreement = 0.0
     expected_disagreement = 0.0
-    for i in range(3):
-        for j in range(3):
-            weight = ((i - j) / 2) ** 2
+    span = LABEL_COUNT - 1
+    for i in range(LABEL_COUNT):
+        for j in range(LABEL_COUNT):
+            weight = ((i - j) / span) ** 2
             observed_disagreement += weight * observed[i][j] / count
             expected_disagreement += (
                 weight * human_hist[i] * judge_hist[j] / (count * count)
@@ -1044,6 +1147,7 @@ def _write_label_template(path: Path, examples: Sequence[CalibrationExample]) ->
     fieldnames = [
         "example_id",
         "example_fingerprint",
+        "split",
         "dataset",
         "category",
         "question",
@@ -1057,11 +1161,20 @@ def _write_label_template(path: Path, examples: Sequence[CalibrationExample]) ->
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        for row in examples:
+        for row in sorted(
+            examples,
+            key=lambda item: (
+                item.split != "calibration",
+                item.dataset,
+                item.category,
+                item.example_id,
+            ),
+        ):
             writer.writerow(
                 {
                     "example_id": row.example_id,
                     "example_fingerprint": row.example_fingerprint,
+                    "split": row.split,
                     "dataset": row.dataset,
                     "category": row.category,
                     "question": row.question,
@@ -1073,6 +1186,38 @@ def _write_label_template(path: Path, examples: Sequence[CalibrationExample]) ->
                     "reviewed_at": "",
                 }
             )
+
+
+def _write_human_review_guide(
+    path: Path, examples: Sequence[CalibrationExample]
+) -> None:
+    split_counts = Counter(row.split for row in examples)
+    lines = [
+        "# Judge 人工正确性复核说明",
+        "",
+        f"本批共 {len(examples)} 条：calibration {split_counts['calibration']}，"
+        f"validation {split_counts['validation']}。",
+        "",
+        "## 评分",
+        "",
+        "- `1`：答案与 gold 含义一致，问题所问的必要要点齐全，没有实质错误。",
+        "- `0`：错误、遗漏必要要点、比较对象或数值不对、与问题无关，"
+        "或对 answerable 题直接拒答；unanswerable 题冒答也记 0。",
+        "",
+        "二分类没有中间档：**部分正确记 0**。判定只看问题问到的要点，"
+        "gold 里问题没问到的附带细节缺失不降分。",
+        "",
+        "## 填写纪律",
+        "",
+        "- 只填写 `score/reason/reviewer/reviewed_at`，不要修改冻结内容或 fingerprint。",
+        "- `reason` 写可复核的具体差异，不能只写“对/错”。",
+        "- 先完成 calibration；rubric 若需修改，只能依据 calibration。",
+        "- rubric 冻结后再独立完成 validation，validation 不得用于调 rubric 或 Judge prompt。",
+        "- AI 建议、规则指标和 Judge 预测都不能冒充 human；reviewer 必须是真实复核人。",
+        "",
+        "正式填写文件：`human-labels.csv`。",
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _markdown(payload: Mapping[str, object]) -> str:
@@ -1136,8 +1281,8 @@ def _markdown(payload: Mapping[str, object]) -> str:
                     "",
                     f"> **{caveat}**",
                     "",
-                    "类别切片在当前规模下只作诊断，不进 `gate_failures`：7 类各要 5 条可解读样本，",
-                    "意味着 validation 至少 35 条、约 140 个 Judge case，超出 120 条数据集规划。",
+                    "类别切片在当前规模下只作诊断，不进 `gate_failures`：6 类各要 5 条可解读样本，",
+                    "意味着 validation 至少 30 条、约 120 个 Judge case，超出 70 条 dev 基线。",
                     "在 2~3 条样本上判类别准确率，报出来的是抽样噪声而不是 Judge 质量。",
                     "数据规模上来后用 `--slice-gate-policy enforce` 打开，判据一直在算。",
                 ]
@@ -1179,9 +1324,13 @@ def _percentile(values: Sequence[float], quantile: float) -> float:
     return values[lower] * (1 - weight) + values[upper] * weight
 
 
+def _label_hint() -> str:
+    return "/".join(str(label) for label in LABELS)
+
+
 def _score(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value not in {0, 1, 2}:
-        raise ValueError("score 必须是整数 0/1/2")
+    if isinstance(value, bool) or not isinstance(value, int) or value not in set(LABELS):
+        raise ValueError(f"score 必须是整数 {_label_hint()}")
     return value
 
 
@@ -1273,7 +1422,16 @@ def _parse_args() -> argparse.Namespace:
     prepare.add_argument("--output-dir", type=Path, required=True)
     prepare.add_argument("--seed", type=int, default=DEFAULT_SEED)
     prepare.add_argument("--validation-ratio", type=float, default=0.25)
-    prepare.add_argument("--min-cases", type=int, default=80)
+    prepare.add_argument("--min-cases", type=int, default=DEFAULT_JUDGE_CASES)
+
+    freeze = sub.add_parser(
+        "freeze", help="calibration 标完后锁死 rubric；validation 只能在此之后标"
+    )
+    freeze.add_argument("--bundle-dir", type=Path, required=True)
+    freeze.add_argument(
+        "--labels", type=Path, required=True, help="据以冻结的 calibration 标签文件"
+    )
+    freeze.add_argument("--note", default="", help="冻结说明，例如 v1->v2 改了什么")
 
     run = sub.add_parser("run", help="显式授权后调用 Judge；默认拒绝发送")
     run.add_argument("--examples", type=Path, required=True)
@@ -1302,8 +1460,15 @@ def _parse_args() -> argparse.Namespace:
     calibrate.add_argument("--human-labels", type=Path, required=True)
     calibrate.add_argument("--judge-predictions", type=Path, required=True)
     calibrate.add_argument("--output-dir", type=Path, required=True)
-    calibrate.add_argument("--min-samples", type=int, default=80)
-    calibrate.add_argument("--min-validation-samples", type=int, default=20)
+    calibrate.add_argument(
+        "--rubric-freeze",
+        type=Path,
+        help="冻结记录路径；给了就校验 rubric/prompt 自冻结后未被改动",
+    )
+    calibrate.add_argument("--min-samples", type=int, default=DEFAULT_JUDGE_CASES)
+    calibrate.add_argument(
+        "--min-validation-samples", type=int, default=DEFAULT_MIN_VALIDATION_CASES
+    )
     calibrate.add_argument("--min-qwk", type=float, default=0.85)
     calibrate.add_argument("--min-accuracy", type=float, default=0.85)
     calibrate.add_argument("--min-slice-accuracy", type=float, default=0.70)
@@ -1356,6 +1521,8 @@ def main() -> None:
             validation_ratio=args.validation_ratio,
             min_cases=args.min_cases,
         )
+    elif args.command == "freeze":
+        result = freeze_rubric(args.bundle_dir, note=args.note, labels_path=args.labels)
     elif args.command == "run":
         result = asyncio.run(_run_cli(args))
     elif args.command == "import":
@@ -1379,6 +1546,7 @@ def main() -> None:
             human_labels=labels,
             predictions=predictions,
             output_dir=args.output_dir,
+            rubric_freeze=args.rubric_freeze,
             min_samples=args.min_samples,
             min_validation_samples=args.min_validation_samples,
             min_slice_samples=args.min_slice_samples,
