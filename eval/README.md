@@ -70,6 +70,29 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.seed_english_dev
 种子脚本仍只写入 `synthetic` 候选；不能用脚本自动冒充人工标注。当前 human 身份来自 owner
 逐条复核与明确确认，provenance 固化在 `eval/suites/m0-core-40.json`。
 
+### M1 120 条候选套件
+
+候选构建器保留上面的 40 条 human 原集，不复制、不改写；另外构建中文/英文各 30 条 dev
+增量与各 10 条 test 留出。test 按 document version 整体隔离，类别配额固定为
+dev 总计 25/20/10/10/15/10/10、test 5/4/2/2/3/2/2（七类按 schema 顺序）。
+
+```bash
+# 只生成 ignored 的 manifest、review-dev.jsonl、review-test.jsonl 与报告
+PYTHONPATH=backend backend/.venv/bin/python -m eval.build_m1_candidate_suite
+
+# 连接 DB 独立复核 Unicode quote/range、parsed block、配额、schema 与泄漏
+PYTHONPATH=backend backend/.venv/bin/python -m eval.audit_m1_candidate_outputs \
+  eval/outputs/dataset-candidates/<fingerprint-prefix>
+
+# 只有内容质量门禁通过后才允许写四个隔离 staging dataset
+PYTHONPATH=backend backend/.venv/bin/python -m eval.build_m1_candidate_suite --apply
+```
+
+构建器和审计器均 fail-closed：通用模板、`block N` 占位、整块 quote 直接冒充 gold answer、
+跨 split question/span/version 重复、与既有 40 条问题重复、缺完整 review schema、非
+`synthetic/pending_human` 或存量同 ID 内容漂移都会拒绝。被拒绝的草稿不算“扩充到 120 条”，
+也不会创建 staging dataset；人工逐条重写并填写 reviewer/reviewed_at 前不得升级为 human。
+
 ## M0 40 条正式套件与生成规则轨
 
 `m0-core-40` 固定组合 `core-dev` 20 条和 `english-dev` 20 条，不复制底层 gold；运行前会校验

@@ -1,3 +1,4 @@
+import re
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +12,7 @@ from eval.build_m1_candidate_suite import (
     BlockAnchor,
     CandidateItem,
     CandidateSuiteError,
+    audit_content_quality,
     build_group_items,
     fingerprint_items,
     import_candidates,
@@ -112,6 +114,26 @@ def test_candidate_validation_rejects_human_or_premature_review_status() -> None
     items[0] = replace(items[0], origin="human")
     with pytest.raises(CandidateSuiteError, match="origin must be synthetic"):
         validate_candidate_items(items, human_versions=set())
+
+
+def test_candidate_validation_rejects_question_copied_from_existing_human() -> None:
+    items = _candidate_items()
+    normalized = " ".join(re.findall(r"\w+", items[0].question.casefold(), flags=re.UNICODE))
+
+    with pytest.raises(CandidateSuiteError, match="existing-vs-candidate"):
+        validate_candidate_items(
+            items,
+            human_versions=set(),
+            human_questions={normalized},
+        )
+
+
+def test_automatic_drafts_are_rejected_by_content_quality_gate() -> None:
+    quality = audit_content_quality(_candidate_items())
+
+    assert quality["status"] == "rejected_content_quality"
+    assert quality["finding_counts"]["generic_question_template"] > 0
+    assert quality["finding_counts"]["raw_quote_as_gold_answer"] > 0
 
     items = _candidate_items()
     constraints = {**items[0].constraints, "candidate_review": {"status": "approved"}}
