@@ -328,3 +328,98 @@ def test_versioned_import_payload_preserves_existing_citation_review() -> None:
     assert reused is False
     assert existing["citation_accuracy"] == {"rate": 0.95}
     assert existing["judge_calibration"][RUBRIC_ID]["answer_correctness"]["score"] == 2
+
+
+def _gate_examples(
+    validation_per_category: int, total_per_category: int = 14
+) -> tuple[list[CalibrationExample], dict[str, HumanLabel], dict[str, JudgePrediction]]:
+    """每个类别造相同数量的样本, 只调 validation 切片的大小。"""
+    categories = tuple(category for category in EXPECTED_CATEGORIES if category != "agent_task")
+    examples: list[CalibrationExample] = []
+    index = 0
+    for category in categories:
+        for position in range(total_per_category):
+            split = "validation" if position < validation_per_category else "calibration"
+            examples.append(_example(index, split=split, category=category))
+            index += 1
+    human = {row.example_id: _human(row, i % 3) for i, row in enumerate(examples)}
+    predictions = {row.example_id: _prediction(row, i % 3) for i, row in enumerate(examples)}
+    return examples, human, predictions
+
+
+def test_small_category_slices_are_unavailable_rather_than_failed(tmp_path: Path) -> None:
+    """样本量不足的类别切片不判准确率, 但也不算通过。
+
+    2~3 条的切片上 accuracy 只能取到少数几个离散值, 错一条就必然跌破 0.70——
+    那反映的是样本量而不是 Judge 质量。把它记成"准确率不达标"是把抽样噪声
+    写成质量结论; 直接跳过又等于悄悄没测。所以标记为不可用 + 独立失败原因。
+    """
+    examples, human, predictions = _gate_examples(validation_per_category=3)
+    # 每个类别在 validation 上都错一条: 3 条里错 1 条 = 0.667 < 0.70
+    broken = dict(predictions)
+    seen: dict[str, int] = {}
+    for row in examples:
+        if row.split != "validation":
+            continue
+        seen[row.category] = seen.get(row.category, 0) + 1
+        if seen[row.category] == 1:
+            broken[row.example_id] = replace(
+                broken[row.example_id], score=2 - human[row.example_id].score
+            )
+
+    report = calibration_report(
+        examples=examples,
+        human_labels=human,
+        predictions=broken,
+        output_dir=tmp_path / "small-slices",
+        resamples=200,
+        required_categories=tuple(
+            category for category in EXPECTED_CATEGORIES if category != "agent_task"
+        ),
+    )
+
+    failures = report["gate_failures"]
+    # 不能把小切片记成"准确率不达标"
+    assert not any(reason.startswith("low_slice_accuracy") for reason in failures)
+    # 但也不能算通过: 必须有一条指向样本量的独立失败原因
+    assert any(reason.startswith("slice_sample_count<5") for reason in failures)
+    assert report["status"] == "failed"
+
+    slice_gate = report["slice_gate"]
+    assert slice_gate["gated"] == []
+    assert len(slice_gate["insufficient_samples"]) == 6
+    for metrics in report["slices"].values():
+        if str(metrics.get("accuracy_gate")) == "unavailable":
+            assert metrics["sample_count"] < 5
+
+
+def test_large_slices_still_fail_on_genuine_low_accuracy(tmp_path: Path) -> None:
+    """切片样本够大时, 准确率不达标仍然要按质量问题报出来。"""
+    categories = tuple(category for category in EXPECTED_CATEGORIES if category != "agent_task")
+    examples, human, predictions = _gate_examples(validation_per_category=6)
+    broken = dict(predictions)
+    seen = 0
+    for row in examples:
+        # 只打坏一个类别, 且打坏到足以跌破 0.70
+        if row.split == "validation" and row.category == categories[0] and seen < 3:
+            broken[row.example_id] = replace(
+                broken[row.example_id], score=2 - human[row.example_id].score
+            )
+            seen += 1
+
+    report = calibration_report(
+        examples=examples,
+        human_labels=human,
+        predictions=broken,
+        output_dir=tmp_path / "large-slices",
+        resamples=200,
+        required_categories=categories,
+    )
+
+    failures = report["gate_failures"]
+    assert any(
+        reason.startswith("low_slice_accuracy") and f"validation/category:{categories[0]}" in reason
+        for reason in failures
+    )
+    assert not any(reason.startswith("slice_sample_count") for reason in failures)
+    assert len(report["slice_gate"]["gated"]) == len(categories)

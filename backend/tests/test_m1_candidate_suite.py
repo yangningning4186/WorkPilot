@@ -204,3 +204,53 @@ async def test_candidate_import_rejects_same_id_with_tampered_content(
 
     with pytest.raises(CandidateSuiteError, match="内容与 manifest 漂移"):
         await import_candidates(db_session, sample)
+
+
+def _temporal_item() -> CandidateItem:
+    """取一条真实构造出来的 temporal 候选作为改写起点。"""
+    temporal = [item for item in _candidate_items() if item.category == "temporal"]
+    assert temporal, "构造器应当产出 temporal 候选"
+    return temporal[0]
+
+
+def test_temporal_gate_flags_snapshot_questions_but_clears_real_contrast() -> None:
+    """temporal 检测器必须是可以靠改写通过的真实判据。
+
+    此前它按类别无条件打标: 只要存在 temporal 条目, 内容门禁就永远非空,
+    `--apply` 永远失败, 扩集在工程上死锁——人工把题改得再好也过不了。
+    """
+    base = _temporal_item()
+
+    # 自动草稿问的是"某个时刻的快照是什么", 没有跨时间点比较
+    assert "temporal_without_historical_contrast" in audit_content_quality([base])["finding_counts"]
+
+    # 改写成时间对照问法后必须放行
+    rewritten = replace(
+        base,
+        question="与更新前的版本相比, 该文档记录的结论发生了什么变化?",
+    )
+    assert (
+        "temporal_without_historical_contrast"
+        not in audit_content_quality([rewritten])["finding_counts"]
+    )
+
+    # 证据跨两个 version 同样构成历史对照, 不需要靠措辞
+    two_versions = replace(
+        base,
+        gold_spans=[
+            base.gold_spans[0],
+            {**base.gold_spans[0], "version_id": "00000000-0000-0000-0000-999999999999"},
+        ],
+    )
+    assert (
+        "temporal_without_historical_contrast"
+        not in audit_content_quality([two_versions])["finding_counts"]
+    )
+
+
+def test_temporal_gate_is_not_fooled_by_a_bare_time_word() -> None:
+    """词表只收明确表达先后或变化的词, 随手加个"之前"骗不过去。"""
+    base = _temporal_item()
+    weak = replace(base, question="该文档之前在这一节记录的结论是什么?")
+
+    assert "temporal_without_historical_contrast" in audit_content_quality([weak])["finding_counts"]

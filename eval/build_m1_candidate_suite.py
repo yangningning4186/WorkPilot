@@ -718,8 +718,57 @@ def _dataset_fingerprint(items: list[CandidateItem]) -> str:
     return fingerprint_items(items)
 
 
+# temporal 题必须要求跨时间点比较, 而不是"某个时刻的快照是什么"。
+# 判据取"问题里出现明确的时间对照词", 与"证据跨 ≥2 个 version"二选一即可满足:
+# 前者覆盖同一文档内含时间线的情况, 后者覆盖对照两个版本的情况。
+# 词表刻意只收明确表达先后或变化的词——"之前 / since"这类过宽的词不收,
+# 否则改写者随手加一个词就能骗过门禁, 检测器就又变回摆设。
+_TEMPORAL_CONTRAST_MARKERS = (
+    "相比",
+    "相较",
+    "对比",
+    "变化",
+    "变更",
+    "趋势",
+    "此前",
+    "先前",
+    "原先",
+    "更新前",
+    "更新后",
+    "改为",
+    "不再",
+    "已废弃",
+    "演进",
+    "compared with",
+    "compared to",
+    "changed from",
+    "changed to",
+    "previously",
+    "prior to",
+    "no longer",
+    "used to",
+    "trend",
+    "evolved",
+    "superseded",
+    "deprecated",
+)
+
+
+def _has_historical_contrast(item: CandidateItem) -> bool:
+    """这条 temporal 题是否真的要求跨时间点比较。"""
+    if len({str(span["version_id"]) for span in item.gold_spans}) >= 2:
+        return True
+    question = item.question.casefold()
+    return any(marker in question for marker in _TEMPORAL_CONTRAST_MARKERS)
+
+
 def audit_content_quality(items: list[CandidateItem]) -> dict[str, Any]:
-    """阻止结构正确但语义仍是自动草稿的候选被写入 staging。"""
+    """阻止结构正确但语义仍是自动草稿的候选被写入 staging。
+
+    每一条 finding 都必须是**可通过改写消除**的真实判据。按类别无条件打标的"检测器"
+    会让门禁永远非空, `--apply` 永远失败, 扩集在工程上死锁——那不是 fail-closed,
+    只是坏掉的闸门。
+    """
 
     findings: dict[str, list[str]] = defaultdict(list)
     generic_markers = (
@@ -739,7 +788,7 @@ def audit_content_quality(items: list[CandidateItem]) -> dict[str, Any]:
         quoted_answer = "\n\n".join(str(span["quote"]) for span in item.gold_spans)
         if quoted_answer and (item.gold_answer or "").strip() == quoted_answer.strip():
             findings["raw_quote_as_gold_answer"].append(item.item_key)
-        if item.category == "temporal":
+        if item.category == "temporal" and not _has_historical_contrast(item):
             findings["temporal_without_historical_contrast"].append(item.item_key)
         if item.category == "global":
             span_versions = {str(span["version_id"]) for span in item.gold_spans}
