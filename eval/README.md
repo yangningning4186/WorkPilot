@@ -154,7 +154,63 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.dense_baseline \
 ```
 
 报告保存在 Git 忽略的 `eval/outputs/dense-baseline/`，聚合与逐样本结果同时写入 PostgreSQL。
-下一阶段的 Judge 校准和 CI gate 尚未实现。
+M0 报告本身仍不调用 Judge；校准工程入口如下。
+
+## Judge 校准
+
+`judge_calibration.py` 将数据准备、人工标注、模型跑批、版本化写回和一致性门禁拆开。
+除 `run` 外均为离线操作；`run` 默认拒绝发送，必须显式声明 provider/model、目标端点和授权说明。
+当前 heavy 档尚未接入统一路由，因此不得把 main 档身份冒充 heavy，也不允许 fallback。
+
+先从一份包含**唯一题目**的 generation report 导出校准包：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.judge_calibration prepare \
+  --generation-report /path/to/unique-cases/report.json \
+  --output-dir eval/outputs/judge-calibration/<batch>
+```
+
+同一 `dataset/item_id` 出现在多个策略或 run 会直接失败，不能用四份策略结果把 20 道题重复凑成
+80 条。manifest 默认要求至少 80 个唯一 case，并覆盖
+`single_hop/multi_hop/table/temporal/unanswerable/global/agent_task`；按 category 固定拆分
+calibration/validation。`agent_task` 在执行闭环实现前保持 pending。语言不是 category，现阶段按 dataset
+切片；扩集若要同一 dataset 内再分语言，需先把 language 元数据固化进 generation report。
+
+填完 `human-labels.csv` 的 0/1/2、理由、reviewer、reviewed_at 后才可跑 Judge。以下命令只是模板，
+没有针对数据与目标端点的新授权时不要执行：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.judge_calibration run \
+  --examples eval/outputs/judge-calibration/<batch>/examples.jsonl \
+  --output eval/outputs/judge-calibration/<batch>/judge-predictions.jsonl \
+  --provider openai_compatible --model <heavy-model> --base-url <approved-v1-url> \
+  --allow-model-send --authorization-note '<approval reference>'
+```
+
+每条 Judge 输出必须先给理由再给 0/1/2，记录 raw output、rubric/prompt 指纹、实际 provider/model、
+token audit 和授权说明指纹；实际身份不同立即失败。标签与 Judge 输出可先只读校验，再显式写回：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.judge_calibration import \
+  --examples /path/to/examples.jsonl --human-labels /path/to/human-labels.csv \
+  --judge-predictions /path/to/judge-predictions.jsonl --output /path/to/db-patch.jsonl
+# 校验通过后追加 --apply；写入版本化 judge_calibration/rubric/metric namespace，
+# 不覆盖 M0 human_label.citation_accuracy。
+```
+
+最后在未参与 rubric 调整的 validation split 上执行门禁：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.judge_calibration calibrate \
+  --examples /path/to/examples.jsonl --human-labels /path/to/human-labels.csv \
+  --judge-predictions /path/to/judge-predictions.jsonl --output-dir /path/to/report
+```
+
+报告包含固定 `[0,1,2]` 轴的 quadratic weighted Kappa、准确率、混淆矩阵与边际、类别/可答性/
+dataset 切片、配对 bootstrap CI 和逐条分歧理由。默认门槛为 80 个唯一 case、validation 至少 20 条、
+QWK/准确率 ≥0.85、类别切片准确率 ≥0.70；缺失/重复标签、内容或 rubric/prompt 漂移、常量标签导致
+QWK 未定义、bootstrap 不完整都会 fail-closed。不同 metric 或 rubric 版本必须使用独立 namespace，
+不得把 correctness、faithfulness 与 citation 分数混合统计。
 
 ## 两次跑批的配对对照
 
