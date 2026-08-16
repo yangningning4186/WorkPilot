@@ -2,9 +2,10 @@ import argparse
 import asyncio
 import json
 
-from app.core.db import close_database, session_factory
 from sqlalchemy import text
 from uuid6 import uuid7
+
+from app.core.db import close_database, session_factory
 
 DATASET_NAME = "dense-title-smoke"
 

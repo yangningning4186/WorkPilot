@@ -9,6 +9,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.ingest.chunk_strategies import (
@@ -20,9 +23,6 @@ from app.ingest.chunk_strategies import (
 from app.llm.gateway import build_model_gateway
 from app.retrieval.lexical import LEXICAL_MODES
 from app.retrieval.strategy import CHUNK_STRATEGIES, ChunkStrategy
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from eval.dense_baseline import (
     RETRIEVAL_STRATEGIES,
     _load_items,

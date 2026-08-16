@@ -62,9 +62,10 @@ uv run python -m eval.compare baseline exp-hybrid-rrf    # 快照 diff + bootstr
 uv run python -m eval.gate --against main --dataset smoke  # PR 门禁，纯规则轨
 
 # 质量
-uv run ruff check . && uv run ruff format .
+uv run ruff check app tests migrations ../eval --config pyproject.toml
 uv run mypy app
 uv run pytest
+cd ../frontend && npm run lint && npm run typecheck
 ```
 
 ---

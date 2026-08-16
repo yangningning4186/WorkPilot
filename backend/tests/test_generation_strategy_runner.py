@@ -6,20 +6,15 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-import eval.chunk_strategy_runner as chunk_runner
-import eval.dense_baseline as dense_baseline
-import eval.generation_baseline as generation_baseline
-import eval.generation_strategy_runner as generation_runner
 import pytest
-from eval.generation_strategy_runner import (
-    GenerationTrackNotReadyError,
-    _assert_single_variable,
-    load_retrieval_manifest,
-)
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from uuid6 import uuid7
 
+import eval.chunk_strategy_runner as chunk_runner
+import eval.dense_baseline as dense_baseline
+import eval.generation_baseline as generation_baseline
+import eval.generation_strategy_runner as generation_runner
 from app.core.config import Settings
 from app.llm.gateway import ModelGateway
 from app.llm.types import CompletionResult, Message, Usage
@@ -27,6 +22,11 @@ from app.retrieval.strategy import CHUNK_STRATEGIES
 from app.services.chunk_building import build_chunk_strategies
 from app.services.grounded_answer import answer_with_citations
 from app.services.markdown_ingestion import ingest_markdown_file
+from eval.generation_strategy_runner import (
+    GenerationTrackNotReadyError,
+    _assert_single_variable,
+    load_retrieval_manifest,
+)
 from tests.fakes import DeterministicProvider
 
 SUFFICIENT = (

@@ -24,10 +24,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid5
 
-from app.core.db import close_database, session_factory
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import close_database, session_factory
 from eval.build_m1_candidate_suite import NAMESPACE, CandidateSuiteError
 from eval.import_handwritten_suite import SUITE_NAME, TARGET_DATASETS, load_items
 

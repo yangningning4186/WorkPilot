@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Any
 
 from app.core.db import close_database, session_factory
-
 from eval.build_m1_candidate_suite import (
     CandidateItem,
     CandidateSuiteError,

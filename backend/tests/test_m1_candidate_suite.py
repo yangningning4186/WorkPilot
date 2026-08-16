@@ -5,6 +5,9 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from eval.build_m1_candidate_suite import (
     EXPECTED_CANDIDATE_COUNTS,
     GROUPS,
@@ -20,8 +23,6 @@ from eval.build_m1_candidate_suite import (
     validate_candidate_items,
     write_outputs,
 )
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _blocks(version_id: str) -> list[BlockAnchor]:

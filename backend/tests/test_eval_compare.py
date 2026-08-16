@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from eval.compare import (
     build_comparison,
     load_report,
@@ -546,12 +547,12 @@ def test_markdown_states_the_verdict_and_the_interpretation_limits(tmp_path: Pat
 
     markdown = markdown_report(payload)
 
-    assert "# 评测对照：base → cand" in markdown  # noqa: RUF001
+    assert "# 评测对照：base → cand" in markdown
     assert "budget span Recall" in markdown
     assert "显著提升" in markdown
     assert "置信区间跨 0 即无显著差异" in markdown
     assert "| `strategy` | `dense-only` | `dense-lexical-rrf` |" in markdown
-    assert "### multi_hop（1 条）" in markdown  # noqa: RUF001
+    assert "### multi_hop（1 条）" in markdown
 
 
 def test_cli_writes_json_and_markdown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

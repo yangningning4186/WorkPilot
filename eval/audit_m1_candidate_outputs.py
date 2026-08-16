@@ -10,8 +10,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from app.core.db import close_database, session_factory
 from sqlalchemy import bindparam, text
+
+from app.core.db import close_database, session_factory
 
 EXPECTED_SPLIT_CATEGORY_COUNTS = {
     "dev": Counter(
@@ -375,7 +376,10 @@ async def audit(output_dir: Path) -> dict[str, Any]:
         "status": "fail" if failures else "pass_with_warnings" if warnings else "pass",
         "item_count": len(items),
         "split_counts": dict(split_counts),
-        "language_counts": {f"{s}:{l}": n for (s, l), n in language_counts.items()},
+        "language_counts": {
+            f"{split}:{language}": count
+            for (split, language), count in language_counts.items()
+        },
         "split_category_counts": {
             split: dict(counts) for split, counts in split_category_counts.items()
         },

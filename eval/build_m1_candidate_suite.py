@@ -23,9 +23,10 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid5
 
-from app.core.db import close_database, session_factory
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.db import close_database, session_factory
 
 Language = Literal["zh", "en"]
 Split = Literal["dev", "test"]

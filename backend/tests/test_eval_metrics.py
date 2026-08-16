@@ -2,6 +2,7 @@ from collections import Counter
 from uuid import UUID
 
 import pytest
+
 from eval.dense_baseline import ItemResult, _aggregate
 from eval.mapping import GoldSpan, RetrievedChunk, hits, overlap_ratio
 from eval.metrics.diagnostics import diagnose_spans, summarize_scores

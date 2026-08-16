@@ -9,6 +9,9 @@ from pathlib import Path
 from statistics import fmean
 
 import httpx
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.llm.audit import SqlLlmCallAudit
@@ -17,9 +20,6 @@ from app.retrieval.dense import DenseSearchHit, dense_search
 from app.retrieval.fusion import reciprocal_rank_fusion
 from app.retrieval.lexical import lexical_search
 from app.services.reranker import rerank_candidates
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from eval.metrics.diagnostics import percentile
 
 

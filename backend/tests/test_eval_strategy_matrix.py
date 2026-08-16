@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from eval.report_metrics import RETRIEVAL_METRICS, load_report
 from eval.strategy_matrix import (
     ValidationError,
@@ -597,9 +598,9 @@ def test_markdown_carries_sample_size_baseline_verdict_and_outliers(
 
     markdown = markdown_report(payload)
 
-    assert "# 策略对照矩阵：core-dev · 2 策略" in markdown  # noqa: RUF001
-    assert "配对样本：4 条（可答 4，不可答 0）" in markdown  # noqa: RUF001
-    assert "| `fixed`（基线）" in markdown  # noqa: RUF001
+    assert "# 策略对照矩阵：core-dev · 2 策略" in markdown
+    assert "配对样本：4 条（可答 4，不可答 0）" in markdown
+    assert "| `fixed`（基线）" in markdown
     assert "| 检查项 | 结果 |" in markdown
     assert "gold span 指纹一致" in markdown
     assert "| 策略 | Δ | 95% CI | 跨零 | 判定 | 胜 | 负 | 平 |" in markdown

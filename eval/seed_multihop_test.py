@@ -1,4 +1,3 @@
-# ruff: noqa: E501, RUF001
 
 import argparse
 import asyncio

@@ -48,7 +48,18 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
-ignore = ["RUF002"]
+# 中文注释、prompt、gold answer 与报告正文会有意使用全角标点；长字符串不强拆。
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.isort]
+# 显式固定一方代码边界，避免从仓库根目录与 backend/ 运行时 import 分组漂移。
+known-first-party = ["app", "eval", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# eval 是离线 CLI；少量 Path.read_text/write_text 不阻塞在线请求或 worker 事件循环。
+"**/eval/*.py" = ["ASYNC240"]
+"../eval/*.py" = ["ASYNC240"]
+"../eval/**/*.py" = ["ASYNC240"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -3,9 +3,15 @@
 import json
 from pathlib import Path
 
+import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from uuid6 import uuid7
+
 import eval.build_m1_candidate_suite as builder
 import eval.import_handwritten_suite as importer
-import pytest
+from app.llm.gateway import ModelGateway
+from app.services.markdown_ingestion import ingest_markdown_file
 from eval.build_m1_candidate_suite import CandidateSuiteError
 from eval.import_handwritten_suite import (
     TARGET_DATASETS,
@@ -13,12 +19,6 @@ from eval.import_handwritten_suite import (
     preflight,
     run,
 )
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
-from uuid6 import uuid7
-
-from app.llm.gateway import ModelGateway
-from app.services.markdown_ingestion import ingest_markdown_file
 from tests.fakes import DeterministicProvider
 
 V1 = "00000000-0000-0000-0000-000000000001"

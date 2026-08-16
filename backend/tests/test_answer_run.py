@@ -249,7 +249,7 @@ async def test_producer_failure_surfaces_as_error_event_not_silent_success(
 
 
 def test_split_deltas_never_yields_empty_or_oversized_pieces() -> None:
-    text_value = "第一句。第二句！第三句？" + "尾" * 50  # noqa: RUF001 - 断句依赖全角标点
+    text_value = "第一句。第二句！第三句？" + "尾" * 50
     pieces = list(split_deltas(text_value, max_chars=10))
     assert "".join(pieces) == text_value
     assert all(piece for piece in pieces)

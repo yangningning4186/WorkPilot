@@ -2,14 +2,13 @@ import json
 from pathlib import Path
 from uuid import UUID
 
-import eval.chunk_strategy_runner as chunk_runner
-import eval.dense_baseline as dense_baseline
 import pytest
-from eval.chunk_strategy_runner import ChunkCorpusNotReadyError, preflight_chunk_corpus
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from uuid6 import uuid7
 
+import eval.chunk_strategy_runner as chunk_runner
+import eval.dense_baseline as dense_baseline
 from app.core.config import Settings
 from app.ingest.chunk_strategies import count_tokens
 from app.llm.gateway import ModelGateway
@@ -20,6 +19,7 @@ from app.retrieval.strategy import CHUNK_STRATEGIES, ChunkStrategy
 from app.services.chunk_building import build_chunk_strategies
 from app.services.markdown_ingestion import ingest_markdown_file
 from app.services.reranker import rerank_candidates
+from eval.chunk_strategy_runner import ChunkCorpusNotReadyError, preflight_chunk_corpus
 from tests.fakes import DeterministicProvider
 
 

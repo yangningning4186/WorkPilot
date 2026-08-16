@@ -3,17 +3,17 @@
 import json
 from pathlib import Path
 
-import eval.import_handwritten_suite as importer
-import eval.promote_candidates as promoter
 import pytest
-from eval.build_m1_candidate_suite import CandidateSuiteError
-from eval.promote_candidates import promote
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from uuid6 import uuid7
 
+import eval.import_handwritten_suite as importer
+import eval.promote_candidates as promoter
 from app.llm.gateway import ModelGateway
 from app.services.markdown_ingestion import ingest_markdown_file
+from eval.build_m1_candidate_suite import CandidateSuiteError
+from eval.promote_candidates import promote
 from tests.fakes import DeterministicProvider
 
 REVIEWER = "tester <t@example.com>"
