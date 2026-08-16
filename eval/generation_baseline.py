@@ -14,6 +14,10 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from uuid6 import uuid7
+
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.llm.audit import SqlLlmCallAudit
@@ -25,10 +29,6 @@ from app.services.grounded_answer import (
     GroundedAnswerResult,
     answer_with_citations,
 )
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-from uuid6 import uuid7
-
 from eval.mapping import GoldSpan
 from eval.metrics.generation import (
     CitationSource,
@@ -109,6 +109,15 @@ class GenerationItemResult:
     provider: str | None
     chunk_strategy: ChunkStrategy | None = None
     usage: ItemUsage | None = None
+    top_score: float | None = None
+    second_score: float | None = None
+    score_margin: float | None = None
+    low_margin: bool | None = None
+    evidence_sufficient: bool | None = None
+    evidence_reason: str | None = None
+    evidence_model: str | None = None
+    evidence_provider: str | None = None
+    rerank_applied: bool | None = None
     error: str | None = None
 
     @property
@@ -205,7 +214,6 @@ async def run_generation_baseline(
             "chat_provider_base_url": settings.tier_main_base_url,
             "evidence_gate_max_chars": settings.evidence_gate_max_chars,
             "rerank_evidence_gate_max_chars": settings.rerank_evidence_gate_max_chars,
-            "evidence_gate_max_segment_chars": settings.evidence_gate_max_segment_chars,
             "evidence_gate_max_tokens": settings.evidence_gate_max_tokens,
             "query_decomposition_max_subqueries": settings.query_decomposition_max_subqueries,
             "rerank_candidate_k": settings.rerank_candidate_k,
@@ -463,7 +471,6 @@ async def _evaluate_item(
             refusal_margin_threshold=settings.refusal_margin_threshold,
             evidence_gate_max_chars=settings.evidence_gate_max_chars,
             rerank_evidence_gate_max_chars=settings.rerank_evidence_gate_max_chars,
-            evidence_gate_max_segment_chars=settings.evidence_gate_max_segment_chars,
             evidence_gate_max_tokens=settings.evidence_gate_max_tokens,
             query_decomposition_enabled=flags["decomposition"],
             query_decomposition_max_subqueries=settings.query_decomposition_max_subqueries,
@@ -546,6 +553,15 @@ async def _evaluate_item(
         provider=generated.provider,
         chunk_strategy=generated.chunk_strategy,
         usage=usage,
+        top_score=generated.top_score,
+        second_score=generated.second_score,
+        score_margin=generated.score_margin,
+        low_margin=generated.low_margin,
+        evidence_sufficient=generated.evidence_sufficient,
+        evidence_reason=generated.evidence_reason,
+        evidence_model=generated.evidence_model,
+        evidence_provider=generated.evidence_provider,
+        rerank_applied=generated.rerank_applied,
     )
 
 
@@ -700,6 +716,19 @@ async def _store_result(
     scores = {
         "answerable": result.item.answerable,
         "refusal_correct": result.refusal_correct,
+        "refusal_signals": {
+            "top_score": result.top_score,
+            "second_score": result.second_score,
+            "score_margin": result.score_margin,
+            "low_margin": result.low_margin,
+        },
+        "evidence_gate": {
+            "sufficient": result.evidence_sufficient,
+            "reason": result.evidence_reason,
+            "model": result.evidence_model,
+            "provider": result.evidence_provider,
+            "rerank_applied": result.rerank_applied,
+        },
         "citation_validity": result.citation_validity.to_dict(),
         "constraint_pass": result.constraint_result.to_dict(),
         "citation_gold_alignment": {
@@ -899,6 +928,19 @@ def _json_item(result: GenerationItemResult) -> dict[str, object]:
         "refused": result.refused,
         "refusal_reason": result.refusal_reason,
         "refusal_correct": result.refusal_correct,
+        "refusal_signals": {
+            "top_score": result.top_score,
+            "second_score": result.second_score,
+            "score_margin": result.score_margin,
+            "low_margin": result.low_margin,
+        },
+        "evidence_gate": {
+            "sufficient": result.evidence_sufficient,
+            "reason": result.evidence_reason,
+            "model": result.evidence_model,
+            "provider": result.evidence_provider,
+            "rerank_applied": result.rerank_applied,
+        },
         "citation_validity": result.citation_validity.to_dict(),
         "constraint_pass": result.constraint_result.to_dict(),
         "citation_gold_alignment": {

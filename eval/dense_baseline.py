@@ -12,6 +12,10 @@ from statistics import fmean
 from typing import Literal
 from uuid import UUID
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from uuid6 import uuid7
+
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.ingest.chunk_strategies import count_tokens
@@ -27,10 +31,6 @@ from app.retrieval.strategy import (
 )
 from app.services.query_decomposition import plan_retrieval_queries
 from app.services.reranker import rerank_candidates
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-from uuid6 import uuid7
-
 from eval.mapping import GoldSpan, RetrievedChunk
 from eval.metrics.diagnostics import diagnose_spans, percentile, summarize_scores
 from eval.metrics.refusal import RefusalAnalysis, analyze_refusal
@@ -279,7 +279,7 @@ async def _load_items(
         raise ValueError(f"数据集 {dataset_name} 没有 origin={origin} 的样本")
     items: list[EvalItem] = []
     for row in rows:
-        if row["category"] in {"global", "agent_task"}:
+        if row["category"] == "agent_task":
             raise ValueError(
                 f"dense-only 基线不支持类别 {row['category']}: {row['id']}"
             )

@@ -70,11 +70,12 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.seed_english_dev
 种子脚本仍只写入 `synthetic` 候选；不能用脚本自动冒充人工标注。当前 human 身份来自 owner
 逐条复核与明确确认，provenance 固化在 `eval/suites/m0-core-40.json`。
 
-### M1 120 条候选套件
+### M1 80 条 human 基线（70 dev + 10 test）
 
-候选构建器保留上面的 40 条 human 原集，不复制、不改写；另外构建中文/英文各 30 条 dev
-增量与各 10 条 test 留出。test 按 document version 整体隔离，类别配额固定为
-dev 总计 25/20/10/10/15/10/10、test 5/4/2/2/3/2/2（七类按 schema 顺序）。
+曾规划的 120 条候选构建器仍保留用于复现失败实验：它保留 40 条 human 原集，另生成
+60 dev + 20 test 自动草稿；首版草稿被内容门禁全部拒绝，没有写库。当前正式基线不再硬凑
+120 条，而是原 40 条加 40 条人工撰写、作者逐条复核的 human 数据，共 70 dev + 10 test。
+test 按 document version 隔离，最终方案冻结前不得访问。
 
 ```bash
 # 只生成 ignored 的 manifest、review-dev.jsonl、review-test.jsonl 与报告
@@ -88,10 +89,42 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.audit_m1_candidate_outputs \
 PYTHONPATH=backend backend/.venv/bin/python -m eval.build_m1_candidate_suite --apply
 ```
 
-构建器和审计器均 fail-closed：通用模板、`block N` 占位、整块 quote 直接冒充 gold answer、
+候选构建器和审计器均 fail-closed：通用模板、`block N` 占位、整块 quote 直接冒充 gold answer、
 跨 split question/span/version 重复、与既有 40 条问题重复、缺完整 review schema、非
-`synthetic/pending_human` 或存量同 ID 内容漂移都会拒绝。被拒绝的草稿不算“扩充到 120 条”，
+`synthetic/pending_human` 或存量同 ID 内容漂移都会拒绝。被拒绝的草稿不计入正式基线，
 也不会创建 staging dataset；人工逐条重写并填写 reviewer/reviewed_at 前不得升级为 human。
+
+70 条 dev 的正式套件为 `eval/suites/m1-dev-70.json`。以下两条 runner 都会 fail-closed
+检查恰好 70 条、六类完整、无 `agent_task`、无 test dataset、gold span 有效，并将 suite SHA
+与 test-access 审计写入 manifest：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.suite_retrieval_runner \
+  --suite eval/suites/m1-dev-70.json --label m1-dev70-finalists \
+  --chunk-strategy heading --chunk-strategy semantic \
+  --retrieval-strategy dense-lexical-rrf-rerank --top-k 10 --diagnostic-k 50 \
+  --token-budget 4000 --theta 0.5 --alpha 0.5 \
+  --rerank-candidate-text-mode title_heading_content --lexical-mode ts_rank
+
+# 会发送问题与截断证据；必须显式携带已取得的授权说明
+PYTHONPATH=backend backend/.venv/bin/python -m eval.suite_generation_runner \
+  --suite eval/suites/m1-dev-70.json --retrieval-manifest /path/to/manifest.json \
+  --label m1-dev70-heading-generation --chunk-strategy heading \
+  --allow-model-send --authorization-note '<approval reference>'
+```
+
+对 answerable 误拒做 evidence gate 分层归因时，使用同一份正式 retrieval report 和各 dataset 的
+generation report 重建证据。`round_robin` 用于复现旧实现，修复后生产口径为 `sequential`；脚本
+会把 Top-K 检索缺失、gate 打包缺失、12k answer 证据预算缺失和 gate 模型误判分开：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.evidence_gate_analysis \
+  --retrieval-report /path/to/retrieval-report.json \
+  --generation-report /path/to/core-report.json \
+  --generation-report /path/to/english-report.json \
+  --packing-mode sequential --expected-false-refusals 13 \
+  --output-dir eval/outputs/evidence-gate-analysis/<batch>
+```
 
 ## M0 40 条正式套件与生成规则轨
 
@@ -184,6 +217,13 @@ M0 报告本身仍不调用 Judge；校准工程入口如下。
 `judge_calibration.py` 将数据准备、人工标注、模型跑批、版本化写回和一致性门禁拆开。
 除 `run` 外均为离线操作；`run` 默认拒绝发送，必须显式声明 provider/model、目标端点和授权说明。
 当前 heavy 档尚未接入统一路由，因此不得把 main 档身份冒充 heavy，也不允许 fallback。
+已准备独立端点检查器，只验证 exact model identity；`--chat-smoke` 使用不含项目数据的固定合成
+提示。健康检查通过不构成 Judge 数据发送授权：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.heavy_endpoint_check \
+  --chat-smoke --output eval/outputs/judge-calibration/<batch>/heavy-endpoint.json
+```
 
 先从一份包含**唯一题目**的 generation report 导出校准包：
 
@@ -193,13 +233,15 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.judge_calibration prepare \
   --output-dir eval/outputs/judge-calibration/<batch>
 ```
 
-同一 `dataset/item_id` 出现在多个策略或 run 会直接失败，不能用四份策略结果把 20 道题重复凑成
-80 条。manifest 默认要求至少 80 个唯一 case，并覆盖
-`single_hop/multi_hop/table/temporal/unanswerable/global/agent_task`；按 category 固定拆分
-calibration/validation。`agent_task` 在执行闭环实现前保持 pending。语言不是 category，现阶段按 dataset
-切片；扩集若要同一 dataset 内再分语言，需先把 language 元数据固化进 generation report。
+同一 `dataset/item_id` 出现在多个策略或 run 会直接失败，不能用多策略结果把同一题重复凑数。
+当前中间基线要求至少 70 个唯一 case，并覆盖
+`single_hop/multi_hop/table/temporal/unanswerable/global` 六类；按 category 固定拆分
+calibration/validation，validation 至少 17 条。`agent_task` 在执行闭环实现前不纳入本轮，
+因此本轮只允许声明“六类中间校准”。语言不是 category，现阶段按 dataset 切片；若要在同一
+dataset 内再分语言，需先把 language 元数据固化进 generation report。
 
-填完 `human-labels.csv` 的 0/1/2、理由、reviewer、reviewed_at 后才可跑 Judge。以下命令只是模板，
+`prepare` 同时生成按 calibration 优先排序的 `human-labels.csv` 和 `human-review-guide.md`。
+填完 0/1/2、理由、reviewer、reviewed_at 后才可跑 Judge。以下命令只是模板，
 没有针对数据与目标端点的新授权时不要执行：
 
 ```bash
@@ -230,10 +272,11 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.judge_calibration calibrate 
 ```
 
 报告包含固定 `[0,1,2]` 轴的 quadratic weighted Kappa、准确率、混淆矩阵与边际、类别/可答性/
-dataset 切片、配对 bootstrap CI 和逐条分歧理由。默认门槛为 80 个唯一 case、validation 至少 20 条、
-QWK/准确率 ≥0.85、类别切片准确率 ≥0.70；缺失/重复标签、内容或 rubric/prompt 漂移、常量标签导致
-QWK 未定义、bootstrap 不完整都会 fail-closed。不同 metric 或 rubric 版本必须使用独立 namespace，
-不得把 correctness、faithfulness 与 citation 分数混合统计。
+dataset 切片、配对 bootstrap CI 和逐条分歧理由。当前默认门槛为 70 个唯一 case、validation
+至少 17 条、整体 QWK/准确率 ≥0.85；类别切片因样本量小只作诊断，不进 gate。缺失/重复标签、
+内容或 rubric/prompt 漂移、常量标签导致 QWK 未定义、bootstrap 不完整都会 fail-closed。
+不同 metric 或 rubric 版本必须使用独立 namespace，不得把 correctness、faithfulness 与
+citation 分数混合统计。
 
 ## 两次跑批的配对对照
 
