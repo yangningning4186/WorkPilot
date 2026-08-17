@@ -23,7 +23,8 @@ uv run uvicorn app.main:app --reload
 
 | 表面 | 权限 |
 |---|---|
-| `/api/v1/runs/**` | 匿名 demo session，只能操作自己的 conversation/run/SSE；固定综述的创建与 resume 额外要求 demo admin |
+| `/api/v1/runs/**` | 登录 owner 使用 `local_owner` conversation；匿名 demo 只能操作自己的 conversation/run/SSE；固定综述的创建与 resume 要求 owner |
+| `/api/v1/memories/**` | 仅 owner；匿名 demo 不可列出、新增、编辑、删除、置顶或恢复 |
 | `/api/v1/documents/{version_id}/**` | demo session，且该版本必须被自己的 run 引用过 |
 | `/api/v1/sources/**`、入库、直接检索、同步回答 | demo admin |
 | `/api/v1/annotation/**`、`/annotation` | demo admin；生产环境仍固定关闭标注工具 |
@@ -44,10 +45,23 @@ curl -c /tmp/workpilot-admin.cookie \
 维护接口的后续 curl 请求使用 `-b /tmp/workpilot-admin.cookie`。未配置 hash 时 admin 登录
 fail-closed 返回 `503`，不会在开发环境隐式放行。
 
-浏览器里走前端顶栏右上角的 **admin 登录**，不必再 curl 换 cookie。cookie 是 httpOnly 的，
+浏览器里走前端顶栏右上角的 **owner 登录**，不必再 curl 换 cookie。cookie 是 httpOnly 的，
 前端读不到，登录态一律以 `GET /api/v1/auth/admin/session` 为准。写操作拿到 `401` 时前端会
 就地把顶栏拉回未登录并提示重新登录；固定综述停在确认点的 run 不受影响，重登后原地再点一次
 即可，`resume_token` 仍然有效。
+
+## owner 长期记忆
+
+`MEMORY_EXTRACTION_ENABLED` 与 `MEMORY_RECALL_ENABLED` 默认开启，但只对验证过的 owner
+会话生效。回答成功后在同一数据库事务建立幂等抽取 job，Arq 投递失败由周期 dispatcher
+补偿；worker 先抽候选事实，再与现有记忆 top-5 比对并执行 ADD/UPDATE/DELETE/NOOP。
+回答前把置顶记忆（最多 3 条）与相关记忆（top-5）按字符预算注入 user message。
+
+管理页是 `http://127.0.0.1:3000/memory`；API 支持 `view=current|history`、手工新增、
+版本化编辑、置顶、软删除和历史恢复。模型不能自动更新或删除置顶记忆。
+
+匿名 demo 在代码层有三重阻断：conversation scope 检查、job 创建条件与召回前 run 归属检查。
+公网 demo 必须继续使用不含个人数据的独立数据库，不能把共享维护口令当作 owner 口令。
 
 生产环境默认启用两层滥用防护：Redis 原子 token bucket 按 `request.client.host` 限制每 IP
 每分钟 20 次、突发 5 次；PostgreSQL 条件更新限制每个 30 分钟 demo session 最多提问 20 次。

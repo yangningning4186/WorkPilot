@@ -25,6 +25,9 @@ export function Topbar() {
         <Link aria-current={pathname === "/library" ? "page" : undefined} href="/library">
           资料库
         </Link>
+        <Link aria-current={pathname === "/memory" ? "page" : undefined} href="/memory">
+          记忆
+        </Link>
         {/* 成本是运营页，后端强制 admin；这里照常显示，未登录时页面自己提示登录 */}
         <Link aria-current={pathname === "/cost" ? "page" : undefined} href="/cost">
           成本

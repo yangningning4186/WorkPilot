@@ -17,9 +17,16 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
+from app.core.queue import get_run_queue
 from app.core.run_bus import RunBus
 from app.llm.audit import SqlLlmCallAudit
 from app.llm.gateway import build_model_gateway
+from app.memory.recall import recall_memory_context
+from app.memory.store import (
+    MemoryExtractionJob,
+    run_uses_owner_memory,
+    schedule_memory_extraction,
+)
 from app.services.answer_stream import (
     AnswerDelta,
     AnswerFinished,
@@ -143,12 +150,32 @@ async def answer_run(
             )
             try:
                 finished: AnswerFinished | None = None
+                memory_context = ""
+                if settings.memory_recall_enabled and await run_uses_owner_memory(
+                    session, run_id
+                ):
+                    try:
+                        recalled = await recall_memory_context(
+                            session,
+                            gateway,
+                            query=run.goal,
+                            top_k=settings.memory_recall_top_k,
+                            pinned_limit=settings.memory_pinned_limit,
+                            max_chars=settings.memory_context_max_chars,
+                        )
+                        memory_context = recalled.text
+                    except Exception:
+                        # 记忆是增强项。召回服务/向量身份异常时回退到原问答，不能让
+                        # 一条个人偏好把整条可靠 RAG 链路拖成失败。
+                        await session.rollback()
+                        logger.exception("长期记忆召回失败，降级为无记忆回答", run_id=str(run_id))
                 async for event in producer(
                     session,
                     gateway,
                     query=run.goal,
                     top_k=top_k,
                     settings=settings,
+                    memory_context=memory_context,
                 ):
                     _check_control(control)
                     if isinstance(event, AnswerDelta):
@@ -180,6 +207,7 @@ async def answer_run(
                 "cost_usd": await _run_cost_usd(session_factory, run_id=run_id),
             },
         )
+        memory_job: MemoryExtractionJob | None = None
         async with session_factory() as session:
             await finalize_message(
                 session,
@@ -188,8 +216,19 @@ async def answer_run(
                 content=finished.answer,
                 citations=[_citation_payload(citation) for citation in finished.citations],
             )
-            await finish_run(session, run_id=run_id, status="done", worker_id=worker_id)
+            finished_run = await finish_run(
+                session, run_id=run_id, status="done", worker_id=worker_id
+            )
+            if finished_run and settings.memory_extraction_enabled:
+                memory_job = await schedule_memory_extraction(session, run_id=run_id)
             await session.commit()
+        if memory_job is not None:
+            try:
+                queue = ctx.get("run_queue") or await get_run_queue()
+                await queue.enqueue_memory_job(memory_job.id, attempt=memory_job.attempts)
+            except Exception:
+                # 作业记录已经提交，dispatcher 会补偿；不能把已成功回答改成失败。
+                logger.exception("长期记忆作业首次入队失败", job_id=str(memory_job.id))
     except RunAborted as aborted:
         await _abort(
             emitter,

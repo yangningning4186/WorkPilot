@@ -183,7 +183,7 @@ function ReviewWorkspace() {
       if (error instanceof ApiError && error.status === 401) {
         // session 可能是刚过期的，把顶栏拉回未登录，用户能就地重新登录。
         invalidateAdmin();
-        setFormError("admin 会话已失效，请在右上角重新登录后重试。");
+        setFormError("owner 会话已失效，请在右上角重新登录后重试。");
       } else {
         setFormError(
           error instanceof ApiError ? `创建失败（${error.status}）：${error.message}` : "创建失败",
@@ -210,7 +210,7 @@ function ReviewWorkspace() {
           // 走到这一步说明只读部分已经跑完了，run 还停在 waiting_human。
           // 重新登录后原地再点一次即可，resume_token 仍然有效，不必从头再跑一遍。
           invalidateAdmin();
-          setFormError("admin 会话已失效。请在右上角重新登录，run 仍停在确认点，可直接再点一次。");
+          setFormError("owner 会话已失效。请在右上角重新登录，run 仍停在确认点，可直接再点一次。");
         } else {
           setFormError(
             error instanceof ApiError
@@ -269,7 +269,7 @@ function ReviewWorkspace() {
 
           {adminState === "anonymous" && (
             <p className="login-required">
-              创建综述和批准写回属于写操作，需要先在右上角完成 admin 登录。
+              创建综述和批准写回属于 owner 操作，需要先在右上角完成 owner 登录。
               浏览资料库和问答不受影响。
             </p>
           )}

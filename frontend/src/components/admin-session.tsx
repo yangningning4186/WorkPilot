@@ -148,8 +148,8 @@ export function AdminSessionControl() {
   if (state === "authenticated") {
     return (
       <div className="admin-session">
-        <span className="admin-badge" title="可以触发同步、创建综述、批准写回">
-          admin
+        <span className="admin-badge" title="owner 私有会话：可使用个人记忆与管理功能">
+          owner
         </span>
         <button className="link-button" onClick={() => void logout()} type="button">
           登出
@@ -167,11 +167,11 @@ export function AdminSessionControl() {
         onClick={() => (open ? close() : setOpen(true))}
         type="button"
       >
-        admin 登录
+        owner 登录
       </button>
       {open && (
-        <form aria-label="admin 登录" className="admin-login" onSubmit={submit} role="dialog">
-          <label htmlFor={inputId}>管理员密码</label>
+        <form aria-label="owner 登录" className="admin-login" onSubmit={submit} role="dialog">
+          <label htmlFor={inputId}>owner 口令</label>
           <input
             autoComplete="current-password"
             autoFocus
@@ -191,7 +191,7 @@ export function AdminSessionControl() {
             </button>
           </div>
           <p className="admin-login-hint">
-            单用户 demo 口令，只用于放行写操作；读接口不需要登录。
+            单用户 owner 口令。个人记忆只会在这个会话中抽取、召回和管理。
           </p>
         </form>
       )}

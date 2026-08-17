@@ -204,6 +204,67 @@ export function fetchLibrary(query: string): Promise<LibraryResponse> {
   return request<LibraryResponse>(`/api/v1/library${search}`);
 }
 
+/** owner 私有长期记忆；匿名 demo 永远不能读取这些字段。 */
+export type MemoryCategory = "preference" | "profile" | "interest" | "fact";
+export type MemoryView = "current" | "history";
+
+export interface MemoryRecord {
+  id: string;
+  category: MemoryCategory;
+  fact: string;
+  valid_from: string;
+  invalid_at: string | null;
+  superseded_by: string | null;
+  source_type: "conversation" | "manual";
+  source_message_id: string | null;
+  confidence: number;
+  access_count: number;
+  last_used_at: string | null;
+  pinned: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemoryListResponse {
+  items: MemoryRecord[];
+  total: number;
+}
+
+export function fetchMemories(view: MemoryView): Promise<MemoryListResponse> {
+  return request<MemoryListResponse>(`/api/v1/memories?view=${view}`);
+}
+
+export function createMemory(body: {
+  category: MemoryCategory;
+  fact: string;
+  pinned: boolean;
+}): Promise<MemoryRecord> {
+  return request<MemoryRecord>("/api/v1/memories", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateMemory(
+  memoryId: string,
+  body: { category?: MemoryCategory; fact?: string; pinned?: boolean },
+): Promise<MemoryRecord> {
+  return request<MemoryRecord>(`/api/v1/memories/${memoryId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteMemory(memoryId: string): Promise<void> {
+  return requestVoid(`/api/v1/memories/${memoryId}`, { method: "DELETE" });
+}
+
+export function restoreMemory(memoryId: string): Promise<MemoryRecord> {
+  return request<MemoryRecord>(`/api/v1/memories/${memoryId}/restore`, {
+    method: "POST",
+  });
+}
+
 /**
  * 成本看板。
  *

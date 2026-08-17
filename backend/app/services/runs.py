@@ -100,16 +100,28 @@ async def ensure_conversation(
 ) -> UUID:
     """复用已有对话或新建一个。demo 作用域必须带 session, 由建表约束保证。"""
 
+    if scope not in {"local_owner", "demo"}:
+        raise ValueError("未知 conversation scope")
+    if scope == "local_owner" and demo_session_id is not None:
+        raise ValueError("local_owner 对话不能绑定 demo session")
+    if scope == "demo" and demo_session_id is None:
+        raise ValueError("demo 对话必须绑定 demo session")
+
     if conversation_id is not None:
-        if demo_session_id is None:
-            statement = "SELECT id FROM conversations WHERE id = :id"
-            parameters = {"id": conversation_id}
-        else:
-            statement = """
-                SELECT id FROM conversations
-                WHERE id = :id AND scope = 'demo' AND demo_session_id = :demo_session_id
-            """
-            parameters = {"id": conversation_id, "demo_session_id": demo_session_id}
+        statement = """
+            SELECT id FROM conversations
+            WHERE id = :id
+              AND scope = :scope
+              AND (
+                (:scope = 'local_owner' AND demo_session_id IS NULL)
+                OR (:scope = 'demo' AND demo_session_id = :demo_session_id)
+              )
+        """
+        parameters = {
+            "id": conversation_id,
+            "scope": scope,
+            "demo_session_id": demo_session_id,
+        }
         found = (await session.execute(text(statement), parameters)).scalar_one_or_none()
         if found is None:
             raise LookupError(f"对话不存在: {conversation_id}")
@@ -223,6 +235,46 @@ async def get_run_for_demo_session(
     return None if row is None else RunRecord(**row)
 
 
+async def get_run_for_identity(
+    session: AsyncSession,
+    *,
+    run_id: UUID,
+    scope: str,
+    demo_session_id: UUID | None,
+) -> RunRecord | None:
+    """按服务端解析出的身份读取 run，owner 与 demo 空间严格隔离。"""
+
+    if scope not in {"local_owner", "demo"}:
+        raise ValueError("未知 identity scope")
+    row = (
+        (
+            await session.execute(
+                text(
+                    f"""
+                    SELECT {_RUN_COLUMNS_QUALIFIED}
+                    FROM agent_runs ar
+                    JOIN conversations c ON c.id = ar.conversation_id
+                    WHERE ar.id = :run_id
+                      AND c.scope = :scope
+                      AND (
+                        (:scope = 'local_owner' AND c.demo_session_id IS NULL)
+                        OR (:scope = 'demo' AND c.demo_session_id = :demo_session_id)
+                      )
+                    """
+                ),
+                {
+                    "run_id": run_id,
+                    "scope": scope,
+                    "demo_session_id": demo_session_id,
+                },
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    return None if row is None else RunRecord(**row)
+
+
 async def demo_session_can_access_version(
     session: AsyncSession,
     *,
@@ -249,6 +301,45 @@ async def demo_session_can_access_version(
                     """
                 ),
                 {"version_id": str(version_id), "demo_session_id": demo_session_id},
+            )
+        ).scalar_one()
+    )
+
+
+async def identity_can_access_version(
+    session: AsyncSession,
+    *,
+    version_id: UUID,
+    scope: str,
+    demo_session_id: UUID | None,
+) -> bool:
+    if scope not in {"local_owner", "demo"}:
+        raise ValueError("未知 identity scope")
+    return bool(
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM run_events re
+                        JOIN agent_runs ar ON ar.id = re.run_id
+                        JOIN conversations c ON c.id = ar.conversation_id
+                        WHERE re.type = 'citation'
+                          AND re.payload ->> 'version_id' = :version_id
+                          AND c.scope = :scope
+                          AND (
+                            (:scope = 'local_owner' AND c.demo_session_id IS NULL)
+                            OR (:scope = 'demo' AND c.demo_session_id = :demo_session_id)
+                          )
+                    )
+                    """
+                ),
+                {
+                    "version_id": str(version_id),
+                    "scope": scope,
+                    "demo_session_id": demo_session_id,
+                },
             )
         ).scalar_one()
     )
@@ -503,6 +594,7 @@ async def request_cancel(
     session: AsyncSession,
     *,
     run_id: UUID,
+    scope: str | None = None,
     demo_session_id: UUID | None = None,
 ) -> RunRecord:
     """请求取消。
@@ -523,18 +615,21 @@ async def request_cancel(
                         updated_at = now()
                     WHERE id = :run_id
                       AND (
-                        CAST(:demo_session_id AS uuid) IS NULL
+                        CAST(:scope AS text) IS NULL
                         OR EXISTS (
                             SELECT 1 FROM conversations c
                             WHERE c.id = agent_runs.conversation_id
-                              AND c.scope = 'demo'
-                              AND c.demo_session_id = :demo_session_id
+                              AND c.scope = :scope
+                              AND (
+                                (:scope = 'local_owner' AND c.demo_session_id IS NULL)
+                                OR (:scope = 'demo' AND c.demo_session_id = :demo_session_id)
+                              )
                         )
                       )
                     RETURNING {_RUN_COLUMNS}
                     """
                 ),
-                {"run_id": run_id, "demo_session_id": demo_session_id},
+                {"run_id": run_id, "scope": scope, "demo_session_id": demo_session_id},
             )
         )
         .mappings()

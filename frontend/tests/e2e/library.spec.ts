@@ -84,6 +84,6 @@ test.describe("资料库页", () => {
 
     await page.getByRole("button", { name: "导入 / 同步" }).click();
 
-    await expect(page.locator(".inline-notice")).toContainText("需要 admin 登录");
+    await expect(page.locator(".inline-notice")).toContainText("需要 owner 登录");
   });
 });

@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID, uuid4
@@ -9,12 +10,29 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
 from app.core.run_bus import InMemoryRunBus
+from app.memory.recall import RecalledMemoryContext
 from app.retrieval.citations import Citation
 from app.services.answer_stream import AnswerDelta, AnswerFinished, split_deltas
-from app.services.runs import create_run, ensure_conversation, get_run, list_events, request_cancel
+from app.services.demo_sessions import resolve_demo_session
+from app.services.runs import (
+    append_message,
+    create_run,
+    ensure_conversation,
+    get_run,
+    list_events,
+    request_cancel,
+)
 from app.worker.answer_run import answer_run
 
 pytestmark = pytest.mark.integration
+
+
+class RecordingMemoryQueue:
+    def __init__(self) -> None:
+        self.memory_jobs: list[tuple[UUID, int]] = []
+
+    async def enqueue_memory_job(self, job_id: UUID, *, attempt: int = 0) -> None:
+        self.memory_jobs.append((job_id, attempt))
 
 
 def _citation() -> Citation:
@@ -51,9 +69,19 @@ def _finished(answer: str, *, refused: bool = False, citations: list[Citation] |
     )
 
 
-def _producer(answer: str, *, citations: list[Citation] | None = None, delay_s: float = 0.0):
-    async def produce(session, gateway, *, query, top_k, settings) -> AsyncIterator[Any]:
+def _producer(
+    answer: str,
+    *,
+    citations: list[Citation] | None = None,
+    delay_s: float = 0.0,
+    memory_contexts: list[str] | None = None,
+):
+    async def produce(
+        session, gateway, *, query, top_k, settings, memory_context=""
+    ) -> AsyncIterator[Any]:
         del session, gateway, query, top_k
+        if memory_contexts is not None:
+            memory_contexts.append(memory_context)
         for piece in split_deltas(answer, max_chars=settings.run_delta_flush_chars):
             if delay_s:
                 await asyncio.sleep(delay_s)
@@ -153,6 +181,131 @@ async def test_answer_run_batches_deltas_instead_of_one_event_per_token(
     assert "".join(event.payload["text"] for event in deltas) == answer
 
 
+async def test_owner_answer_schedules_memory_after_success(
+    db_engine: AsyncEngine, db_session: AsyncSession
+) -> None:
+    conversation_id = await ensure_conversation(db_session, scope="local_owner")
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="我偏好简洁回答",
+        budget_tokens=1000,
+        budget_calls=5,
+        budget_wall_ms=60_000,
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        status="completed",
+        run_id=run.id,
+    )
+    await db_session.commit()
+    queue = RecordingMemoryQueue()
+    ctx = await _make_ctx(
+        db_engine,
+        _producer("答案。[S1]"),
+        memory_extraction_enabled=True,
+    )
+    ctx["run_queue"] = queue
+
+    await answer_run(ctx, str(run.id), 3)
+
+    row = (
+        await db_session.execute(
+            text(
+                "SELECT id, status, attempts FROM memory_extraction_jobs WHERE run_id = :run_id"
+            ),
+            {"run_id": run.id},
+        )
+    ).one()
+    assert row.status == "queued"
+    assert queue.memory_jobs == [(row.id, 0)]
+
+
+async def test_recall_context_is_injected_for_owner_but_never_demo(
+    db_engine: AsyncEngine,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answer_run_module = importlib.import_module("app.worker.answer_run")
+    recall_calls = 0
+
+    async def fake_recall(*args: Any, **kwargs: Any) -> RecalledMemoryContext:
+        nonlocal recall_calls
+        del args, kwargs
+        recall_calls += 1
+        return RecalledMemoryContext(memories=[], text="<personal_memory>owner</personal_memory>")
+
+    monkeypatch.setattr(answer_run_module, "recall_memory_context", fake_recall)
+    owner_run_id = await _seed_run(db_session)
+    owner_contexts: list[str] = []
+    owner_ctx = await _make_ctx(
+        db_engine,
+        _producer("owner answer", citations=[], memory_contexts=owner_contexts),
+        memory_recall_enabled=True,
+        memory_extraction_enabled=False,
+    )
+    await answer_run(owner_ctx, str(owner_run_id), 3)
+
+    resolved = await resolve_demo_session(db_session, cookie_token=None, ttl_s=300)
+    demo_conversation_id = await ensure_conversation(
+        db_session,
+        scope="demo",
+        demo_session_id=resolved.session.id,
+    )
+    demo_run = await create_run(
+        db_session,
+        conversation_id=demo_conversation_id,
+        goal="匿名问题",
+        budget_tokens=1000,
+        budget_calls=5,
+        budget_wall_ms=60_000,
+    )
+    await db_session.commit()
+    demo_contexts: list[str] = []
+    demo_ctx = await _make_ctx(
+        db_engine,
+        _producer("demo answer", citations=[], memory_contexts=demo_contexts),
+        memory_recall_enabled=True,
+        memory_extraction_enabled=False,
+    )
+    await answer_run(demo_ctx, str(demo_run.id), 3)
+
+    assert recall_calls == 1
+    assert owner_contexts == ["<personal_memory>owner</personal_memory>"]
+    assert demo_contexts == [""]
+
+
+async def test_recall_failure_degrades_to_answer_without_memory(
+    db_engine: AsyncEngine,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answer_run_module = importlib.import_module("app.worker.answer_run")
+
+    async def broken_recall(*args: Any, **kwargs: Any) -> RecalledMemoryContext:
+        del args, kwargs
+        raise RuntimeError("embedding unavailable")
+
+    monkeypatch.setattr(answer_run_module, "recall_memory_context", broken_recall)
+    run_id = await _seed_run(db_session)
+    contexts: list[str] = []
+    ctx = await _make_ctx(
+        db_engine,
+        _producer("仍然回答", citations=[], memory_contexts=contexts),
+        memory_recall_enabled=True,
+        memory_extraction_enabled=False,
+    )
+
+    await answer_run(ctx, str(run_id), 3)
+
+    run = await get_run(db_session, run_id)
+    assert run is not None and run.status == "done"
+    assert contexts == [""]
+
+
 async def test_second_worker_cannot_double_run_the_same_job(
     db_engine: AsyncEngine, db_session: AsyncSession
 ) -> None:
@@ -214,8 +367,10 @@ async def test_producer_failure_surfaces_as_error_event_not_silent_success(
 ) -> None:
     run_id = await _seed_run(db_session)
 
-    async def broken(session, gateway, *, query, top_k, settings) -> AsyncIterator[Any]:
-        del session, gateway, query, top_k, settings
+    async def broken(
+        session, gateway, *, query, top_k, settings, memory_context=""
+    ) -> AsyncIterator[Any]:
+        del session, gateway, query, top_k, settings, memory_context
         yield AnswerDelta(text="半截")
         raise RuntimeError("provider 挂了")
 

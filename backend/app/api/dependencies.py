@@ -16,6 +16,7 @@ from app.services.admin_sessions import AdminSessionStore, RedisAdminSessionStor
 from app.services.demo_sessions import DemoSession, resolve_demo_session
 from app.services.model_budget import build_cost_guard
 from app.services.rate_limit import IpRateLimiter, RedisIpRateLimiter
+from app.services.request_identity import RequestIdentity
 
 
 def get_run_bus() -> RunBus:
@@ -84,6 +85,53 @@ async def require_admin_session(
         raise HTTPException(status_code=503, detail="admin 会话服务不可用") from error
     if not valid:
         raise HTTPException(status_code=401, detail="admin 会话无效或已过期")
+
+
+async def get_request_identity(
+    request: Request,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    store: Annotated[AdminSessionStore, Depends(get_admin_session_store)],
+) -> RequestIdentity:
+    """登录 admin 映射为 owner；没有 admin Cookie 才签发匿名 demo 身份。"""
+
+    admin_token = request.cookies.get(settings.admin_cookie_name)
+    if admin_token is not None:
+        try:
+            valid = await store.validate(admin_token)
+        except RedisError as error:
+            raise HTTPException(status_code=503, detail="admin 会话服务不可用") from error
+        if not valid:
+            # 不能静默降级成 demo，否则用户以为这轮会被记住，实际却被匿名处理。
+            raise HTTPException(status_code=401, detail="admin 会话无效或已过期")
+        return RequestIdentity(scope="local_owner")
+
+    resolved = await resolve_demo_session(
+        session,
+        cookie_token=request.cookies.get(settings.session_cookie_name),
+        ttl_s=settings.session_ttl_s,
+    )
+    if resolved.cookie_token is not None:
+        secure = settings.session_cookie_secure
+        response.set_cookie(
+            key=settings.session_cookie_name,
+            value=resolved.cookie_token,
+            max_age=settings.session_ttl_s,
+            httponly=True,
+            secure=settings.app_env == "production" if secure is None else secure,
+            samesite="lax",
+            path="/",
+        )
+    return RequestIdentity(scope="demo", demo_session_id=resolved.session.id)
+
+
+async def require_owner_identity(
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+) -> RequestIdentity:
+    if not identity.is_owner:
+        raise HTTPException(status_code=401, detail="需要先登录 owner")
+    return identity
 
 
 async def enforce_ip_rate_limit(

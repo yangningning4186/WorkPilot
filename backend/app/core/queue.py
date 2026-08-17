@@ -14,12 +14,15 @@ from app.core.config import get_settings
 
 ANSWER_RUN_TASK = "answer_run"
 REVIEW_RUN_TASK = "review_run"
+MEMORY_EXTRACTION_TASK = "memory_extraction_job"
 
 
 class RunQueue(Protocol):
     async def enqueue_answer_run(self, run_id: UUID, *, top_k: int) -> None: ...
 
     async def enqueue_review_run(self, run_id: UUID, *, attempt: int = 0) -> None: ...
+
+    async def enqueue_memory_job(self, job_id: UUID, *, attempt: int = 0) -> None: ...
 
 
 class ArqRunQueue:
@@ -44,6 +47,14 @@ class ArqRunQueue:
         if attempt > 0:
             job_id = f"{job_id}:r{attempt}"
         await self._pool.enqueue_job(REVIEW_RUN_TASK, str(run_id), _job_id=job_id)
+
+    async def enqueue_memory_job(self, job_id: UUID, *, attempt: int = 0) -> None:
+        # 作业失败回到 queued 后必须换 job_id，否则 arq 的旧 result key 会把重投静默去重。
+        await self._pool.enqueue_job(
+            MEMORY_EXTRACTION_TASK,
+            str(job_id),
+            _job_id=f"{MEMORY_EXTRACTION_TASK}:{job_id}:r{attempt}",
+        )
 
 
 _pool: ArqRedis | None = None

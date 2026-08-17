@@ -27,6 +27,7 @@ async def stream_general_answer(
     gateway: ModelGateway,
     *,
     query: str,
+    memory_context: str = "",
     max_tokens: int = 800,
 ) -> AsyncIterator[str]:
     """流式产出通用知识回答。不检索、不产引用, 调用仍然经过模型网关(约束 1)。"""
@@ -34,7 +35,14 @@ async def stream_general_answer(
     async for chunk in gateway.stream(
         [
             Message(role="system", content=SYSTEM_PROMPT),
-            Message(role="user", content=query.strip()),
+            Message(
+                role="user",
+                content=(
+                    query.strip()
+                    if not memory_context
+                    else f"{memory_context}\n\n当前问题：\n{query.strip()}"
+                ),
+            ),
         ],
         task_type="general_answer",
         max_tokens=max_tokens,

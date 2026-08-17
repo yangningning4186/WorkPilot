@@ -40,6 +40,55 @@ const adminTokens = new Set();
 /** 后端是否配了 DEMO_ADMIN_PASSWORD_HASH；关掉用来验收 503 的提示文案。 */
 let adminConfigured = true;
 
+let memoryCounter = 10;
+let memories = [];
+
+function nextMemoryId() {
+  memoryCounter += 1;
+  return `6d0e4c55-0000-4d00-8000-${String(memoryCounter).padStart(12, "0")}`;
+}
+
+function memoryRecord(overrides) {
+  const now = "2026-08-18T01:30:00Z";
+  return {
+    id: nextMemoryId(),
+    category: "preference",
+    fact: "偏好简洁回答",
+    valid_from: now,
+    invalid_at: null,
+    superseded_by: null,
+    source_type: "conversation",
+    source_message_id: "5d0e4c55-0000-4d00-8000-000000000001",
+    confidence: 0.94,
+    access_count: 3,
+    last_used_at: "2026-08-18T02:10:00Z",
+    pinned: false,
+    created_at: now,
+    updated_at: now,
+    ...overrides,
+  };
+}
+
+function resetMemories() {
+  memoryCounter = 10;
+  memories = [
+    memoryRecord({ fact: "回答时先给结论，再补充依据", pinned: true, access_count: 8 }),
+    memoryRecord({ category: "profile", fact: "正在开发 WorkPilot", access_count: 2 }),
+    memoryRecord({ category: "interest", fact: "关注 RAG 与智能体评测", access_count: 5 }),
+    memoryRecord({
+      category: "preference",
+      fact: "偏好非常详细的回答",
+      valid_from: "2026-08-01T09:00:00Z",
+      invalid_at: "2026-08-12T11:20:00Z",
+      superseded_by: null,
+      access_count: 1,
+      last_used_at: "2026-08-10T10:00:00Z",
+    }),
+  ];
+}
+
+resetMemories();
+
 const ADMIN_PASSWORD = "demo-admin-pw";
 
 let runCounter = 0;
@@ -293,6 +342,7 @@ const server = createServer((request, response) => {
     sessions.clear();
     adminTokens.clear();
     adminConfigured = true;
+    resetMemories();
     requestLog.length = 0;
     json(response, 200, { status: "reset" });
     return;
@@ -349,6 +399,128 @@ const server = createServer((request, response) => {
     response.writeHead(204, {
       "set-cookie": "workpilot_admin_session=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax",
     });
+    response.end();
+    return;
+  }
+
+  // ------------------------------------------------------------ owner 私有记忆
+
+  if (path === "/api/v1/memories" && request.method === "GET") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    const view = url.searchParams.get("view") ?? "current";
+    const items = memories.filter((item) =>
+      view === "history" ? item.invalid_at !== null : item.invalid_at === null,
+    );
+    json(response, 200, { items, total: items.length });
+    return;
+  }
+
+  if (path === "/api/v1/memories" && request.method === "POST") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    void readBody(request).then((body) => {
+      const created = memoryRecord({
+        category: body.category,
+        fact: body.fact,
+        pinned: body.pinned === true,
+        source_type: "manual",
+        source_message_id: null,
+        confidence: 1,
+        access_count: 0,
+        last_used_at: null,
+      });
+      memories.unshift(created);
+      json(response, 201, created);
+    });
+    return;
+  }
+
+  const restoreMemoryMatch = path.match(/^\/api\/v1\/memories\/([^/]+)\/restore$/);
+  if (restoreMemoryMatch && request.method === "POST") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    const historical = memories.find((item) => item.id === restoreMemoryMatch[1]);
+    if (historical === undefined || historical.invalid_at === null) {
+      json(response, historical === undefined ? 404 : 409, { detail: "记忆无法恢复" });
+      return;
+    }
+    const restored = memoryRecord({
+      category: historical.category,
+      fact: historical.fact,
+      pinned: historical.pinned,
+      source_type: "manual",
+      source_message_id: null,
+      confidence: 1,
+      access_count: 0,
+      last_used_at: null,
+    });
+    memories.unshift(restored);
+    json(response, 200, restored);
+    return;
+  }
+
+  const memoryMatch = path.match(/^\/api\/v1\/memories\/([^/]+)$/);
+  if (memoryMatch && request.method === "PATCH") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    void readBody(request).then((body) => {
+      const index = memories.findIndex(
+        (item) => item.id === memoryMatch[1] && item.invalid_at === null,
+      );
+      if (index < 0) {
+        json(response, 404, { detail: "当前记忆不存在" });
+        return;
+      }
+      const current = memories[index];
+      if (body.fact === undefined && body.category === undefined) {
+        memories[index] = { ...current, pinned: body.pinned === true };
+        json(response, 200, memories[index]);
+        return;
+      }
+      const replacement = memoryRecord({
+        category: body.category ?? current.category,
+        fact: body.fact ?? current.fact,
+        pinned: body.pinned ?? current.pinned,
+        source_type: "manual",
+        source_message_id: null,
+        confidence: 1,
+        access_count: 0,
+        last_used_at: null,
+      });
+      memories[index] = {
+        ...current,
+        invalid_at: "2026-08-18T02:30:00Z",
+        superseded_by: replacement.id,
+      };
+      memories.unshift(replacement);
+      json(response, 200, replacement);
+    });
+    return;
+  }
+
+  if (memoryMatch && request.method === "DELETE") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    const index = memories.findIndex(
+      (item) => item.id === memoryMatch[1] && item.invalid_at === null,
+    );
+    if (index < 0) {
+      json(response, 404, { detail: "当前记忆不存在" });
+      return;
+    }
+    memories[index] = { ...memories[index], invalid_at: "2026-08-18T02:30:00Z" };
+    response.writeHead(204);
     response.end();
     return;
   }

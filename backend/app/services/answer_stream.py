@@ -57,6 +57,7 @@ class AnswerProducer(Protocol):
         query: str,
         top_k: int,
         settings: Settings,
+        memory_context: str = "",
     ) -> AsyncIterator[AnswerStreamEvent]: ...
 
 
@@ -84,6 +85,7 @@ async def produce_answer(
     query: str,
     top_k: int,
     settings: Settings,
+    memory_context: str = "",
 ) -> AsyncIterator[AnswerStreamEvent]:
     """真流式: 模型吐一段就发一段, 首 token 延迟不再等整答生成完。
 
@@ -102,6 +104,7 @@ async def produce_answer(
         query=query,
         top_k=top_k,
         settings=settings,
+        memory_context=memory_context,
     ):
         if isinstance(item, GroundedAnswerResult):
             result = item
@@ -140,6 +143,7 @@ async def produce_general_answer(
     query: str,
     top_k: int,
     settings: Settings,
+    memory_context: str = "",
 ) -> AsyncIterator[AnswerStreamEvent]:
     """通用知识模式: 跳过检索, 产出不可溯源的回答。
 
@@ -152,6 +156,7 @@ async def produce_general_answer(
     async for chunk in stream_general_answer(
         gateway,
         query=query,
+        memory_context=memory_context,
         max_tokens=settings.general_answer_max_tokens,
     ):
         parts.append(chunk)

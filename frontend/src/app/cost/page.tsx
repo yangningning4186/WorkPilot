@@ -120,7 +120,7 @@ export default function CostPage() {
       // 401 不是错误态，是"还没登录"——提示登录而不是报故障（约束 4 同样适用于人）
       setError(
         cause instanceof ApiError && cause.status === 401
-          ? "成本页是运营信息，需要先登录 admin。"
+          ? "成本页是运营信息，需要先登录 owner。"
           : "读取成本数据失败。",
       );
       setData(null);

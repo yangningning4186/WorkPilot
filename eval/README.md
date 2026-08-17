@@ -4,6 +4,24 @@
 
 与 backend 平级的一等模块，不是测试目录的附属。
 
+## A5 长期记忆注入
+
+`memory_injection_experiment.py` 对同一批个人化任务严格配对运行 memory off/on，冻结模型、
+温度和 token 上限，样本顺序交替；报告 task success、paired bootstrap 区间、输入 token 与延迟。
+同时生成打乱臂标识的 `blind-review.jsonl`，满意度只能由 owner 填写。
+
+仓库中的 `a5-memory-seed.json` 明确标为 synthetic，只能验证工程链路，不能作为产品质量结论：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.memory_injection_experiment \
+  --suite eval/suites/a5-memory-seed.json --label a5-seed-YYYYMMDD \
+  --allow-model-send --authorization-note '<已核验的端点与授权记录>' --allow-synthetic
+```
+
+runner 使用 evaluation mode，禁止 fallback。即便是合成 seed，也必须显式确认模型端点与发送授权；
+真实 owner 记忆更不能在端点信任边界不清楚时外发。正式 A5 结论要求 owner 审核的 human suite、
+完整 paired report 和盲评满意度，三者缺一不可。
+
 ## Dense-only 基线
 
 先在本地 `http://127.0.0.1:8000/annotation` 标注 gold spans，再运行：

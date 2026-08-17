@@ -6,6 +6,7 @@ import structlog
 
 from app.core.queue import get_run_queue
 from app.core.run_bus import RunBus
+from app.memory.store import list_dispatchable_memory_jobs
 from app.services.cost_budget import sweep_expired_reservations
 from app.services.runs import reap_expired_runs
 
@@ -52,3 +53,21 @@ async def cost_sweeper_tick(ctx: dict[str, Any]) -> int:
     if swept:
         logger.warning("按上限结算过期费用预留", count=swept)
     return swept
+
+
+async def memory_dispatch_tick(ctx: dict[str, Any]) -> int:
+    """补偿 DB 作业已创建但首次 Redis 入队失败的窗口。"""
+
+    settings = ctx["settings"]
+    if not settings.memory_extraction_enabled:
+        return 0
+    session_factory = ctx["session_factory"]
+    async with session_factory() as session:
+        jobs = await list_dispatchable_memory_jobs(
+            session, max_attempts=settings.memory_job_max_attempts
+        )
+        await session.commit()
+    queue = ctx.get("run_queue") or await get_run_queue()
+    for job_id, attempt in jobs:
+        await queue.enqueue_memory_job(job_id, attempt=attempt)
+    return len(jobs)

@@ -61,6 +61,7 @@ routes:
 
   # —— 改写/分解：高频、对单次质量不敏感，后面还有检索与 rerank 兜底。
   query_decomposition: light
+  memory_op: light
 
   # —— 结构化抽取：**刻意留在 main**。
   # docs/07 §3 的设计是 light 起步、置信度不达标再升档，但那套升档机制还没实现。
@@ -69,6 +70,7 @@ routes:
   evidence_sufficiency: main
   agent_extract_card: main
   eval_agent_evidence_anchor: main
+  eval_memory_injection: main
 
   # —— 判分：错了会污染整个评测体系，最不该省钱的一档。
   judge: heavy

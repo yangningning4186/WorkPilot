@@ -14,7 +14,7 @@ test.describe("admin 登录入口", () => {
   test("未登录时综述页说明缺什么，创建按钮开不了", async ({ page }) => {
     await page.goto("/review");
 
-    await expect(page.locator(".login-required")).toContainText("需要先在右上角完成 admin 登录");
+    await expect(page.locator(".login-required")).toContainText("需要先在右上角完成 owner 登录");
 
     // 表单填满也不该变成可点——写回有副作用，不能让人填完再吃一个 401。
     await page.getByRole("textbox", { name: "综述目标" }).fill("比较两篇的取舍");
@@ -40,21 +40,21 @@ test.describe("admin 登录入口", () => {
 
     // 状态存在 httpOnly cookie 里，换页面和刷新都不该掉——存内存就会掉。
     await page.goto("/review");
-    await expect(page.locator(".admin-badge")).toHaveText("admin");
+    await expect(page.locator(".admin-badge")).toHaveText("owner");
     await page.reload();
-    await expect(page.locator(".admin-badge")).toHaveText("admin");
+    await expect(page.locator(".admin-badge")).toHaveText("owner");
   });
 
   test("密码错误说密码错误，且不谎称已登录", async ({ page }) => {
     await page.goto("/review");
-    await page.getByRole("button", { name: "admin 登录" }).click();
-    await page.getByLabel("管理员密码").fill("wrong-password");
+    await page.getByRole("button", { name: "owner 登录" }).click();
+    await page.getByLabel("owner 口令").fill("wrong-password");
     await page.getByRole("button", { name: "登录", exact: true }).click();
 
     await expect(page.locator(".admin-login .form-error")).toHaveText("密码错误。");
     await expect(page.locator(".admin-badge")).toHaveCount(0);
     // 密码框清空重来，免得在一个已知错误的值上反复回车。
-    await expect(page.getByLabel("管理员密码")).toHaveValue("");
+    await expect(page.getByLabel("owner 口令")).toHaveValue("");
     await expect(page.locator(".login-required")).toBeVisible();
   });
 
@@ -64,8 +64,8 @@ test.describe("admin 登录入口", () => {
     await setAdminConfigured(request, false);
     try {
       await page.goto("/review");
-      await page.getByRole("button", { name: "admin 登录" }).click();
-      await page.getByLabel("管理员密码").fill(ADMIN_PASSWORD);
+      await page.getByRole("button", { name: "owner 登录" }).click();
+      await page.getByLabel("owner 口令").fill(ADMIN_PASSWORD);
       await page.getByRole("button", { name: "登录", exact: true }).click();
 
       const error = page.locator(".admin-login .form-error");
@@ -84,7 +84,7 @@ test.describe("admin 登录入口", () => {
     await page.getByRole("button", { name: "登出" }).click();
 
     await expect(page.locator(".admin-badge")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "admin 登录" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "owner 登录" })).toBeVisible();
     await expect(page.locator(".login-required")).toBeVisible();
 
     await page.getByRole("textbox", { name: "综述目标" }).fill("比较两篇的取舍");

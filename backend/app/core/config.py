@@ -136,6 +136,14 @@ class Settings(BaseSettings):
     query_decomposition_enabled: bool = False
     query_decomposition_max_subqueries: int = Field(default=4, ge=2, le=8)
     query_decomposition_max_tokens: int = Field(default=300, ge=64, le=2048)
+    # owner 长期记忆。demo 路径无视开关也不抽取/召回；两项仍可独立紧急关闭。
+    memory_extraction_enabled: bool = True
+    memory_recall_enabled: bool = True
+    memory_job_lease_s: int = Field(default=120, ge=10, le=1800)
+    memory_job_max_attempts: int = Field(default=3, ge=1, le=10)
+    memory_recall_top_k: int = Field(default=5, ge=1, le=20)
+    memory_pinned_limit: int = Field(default=3, ge=0, le=20)
+    memory_context_max_chars: int = Field(default=2000, ge=200, le=10000)
     # 真实子问题的逐查询排名近似 gold coverage oracle；默认关闭，P1-K 验证后再决定上线。
     # 只在 query_decomposition 确实返回 >=2 个子问题时介入，简单题逐位回退原 RRF。
     coverage_selection_enabled: bool = False

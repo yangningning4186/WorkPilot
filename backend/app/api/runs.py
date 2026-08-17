@@ -13,11 +13,11 @@ from app.agent.write_note import (
     resume_review_after_human,
 )
 from app.api.dependencies import (
-    get_demo_session,
+    get_request_identity,
     get_run_bus,
     get_run_queue_dependency,
     get_session_factory,
-    require_admin_session,
+    require_owner_identity,
 )
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
@@ -30,7 +30,8 @@ from app.schemas.runs import (
     ResumeRunRequest,
     RunStatusResponse,
 )
-from app.services.demo_sessions import DemoSession, consume_question_quota
+from app.services.demo_sessions import consume_question_quota
+from app.services.request_identity import RequestIdentity
 from app.services.run_stream import parse_last_event_id, stream_run_events
 from app.services.runs import (
     RunNotFoundError,
@@ -39,7 +40,7 @@ from app.services.runs import (
     create_run,
     ensure_conversation,
     finish_run,
-    get_run_for_demo_session,
+    get_run_for_identity,
     request_cancel,
 )
 
@@ -60,7 +61,7 @@ async def create_answer_run(
     request: CreateRunRequest,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     queue: Annotated[RunQueue, Depends(get_run_queue_dependency)],
-    demo_session: Annotated[DemoSession, Depends(get_demo_session)],
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> CreateRunResponse:
     """创建 run 并入队, 立即返回。执行在 worker 进程, 不依附本次 HTTP 连接。"""
@@ -69,17 +70,19 @@ async def create_answer_run(
         conversation_id = await ensure_conversation(
             session,
             conversation_id=request.conversation_id,
-            scope="demo",
-            demo_session_id=demo_session.id,
+            scope=identity.scope,
+            demo_session_id=identity.demo_session_id,
         )
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-    if not await consume_question_quota(
-        session,
-        demo_session_id=demo_session.id,
-        limit=settings.demo_session_question_limit,
-    ):
-        raise HTTPException(status_code=429, detail="本 session 的提问额度已用尽")
+    if not identity.is_owner:
+        assert identity.demo_session_id is not None
+        if not await consume_question_quota(
+            session,
+            demo_session_id=identity.demo_session_id,
+            limit=settings.demo_session_question_limit,
+        ):
+            raise HTTPException(status_code=429, detail="本 session 的提问额度已用尽")
 
     run = await create_run(
         session,
@@ -138,14 +141,13 @@ async def create_answer_run(
     "/reviews",
     response_model=CreateRunResponse,
     status_code=202,
-    dependencies=[Depends(require_admin_session)],
 )
 async def create_review_run(
     request: CreateReviewRunRequest,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     queue: Annotated[RunQueue, Depends(get_run_queue_dependency)],
     bus: Annotated[RunBus, Depends(get_run_bus)],
-    demo_session: Annotated[DemoSession, Depends(get_demo_session)],
+    identity: Annotated[RequestIdentity, Depends(require_owner_identity)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> CreateRunResponse:
     """创建固定综述；只允许已登录的个人 owner 选择文档和写回目标。"""
@@ -157,8 +159,8 @@ async def create_review_run(
         conversation_id = await ensure_conversation(
             session,
             conversation_id=request.conversation_id,
-            scope="demo",
-            demo_session_id=demo_session.id,
+            scope=identity.scope,
+            demo_session_id=identity.demo_session_id,
         )
     except (LookupError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -221,18 +223,20 @@ async def create_review_run(
 @router.post(
     "/{run_id}/resume",
     response_model=RunStatusResponse,
-    dependencies=[Depends(require_admin_session)],
 )
 async def resume_review_run(
     run_id: UUID,
     request: ResumeRunRequest,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     bus: Annotated[RunBus, Depends(get_run_bus)],
-    demo_session: Annotated[DemoSession, Depends(get_demo_session)],
+    identity: Annotated[RequestIdentity, Depends(require_owner_identity)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> RunStatusResponse:
-    run = await get_run_for_demo_session(
-        session, run_id=run_id, demo_session_id=demo_session.id
+    run = await get_run_for_identity(
+        session,
+        run_id=run_id,
+        scope=identity.scope,
+        demo_session_id=identity.demo_session_id,
     )
     if run is None or run.workflow_type != "literature_review":
         raise HTTPException(status_code=404, detail="固定综述 run 不存在")
@@ -249,8 +253,11 @@ async def resume_review_run(
         )
     except (InvocationInFlightError, LookupError, ValueError) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    refreshed = await get_run_for_demo_session(
-        session, run_id=run_id, demo_session_id=demo_session.id
+    refreshed = await get_run_for_identity(
+        session,
+        run_id=run_id,
+        scope=identity.scope,
+        demo_session_id=identity.demo_session_id,
     )
     if refreshed is None:  # pragma: no cover - 同一事务内 run 不会消失
         raise HTTPException(status_code=404, detail="固定综述 run 不存在")
@@ -273,9 +280,14 @@ async def resume_review_run(
 async def read_run(
     run_id: UUID,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-    demo_session: Annotated[DemoSession, Depends(get_demo_session)],
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
 ) -> RunStatusResponse:
-    run = await get_run_for_demo_session(session, run_id=run_id, demo_session_id=demo_session.id)
+    run = await get_run_for_identity(
+        session,
+        run_id=run_id,
+        scope=identity.scope,
+        demo_session_id=identity.demo_session_id,
+    )
     if run is None:
         raise HTTPException(status_code=404, detail="run 不存在")
     return RunStatusResponse(
@@ -299,7 +311,7 @@ async def stream_events(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     bus: Annotated[RunBus, Depends(get_run_bus)],
     stream_sessions: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
-    demo_session: Annotated[DemoSession, Depends(get_demo_session)],
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
     after_seq: Annotated[int, Query(ge=0)] = 0,
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> StreamingResponse:
@@ -310,7 +322,12 @@ async def stream_events(
     """
 
     if (
-        await get_run_for_demo_session(session, run_id=run_id, demo_session_id=demo_session.id)
+        await get_run_for_identity(
+            session,
+            run_id=run_id,
+            scope=identity.scope,
+            demo_session_id=identity.demo_session_id,
+        )
         is None
     ):
         raise HTTPException(status_code=404, detail="run 不存在")
@@ -334,12 +351,17 @@ async def cancel_run(
     run_id: UUID,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     bus: Annotated[RunBus, Depends(get_run_bus)],
-    demo_session: Annotated[DemoSession, Depends(get_demo_session)],
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
 ) -> RunStatusResponse:
     """请求取消。已在执行的 run 由持有租约的 worker 在下一个检查点收尾。"""
 
     try:
-        run = await request_cancel(session, run_id=run_id, demo_session_id=demo_session.id)
+        run = await request_cancel(
+            session,
+            run_id=run_id,
+            scope=identity.scope,
+            demo_session_id=identity.demo_session_id,
+        )
     except RunNotFoundError as error:
         raise HTTPException(status_code=404, detail="run 不存在") from error
     await session.commit()

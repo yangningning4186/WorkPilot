@@ -9,16 +9,19 @@ from app.agent.budget import BudgetMeter
 from app.agent.review_graph import run_readonly_review
 from app.agent.write_note import review_resume_token
 from app.api.dependencies import (
+    get_request_identity,
     get_run_bus,
     get_run_queue_dependency,
     get_session_factory,
     require_admin_session,
+    require_owner_identity,
 )
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
 from app.core.run_bus import InMemoryRunBus
 from app.main import create_app
 from app.services.demo_sessions import hash_session_token
+from app.services.request_identity import RequestIdentity
 from app.services.runs import append_events, claim_run, finish_run, get_run
 from tests.fakes import review_budget
 from tests.test_write_note import ReadyReviewTools
@@ -66,6 +69,9 @@ def _client(
         app.dependency_overrides[get_settings] = lambda: settings
     if admin:
         app.dependency_overrides[require_admin_session] = lambda: None
+        owner_identity = RequestIdentity(scope="local_owner")
+        app.dependency_overrides[get_request_identity] = lambda: owner_identity
+        app.dependency_overrides[require_owner_identity] = lambda: owner_identity
     if db_engine is not None:
         factory = async_sessionmaker(db_engine, expire_on_commit=False)
         app.dependency_overrides[get_session_factory] = lambda: factory
@@ -180,6 +186,34 @@ async def test_create_run_sets_http_only_session_and_enqueues(
         )
     ).one()
     assert (role, content) == ("user", "稠密检索如何召回内容?")
+
+
+async def test_logged_in_run_uses_owner_scope_without_demo_quota(
+    db_session: AsyncSession,
+) -> None:
+    queue = RecordingQueue()
+    client, _ = _client(
+        db_session,
+        queue,
+        settings=Settings(app_env="test", demo_session_question_limit=1),
+        admin=True,
+    )
+    async with client:
+        response = await client.post("/api/v1/runs", json={"query": "请记住我的偏好"})
+        second = await client.post("/api/v1/runs", json={"query": "第二个 owner 问题"})
+
+    assert response.status_code == 202
+    assert second.status_code == 202
+    conversation_id = UUID(response.json()["conversation_id"])
+    scope, demo_session_id = (
+        await db_session.execute(
+            text("SELECT scope, demo_session_id FROM conversations WHERE id = :id"),
+            {"id": conversation_id},
+        )
+    ).one()
+    assert scope == "local_owner"
+    assert demo_session_id is None
+    assert "workpilot_session=" not in response.headers.get("set-cookie", "").lower()
 
 
 async def test_production_session_cookie_is_secure(db_session: AsyncSession) -> None:

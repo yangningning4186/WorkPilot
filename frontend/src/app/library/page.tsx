@@ -124,7 +124,7 @@ export default function LibraryPage() {
         if (reason instanceof ApiError && reason.status === 401) {
           // 顶栏可能还显示着已登录（session 刚过期），拉回未登录才对得上。
           invalidateAdmin();
-          setNotice("触发同步需要 admin 登录；请在右上角登录后重试。");
+          setNotice("触发同步需要 owner 登录；请在右上角登录后重试。");
         } else {
           setNotice("同步触发失败，请检查后端日志。");
         }

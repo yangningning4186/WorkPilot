@@ -72,10 +72,10 @@ export const ADMIN_PASSWORD = "demo-admin-pw";
  * 绕过 UI 注入等于把这个入口本身排除在验收之外。
  */
 export async function loginAsAdmin(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "admin 登录" }).click();
-  await page.getByLabel("管理员密码").fill(ADMIN_PASSWORD);
+  await page.getByRole("button", { name: "owner 登录" }).click();
+  await page.getByLabel("owner 口令").fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: "登录", exact: true }).click();
-  await expect(page.locator(".admin-badge")).toHaveText("admin");
+  await expect(page.locator(".admin-badge")).toHaveText("owner");
 }
 
 /** 切换假后端的 DEMO_ADMIN_PASSWORD_HASH 配置状态。 */
