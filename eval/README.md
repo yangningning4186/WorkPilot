@@ -113,6 +113,12 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.suite_generation_runner \
   --allow-model-send --authorization-note '<approval reference>'
 ```
 
+两条 runner 都在分 dataset 的子报告之外，再并出一份 `<batch>/<chunk_strategy>/report.json`
+的整套报告（夜间门禁判的就是它）。合并时逐项校验 dataset 顺序、item 唯一性与配置漂移；
+`dataset_fingerprint` 与 `annotation_fingerprint` 天生逐 dataset 不同，会被合成指纹并
+连同各自原值一起写进 `chunk_metadata`——**不是被忽略掉**，标注改过仍然会显形。
+生成轨合并报告的聚合值直接用 `report_metrics` 的 MetricSpec 计算，与门禁读到的是同一个定义。
+
 对 answerable 误拒做 evidence gate 分层归因时，使用同一份正式 retrieval report 和各 dataset 的
 generation report 重建证据。`round_robin` 用于复现旧实现，修复后生产口径为 `sequential`；脚本
 会把 Top-K 检索缺失、gate 打包缺失、12k answer 证据预算缺失和 gate 模型误判分开：
@@ -326,14 +332,24 @@ markdown 里各列几条，`report.json` 始终保留全部逐样本差值。
 **跑在本机/集群，不在 GitHub Actions**——runner 既到不了推理集群也到不了私人库，
 PR 层是静态检查 + pytest（[docs/06 §4.1](../docs/06-评测体系.md)）。
 
+检索轨与生成轨**各一份快照**，按报告类型自动解析，不用每次手写 `--baseline`：
+
+| 轨 | 快照 | 从哪次跑批导出 |
+|---|---|---|
+| retrieval | `eval/snapshots/retrieval.json` | `suite_retrieval_runner` 的 `<batch>/<chunk_strategy>/report.json` |
+| generation | `eval/snapshots/generation.json` | `suite_generation_runner` 的 `<batch>/<chunk_strategy>/report.json` |
+
+两条 runner 都会把分 dataset 的子报告并成一份整套报告；门禁判的是**整套 70 条**，
+不是四份分 dataset 报告分别判——那样配对样本会碎成四组，快照也要维护四份。
+
 ```bash
-# 1. 从一次可信的跑批导出 baseline 快照，提交进 git
+# 1. 从一次可信的跑批导出 baseline 快照，提交进 git（输出路径按轨自动选）
 PYTHONPATH=backend backend/.venv/bin/python -m eval.gate snapshot \
-  eval/outputs/dev-suite-retrieval/<run> --output eval/snapshots/baseline.json
+  eval/outputs/dev-suite-retrieval/<run>/heading
 
 # 2. 用候选跑批比对。--against 从该 git ref 读快照，所以在分支上也能对着 main 判
 PYTHONPATH=backend backend/.venv/bin/python -m eval.gate check \
-  eval/outputs/dev-suite-retrieval/<run> --against main \
+  eval/outputs/dev-suite-retrieval/<run>/heading --against main \
   --output-dir eval/outputs/gate/<label>
 ```
 

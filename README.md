@@ -94,8 +94,8 @@ Judge 校准已完成；M2 已选择三档路由方向并进入最终交付阶�
 - 固定综述 Agent：六步状态机、三维预算、checkpoint、`SIGKILL` 恢复、HITL 与 effectively-once 写回
 - `light/main/heavy/external` 路由、fallback、确定性升档、精确缓存、GPU 批次成本口径与 admin 成本看板
 - 80 条 human 评测集（70 dev + 10 隔离 test）、严格配对 diff、bootstrap 与 badcase 棘轮
-- 夜间 gate 已在**检索轨**点亮：首份 baseline 快照已提交，通过 / 阻断 / 拒判三条路径
-  各用真报告实跑验证过
+- 夜间 gate 已在**检索轨与生成轨**双双点亮：两份 baseline 快照均已提交，
+  检索轨的通过 / 阻断 / 拒判三条路径各用真报告实跑验证过
 - 独立 validation 19 条上，heavy Judge accuracy/QWK 为 **0.9474/0.8725**，
   main 为 **1.0000/1.0000**；日常 binary correctness Judge 采用 main
 - 当前验证：后端与前端测试、Ruff、mypy、ESLint、TypeScript 全部通过
@@ -113,8 +113,8 @@ Judge 校准已完成；M2 已选择三档路由方向并进入最终交付阶�
 ### 收口中
 
 - 扩充并人工复核 `agent_task`，再从六类中间结论升级为七类正式校准
-- 生成轨 baseline 与 nightly dev + Judge：检索轨门禁已生效，但生成轨快照、
-  `answer_correctness` 字段接入与定时化都还没做
+- nightly dev + Judge：两条规则轨的门禁已生效，但 `answer_correctness`
+  接进生成轨快照与夜间定时化都还没做
 - 保持 10 条 test 隔离，最终里程碑只运行一次
 - README 完整使用说明、前端打磨、安全清单、独立演示环境、博客、视频和公网部署
 

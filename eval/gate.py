@@ -4,11 +4,14 @@
 
     # 1. 从一次可信的跑批导出 baseline 快照（只留数字，可提交进 git）
     PYTHONPATH=backend backend/.venv/bin/python -m eval.gate snapshot \\
-      eval/outputs/dev-suite-retrieval/<run> --output eval/snapshots/baseline.json
+      eval/outputs/dev-suite-retrieval/<run>/heading
 
     # 2. 用候选跑批比对 baseline，任一门禁条件不满足即非零码退出
     PYTHONPATH=backend backend/.venv/bin/python -m eval.gate check \\
-      eval/outputs/dev-suite-retrieval/<run> --against main
+      eval/outputs/dev-suite-retrieval/<run>/heading --against main
+
+检索轨与生成轨各有一份快照，**按报告类型自动选**（`SNAPSHOT_PATHS`），
+不需要每次手写 `--baseline`——手写就意味着有一天会拿生成轨的报告去比检索轨的基线。
 
 **PR 层不跑这个。** GitHub runner 既到不了推理集群也到不了本机私人库，
 PR 门禁是静态检查 + pytest（`.github/workflows/ci.yml`）。这里跑在本机/集群。
@@ -39,7 +42,12 @@ from eval.report_metrics import (
     load_report,
 )
 
-DEFAULT_BASELINE_PATH = Path("eval/snapshots/baseline.json")
+# 每条轨一份快照。文件名带轨名而不是共用 `baseline.json`：两条轨的指标集完全不同，
+# 名字里看不出是哪条，就迟早有人拿生成轨的候选去比检索轨的基线。
+SNAPSHOT_PATHS: dict[str, Path] = {
+    KIND_RETRIEVAL: Path("eval/snapshots/retrieval.json"),
+    KIND_GENERATION: Path("eval/snapshots/generation.json"),
+}
 SNAPSHOT_VERSION = 1
 
 # --------------------------------------------------------------------- 门禁规则
@@ -501,7 +509,9 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     snapshot = sub.add_parser("snapshot", help="从一次跑批导出可提交的 baseline 快照")
     snapshot.add_argument("report", type=Path, help="report.json 或其所在目录")
-    snapshot.add_argument("--output", type=Path, default=DEFAULT_BASELINE_PATH)
+    snapshot.add_argument(
+        "--output", type=Path, default=None, help="默认按报告类型选 SNAPSHOT_PATHS"
+    )
 
     check = sub.add_parser("check", help="用候选跑批比对 baseline 快照")
     check.add_argument("report", type=Path, help="候选 report.json 或其所在目录")
@@ -510,31 +520,48 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="main",
         help="从该 git ref 读 baseline 快照；给 'working' 则读工作区文件",
     )
-    check.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE_PATH)
+    check.add_argument(
+        "--baseline", type=Path, default=None, help="默认按候选报告类型选快照"
+    )
     check.add_argument("--output-dir", type=Path, default=None)
     return parser.parse_args(argv)
 
 
+def _snapshot_path(kind: str, override: Path | None) -> Path:
+    """快照路径按轨解析。给了 --baseline 就用它，否则按报告类型选。"""
+    if override is not None:
+        return override
+    path = SNAPSHOT_PATHS.get(kind)
+    if path is None:
+        raise GateRefused(f"没有为 {kind} 轨定义 baseline 快照路径")
+    return path
+
+
 def _run_snapshot(args: argparse.Namespace) -> int:
-    snapshot = build_snapshot(load_report(args.report))
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
+    report = load_report(args.report)
+    output = _snapshot_path(report.kind, args.output)
+    snapshot = build_snapshot(report)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
         json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    print(f"baseline 快照已写入 {args.output}（{len(snapshot['items'])} 条）")
+    print(f"{report.kind} 轨 baseline 快照已写入 {output}（{len(snapshot['items'])} 条）")
     print("快照只含数字与 UUID，不含任何原文，可以提交进 git")
     return 0
 
 
 def _run_check(args: argparse.Namespace) -> int:
-    git_ref = None if args.against == "working" else args.against
-    baseline = read_baseline(path=args.baseline, git_ref=git_ref)
     try:
+        # 先读候选：快照路径要按它的轨来选
         candidate = load_report(args.report)
     except ValueError as error:
         # 候选报告本身读不动（缺 items、认不出轨）同样是拒判，不是不合格
         raise GateRefused(f"候选报告无法载入: {error}") from error
+    git_ref = None if args.against == "working" else args.against
+    baseline = read_baseline(
+        path=_snapshot_path(candidate.kind, args.baseline), git_ref=git_ref
+    )
     outcome = evaluate(baseline, candidate)
     report = render_markdown(outcome)
     print(report)
