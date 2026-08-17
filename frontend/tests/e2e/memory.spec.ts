@@ -12,6 +12,19 @@ test.describe("owner 长期记忆", () => {
     expect(log.filter((item) => item.path === "/api/v1/memories")).toHaveLength(0);
   });
 
+  test("窄屏仍能看到记忆导航和 owner 登录，页面不横向溢出", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto("/memory");
+
+    await expect(page.getByRole("link", { name: "记忆" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "owner 登录" })).toBeVisible();
+    const sizes = await page.evaluate(() => ({
+      viewport: window.innerWidth,
+      document: document.documentElement.scrollWidth,
+    }));
+    expect(sizes.document).toBeLessThanOrEqual(sizes.viewport);
+  });
+
   test("登录后可新增、置顶、版本化编辑并查看历史", async ({ page }) => {
     await page.goto("/memory");
     await loginAsAdmin(page);

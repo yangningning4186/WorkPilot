@@ -159,9 +159,7 @@ async def process_memory_job_source(
     candidates = await extract_memory_candidates(gateway, user_message=source.content)
     operations: list[dict[str, Any]] = []
     for candidate in candidates:
-        embedding_result = await gateway.embed(
-            [candidate.fact], task_type="memory_embedding"
-        )
+        embedding_result = await gateway.embed([candidate.fact], task_type="memory_embedding")
         embedding = embedding_result.embeddings[0]
         existing = await search_active_memories(
             session,
@@ -215,7 +213,8 @@ async def process_memory_job_source(
         operations.append(
             {
                 "operation": decision.operation,
-                "applied": True,
+                "applied": write.applied,
+                "current_changed": write.current_changed,
                 "target_memory_id": (
                     None if decision.target_memory_id is None else str(decision.target_memory_id)
                 ),
@@ -223,7 +222,11 @@ async def process_memory_job_source(
                 "category": candidate.category,
                 "fact": candidate.fact,
                 "confidence": candidate.confidence,
-                "reason": decision.reason,
+                "reason": (
+                    decision.reason
+                    if write.current_changed or decision.operation == "NOOP"
+                    else "事件时间早于当前记忆，未反向覆盖当前状态"
+                ),
             }
         )
     return operations

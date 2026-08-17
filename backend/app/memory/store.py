@@ -51,6 +51,8 @@ class MemoryWrite:
     operation: MemoryOperation
     memory: MemoryRecord | None
     target_id: UUID | None
+    applied: bool = True
+    current_changed: bool = True
 
 
 @dataclass(frozen=True)
@@ -115,7 +117,11 @@ async def list_memories(
         raise ValueError("limit 必须位于 1 到 1000")
     if category is not None and category not in MEMORY_CATEGORIES:
         raise ValueError("未知记忆类别")
-    activity = "" if active is None else ("AND invalid_at IS NULL" if active else "AND invalid_at IS NOT NULL")
+    activity = (
+        ""
+        if active is None
+        else ("AND invalid_at IS NULL" if active else "AND invalid_at IS NOT NULL")
+    )
     rows = (
         (
             await session.execute(
@@ -138,9 +144,7 @@ async def list_memories(
     return [_memory(row) for row in rows]
 
 
-async def list_pinned_memories(
-    session: AsyncSession, *, limit: int = 3
-) -> list[MemoryRecord]:
+async def list_pinned_memories(session: AsyncSession, *, limit: int = 3) -> list[MemoryRecord]:
     if not 0 <= limit <= 20:
         raise ValueError("置顶记忆 limit 必须位于 0 到 20")
     if limit == 0:
@@ -368,11 +372,54 @@ async def apply_memory_operation(
             .mappings()
             .one()
         )
-        return MemoryWrite(operation=operation, memory=_memory(row), target_id=target.id)
+        return MemoryWrite(
+            operation=operation,
+            memory=_memory(row),
+            target_id=target.id,
+            current_changed=False,
+        )
+
+    # 抽取是异步的：旧消息可能在新消息之后才处理。事件时间早于当前事实时，
+    # 绝不能把当前状态反向覆盖。旧 UPDATE 仍可落成一段历史有效期；旧 DELETE
+    # 没有可表达的替代事实，只记录为未应用。
+    if actor == "model" and target is not None and valid_from <= target.valid_from:
+        if operation == "DELETE" or valid_from == target.valid_from:
+            return MemoryWrite(
+                operation=operation,
+                memory=None,
+                target_id=target.id,
+                applied=False,
+                current_changed=False,
+            )
+        historical = await _insert_historical_memory(
+            session,
+            current_target_id=target.id,
+            category=category,
+            fact=normalized_fact,
+            confidence=confidence,
+            valid_from=valid_from,
+            source_message_id=source_message_id,
+            embedding=embedding,
+            embedding_model=embedding_model,
+            embedding_provider=embedding_provider,
+            embedding_revision=embedding_revision,
+        )
+        return MemoryWrite(
+            operation=operation,
+            memory=historical,
+            target_id=target.id,
+            applied=historical is not None,
+            current_changed=False,
+        )
 
     if operation == "DELETE":
         assert target is not None
-        await _invalidate(session, target.id, superseded_by=None)
+        await _invalidate(
+            session,
+            target.id,
+            invalid_at=valid_from,
+            superseded_by=None,
+        )
         return MemoryWrite(operation=operation, memory=None, target_id=target.id)
 
     new_memory = await _insert_memory(
@@ -381,6 +428,8 @@ async def apply_memory_operation(
         fact=normalized_fact,
         confidence=confidence,
         valid_from=valid_from,
+        invalid_at=None,
+        superseded_by=None,
         source_type="conversation" if actor == "model" else "manual",
         source_message_id=source_message_id,
         embedding=embedding,
@@ -391,7 +440,12 @@ async def apply_memory_operation(
     )
     if operation == "UPDATE":
         assert target is not None
-        await _invalidate(session, target.id, superseded_by=new_memory.id)
+        await _invalidate(
+            session,
+            target.id,
+            invalid_at=valid_from,
+            superseded_by=new_memory.id,
+        )
     return MemoryWrite(operation=operation, memory=new_memory, target_id=target_id)
 
 
@@ -402,6 +456,8 @@ async def _insert_memory(
     fact: str,
     confidence: float,
     valid_from: datetime,
+    invalid_at: datetime | None,
+    superseded_by: UUID | None,
     source_type: Literal["conversation", "manual"],
     source_message_id: UUID | None,
     embedding: list[float] | None,
@@ -417,12 +473,12 @@ async def _insert_memory(
                     f"""
                     INSERT INTO memories
                         (id, category, fact, embedding, embedding_model, embedding_provider,
-                         embedding_revision, valid_from, source_type, source_message_id,
-                         confidence, pinned)
+                         embedding_revision, valid_from, invalid_at, superseded_by, source_type,
+                         source_message_id, confidence, pinned)
                     VALUES
                         (:id, :category, :fact, CAST(:embedding AS vector), :embedding_model,
-                         :embedding_provider, :embedding_revision, :valid_from, :source_type,
-                         :source_message_id, :confidence, :pinned)
+                         :embedding_provider, :embedding_revision, :valid_from, :invalid_at,
+                         :superseded_by, :source_type, :source_message_id, :confidence, :pinned)
                     RETURNING {_MEMORY_COLUMNS}
                     """
                 ),
@@ -435,6 +491,8 @@ async def _insert_memory(
                     "embedding_provider": embedding_provider,
                     "embedding_revision": embedding_revision,
                     "valid_from": valid_from,
+                    "invalid_at": invalid_at,
+                    "superseded_by": superseded_by,
                     "source_type": source_type,
                     "source_message_id": source_message_id,
                     "confidence": confidence,
@@ -448,21 +506,128 @@ async def _insert_memory(
     return _memory(row)
 
 
+async def _insert_historical_memory(
+    session: AsyncSession,
+    *,
+    current_target_id: UUID,
+    category: MemoryCategory,
+    fact: str,
+    confidence: float,
+    valid_from: datetime,
+    source_message_id: UUID | None,
+    embedding: list[float] | None,
+    embedding_model: str | None,
+    embedding_provider: str | None,
+    embedding_revision: str | None,
+) -> MemoryRecord | None:
+    """把乱序旧事实插进当前版本链，而不是制造重叠的历史分支。"""
+
+    lineage_rows = (
+        (
+            await session.execute(
+                text(
+                    f"""
+                    WITH RECURSIVE lineage AS (
+                        SELECT m.*, 0 AS depth
+                        FROM memories m
+                        WHERE m.id = :target_id
+                        UNION ALL
+                        SELECT previous.*, lineage.depth + 1
+                        FROM lineage
+                        JOIN memories previous ON previous.superseded_by = lineage.id
+                        WHERE lineage.depth < 100
+                    )
+                    SELECT {_MEMORY_COLUMNS}
+                    FROM lineage
+                    ORDER BY valid_from, id
+                    """
+                ),
+                {"target_id": current_target_id},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    lineage = [_memory(row) for row in lineage_rows]
+    if any(memory.valid_from == valid_from for memory in lineage):
+        return None
+    successor = next(
+        (memory for memory in lineage if memory.valid_from > valid_from),
+        None,
+    )
+    if successor is None:  # current target 本应比乱序事件新；不满足说明调用契约被破坏。
+        raise ValueError("乱序历史记忆找不到后继版本")
+    predecessor = max(
+        (memory for memory in lineage if memory.valid_from < valid_from),
+        key=lambda memory: (memory.valid_from, memory.id),
+        default=None,
+    )
+    historical = await _insert_memory(
+        session,
+        category=category,
+        fact=fact,
+        confidence=confidence,
+        valid_from=valid_from,
+        invalid_at=successor.valid_from,
+        superseded_by=successor.id,
+        source_type="conversation",
+        source_message_id=source_message_id,
+        embedding=embedding,
+        embedding_model=embedding_model,
+        embedding_provider=embedding_provider,
+        embedding_revision=embedding_revision,
+        pinned=False,
+    )
+    if predecessor is not None:
+        relinked = (
+            await session.execute(
+                text(
+                    """
+                    UPDATE memories
+                    SET invalid_at = :invalid_at, superseded_by = :superseded_by
+                    WHERE id = :id AND superseded_by = :expected_successor
+                    RETURNING id
+                    """
+                ),
+                {
+                    "id": predecessor.id,
+                    "invalid_at": valid_from,
+                    "superseded_by": historical.id,
+                    "expected_successor": successor.id,
+                },
+            )
+        ).scalar_one_or_none()
+        if relinked is None:
+            raise RuntimeError("历史记忆版本链并发变化")
+    return historical
+
+
 async def _invalidate(
-    session: AsyncSession, memory_id: UUID, *, superseded_by: UUID | None
+    session: AsyncSession,
+    memory_id: UUID,
+    *,
+    invalid_at: datetime,
+    superseded_by: UUID | None,
 ) -> None:
     updated = (
         await session.execute(
             text(
                 """
                 UPDATE memories
-                SET invalid_at = GREATEST(clock_timestamp(), valid_from + interval '1 microsecond'),
+                SET invalid_at = GREATEST(
+                        CAST(:invalid_at AS timestamptz),
+                        valid_from + interval '1 microsecond'
+                    ),
                     superseded_by = :superseded_by
                 WHERE id = :id AND invalid_at IS NULL
                 RETURNING id
                 """
             ),
-            {"id": memory_id, "superseded_by": superseded_by},
+            {
+                "id": memory_id,
+                "invalid_at": invalid_at,
+                "superseded_by": superseded_by,
+            },
         )
     ).scalar_one_or_none()
     if updated is None:

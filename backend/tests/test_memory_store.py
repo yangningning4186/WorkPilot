@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -89,13 +89,14 @@ async def test_memory_operations_preserve_history_and_protect_pinned(
             target_id=added.memory.id,
         )
 
+    update_time = now + timedelta(seconds=1)
     updated = await apply_memory_operation(
         db_session,
         operation="UPDATE",
         category="preference",
         fact="偏好详细回答",
         confidence=1.0,
-        valid_from=now,
+        valid_from=update_time,
         actor="manual",
         source_message_id=None,
         embedding=_embedding(2),
@@ -109,6 +110,7 @@ async def test_memory_operations_preserve_history_and_protect_pinned(
     historical = await get_memory(db_session, added.memory.id)
     assert historical is not None
     assert historical.invalid_at is not None
+    assert historical.invalid_at == update_time
     assert historical.superseded_by == updated.memory.id
 
     noop = await apply_memory_operation(
@@ -168,6 +170,95 @@ async def test_memory_search_isolated_by_embedding_identity(db_session: AsyncSes
     assert [item.fact for item in hits] == ["偏好简洁回答"]
 
 
+async def test_out_of_order_model_update_becomes_history_without_reversing_current(
+    db_session: AsyncSession,
+) -> None:
+    _, message_id = await _owner_message(db_session)
+    newer_time = datetime(2026, 8, 18, 10, 0, tzinfo=UTC)
+    middle_time = datetime(2026, 8, 17, 18, 0, tzinfo=UTC)
+    older_time = datetime(2026, 8, 17, 10, 0, tzinfo=UTC)
+    current = await apply_memory_operation(
+        db_session,
+        operation="ADD",
+        category="profile",
+        fact="正在做智能体评测",
+        confidence=0.95,
+        valid_from=newer_time,
+        actor="model",
+        source_message_id=message_id,
+        embedding=_embedding(3),
+        embedding_model="fake-embedding",
+        embedding_provider="deterministic_test",
+        embedding_revision="memory-test",
+    )
+    assert current.memory is not None
+
+    late_old_job = await apply_memory_operation(
+        db_session,
+        operation="UPDATE",
+        category="profile",
+        fact="正在做多模态检索",
+        confidence=0.9,
+        valid_from=older_time,
+        actor="model",
+        source_message_id=message_id,
+        embedding=_embedding(4),
+        embedding_model="fake-embedding",
+        embedding_provider="deterministic_test",
+        embedding_revision="memory-test",
+        target_id=current.memory.id,
+    )
+
+    assert late_old_job.applied is True
+    assert late_old_job.current_changed is False
+    assert late_old_job.memory is not None
+    assert late_old_job.memory.invalid_at == newer_time
+    assert late_old_job.memory.superseded_by == current.memory.id
+    active = await list_memories(db_session, active=True)
+    assert [item.id for item in active] == [current.memory.id]
+
+    late_middle_job = await apply_memory_operation(
+        db_session,
+        operation="UPDATE",
+        category="profile",
+        fact="正在做 RAG 系统",
+        confidence=0.9,
+        valid_from=middle_time,
+        actor="model",
+        source_message_id=message_id,
+        embedding=_embedding(5),
+        embedding_model="fake-embedding",
+        embedding_provider="deterministic_test",
+        embedding_revision="memory-test",
+        target_id=current.memory.id,
+    )
+    assert late_middle_job.memory is not None
+    assert late_middle_job.memory.invalid_at == newer_time
+    assert late_middle_job.memory.superseded_by == current.memory.id
+    refreshed_oldest = await get_memory(db_session, late_old_job.memory.id)
+    assert refreshed_oldest is not None
+    assert refreshed_oldest.invalid_at == middle_time
+    assert refreshed_oldest.superseded_by == late_middle_job.memory.id
+
+    stale_delete = await apply_memory_operation(
+        db_session,
+        operation="DELETE",
+        category="profile",
+        fact="不再做智能体评测",
+        confidence=0.9,
+        valid_from=older_time,
+        actor="model",
+        source_message_id=message_id,
+        embedding=None,
+        embedding_model=None,
+        embedding_provider=None,
+        embedding_revision=None,
+        target_id=current.memory.id,
+    )
+    assert stale_delete.applied is False
+    assert [item.id for item in await list_memories(db_session, active=True)] == [current.memory.id]
+
+
 async def test_extraction_job_is_owner_only_idempotent_and_recoverable(
     db_session: AsyncSession,
 ) -> None:
@@ -187,13 +278,16 @@ async def test_extraction_job_is_owner_only_idempotent_and_recoverable(
     )
     assert claimed is not None
     assert claimed.content == "我偏好简洁回答"
-    assert await claim_memory_job(
-        db_session,
-        job_id=first.id,
-        worker_id="worker-2",
-        lease_s=30,
-        max_attempts=3,
-    ) is None
+    assert (
+        await claim_memory_job(
+            db_session,
+            job_id=first.id,
+            worker_id="worker-2",
+            lease_s=30,
+            max_attempts=3,
+        )
+        is None
+    )
     assert (
         await retry_or_fail_memory_job(
             db_session,
@@ -253,13 +347,16 @@ async def test_dispatcher_recovers_expired_jobs_and_finalizes_exhausted_ones(
     first_run, _ = await _owner_message(db_session)
     first = await schedule_memory_extraction(db_session, run_id=first_run.id)
     assert first is not None
-    assert await claim_memory_job(
-        db_session,
-        job_id=first.id,
-        worker_id="dead-worker",
-        lease_s=30,
-        max_attempts=3,
-    ) is not None
+    assert (
+        await claim_memory_job(
+            db_session,
+            job_id=first.id,
+            worker_id="dead-worker",
+            lease_s=30,
+            max_attempts=3,
+        )
+        is not None
+    )
     await db_session.execute(
         text("UPDATE memory_extraction_jobs SET lease_until = now() - interval '1 second'")
     )

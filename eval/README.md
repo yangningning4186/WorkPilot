@@ -22,6 +22,16 @@ runner 使用 evaluation mode，禁止 fallback。即便是合成 seed，也必�
 真实 owner 记忆更不能在端点信任边界不清楚时外发。正式 A5 结论要求 owner 审核的 human suite、
 完整 paired report 和盲评满意度，三者缺一不可。
 
+模型跑完后，owner 在 `blind-review.jsonl` 逐条填写 `preferred=A|B|tie`、两臂 1–5 分、
+`reviewer` 与 `reviewed_at`，再解盲汇总：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.memory_blind_review \
+  --package eval/outputs/memory-injection/<label>
+```
+
+缺评分、缺 reviewer/时间、item 顺序漂移或不足 5 条都会 fail-closed，不生成满意度报告。
+
 ## Dense-only 基线
 
 先在本地 `http://127.0.0.1:8000/annotation` 标注 gold spans，再运行：

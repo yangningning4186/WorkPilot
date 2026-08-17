@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
+from app.core.config import get_settings
 from app.llm.gateway import ModelGateway
 from app.memory.extraction import (
     MemoryExtractionError,
@@ -18,6 +19,7 @@ from app.memory.store import (
     schedule_memory_extraction,
 )
 from app.services.runs import append_message, create_run, ensure_conversation, finish_run
+from app.worker.memory_run import memory_extraction_job
 from tests.fakes import DeterministicProvider
 
 
@@ -119,9 +121,7 @@ async def test_processing_same_fact_adds_once_then_noops(db_session: AsyncSessio
 
     first_source = await _owner_job(db_session, "我偏好简洁回答")
     provider.queue_completions(candidate_payload)
-    first_operations = await process_memory_job_source(
-        db_session, gateway, source=first_source
-    )
+    first_operations = await process_memory_job_source(db_session, gateway, source=first_source)
     assert first_operations[0]["operation"] == "ADD"
     active = await list_memories(db_session)
     assert len(active) == 1
@@ -138,11 +138,14 @@ async def test_processing_same_fact_adds_once_then_noops(db_session: AsyncSessio
             ensure_ascii=False,
         ),
     )
-    second_operations = await process_memory_job_source(
-        db_session, gateway, source=second_source
-    )
+    second_operations = await process_memory_job_source(db_session, gateway, source=second_source)
 
     assert second_operations[0]["operation"] == "NOOP"
     refreshed = await list_memories(db_session)
     assert len(refreshed) == 1
     assert refreshed[0].access_count == 1
+
+
+async def test_disabled_extraction_worker_does_not_claim_queued_jobs() -> None:
+    settings = get_settings().model_copy(update={"memory_extraction_enabled": False})
+    await memory_extraction_job({"settings": settings}, str(uuid7()))

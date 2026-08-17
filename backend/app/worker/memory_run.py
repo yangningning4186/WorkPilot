@@ -27,6 +27,8 @@ def memory_worker_identity() -> str:
 async def memory_extraction_job(ctx: dict[str, Any], job_id_raw: str) -> None:
     job_id = UUID(job_id_raw)
     settings = ctx["settings"]
+    if not settings.memory_extraction_enabled:
+        return
     session_factory = ctx["session_factory"]
     worker_id = memory_worker_identity()
 
