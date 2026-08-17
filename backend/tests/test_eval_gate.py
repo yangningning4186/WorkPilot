@@ -346,7 +346,7 @@ def test_controlled_config_drift_is_not_silently_allowed(tmp_path: Path) -> None
     baseline = _retrieval_report([_retrieval_item("a")])
     candidate = _retrieval_report([_retrieval_item("a")], config={"top_k": 5})
 
-    with pytest.raises(ValueError, match="受控配置项不一致"):
+    with pytest.raises(GateRefused, match="受控配置项不一致"):
         _evaluate(tmp_path, baseline, candidate)
 
 
@@ -354,7 +354,16 @@ def test_dataset_mismatch_is_rejected(tmp_path: Path) -> None:
     baseline = _retrieval_report([_retrieval_item("a")])
     candidate = _retrieval_report([_retrieval_item("a")], dataset="english-dev")
 
-    with pytest.raises(ValueError, match="数据集不一致"):
+    with pytest.raises(GateRefused, match="数据集不一致"):
+        _evaluate(tmp_path, baseline, candidate)
+
+
+def test_item_id_mismatch_is_rejected(tmp_path: Path) -> None:
+    """配不上对就没有"比较"可言，同样属于拒判。"""
+    baseline = _retrieval_report([_retrieval_item("a")])
+    candidate = _retrieval_report([_retrieval_item("b")])
+
+    with pytest.raises(GateRefused, match="item_id"):
         _evaluate(tmp_path, baseline, candidate)
 
 
@@ -387,6 +396,14 @@ def test_cli_exit_codes_separate_failure_from_refusal(tmp_path: Path) -> None:
         "broken",
         _retrieval_report([_retrieval_item("a"), _retrieval_item("b", error="超时")]),
     )
+    # 下面两条走的是比较层的 ValueError，历史上会漏成 traceback + 退出码 1，
+    # 也就是把"跑批配错了"混报成"质量回退"
+    wrong_dataset = _write(
+        tmp_path, "dataset", _retrieval_report(items, dataset="english-dev")
+    )
+    drifted_config = _write(
+        tmp_path, "config", _retrieval_report(items, config={"top_k": 5})
+    )
 
     def _check(report: Path) -> int:
         return main(
@@ -397,6 +414,8 @@ def test_cli_exit_codes_separate_failure_from_refusal(tmp_path: Path) -> None:
     assert _check(failing) == 1
     # 拒判与判为不合格是两件事，退出码必须分开
     assert _check(broken) == 2
+    assert _check(wrong_dataset) == 2
+    assert _check(drifted_config) == 2
 
 
 def test_cli_snapshot_writes_a_committable_file(tmp_path: Path) -> None:

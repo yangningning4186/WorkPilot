@@ -78,6 +78,26 @@ BADCASES: tuple[Badcase, ...] = (
             "tests.test_cost_report::test_same_label_from_a_rerun_does_not_contaminate_lookups",
         ),
     ),
+    Badcase(
+        case_id="G1-门禁拒判退出码撞车",
+        discovered="2026-08-17",
+        source="docs/experiments/2026-08-17-G1-首份baseline快照与门禁点亮.md",
+        symptom=(
+            "拿错数据集的跑批去过门禁，`eval.gate` 甩出 traceback 并以退出码 1 退出——"
+            "和'判为不合格'同码。夜间自动化会把'跑批配错了'读成'质量回退'，"
+            "而 gate.py 的文档明明写着这类前置条件不满足要退 2"
+        ),
+        fix=(
+            "比较层（数据集不一致、受控配置漂移、item_id 配不上）抛的 ValueError "
+            "在 gate 里统一转成 GateRefused，退出码 2 与判定不合格分开"
+        ),
+        covered_by=(
+            "tests.test_eval_gate::test_cli_exit_codes_separate_failure_from_refusal",
+            "tests.test_eval_gate::test_dataset_mismatch_is_rejected",
+            "tests.test_eval_gate::test_controlled_config_drift_is_not_silently_allowed",
+            "tests.test_eval_gate::test_item_id_mismatch_is_rejected",
+        ),
+    ),
 )
 
 

@@ -255,7 +255,7 @@ def evaluate(baseline: LoadedReport, candidate: LoadedReport) -> GateOutcome:
     # 先做便宜的拒绝检查，再跑 bootstrap——否则漂移的比较也要先烧一遍重采样
     _reject_incomplete(candidate)
     _reject_gold_drift(baseline, candidate)
-    comparison = build_comparison(baseline, candidate)
+    comparison = _compare_or_refuse(baseline, candidate)
     kind = str(comparison["kind"])
     checks: list[dict[str, Any]] = []
     violations: list[Violation] = []
@@ -275,6 +275,22 @@ def evaluate(baseline: LoadedReport, candidate: LoadedReport) -> GateOutcome:
         pending=PENDING_JUDGE_METRICS,
         excluded=EXCLUDED_METRICS,
     )
+
+
+def _compare_or_refuse(
+    baseline: LoadedReport, candidate: LoadedReport
+) -> dict[str, Any]:
+    """比较层的前置校验（数据集、报告类型、受控配置、item_id 配对、类别漂移）
+    抛的是 `ValueError`——那是给 `eval.compare` 交互式使用的口径。门禁必须把它们
+    统一成 `GateRefused`：这些同样是"拒绝判定"，不是"判为不合格"。
+
+    否则退出码 1 会同时表示"质量回退"和"跑批配错了"，夜间自动化分不开这两件事，
+    还会甩一个 traceback 而不是可执行的说明。
+    """
+    try:
+        return build_comparison(baseline, candidate)
+    except ValueError as error:
+        raise GateRefused(str(error)) from error
 
 
 def _reject_incomplete(candidate: LoadedReport) -> None:
@@ -514,7 +530,12 @@ def _run_snapshot(args: argparse.Namespace) -> int:
 def _run_check(args: argparse.Namespace) -> int:
     git_ref = None if args.against == "working" else args.against
     baseline = read_baseline(path=args.baseline, git_ref=git_ref)
-    outcome = evaluate(baseline, load_report(args.report))
+    try:
+        candidate = load_report(args.report)
+    except ValueError as error:
+        # 候选报告本身读不动（缺 items、认不出轨）同样是拒判，不是不合格
+        raise GateRefused(f"候选报告无法载入: {error}") from error
+    outcome = evaluate(baseline, candidate)
     report = render_markdown(outcome)
     print(report)
     if args.output_dir is not None:
