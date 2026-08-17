@@ -241,7 +241,7 @@ calibration/validation，validation 至少 17 条。`agent_task` 在执行闭环
 dataset 内再分语言，需先把 language 元数据固化进 generation report。
 
 `prepare` 同时生成按 calibration 优先排序的 `human-labels.csv` 和 `human-review-guide.md`。
-填完 0/1/2、理由、reviewer、reviewed_at 后才可跑 Judge。以下命令只是模板，
+按当前冻结 binary v2 填完 0/1、理由、reviewer、reviewed_at 后才可跑 Judge。以下命令只是模板，
 没有针对数据与目标端点的新授权时不要执行：
 
 ```bash
@@ -252,7 +252,7 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.judge_calibration run \
   --allow-model-send --authorization-note '<approval reference>'
 ```
 
-每条 Judge 输出必须先给理由再给 0/1/2，记录 raw output、rubric/prompt 指纹、实际 provider/model、
+每条 Judge 输出必须先给理由再给 0/1，记录 raw output、rubric/prompt 指纹、实际 provider/model、
 token audit 和授权说明指纹；实际身份不同立即失败。标签与 Judge 输出可先只读校验，再显式写回：
 
 ```bash
@@ -277,6 +277,11 @@ dataset 切片、配对 bootstrap CI 和逐条分歧理由。当前默认门槛�
 内容或 rubric/prompt 漂移、常量标签导致 QWK 未定义、bootstrap 不完整都会 fail-closed。
 不同 metric 或 rubric 版本必须使用独立 namespace，不得把 correctness、faithfulness 与
 citation 分数混合统计。
+
+bootstrap 对 validation 做成对有放回抽样。小样本偶尔会抽到单一标签，此时 QWK 的
+chance-agreement 分母为 0、数学上不可定义；runner 会丢弃整对退化样本并按固定 seed 补抽，
+直到 accuracy/QWK 同时取得请求数量。报告必须记录 `attempted_resamples` 和
+`discarded_undefined_qwk`；原始标签本身常量或 10 倍尝试仍凑不齐时继续 fail-closed。
 
 ## 两次跑批的配对对照
 

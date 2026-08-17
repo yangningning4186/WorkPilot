@@ -285,7 +285,41 @@ def test_qwk_confusion_and_bootstrap_are_deterministic() -> None:
     assert metrics["confusion_matrix"]["judge_marginal"] == [3, 3]
     assert quadratic_weighted_kappa([0, 1], [0, 1]) == 1.0
     assert quadratic_weighted_kappa([1, 1], [1, 1]) is None
+    assert first["accuracy"]["effective_resamples"] == 200
+    assert first["qwk"]["effective_resamples"] == 200
+    assert first["attempted_resamples"] >= 200
     assert first == second
+
+
+def test_bootstrap_redraws_single_label_samples_in_small_skewed_validation() -> None:
+    """19 条、少数类 5 条是当前真实 validation 的形状。
+
+    普通有放回抽样合法地可能抽不到少数类；这时 QWK 未定义，不应把一次退化抽样
+    误报成 Judge 校准失败。补抽必须凑足请求数，并保留丢弃审计。
+    """
+    human = [0] * 5 + [1] * 14
+    judge = [0] * 5 + [1] * 14
+
+    result = bootstrap_agreement(human, judge, seed=12345, resamples=1_000)
+
+    assert result["accuracy"]["effective_resamples"] == 1_000
+    assert result["qwk"]["effective_resamples"] == 1_000
+    assert result["attempted_resamples"] > 1_000
+    assert result["discarded_undefined_qwk"] == result["attempted_resamples"] - 1_000
+    assert result["qwk"]["ci_low"] == 1.0
+    assert result["qwk"]["ci_high"] == 1.0
+
+
+def test_bootstrap_keeps_constant_original_labels_incomplete() -> None:
+    """原始标签没有方差时补抽也不能伪造一个 Kappa。"""
+    result = bootstrap_agreement([1] * 6, [1] * 6, seed=7, resamples=100)
+
+    assert result["accuracy"]["effective_resamples"] == 0
+    assert result["qwk"]["effective_resamples"] == 0
+    assert result["attempted_resamples"] == 100
+    assert result["discarded_undefined_qwk"] == 100
+    assert result["qwk"]["ci_low"] is None
+    assert result["qwk"]["ci_high"] is None
 
 
 def test_binary_qwk_equals_cohen_kappa_and_rejects_off_scale_labels() -> None:

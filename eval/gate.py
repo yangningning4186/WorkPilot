@@ -85,8 +85,9 @@ EXCLUDED_METRICS: dict[str, str] = {
     "cost_usd": "自部署价格表为 0，金额口径不可用；成本走 token 计",
 }
 
-# 需要校准过的 Judge 才能算，实验 J 收口前不启用。
-# 不是"忽略"，是在报告里显式列为 pending —— 免得以后有人以为门禁已经覆盖了语义正确性。
+# J2 已校准 answer_correctness-binary.v2，但当前 generation 快照还不携带 Judge 字段；
+# faithfulness / citation_accuracy 也尚未各自校准。所以这里仍显式列为 pending，直到
+# 首份 nightly baseline 完成字段接入。不是"忽略"，是防止误报门禁已经覆盖语义质量。
 PENDING_JUDGE_METRICS: tuple[str, ...] = (
     "answer_correctness",
     "faithfulness",

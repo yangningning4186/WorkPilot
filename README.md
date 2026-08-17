@@ -85,8 +85,8 @@ sparse 第三路检索、Obsidian/Zotero/web_clip connector、Langfuse/OpenTelem
 
 ## 项目状态
 
-**状态快照：2026-08-17。** M0 已收口；M1 的检索与固定 Agent 工程闭环已完成，
-Judge 正式校准尚未收口；M2 已选择三档路由方向并进入最终交付阶段。当前停止扩功能。
+**状态快照：2026-08-17。** M0 已收口；M1 的检索、固定 Agent 与六类 binary correctness
+Judge 校准已完成；M2 已选择三档路由方向并进入最终交付阶段。当前停止扩功能。
 
 ### 已实现
 
@@ -94,19 +94,23 @@ Judge 正式校准尚未收口；M2 已选择三档路由方向并进入最终�
 - 固定综述 Agent：六步状态机、三维预算、checkpoint、`SIGKILL` 恢复、HITL 与 effectively-once 写回
 - `light/main/heavy/external` 路由、fallback、确定性升档、精确缓存、GPU 批次成本口径与 admin 成本看板
 - 80 条 human 评测集（70 dev + 10 隔离 test）、严格配对 diff、bootstrap、夜间 gate 工具与 badcase 棘轮
-- 当前验证：后端 **411/411**、前端 Playwright **37/37**，Ruff、mypy、ESLint、TypeScript 全部通过
+- 独立 validation 19 条上，heavy Judge accuracy/QWK 为 **0.9474/0.8725**，
+  main 为 **1.0000/1.0000**；日常 binary correctness Judge 采用 main
+- 当前验证：后端与前端测试、Ruff、mypy、ESLint、TypeScript 全部通过
 
 ### 已有数据，但结论有边界
 
 - 人工引用准确率 **95.45%（42/44）**；修复后不可答题 **13/13** 正确拒答，
   可答题实际回答从 36/57 提升到 44/57，仍有 13 条误拒
-- Judge 降档的判者间一致率为 **97.14%**、QWK **0.9191**，但 95% CI 下界为 0.7842；
-  尚无独立人工盲标，不能据此宣称 `main` Judge 已被证明准确
+- Judge 校准只覆盖当前六类的 `answer-correctness-binary.v2`；类别 validation 仅 2–5 条，
+  不能外推到逐类可靠性、faithfulness、citation accuracy 或 `agent_task`
+- heavy 的 validation QWK 点估计过门，但 95% CI 下界为 0.5674；main 的 19/19 也不能
+  读成真实总体准确率必然为 100%
 - HNSW 调参在当前 40 篇语料规模下未真正命中向量索引；语料扩容后必须重跑
 
 ### 收口中
 
-- 作者盲标 validation 19 条，完成六类 Judge 正式校准；扩充并人工复核 `agent_task`
+- 扩充并人工复核 `agent_task`，再从六类中间结论升级为七类正式校准
 - 生成首份 `eval/snapshots/baseline.json`，实际运行 nightly dev + Judge 门禁
 - 保持 10 条 test 隔离，最终里程碑只运行一次
 - README 完整使用说明、前端打磨、安全清单、独立演示环境、博客、视频和公网部署

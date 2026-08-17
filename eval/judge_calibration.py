@@ -1117,20 +1117,38 @@ def bootstrap_agreement(
     rng = random.Random(seed)
     accuracy_samples: list[float] = []
     qwk_samples: list[float] = []
-    for _ in range(resamples):
+    # 有限 validation 集的普通 bootstrap 会偶尔抽到单一标签。此时 accuracy 仍有定义，
+    # 但 Kappa 的 chance-agreement 分母为 0，数学上不可定义。旧实现直接丢掉这些 QWK，
+    # 随后又要求 effective_resamples == requested_resamples，导致只要发生一次合法的退化抽样，
+    # 整批校准就必然失败。n=19、少数类=5 时这不是异常，而是约 0.3% 的预期事件。
+    #
+    # 这里保持 paired percentile bootstrap：退化样本整对丢弃，并用同一个 RNG 确定性补抽，
+    # 直到 accuracy/QWK 同时得到请求数量。若原始标签本身常量，或在 10 倍尝试内仍凑不齐，
+    # 继续 fail-closed；报告显式记录尝试数与丢弃数，不能把补抽藏起来。
+    original_qwk = quadratic_weighted_kappa(human, judge)
+    max_attempts = resamples * 10
+    attempts = 0
+    while len(qwk_samples) < resamples and attempts < max_attempts:
+        attempts += 1
         indexes = [rng.randrange(len(human)) for _ in human]
         left = [human[i] for i in indexes]
         right = [judge[i] for i in indexes]
-        accuracy_samples.append(
-            sum(a == b for a, b in zip(left, right, strict=True)) / len(left)
-        )
         qwk = quadratic_weighted_kappa(left, right)
         if qwk is not None and math.isfinite(qwk):
+            accuracy_samples.append(
+                sum(a == b for a, b in zip(left, right, strict=True)) / len(left)
+            )
             qwk_samples.append(qwk)
+        if original_qwk is None and attempts >= resamples:
+            # 原始样本就没有标签方差时，补抽不可能让 QWK 变得可解释。
+            break
     return {
-        "method": "paired percentile bootstrap",
+        "method": "paired percentile bootstrap with deterministic redraw for undefined QWK",
         "seed": seed,
         "resamples": resamples,
+        "attempted_resamples": attempts,
+        "discarded_undefined_qwk": attempts - len(qwk_samples),
+        "max_attempts": max_attempts,
         "ci_level": ci_level,
         "accuracy": _bootstrap_summary(accuracy_samples, resamples, ci_level),
         "qwk": _bootstrap_summary(qwk_samples, resamples, ci_level),

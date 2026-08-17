@@ -94,8 +94,10 @@ Agent 与工具 · 记忆系统 · 知识图谱 · 三档模型路由 · 任何�
 > heading 生成，均为 70/70、0 error，10 条 test 未访问。evidence gate 修复后，可答题实际回答
 > 从 36/57 升到 44/57，不可答仍为 13/13。修复后六类 Judge 包为 70 个唯一 case
 >（calibration 51 / validation 19），人工标签表和复核指南已准备；该数据范围的内网发送已获授权。
-> J1 已完成 `main` / `heavy` 的判者间一致性实验，但它不替代独立人工盲标；正式 Judge 校准仍待
-> 作者盲标 validation、必要的 rubric 修订和重跑。
+> J1 已完成 `main` / `heavy` 的判者间一致性实验；J2 随后完成作者独立盲标 validation 19 条。
+> heavy 的 validation accuracy/QWK 为 0.9474/0.8725，main 为 1.0/1.0，两档均通过 0.85 门槛，
+> 日常 binary correctness Judge 采用 main。该结论只覆盖当前六类；`agent_task` 与其他 rubric
+> 仍未校准。
 
 > **为什么是"固定工作流"而不是通用 Agent**：
 > 固定流程能把 planner 的不确定性关掉，让 HITL、幂等、断点续跑这些
