@@ -130,6 +130,8 @@ class Settings(BaseSettings):
     query_decomposition_max_subqueries: int = Field(default=4, ge=2, le=8)
     query_decomposition_max_tokens: int = Field(default=300, ge=64, le=2048)
     rerank_enabled: bool = False
+    # dense/lexical 各臂取候选后先做 RRF，并截到该深度再送 rerank。
+    # 两臂完整并集只用于离线 P1 实验，不是生产默认链路。
     rerank_candidate_k: int = Field(default=50, ge=2, le=50)
     reranker_base_url: str = "http://127.0.0.1:8011"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
@@ -141,6 +143,11 @@ class Settings(BaseSettings):
     lexical_rrf_enabled: bool = True
     lexical_mode: Literal["ts_rank", "coverage", "ts_rank_cd"] = "ts_rank"
     rrf_k: int = Field(default=60, ge=1, le=1000)
+    # 每篇文档在融合结果头部的名额上限（0 = 关闭）。跨文档题被单一文档霸榜的
+    # 对策，见 retrieval/fusion.py::apply_document_cap 与台账 E7。
+    # 默认关闭：它拿"集中"换"分散"，对答案本就集中在单篇的题有害，
+    # 必须先在 70 条上做受控对照再决定默认值。
+    document_cap_per_version: int = Field(default=0, ge=0, le=50)
     answer_max_evidence_chars: int = Field(default=12000, ge=1000, le=100000)
     answer_max_tokens: int = Field(default=1200, ge=64, le=8192)
     # 通用知识回答不可溯源, 刻意给得比资料库回答更短: 它是降级出口不是主路。

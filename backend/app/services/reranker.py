@@ -5,8 +5,9 @@ import httpx
 from app.retrieval.dense import DenseSearchHit
 from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
 
-# 送给 cross-encoder 的候选文本构造方式。title 前置会让标题与问题字面吻合的 chunk
-# 压过正文真正相关的 chunk, 见台账 D5; 因此做成可切换的单变量。第一项是当前默认值。
+# 送给 cross-encoder 的候选文本构造方式。P1-B 表明去掉 title 单独无收益，
+# 去掉 heading/结构前缀后才显著改善；先保留三种模式供正式单变量复核。
+# 第一项仍是当前生产默认值。
 CANDIDATE_TEXT_MODES = ("title_heading_content", "heading_content", "content")
 
 
@@ -61,7 +62,7 @@ async def rerank_candidates(
         "documents": [
             {
                 "id": candidate_id,
-                "text": _candidate_text(
+                "text": build_candidate_text(
                     hit, max_chars=max_candidate_chars, mode=candidate_text_mode
                 ),
             }
@@ -148,7 +149,20 @@ def parse_cross_encoder_response(
     return parsed, model.strip()
 
 
-def _candidate_text(hit: DenseSearchHit, *, max_chars: int, mode: str) -> str:
+def build_candidate_text(hit: DenseSearchHit, *, max_chars: int, mode: str) -> str:
+    """按线上同一口径构造 cross-encoder 的 document 字符串。"""
+    prefix = _candidate_prefix(hit, mode=mode)
+    content_budget = max(1, max_chars - len(prefix) - 1)
+    return f"{prefix}\n{hit.content[:content_budget]}" if prefix else hit.content[:max_chars]
+
+
+def candidate_content_offset(hit: DenseSearchHit, *, mode: str) -> int:
+    """正文首字符在候选字符串中的偏移，供 gold span 可见性审计使用。"""
+    prefix = _candidate_prefix(hit, mode=mode)
+    return len(prefix) + 1 if prefix else 0
+
+
+def _candidate_prefix(hit: DenseSearchHit, *, mode: str) -> str:
     if mode == "content":
         parts: tuple[str, ...] = ()
     elif mode == "heading_content":
@@ -157,6 +171,8 @@ def _candidate_text(hit: DenseSearchHit, *, max_chars: int, mode: str) -> str:
         parts = (hit.title, " > ".join(hit.heading_path))
     else:
         raise ValueError(f"未知的 rerank_candidate_text_mode: {mode}")
-    prefix = "\n".join(part for part in parts if part)
-    content_budget = max(1, max_chars - len(prefix) - 1)
-    return f"{prefix}\n{hit.content[:content_budget]}" if prefix else hit.content[:max_chars]
+    return "\n".join(part for part in parts if part)
+
+
+# 兼容既有内部测试与调用；新审计代码使用语义更清楚的公开名称。
+_candidate_text = build_candidate_text

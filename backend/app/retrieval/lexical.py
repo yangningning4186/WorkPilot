@@ -154,8 +154,8 @@ async def lexical_search(
 ) -> list[DenseSearchHit]:
     if not query.strip():
         raise ValueError("query 不能为空")
-    if not 1 <= top_k <= 50:
-        raise ValueError("top_k 必须位于 1 到 50")
+    if not 1 <= top_k <= 100:
+        raise ValueError("top_k 必须位于 1 到 100")
     if mode not in LEXICAL_MODES:
         raise ValueError(f"未知的 lexical_mode: {mode}, 可选 {LEXICAL_MODES}")
     strategy = validate_chunk_strategy(strategy)

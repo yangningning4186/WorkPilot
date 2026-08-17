@@ -220,6 +220,22 @@ RETRIEVAL_METRICS: tuple[MetricSpec, ...] = (
         _retrieval_metric("context_precision"),
     ),
     MetricSpec(
+        "gold_doc_recall_at_k",
+        "gold 文档 Recall@K",
+        "ratio",
+        True,
+        _retrieval_metric("gold_doc_recall_at_k"),
+        note="命中的 gold 文档数占比。跨文档题被单一文档霸榜时直接掉档。",
+    ),
+    MetricSpec(
+        "max_doc_share_at_k",
+        "单文档最大占比@K",
+        "ratio",
+        False,
+        _retrieval_metric("max_doc_share_at_k"),
+        note="Top-K 中单篇文档占比，越低越好。1.0 表示被一篇文档霸榜。",
+    ),
+    MetricSpec(
         "context_redundancy",
         "上下文冗余率",
         "ratio",

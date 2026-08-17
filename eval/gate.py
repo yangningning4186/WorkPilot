@@ -64,6 +64,11 @@ NO_REGRESSION_METRICS: dict[str, tuple[str, ...]] = {
         "alpha_ndcg_at_k",
         "mrr",
         "context_precision",
+        # TODO(P1-多样性): gold_doc_recall_at_k 是单文档霸榜的守门指标
+        # （α-nDCG 对该失败模式无区分度，见 metrics/retrieval.py）。
+        # 现在还不能进门禁：旧 baseline 没有这个字段，会直接触发
+        # no_comparable_samples 拒绝。等多样性修复落地、语料稳定后
+        # 随新 baseline 一起点亮。
         "refusal_correct_at_threshold",
     ),
     KIND_GENERATION: (

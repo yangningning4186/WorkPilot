@@ -187,6 +187,7 @@ async def answer(
             lexical_rrf_enabled=settings.lexical_rrf_enabled,
             lexical_mode=settings.lexical_mode,
             rrf_k=settings.rrf_k,
+            document_cap_per_version=settings.document_cap_per_version,
             max_evidence_chars=settings.answer_max_evidence_chars,
             max_tokens=settings.answer_max_tokens,
         )

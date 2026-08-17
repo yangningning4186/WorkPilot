@@ -9,6 +9,8 @@ from app.core.config import get_settings
 from app.llm.gateway import ModelGateway
 from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
 
+MAX_RETRIEVAL_CANDIDATES = 100
+
 
 async def apply_hnsw_scan_settings(session: AsyncSession) -> None:
     """按 docs/03 §4.1 设置本事务的 pgvector 扫描参数。
@@ -60,8 +62,8 @@ async def dense_search(
 ) -> list[DenseSearchHit]:
     if not query.strip():
         raise ValueError("query 不能为空")
-    if not 1 <= top_k <= 50:
-        raise ValueError("top_k 必须位于 1 到 50")
+    if not 1 <= top_k <= MAX_RETRIEVAL_CANDIDATES:
+        raise ValueError(f"top_k 必须位于 1 到 {MAX_RETRIEVAL_CANDIDATES}")
     strategy = validate_chunk_strategy(strategy)
     result = await gateway.embed([query], task_type="query_embedding")
     return await _dense_search_by_vector(
@@ -85,10 +87,10 @@ async def multi_query_dense_search(
     normalized = list(dict.fromkeys(" ".join(query.split()) for query in queries if query.strip()))
     if not normalized:
         raise ValueError("queries 不能为空")
-    if not 1 <= top_k <= 50:
-        raise ValueError("top_k 必须位于 1 到 50")
-    if not 1 <= per_query_top_k <= 50:
-        raise ValueError("per_query_top_k 必须位于 1 到 50")
+    if not 1 <= top_k <= MAX_RETRIEVAL_CANDIDATES:
+        raise ValueError(f"top_k 必须位于 1 到 {MAX_RETRIEVAL_CANDIDATES}")
+    if not 1 <= per_query_top_k <= MAX_RETRIEVAL_CANDIDATES:
+        raise ValueError(f"per_query_top_k 必须位于 1 到 {MAX_RETRIEVAL_CANDIDATES}")
     strategy = validate_chunk_strategy(strategy)
     if len(normalized) == 1:
         return await dense_search(

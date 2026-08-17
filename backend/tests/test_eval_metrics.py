@@ -70,6 +70,52 @@ def test_retrieval_metrics_cover_ranking_budget_and_duplicate_evidence() -> None
     assert 0 < metrics.alpha_ndcg_at_k < 1
 
 
+def test_document_diversity_catches_single_document_domination() -> None:
+    """跨文档题被单一文档霸榜：α-nDCG 看不出来，文档多样性指标必须看得出来。
+
+    这是 E7 的 badcase 形状：gold 跨两篇文档，Top-K 全部来自第一篇。
+    """
+    spans = [
+        GoldSpan(version_id=VERSION_A, char_start=100, char_end=200),
+        GoldSpan(version_id=VERSION_B, char_start=100, char_end=200),
+    ]
+    # Top-K 全部来自 VERSION_A，VERSION_B 的 gold 一条都没进
+    dominated = [
+        _chunk(1, 90, 210),
+        _chunk(2, 300, 400),
+        _chunk(3, 500, 600),
+        _chunk(4, 700, 800),
+    ]
+    candidates = [*dominated, _chunk(5, 90, 210, version=VERSION_B)]
+
+    metrics = evaluate_retrieval(
+        spans, dominated, candidates, top_k=4, token_budget=10_000, theta=0.5, alpha=0.5
+    )
+
+    assert metrics.gold_doc_recall_at_k == 0.5  # 两篇 gold 文档只命中一篇
+    assert metrics.max_doc_share_at_k == 1.0  # 被一篇文档 100% 霸榜
+    assert metrics.distinct_docs_at_k == 1
+    assert metrics.gold_doc_count == 2
+
+
+def test_document_diversity_does_not_penalize_within_document_multi_hop() -> None:
+    """同文档多跳（multi_hop 24 条里有 15 条是这形状）不能被误判为霸榜。"""
+    spans = [
+        GoldSpan(version_id=VERSION_A, char_start=100, char_end=200),
+        GoldSpan(version_id=VERSION_A, char_start=300, char_end=400),
+    ]
+    ranked = [_chunk(1, 90, 210), _chunk(2, 290, 410)]
+
+    metrics = evaluate_retrieval(
+        spans, ranked, ranked, top_k=2, token_budget=10_000, theta=0.5, alpha=0.5
+    )
+
+    # 两跳都在同一篇文档里，这是正确答案，gold 文档召回必须是满分
+    assert metrics.gold_doc_recall_at_k == 1.0
+    assert metrics.gold_doc_count == 1
+    assert metrics.span_recall_at_k == 1.0
+
+
 def test_token_budget_is_strict_and_repeatable() -> None:
     chunks = [_chunk(1, 0, 100, tokens=120), _chunk(2, 100, 200, tokens=40)]
 

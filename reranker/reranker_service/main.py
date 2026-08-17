@@ -1,5 +1,6 @@
 import math
 import os
+from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -38,9 +39,31 @@ class ServiceSettings:
         )
 
 
+class AuditSpan(BaseModel):
+    id: str = Field(min_length=1, max_length=100)
+    char_start: int = Field(ge=0)
+    char_end: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "AuditSpan":
+        if self.char_end <= self.char_start:
+            raise ValueError("audit span 结束位置必须大于开始位置")
+        return self
+
+
 class Document(BaseModel):
     id: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=20_000)
+    audit_spans: list[AuditSpan] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_audit_spans(self) -> "Document":
+        ids = [span.id for span in self.audit_spans]
+        if len(ids) != len(set(ids)):
+            raise ValueError("同一 document 的 audit span id 不能重复")
+        if any(span.char_end > len(self.text) for span in self.audit_spans):
+            raise ValueError("audit span 不能超过 document text 长度")
+        return self
 
 
 class RerankRequest(BaseModel):
@@ -48,6 +71,9 @@ class RerankRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4_000)
     documents: list[Document] = Field(min_length=1, max_length=100)
     top_n: int = Field(default=10, ge=1, le=100)
+    # 仅允许在已加载服务的安全上限内缩小窗口。生产请求不传时行为逐位不变;
+    # 离线 2x2 实验可在同一模型实例上比较 512/1024, 避免重启引入候选漂移。
+    max_length: int | None = Field(default=None, ge=128, le=8192)
 
     @model_validator(mode="after")
     def validate_request(self) -> "RerankRequest":
@@ -65,9 +91,20 @@ class RerankItem(BaseModel):
     relevance_score: float
 
 
+class TokenSpanAudit(BaseModel):
+    document_id: str
+    span_id: str
+    char_start: int
+    char_end: int
+    total_tokens: int
+    visible_tokens: int
+    fully_visible: bool
+
+
 class RerankResponse(BaseModel):
     model: str
     results: list[RerankItem]
+    span_audits: list[TokenSpanAudit] = Field(default_factory=list)
 
 
 class HealthResponse(BaseModel):
@@ -88,7 +125,17 @@ class Scorer(Protocol):
     batch_size: int
     max_length: int
 
-    def score(self, query: str, documents: list[str]) -> list[float]: ...
+    def score(
+        self, query: str, documents: list[str], *, max_length: int | None = None
+    ) -> list[float]: ...
+
+    def audit_spans(
+        self,
+        query: str,
+        documents: list[Document],
+        *,
+        max_length: int,
+    ) -> list[TokenSpanAudit]: ...
 
 
 class CrossEncoderScorer:
@@ -111,7 +158,10 @@ class CrossEncoderScorer:
         self._model.to(self.device)
         self._model.eval()
 
-    def score(self, query: str, documents: list[str]) -> list[float]:
+    def score(
+        self, query: str, documents: list[str], *, max_length: int | None = None
+    ) -> list[float]:
+        effective_max_length = max_length or self.max_length
         scores: list[float] = []
         with torch.inference_mode():
             for offset in range(0, len(documents), self.batch_size):
@@ -121,7 +171,7 @@ class CrossEncoderScorer:
                     batch,
                     padding=True,
                     truncation=True,
-                    max_length=self.max_length,
+                    max_length=effective_max_length,
                     return_tensors="pt",
                 )
                 inputs = {key: value.to(self.device) for key, value in inputs.items()}
@@ -130,6 +180,86 @@ class CrossEncoderScorer:
         if len(scores) != len(documents) or any(not math.isfinite(score) for score in scores):
             raise RuntimeError("reranker 返回了非法分数")
         return scores
+
+    def audit_spans(
+        self,
+        query: str,
+        documents: list[Document],
+        *,
+        max_length: int,
+    ) -> list[TokenSpanAudit]:
+        audits: list[TokenSpanAudit] = []
+        for document in documents:
+            if not document.audit_spans:
+                continue
+            complete = self._tokenizer(
+                query,
+                document.text,
+                truncation=False,
+                return_offsets_mapping=True,
+            )
+            visible = self._tokenizer(
+                query,
+                document.text,
+                truncation=True,
+                max_length=max_length,
+                return_offsets_mapping=True,
+            )
+            complete_offsets = _document_offsets(complete)
+            visible_offsets = _document_offsets(visible)
+            for span in document.audit_spans:
+                total_tokens, visible_tokens, fully_visible = _token_span_coverage(
+                    complete_offsets,
+                    visible_offsets,
+                    char_start=span.char_start,
+                    char_end=span.char_end,
+                )
+                audits.append(
+                    TokenSpanAudit(
+                        document_id=document.id,
+                        span_id=span.id,
+                        char_start=span.char_start,
+                        char_end=span.char_end,
+                        total_tokens=total_tokens,
+                        visible_tokens=visible_tokens,
+                        fully_visible=fully_visible,
+                    )
+                )
+        return audits
+
+
+def _document_offsets(encoding: object) -> list[tuple[int, int]]:
+    """取 pair tokenizer 中第二段 document 的字符 offset。"""
+    sequence_ids = encoding.sequence_ids()  # type: ignore[attr-defined]
+    offsets = encoding["offset_mapping"]  # type: ignore[index]
+    return [
+        (int(start), int(end))
+        for sequence_id, (start, end) in zip(sequence_ids, offsets, strict=True)
+        if sequence_id == 1 and end > start
+    ]
+
+
+def _token_span_coverage(
+    complete_offsets: list[tuple[int, int]],
+    visible_offsets: list[tuple[int, int]],
+    *,
+    char_start: int,
+    char_end: int,
+) -> tuple[int, int, bool]:
+    """用真实 token offset 判断 gold span 的 token 是否全部保留。"""
+    complete = Counter(
+        offset
+        for offset in complete_offsets
+        if offset[1] > char_start and offset[0] < char_end
+    )
+    visible = Counter(
+        offset
+        for offset in visible_offsets
+        if offset[1] > char_start and offset[0] < char_end
+    )
+    total_tokens = sum(complete.values())
+    visible_tokens = sum((complete & visible).values())
+    return total_tokens, visible_tokens, total_tokens > 0 and visible_tokens == total_tokens
 
 
 def _resolve_device(requested: str) -> str:
@@ -195,13 +325,32 @@ def create_app(scorer: Scorer | None = None) -> FastAPI:
                 status_code=409,
                 detail=f"服务已加载 {current.model_name}, 请求模型为 {payload.model}",
             )
-        scores = current.score(payload.query, [document.text for document in payload.documents])
+        effective_max_length = payload.max_length or current.max_length
+        if effective_max_length > current.max_length:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"请求 max_length={effective_max_length} 超过服务上限 "
+                    f"{current.max_length}"
+                ),
+            )
+        scores = current.score(
+            payload.query,
+            [document.text for document in payload.documents],
+            max_length=effective_max_length,
+        )
+        span_audits = current.audit_spans(
+            payload.query,
+            payload.documents,
+            max_length=effective_max_length,
+        )
         ranked = sorted(
             enumerate(zip(payload.documents, scores, strict=True)),
             key=lambda item: (-item[1][1], item[0]),
         )[: payload.top_n]
         return RerankResponse(
             model=current.model_name,
+            span_audits=span_audits,
             results=[
                 RerankItem(index=index, id=document.id, relevance_score=score)
                 for index, (document, score) in ranked

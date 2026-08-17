@@ -1,23 +1,26 @@
 import argparse
 import asyncio
 import json
+import math
 import subprocess
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import fmean
+from uuid import UUID
 
 import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from uuid6 import uuid7
 
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.llm.audit import SqlLlmCallAudit
 from app.llm.gateway import ModelGateway, build_model_gateway
 from app.retrieval.dense import DenseSearchHit, dense_search
-from app.retrieval.fusion import reciprocal_rank_fusion
+from app.retrieval.fusion import rerank_candidate_union
 from app.retrieval.lexical import lexical_search
 from app.services.reranker import rerank_candidates
 from eval.metrics.diagnostics import percentile
@@ -39,6 +42,7 @@ async def run_reranker_latency(
     repeat: int,
     warmup: int,
     output_dir: Path,
+    synthetic: bool = False,
     settings: Settings | None = None,
 ) -> Path:
     settings = settings or Settings()
@@ -52,23 +56,34 @@ async def run_reranker_latency(
         raise ValueError("candidate_counts 必须全部大于 top_k")
 
     max_candidates = max(candidate_counts)
+    # 候选数是 cross-encoder 实际看到的总数；两臂各取一半再去重并集，最多 100/臂。
+    per_arm_top_k = math.ceil(max_candidates / 2)
+    if per_arm_top_k > 100:
+        raise ValueError("candidate_counts 最大只能是 200（两臂各 100）")
 
-    async with session_factory() as session:
-        gateway = build_model_gateway(settings, audit_sink=SqlLlmCallAudit(session))
-        questions = await _load_questions(session, dataset_name)
-        if not questions:
-            raise RuntimeError(f"数据集 {dataset_name} 没有样本")
-        # 候选检索不计入精排延迟, 先一次性构造再复用, 避免把 dense/lexical 的耗时算进去。
-        candidates = [
-            await _build_candidates(
-                session,
-                gateway,
-                query=question,
-                top_k=max_candidates,
-                settings=settings,
-            )
-            for question in questions
-        ]
+    if synthetic:
+        # 只测本地 /v1/rerank 的候选规模与文本长度，不读取资料库、也不把问题发给 embedding。
+        # 真实语料跑批仍使用默认路径，并由调用者单独确认其模型发送边界。
+        questions = ["Which evidence best answers this synthetic retrieval question?"]
+        candidates = [_synthetic_candidates(max_candidates)]
+    else:
+        async with session_factory() as session:
+            gateway = build_model_gateway(settings, audit_sink=SqlLlmCallAudit(session))
+            questions = await _load_questions(session, dataset_name)
+            if not questions:
+                raise RuntimeError(f"数据集 {dataset_name} 没有样本")
+            # 候选检索不计入精排延迟, 先一次性构造再复用, 避免把 dense/lexical 的耗时算进去。
+            candidates = [
+                await _build_candidates(
+                    session,
+                    gateway,
+                    query=question,
+                    per_arm_top_k=per_arm_top_k,
+                    settings=settings,
+                )
+                for question in questions
+            ]
+            await gateway.aclose()
 
     samples: list[LatencySample] = []
     async with httpx.AsyncClient(
@@ -108,10 +123,13 @@ async def run_reranker_latency(
         "config": {
             "reranker_base_url": settings.reranker_base_url,
             "rerank_max_candidate_chars": settings.rerank_max_candidate_chars,
+            "candidate_mode": "dense_lexical_union",
+            "per_arm_top_k": per_arm_top_k,
             "top_k": top_k,
             "repeat": repeat,
             "warmup": warmup,
             "question_count": len(questions),
+            "synthetic": synthetic,
         },
         "service_health": health,
         "by_candidate_count": _summarize(samples),
@@ -156,14 +174,14 @@ async def _build_candidates(
     gateway: ModelGateway,
     *,
     query: str,
-    top_k: int,
+    per_arm_top_k: int,
     settings: Settings,
 ) -> list[DenseSearchHit]:
-    dense_hits = await dense_search(session, gateway, query=query, top_k=top_k)
+    dense_hits = await dense_search(session, gateway, query=query, top_k=per_arm_top_k)
     lexical_hits = await lexical_search(
-        session, query=query, top_k=top_k, mode=settings.lexical_mode
+        session, query=query, top_k=per_arm_top_k, mode=settings.lexical_mode
     )
-    return reciprocal_rank_fusion([dense_hits, lexical_hits], top_k=top_k, rrf_k=settings.rrf_k)
+    return rerank_candidate_union(dense_hits, lexical_hits, rrf_k=settings.rrf_k)
 
 
 async def _load_questions(session: AsyncSession, dataset_name: str) -> list[str]:
@@ -202,6 +220,28 @@ def _summarize(samples: list[LatencySample]) -> list[dict[str, object]]:
             }
         )
     return summary
+
+
+def _synthetic_candidates(count: int) -> list[DenseSearchHit]:
+    """构造固定长度候选，隔离 cross-encoder 延迟且不触碰私人语料。"""
+    version_id = UUID("00000000-0000-0000-0000-000000000001")
+    document_id = UUID("00000000-0000-0000-0000-000000000002")
+    return [
+        DenseSearchHit(
+            chunk_id=uuid7(),
+            document_id=document_id,
+            version_id=version_id,
+            version_no=1,
+            title=f"Synthetic document {index}",
+            source_uri="synthetic://reranker-latency",
+            # title/heading_content 模式会吃掉少量前缀；正文故意明显长于 1200 字符截断。
+            content=(f"candidate {index} evidence " * 100),
+            score=1.0 - index / max(count, 1),
+            heading_path=["Synthetic", "Latency"],
+            blocks=[],
+        )
+        for index in range(count)
+    ]
 
 
 def _render_markdown(payload: dict[str, object]) -> str:
@@ -262,11 +302,12 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="测量本地 cross-encoder 的精排延迟")
     parser.add_argument("--dataset", default="multihop-test-v1")
     parser.add_argument("--label", required=True)
-    parser.add_argument("--candidate-counts", default="10,25,50")
-    parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--candidate-counts", default="100,200")
+    parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--output-dir", type=Path, default=Path("eval/outputs/reranker-latency"))
+    parser.add_argument("--synthetic", action="store_true", help="不用资料库和 embedding，只测本地 rerank")
     return parser.parse_args()
 
 
@@ -282,6 +323,7 @@ def main() -> None:
             repeat=args.repeat,
             warmup=args.warmup,
             output_dir=args.output_dir,
+            synthetic=args.synthetic,
         )
     )
     print(f"报告已写入 {path}")

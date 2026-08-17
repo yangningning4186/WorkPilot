@@ -15,7 +15,10 @@ from app.retrieval.citations import (
     parse_citations,
 )
 from app.retrieval.dense import DenseSearchHit, multi_query_dense_search
-from app.retrieval.fusion import reciprocal_rank_fusion
+from app.retrieval.fusion import (
+    apply_document_cap,
+    reciprocal_rank_fusion,
+)
 from app.retrieval.lexical import lexical_search
 from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
 from app.services.evidence_sufficiency import (
@@ -128,6 +131,7 @@ async def stream_answer_with_citations(
     lexical_rrf_enabled: bool = True,
     lexical_mode: str = "ts_rank",
     rrf_k: int = 60,
+    document_cap_per_version: int = 0,
     chunk_strategy: ChunkStrategy = "heading",
     max_evidence_chars: int = 12000,
     max_tokens: int = 1200,
@@ -162,6 +166,7 @@ async def stream_answer_with_citations(
         lexical_rrf_enabled=lexical_rrf_enabled,
         lexical_mode=lexical_mode,
         rrf_k=rrf_k,
+        document_cap_per_version=document_cap_per_version,
         chunk_strategy=chunk_strategy,
         max_evidence_chars=max_evidence_chars,
     )
@@ -208,6 +213,7 @@ async def answer_with_citations(
     lexical_rrf_enabled: bool = True,
     lexical_mode: str = "ts_rank",
     rrf_k: int = 60,
+    document_cap_per_version: int = 0,
     chunk_strategy: ChunkStrategy = "heading",
     max_evidence_chars: int = 12000,
     max_tokens: int = 1200,
@@ -242,6 +248,7 @@ async def answer_with_citations(
         lexical_rrf_enabled=lexical_rrf_enabled,
         lexical_mode=lexical_mode,
         rrf_k=rrf_k,
+        document_cap_per_version=document_cap_per_version,
         chunk_strategy=chunk_strategy,
         max_evidence_chars=max_evidence_chars,
         max_tokens=max_tokens,
@@ -277,6 +284,7 @@ async def _prepare_generation(
     lexical_rrf_enabled: bool,
     lexical_mode: str,
     rrf_k: int,
+    document_cap_per_version: int,
     chunk_strategy: ChunkStrategy,
     max_evidence_chars: int,
 ) -> "_GenerationContext | GroundedAnswerResult":
@@ -309,11 +317,21 @@ async def _prepare_generation(
             mode=lexical_mode,
             strategy=chunk_strategy,
         )
+        # P1-A dev16：两臂并集与 RRF Top-50 的 Recall 完全相同，却把 50/100
+        # 候选精排从约 3.17s 拉到 6.15s。生产链路保持 RRF Top-K -> rerank；
+        # union helper 仅供离线实验，不作为默认候选接口。
         candidate_hits = reciprocal_rank_fusion(
             [candidate_hits, lexical_hits],
             top_k=candidate_k,
             rrf_k=rrf_k,
             strategy=chunk_strategy,
+        )
+    # cap 放在 rerank 之前: cross-encoder 只按单点相关性排序, 放到之后做
+    # 第二篇文档的块根本进不了精排后的 Top-K（台账 E7 B 组）。
+    # 非融合路径（关掉词法臂）同样需要, 所以放在 if 之外。
+    if document_cap_per_version:
+        candidate_hits = apply_document_cap(
+            candidate_hits, cap=document_cap_per_version
         )
     if rerank_enabled and len(candidate_hits) > top_k:
         rerank_result = await rerank_candidates(

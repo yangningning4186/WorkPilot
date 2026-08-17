@@ -80,6 +80,8 @@ async def run_refusal_baseline(
         "lexical_mode": settings.lexical_mode,
         "reranker_base_url": settings.reranker_base_url,
         "reranker_model": settings.reranker_model,
+        "rerank_candidate_k_per_arm": settings.rerank_candidate_k,
+        "rerank_candidate_mode": "rrf_top_k" if strategy.endswith("rerank") else None,
     }
     config_hash = hashlib.sha256(
         json.dumps(config, sort_keys=True, separators=(",", ":")).encode()

@@ -12,6 +12,10 @@ class RetrievalMetrics:
     alpha_ndcg_at_k: float
     mrr: float
     context_precision: float
+    gold_doc_recall_at_k: float
+    max_doc_share_at_k: float
+    distinct_docs_at_k: int
+    gold_doc_count: int
     retrieved_tokens: int
     budget_retrieved_tokens: int
     budget_chunk_count: int
@@ -59,6 +63,7 @@ def evaluate_retrieval(
         None,
     )
     relevant_chunks = sum(_is_relevant(chunk, gold_spans, theta) for chunk in ranked)
+    diversity = _document_diversity(ranked, gold_spans, theta)
     return RetrievalMetrics(
         span_recall_at_k=len(covered) / len(gold_spans),
         budget_span_recall=len(budget_covered) / len(gold_spans),
@@ -66,10 +71,52 @@ def evaluate_retrieval(
         alpha_ndcg_at_k=_safe_ratio(alpha_dcg, ideal_alpha_dcg),
         mrr=1 / first_relevant if first_relevant else 0.0,
         context_precision=relevant_chunks / len(ranked) if ranked else 0.0,
+        gold_doc_recall_at_k=diversity.gold_doc_recall,
+        max_doc_share_at_k=diversity.max_doc_share,
+        distinct_docs_at_k=diversity.distinct_docs,
+        gold_doc_count=diversity.gold_doc_count,
         retrieved_tokens=sum(chunk.content_tokens for chunk in ranked),
         budget_retrieved_tokens=sum(chunk.content_tokens for chunk in budget_ranked),
         budget_chunk_count=len(budget_ranked),
         relevant_chunks=relevant_chunks,
+    )
+
+
+@dataclass(frozen=True)
+class _DocumentDiversity:
+    gold_doc_recall: float
+    max_doc_share: float
+    distinct_docs: int
+    gold_doc_count: int
+
+
+def _document_diversity(
+    ranked: list[RetrievedChunk], spans: list[GoldSpan], theta: float
+) -> _DocumentDiversity:
+    """文档级多样性观测。
+
+    α-nDCG 的 subtopic 是 gold span（每一跳一个 subtopic），这个语义是对的：
+    同文档多跳必须两跳都拿满增益，不能因为"同一篇"就打折。
+    但它对"单文档霸榜导致另一篇 gold 文档一条都没召回"没有区分度——
+    那是**覆盖**失败而非**冗余**失败。这里用文档维度直接观测该失败模式。
+
+    - gold_doc_recall: 命中的 gold 文档数 / gold 文档总数（霸榜时直接掉到 0.5）
+    - max_doc_share: top-k 里单篇文档占比（28/28 霸榜 = 1.0），含非 gold chunk
+    """
+    gold_docs = {span.version_id for span in spans}
+    hit_docs = {
+        span.version_id
+        for span in spans
+        if any(hits(chunk, span, theta=theta) for chunk in ranked)
+    }
+    counts: dict[object, int] = {}
+    for chunk in ranked:
+        counts[chunk.version_id] = counts.get(chunk.version_id, 0) + 1
+    return _DocumentDiversity(
+        gold_doc_recall=len(hit_docs) / len(gold_docs) if gold_docs else 0.0,
+        max_doc_share=max(counts.values()) / len(ranked) if ranked else 0.0,
+        distinct_docs=len(counts),
+        gold_doc_count=len(gold_docs),
     )
 
 

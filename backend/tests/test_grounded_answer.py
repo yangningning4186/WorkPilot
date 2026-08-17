@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from pathlib import Path
+from uuid import UUID
 
 import httpx
 import pytest
@@ -14,7 +15,7 @@ from app.llm.gateway import ModelGateway
 from app.main import create_app
 from app.retrieval.citations import EvidenceSegment
 from app.retrieval.dense import DenseSearchHit, _merge_query_rankings
-from app.retrieval.fusion import reciprocal_rank_fusion
+from app.retrieval.fusion import apply_document_cap, reciprocal_rank_fusion, rerank_candidate_union
 from app.retrieval.lexical import lexical_search, lexical_terms
 from app.services.evidence_sufficiency import (
     EvidenceAssessmentError,
@@ -765,3 +766,67 @@ async def test_semantically_insufficient_evidence_refuses_before_answer_generati
         "query_embedding",
         "evidence_sufficiency",
     }
+
+
+def _capped_hit(version_id: UUID, number: int) -> DenseSearchHit:
+    return DenseSearchHit(
+        chunk_id=uuid7(),
+        document_id=uuid7(),
+        version_id=version_id,
+        version_no=1,
+        title=f"doc-{version_id}",
+        source_uri="test.md",
+        content=f"chunk-{number}",
+        score=1 - number / 100,
+        heading_path=[],
+        blocks=[],
+    )
+
+
+def test_document_cap_demotes_dominant_document_without_dropping_candidates() -> None:
+    """跨文档题被单一文档霸榜: cap 后第二篇必须进入头部, 且候选一条不能丢。"""
+    dominant = uuid7()
+    starved = uuid7()
+    # 前 6 条全是霸榜文档, 第二篇文档的证据排在第 7 位
+    hits = [_capped_hit(dominant, i) for i in range(6)]
+    hits.append(_capped_hit(starved, 6))
+
+    capped = apply_document_cap(hits, cap=3)
+
+    # 头部三条仍是霸榜文档(保序), 第 4 条换成被饿死的第二篇
+    assert [hit.version_id for hit in capped[:4]] == [
+        dominant,
+        dominant,
+        dominant,
+        starved,
+    ]
+    # 降级而不是丢弃: 候选总数不变, 超额的排到尾部
+    assert len(capped) == len(hits)
+    assert {hit.chunk_id for hit in capped} == {hit.chunk_id for hit in hits}
+    assert [hit.version_id for hit in capped[4:]] == [dominant] * 3
+
+
+def test_document_cap_is_a_noop_when_no_document_exceeds_it() -> None:
+    """答案本就集中在单篇文档时不该被打散——名额没用满就必须逐位不变。"""
+    left, right = uuid7(), uuid7()
+    hits = [_capped_hit(left, 0), _capped_hit(right, 1), _capped_hit(left, 2)]
+
+    assert apply_document_cap(hits, cap=3) == hits
+
+    with pytest.raises(ValueError, match="正数"):
+        apply_document_cap(hits, cap=0)
+
+
+def test_rerank_union_keeps_single_arm_hit_that_rrf_top_50_would_drop() -> None:
+    """P1 核心回归：RRF 不能在 cross-encoder 之前截掉单臂命中的候选。"""
+    dense_version, lexical_version = uuid7(), uuid7()
+    dense = [_capped_hit(dense_version, number) for number in range(50)]
+    lexical = [_capped_hit(lexical_version, number + 50) for number in range(50)]
+    lexical_tail = lexical[-1]
+
+    old_rrf = reciprocal_rank_fusion([dense, lexical], top_k=50)
+    union = rerank_candidate_union(dense, lexical, rrf_k=60)
+
+    assert lexical_tail.chunk_id not in {hit.chunk_id for hit in old_rrf}
+    assert lexical_tail.chunk_id in {hit.chunk_id for hit in union}
+    assert len(union) == 100

@@ -22,7 +22,10 @@ from app.ingest.chunk_strategies import count_tokens
 from app.llm.audit import SqlLlmCallAudit
 from app.llm.gateway import ModelGateway, build_model_gateway
 from app.retrieval.dense import DenseSearchHit, dense_search, multi_query_dense_search
-from app.retrieval.fusion import reciprocal_rank_fusion
+from app.retrieval.fusion import (
+    apply_document_cap,
+    reciprocal_rank_fusion,
+)
 from app.retrieval.lexical import LEXICAL_MODES, lexical_search
 from app.retrieval.strategy import (
     CHUNK_STRATEGIES,
@@ -102,8 +105,8 @@ async def run_dense_baseline(
     settings: Settings | None = None,
 ) -> BaselineRunResult:
     settings = settings or Settings()
-    if not 1 <= top_k <= diagnostic_k <= 50:
-        raise ValueError("必须满足 1 <= top_k <= diagnostic_k <= 50")
+    if not 1 <= top_k <= diagnostic_k <= 100:
+        raise ValueError("必须满足 1 <= top_k <= diagnostic_k <= 100")
     if strategy not in RETRIEVAL_STRATEGIES:
         raise ValueError(f"不支持的检索策略: {strategy}")
     if token_count_mode not in {"stored", "unicode"}:
@@ -150,9 +153,12 @@ async def run_dense_baseline(
             "query_decomposition_max_subqueries": settings.query_decomposition_max_subqueries,
             "reranker_base_url": settings.reranker_base_url,
             "reranker_model": settings.reranker_model,
+            "rerank_candidate_k_per_arm": settings.rerank_candidate_k,
+            "rerank_candidate_mode": "rrf_top_k" if strategy.endswith("rerank") else None,
             "rerank_candidate_text_mode": text_mode,
             "lexical_mode": lex_mode,
             "rrf_k": settings.rrf_k,
+            "document_cap_per_version": settings.document_cap_per_version,
             # HNSW 的候选扫描参数直接决定 dense 臂能召回什么，必须进 config_hash。
             # 不进的话两次只改 ef_search 的跑批会算出同一个 hash，
             # `reuse_completed` 会把上一次的结果原样返回——实验看起来跑了，其实没跑。
@@ -516,6 +522,12 @@ async def _evaluate_items(
     return results
 
 
+def _capped(hits: list[DenseSearchHit], *, settings: Settings) -> list[DenseSearchHit]:
+    """按配置施加每文档名额上限；0 表示关闭（默认），保持既有行为逐位不变。"""
+    cap = settings.document_cap_per_version
+    return apply_document_cap(hits, cap=cap) if cap else hits
+
+
 async def _retrieve_with_strategy(
     session: AsyncSession,
     gateway: ModelGateway,
@@ -603,32 +615,39 @@ async def _retrieve_with_strategy(
             mode=lex_mode,
             strategy=chunk_strategy,
         )
-        return reciprocal_rank_fusion(
-            [dense_hits, lexical_hits],
-            top_k=diagnostic_k,
-            rrf_k=settings.rrf_k,
-            strategy=chunk_strategy,
+        return _capped(
+            reciprocal_rank_fusion(
+                [dense_hits, lexical_hits],
+                top_k=diagnostic_k,
+                rrf_k=settings.rrf_k,
+                strategy=chunk_strategy,
+            ),
+            settings=settings,
         )
     if strategy == "dense-lexical-rrf-rerank":
+        arm_candidate_k = max(diagnostic_k, settings.rerank_candidate_k)
         dense_hits = await dense_search(
             session,
             gateway,
             query=query,
-            top_k=diagnostic_k,
+            top_k=arm_candidate_k,
             strategy=chunk_strategy,
         )
         lexical_hits = await lexical_search(
             session,
             query=query,
-            top_k=diagnostic_k,
+            top_k=arm_candidate_k,
             mode=lex_mode,
             strategy=chunk_strategy,
         )
-        candidates = reciprocal_rank_fusion(
-            [dense_hits, lexical_hits],
-            top_k=diagnostic_k,
-            rrf_k=settings.rrf_k,
-            strategy=chunk_strategy,
+        candidates = _capped(
+            reciprocal_rank_fusion(
+                [dense_hits, lexical_hits],
+                top_k=arm_candidate_k,
+                rrf_k=settings.rrf_k,
+                strategy=chunk_strategy,
+            ),
+            settings=settings,
         )
         if len(candidates) <= top_k:
             return candidates
@@ -832,11 +851,17 @@ def _retrieval_summary(results: list[ItemResult]) -> dict[str, float | None]:
         "alpha_ndcg_at_k",
         "mrr",
         "context_precision",
+        # 文档多样性：跨文档题被单一文档霸榜时，只有这两个指标会动
+        "gold_doc_recall_at_k",
+        "max_doc_share_at_k",
     )
-    return {
-        name: fmean(float(item[name]) for item in retrievals) if retrievals else None
-        for name in metric_names
-    }
+    # 容缺: 文档多样性指标是后加的, 历史快照没有这些字段,
+    # 硬取键会让"与旧 baseline 对比"直接崩。缺字段时该指标记 None。
+    def _mean(name: str) -> float | None:
+        values = [float(item[name]) for item in retrievals if name in item]
+        return fmean(values) if values else None
+
+    return {name: _mean(name) for name in metric_names}
 
 
 def _slice_summary(
