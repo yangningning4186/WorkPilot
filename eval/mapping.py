@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 
@@ -12,6 +13,73 @@ class GoldSpan:
     def __post_init__(self) -> None:
         if self.char_start < 0 or self.char_end <= self.char_start:
             raise ValueError("gold span 字符区间无效")
+
+
+@dataclass(frozen=True)
+class GoldEvidenceGroup:
+    fact_id: str
+    alternatives: tuple[GoldSpan, ...]
+
+    def __post_init__(self) -> None:
+        if not self.fact_id.strip():
+            raise ValueError("fact_id 不能为空")
+        if not self.alternatives:
+            raise ValueError("事实组至少需要一个等价证据")
+
+
+def singleton_evidence_groups(spans: list[GoldSpan]) -> list[GoldEvidenceGroup]:
+    return [
+        GoldEvidenceGroup(fact_id=f"R{index}", alternatives=(span,))
+        for index, span in enumerate(spans, start=1)
+    ]
+
+
+def parse_evidence_groups(
+    value: object, *, fallback_spans: list[GoldSpan]
+) -> list[GoldEvidenceGroup]:
+    if not isinstance(value, list) or not value:
+        return singleton_evidence_groups(fallback_spans)
+    groups: list[GoldEvidenceGroup] = []
+    for index, raw in enumerate(value, start=1):
+        if not isinstance(raw, dict):
+            raise ValueError("gold_evidence_groups 元素必须是对象")
+        alternatives = raw.get("alternatives")
+        if not isinstance(alternatives, list) or not alternatives:
+            raise ValueError("事实组 alternatives 必须是非空数组")
+        spans = tuple(_span_from_json(item) for item in alternatives)
+        groups.append(
+            GoldEvidenceGroup(
+                fact_id=str(raw.get("fact_id") or f"R{index}"),
+                alternatives=spans,
+            )
+        )
+    if len({group.fact_id for group in groups}) != len(groups):
+        raise ValueError("fact_id 不能重复")
+    return groups
+
+
+def flatten_evidence_groups(groups: list[GoldEvidenceGroup]) -> list[GoldSpan]:
+    seen: set[tuple[UUID, int, int]] = set()
+    spans: list[GoldSpan] = []
+    for group in groups:
+        for span in group.alternatives:
+            key = (span.version_id, span.char_start, span.char_end)
+            if key in seen:
+                continue
+            seen.add(key)
+            spans.append(span)
+    return spans
+
+
+def _span_from_json(value: Any) -> GoldSpan:
+    if not isinstance(value, dict):
+        raise ValueError("alternative 必须是 gold span 对象")
+    return GoldSpan(
+        version_id=UUID(str(value["version_id"])),
+        char_start=int(value["char_start"]),
+        char_end=int(value["char_end"]),
+        quote=str(value.get("quote") or ""),
+    )
 
 
 @dataclass(frozen=True)

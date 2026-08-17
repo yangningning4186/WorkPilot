@@ -18,13 +18,13 @@ from app.core.db import close_database, session_factory
 from app.llm.gateway import ModelGateway, build_model_gateway
 from app.retrieval.citations import build_evidence_segments
 from app.retrieval.dense import DenseSearchHit, dense_search
-from app.retrieval.fusion import reciprocal_rank_fusion
+from app.retrieval.fusion import apply_document_cap, reciprocal_rank_fusion
 from app.retrieval.lexical import lexical_search
 from app.services.evidence_sufficiency import (
     EvidenceAssessmentError,
     assess_evidence_sufficiency,
 )
-from app.services.grounded_answer import evaluate_refusal
+from app.services.grounded_answer import evaluate_refusal, retrieval_score_source
 from app.services.reranker import rerank_candidates
 
 
@@ -38,6 +38,9 @@ class RefusalItemResult:
     top_score: float | None
     second_score: float | None
     score_margin: float | None
+    score_margin_ratio: float | None
+    score_source: str | None
+    score_threshold_applied: bool
     low_margin: bool
     evidence_reason: str | None
     invalid_gate_response: bool
@@ -69,6 +72,7 @@ async def run_refusal_baseline(
         "top_k": top_k,
         "origin": origin,
         "refusal_threshold": settings.refusal_threshold,
+        "refusal_score_gate_source": settings.refusal_score_gate_source,
         "refusal_margin_threshold": settings.refusal_margin_threshold,
         "evidence_gate_max_chars": settings.evidence_gate_max_chars,
         "rerank_evidence_gate_max_chars": settings.rerank_evidence_gate_max_chars,
@@ -158,7 +162,7 @@ async def _evaluate_item(
     settings: Settings,
 ) -> RefusalItemResult:
     started = time.monotonic()
-    candidate_k = settings.rerank_candidate_k if strategy.endswith("rerank") else top_k
+    candidate_k = max(top_k, settings.rerank_candidate_k)
     dense_hits = await dense_search(session, gateway, query=question, top_k=candidate_k)
     hits: list[DenseSearchHit] = dense_hits
     if strategy in {"dense-lexical-rrf", "dense-lexical-rrf-rerank"}:
@@ -168,6 +172,8 @@ async def _evaluate_item(
         hits = reciprocal_rank_fusion(
             [dense_hits, lexical_hits], top_k=candidate_k, rrf_k=settings.rrf_k
         )
+    if settings.document_cap_per_version:
+        hits = apply_document_cap(hits, cap=settings.document_cap_per_version)
     if strategy == "dense-lexical-rrf-rerank" and len(hits) > top_k:
         reranked = await rerank_candidates(
             query=question,
@@ -177,14 +183,22 @@ async def _evaluate_item(
             model=settings.reranker_model,
             timeout_s=settings.reranker_timeout_s,
             max_candidate_chars=settings.rerank_max_candidate_chars,
+            candidate_text_mode=settings.rerank_candidate_text_mode,
         )
         if not reranked.applied:
             raise RuntimeError(reranked.reason)
         hits = reranked.hits
+    score_source = retrieval_score_source(
+        hits,
+        rerank_applied=strategy.endswith("rerank"),
+        lexical_rrf_applied="lexical-rrf" in strategy,
+    )
     signals = evaluate_refusal(
         hits,
         threshold=settings.refusal_threshold,
         margin_threshold=settings.refusal_margin_threshold,
+        score_source=score_source,
+        threshold_enabled=settings.refusal_score_gate_source == score_source,
     )
     refusal_reason = signals.refusal_reason
     evidence_reason: str | None = None
@@ -211,6 +225,8 @@ async def _evaluate_item(
                     second_score=signals.second_score,
                     score_margin=signals.score_margin,
                     low_margin=signals.low_margin,
+                    score_source=score_source,
+                    score_threshold_applied=signals.threshold_applied,
                     max_tokens=settings.evidence_gate_max_tokens,
                 )
                 evidence_reason = assessment.reason
@@ -229,6 +245,9 @@ async def _evaluate_item(
         top_score=signals.top_score,
         second_score=signals.second_score,
         score_margin=signals.score_margin,
+        score_margin_ratio=signals.score_margin_ratio,
+        score_source=signals.score_source,
+        score_threshold_applied=signals.threshold_applied,
         low_margin=signals.low_margin,
         evidence_reason=evidence_reason,
         invalid_gate_response=invalid,

@@ -121,17 +121,29 @@ class Settings(BaseSettings):
     hnsw_max_scan_tuples: int = Field(default=20_000, ge=1_000, le=1_000_000)
     # ef_search 必须不小于 top_k, 否则召回会被候选队列长度截断。
     hnsw_ef_search: int = Field(default=100, ge=1, le=1000)
+    # 数值分数门必须绑定明确的排序器分数。默认关闭，因为现有 0.35 只在历史
+    # 混合报告上扫过，而 dense cosine、RRF 与 cross-encoder 并不共享量纲；
+    # 关闭时仍保留 fail-closed 的证据充分性门控。
+    refusal_score_gate_source: Literal[
+        "disabled", "dense", "lexical", "fusion", "rerank"
+    ] = "disabled"
     refusal_threshold: float = Field(default=0.35, ge=-1.0, le=1.0)
-    refusal_margin_threshold: float = Field(default=0.03, ge=0.0, le=2.0)
+    # margin 使用 (top1-top2)/abs(top1) 的相对差，避免随排序器量纲漂移。
+    refusal_margin_threshold: float = Field(default=0.03, ge=0.0, le=1.0)
     evidence_gate_max_chars: int = Field(default=3000, ge=500, le=20000)
     rerank_evidence_gate_max_chars: int = Field(default=6000, ge=500, le=20000)
     evidence_gate_max_tokens: int = Field(default=300, ge=64, le=2048)
     query_decomposition_enabled: bool = False
     query_decomposition_max_subqueries: int = Field(default=4, ge=2, le=8)
     query_decomposition_max_tokens: int = Field(default=300, ge=64, le=2048)
+    # 真实子问题的逐查询排名近似 gold coverage oracle；默认关闭，P1-K 验证后再决定上线。
+    # 只在 query_decomposition 确实返回 >=2 个子问题时介入，简单题逐位回退原 RRF。
+    coverage_selection_enabled: bool = False
+    coverage_rank_cutoff: int = Field(default=10, ge=1, le=50)
     rerank_enabled: bool = False
-    # dense/lexical 各臂取候选后先做 RRF，并截到该深度再送 rerank。
-    # 两臂完整并集只用于离线 P1 实验，不是生产默认链路。
+    # 统一候选池深度：dense/lexical 各臂取候选后先做 RRF，并截到该深度；
+    # 无论 rerank 是否开启都生效，避免线上 Top-5 与评测 Top-50 跑成两条链。
+    # 字段名保留 rerank_candidate_k 以兼容已有部署环境变量。
     rerank_candidate_k: int = Field(default=50, ge=2, le=50)
     reranker_base_url: str = "http://127.0.0.1:8011"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"

@@ -5,7 +5,7 @@ import json
 import subprocess
 import time
 from collections import Counter
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import fmean
@@ -34,7 +34,14 @@ from app.retrieval.strategy import (
 )
 from app.services.query_decomposition import plan_retrieval_queries
 from app.services.reranker import rerank_candidates
-from eval.mapping import GoldSpan, RetrievedChunk
+from eval.mapping import (
+    GoldEvidenceGroup,
+    GoldSpan,
+    RetrievedChunk,
+    flatten_evidence_groups,
+    parse_evidence_groups,
+    singleton_evidence_groups,
+)
 from eval.metrics.diagnostics import diagnose_spans, percentile, summarize_scores
 from eval.metrics.refusal import RefusalAnalysis, analyze_refusal
 from eval.metrics.retrieval import RetrievalMetrics, evaluate_retrieval
@@ -56,10 +63,16 @@ class EvalItem:
     category: str
     question: str
     gold_spans: list[GoldSpan]
+    gold_evidence_groups: list[GoldEvidenceGroup] = field(default_factory=list)
+    temporal_ctx: datetime | None = None
 
     @property
     def answerable(self) -> bool:
         return self.category != "unanswerable"
+
+    @property
+    def evidence_groups(self) -> list[GoldEvidenceGroup]:
+        return self.gold_evidence_groups or singleton_evidence_groups(self.gold_spans)
 
 
 @dataclass(frozen=True)
@@ -143,6 +156,11 @@ async def run_dense_baseline(
             "alpha": alpha,
             "origin": origin,
             "refusal_threshold": settings.refusal_threshold,
+            "refusal_score_gate_source": settings.refusal_score_gate_source,
+            "retrieval_score_source": _strategy_score_source(strategy),
+            "refusal_threshold_applied": (
+                settings.refusal_score_gate_source == _strategy_score_source(strategy)
+            ),
             "embedding_model": gateway.embedding_model,
             "embedding_provider": gateway.embedding_provider,
             "embedding_provider_base_url": settings.embedding_base_url,
@@ -272,8 +290,11 @@ async def _load_items(
             await session.execute(
                 text(
                     """
-                    SELECT id, category, question, gold_spans,
-                           validate_eval_spans(gold_spans) AS spans_valid
+                    SELECT id, category, question, gold_spans, gold_evidence_groups,
+                           temporal_ctx,
+                           validate_eval_spans(gold_spans) AS spans_valid,
+                           validate_eval_evidence_groups(gold_evidence_groups)
+                             AS groups_valid
                     FROM eval_items
                     WHERE dataset_id=:dataset_id
                       AND (:origin='all' OR origin=:origin)
@@ -306,6 +327,11 @@ async def _load_items(
             )
             for item in row["gold_spans"]
         ]
+        if not row["groups_valid"]:
+            raise ValueError(f"样本包含无效 gold evidence group: {row['id']}")
+        groups = parse_evidence_groups(
+            row["gold_evidence_groups"], fallback_spans=spans
+        )
         if row["category"] != "unanswerable" and not spans:
             raise ValueError(f"可答样本缺少 gold span: {row['id']}")
         items.append(
@@ -314,6 +340,8 @@ async def _load_items(
                 category=row["category"],
                 question=row["question"],
                 gold_spans=spans,
+                gold_evidence_groups=groups,
+                temporal_ctx=row["temporal_ctx"],
             )
         )
     return dataset_id, items
@@ -334,6 +362,22 @@ def fingerprint_eval_items(items: list[EvalItem]) -> str:
                 }
                 for span in item.gold_spans
             ],
+            "gold_evidence_groups": [
+                {
+                    "fact_id": group.fact_id,
+                    "alternatives": [
+                        {
+                            "version_id": str(span.version_id),
+                            "char_start": span.char_start,
+                            "char_end": span.char_end,
+                            "quote": span.quote,
+                        }
+                        for span in group.alternatives
+                    ],
+                }
+                for group in item.evidence_groups
+            ],
+            "temporal_ctx": item.temporal_ctx.isoformat() if item.temporal_ctx else None,
         }
         for item in items
     ]
@@ -469,6 +513,7 @@ async def _evaluate_items(
             settings=settings,
             text_mode=text_mode,
             lex_mode=lex_mode,
+            temporal_ctx=item.temporal_ctx,
         )
         latency_ms = max(0, round((time.monotonic() - started) * 1000))
         if token_count_mode == "unicode":
@@ -479,7 +524,7 @@ async def _evaluate_items(
         if item.answerable:
             candidates = await _candidate_chunks(
                 session,
-                item.gold_spans,
+                flatten_evidence_groups(item.evidence_groups),
                 embedding_model=gateway.embedding_model,
                 embedding_provider=gateway.embedding_provider,
                 embedding_revision=gateway.embedding_revision,
@@ -494,6 +539,7 @@ async def _evaluate_items(
                 token_budget=token_budget,
                 theta=theta,
                 alpha=alpha,
+                gold_evidence_groups=item.evidence_groups,
             )
             span_diagnostics = [
                 diagnostic.to_dict()
@@ -504,6 +550,7 @@ async def _evaluate_items(
                     top_k=top_k,
                     token_budget=token_budget,
                     theta=theta,
+                    evidence_groups=item.evidence_groups,
                 )
             ]
         result = ItemResult(
@@ -540,6 +587,7 @@ async def _retrieve_with_strategy(
     settings: Settings,
     text_mode: str,
     lex_mode: str,
+    temporal_ctx: datetime | None = None,
 ) -> list[DenseSearchHit]:
     if strategy == "dense-only":
         return await dense_search(
@@ -548,6 +596,7 @@ async def _retrieve_with_strategy(
             query=query,
             top_k=diagnostic_k,
             strategy=chunk_strategy,
+            temporal_ctx=temporal_ctx,
         )
     if strategy == "lexical-only":
         # 单臂对照: RRF 里 dense 会兜住词法的失效, 只看融合结果无法归因词法打分的好坏。
@@ -557,6 +606,7 @@ async def _retrieve_with_strategy(
             top_k=diagnostic_k,
             mode=lex_mode,
             strategy=chunk_strategy,
+            temporal_ctx=temporal_ctx,
         )
     if strategy == "multi-query-dense":
         plan = await plan_retrieval_queries(
@@ -572,6 +622,7 @@ async def _retrieve_with_strategy(
             top_k=diagnostic_k,
             per_query_top_k=diagnostic_k,
             strategy=chunk_strategy,
+            temporal_ctx=temporal_ctx,
         )
     if strategy == "dense-rerank":
         candidates = await dense_search(
@@ -580,6 +631,7 @@ async def _retrieve_with_strategy(
             query=query,
             top_k=diagnostic_k,
             strategy=chunk_strategy,
+            temporal_ctx=temporal_ctx,
         )
         if len(candidates) <= top_k:
             return candidates
@@ -607,6 +659,7 @@ async def _retrieve_with_strategy(
             query=query,
             top_k=diagnostic_k,
             strategy=chunk_strategy,
+            temporal_ctx=temporal_ctx,
         )
         lexical_hits = await lexical_search(
             session,
@@ -614,6 +667,7 @@ async def _retrieve_with_strategy(
             top_k=diagnostic_k,
             mode=lex_mode,
             strategy=chunk_strategy,
+            temporal_ctx=temporal_ctx,
         )
         return _capped(
             reciprocal_rank_fusion(
@@ -632,6 +686,7 @@ async def _retrieve_with_strategy(
             query=query,
             top_k=arm_candidate_k,
             strategy=chunk_strategy,
+            temporal_ctx=temporal_ctx,
         )
         lexical_hits = await lexical_search(
             session,
@@ -639,6 +694,7 @@ async def _retrieve_with_strategy(
             top_k=arm_candidate_k,
             mode=lex_mode,
             strategy=chunk_strategy,
+            temporal_ctx=temporal_ctx,
         )
         candidates = _capped(
             reciprocal_rank_fusion(
@@ -755,9 +811,22 @@ def _serialize_hit(hit: DenseSearchHit) -> dict[str, object]:
 
 
 def _retrieval_score(hit: DenseSearchHit) -> float:
-    if hit.dense_score is not None:
-        return hit.dense_score
+    """报告最终排序器的分数；不得退回某一检索臂遗留的原始 score。"""
+
+    for score in (hit.rerank_score, hit.fusion_score, hit.lexical_score, hit.dense_score):
+        if score is not None:
+            return score
     return hit.score
+
+
+def _strategy_score_source(strategy: str) -> str:
+    if strategy.endswith("rerank"):
+        return "rerank"
+    if strategy == "dense-lexical-rrf":
+        return "fusion"
+    if strategy == "lexical-only":
+        return "lexical"
+    return "dense"
 
 
 async def _store_result(

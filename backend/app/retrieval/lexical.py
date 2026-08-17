@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,10 +87,9 @@ _COVERAGE_SQL = f"""
             )
         ) > 0
     ) matches
-    WHERE c.is_searchable=true
+    WHERE __VISIBILITY__
       AND c.strategy='__CHUNK_STRATEGY__'
       AND d.deleted_at IS NULL
-      AND v.invalid_at IS NULL
       AND matches.matched > 0
     ORDER BY matches.matched DESC, length(c.content), c.id
     LIMIT :top_k
@@ -131,10 +131,9 @@ _RANKED_SQL_TEMPLATE = f"""
     JOIN document_versions v ON v.id=c.version_id
     JOIN documents d ON d.id=v.document_id
     CROSS JOIN q
-    WHERE c.is_searchable=true
+    WHERE __VISIBILITY__
       AND c.strategy='__CHUNK_STRATEGY__'
       AND d.deleted_at IS NULL
-      AND v.invalid_at IS NULL
       AND (
             (q.q_en IS NOT NULL AND c.tsv_en @@ q.q_en)
          OR (q.q_zh IS NOT NULL AND c.tsv_zh @@ q.q_zh)
@@ -151,6 +150,7 @@ async def lexical_search(
     top_k: int = 50,
     mode: str = LEXICAL_MODES[0],
     strategy: ChunkStrategy = "heading",
+    temporal_ctx: datetime | None = None,
 ) -> list[DenseSearchHit]:
     if not query.strip():
         raise ValueError("query 不能为空")
@@ -173,6 +173,18 @@ async def lexical_search(
     else:
         sql = _RANKED_SQL_TEMPLATE.format(rank=mode).replace("__CHUNK_STRATEGY__", strategy)
         params = {"query": query, "top_k": top_k}
+
+    visibility = (
+        "c.is_searchable=true AND v.invalid_at IS NULL"
+        if temporal_ctx is None
+        else (
+            "v.activated_at IS NOT NULL "
+            "AND v.activated_at <= :temporal_ctx "
+            "AND (v.invalid_at IS NULL OR v.invalid_at > :temporal_ctx)"
+        )
+    )
+    sql = sql.replace("__VISIBILITY__", visibility)
+    params["temporal_ctx"] = temporal_ctx
 
     rows = (await session.execute(text(sql), params)).mappings().all()
     return [

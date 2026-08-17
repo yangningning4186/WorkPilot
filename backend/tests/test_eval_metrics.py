@@ -4,7 +4,7 @@ from uuid import UUID
 import pytest
 
 from eval.dense_baseline import ItemResult, _aggregate
-from eval.mapping import GoldSpan, RetrievedChunk, hits, overlap_ratio
+from eval.mapping import GoldEvidenceGroup, GoldSpan, RetrievedChunk, hits, overlap_ratio
 from eval.metrics.diagnostics import diagnose_spans, summarize_scores
 from eval.metrics.refusal import analyze_refusal
 from eval.metrics.retrieval import evaluate_retrieval, take_token_budget
@@ -68,6 +68,38 @@ def test_retrieval_metrics_cover_ranking_budget_and_duplicate_evidence() -> None
     assert metrics.context_precision == 0.75
     assert 0 < metrics.ndcg_at_k < 1
     assert 0 < metrics.alpha_ndcg_at_k < 1
+
+
+def test_evidence_group_accepts_any_equivalent_span_but_requires_every_fact() -> None:
+    canonical = GoldSpan(version_id=VERSION_A, char_start=100, char_end=200)
+    equivalent = GoldSpan(version_id=VERSION_A, char_start=500, char_end=600)
+    second_fact = GoldSpan(version_id=VERSION_B, char_start=300, char_end=400)
+    groups = [
+        GoldEvidenceGroup("R1", (canonical, equivalent)),
+        GoldEvidenceGroup("R2", (second_fact,)),
+    ]
+    alternative_hit = _chunk(1, 490, 610)
+    second_hit = _chunk(2, 290, 410, version=VERSION_B)
+
+    partial = evaluate_retrieval(
+        [canonical, second_fact],
+        [alternative_hit],
+        [alternative_hit, second_hit],
+        top_k=2,
+        token_budget=1000,
+        gold_evidence_groups=groups,
+    )
+    complete = evaluate_retrieval(
+        [canonical, second_fact],
+        [alternative_hit, second_hit],
+        [alternative_hit, second_hit],
+        top_k=2,
+        token_budget=1000,
+        gold_evidence_groups=groups,
+    )
+
+    assert partial.span_recall_at_k == 0.5
+    assert complete.span_recall_at_k == 1.0
 
 
 def test_document_diversity_catches_single_document_domination() -> None:

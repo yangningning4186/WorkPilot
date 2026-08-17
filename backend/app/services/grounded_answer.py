@@ -1,7 +1,8 @@
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Literal
+from datetime import datetime
+from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,7 @@ from app.retrieval.citations import (
     build_evidence_segments,
     parse_citations,
 )
+from app.retrieval.coverage import CoverageSelectionResult, coverage_aware_hybrid_search
 from app.retrieval.dense import DenseSearchHit, multi_query_dense_search
 from app.retrieval.fusion import (
     apply_document_cap,
@@ -33,11 +35,18 @@ from app.services.query_decomposition import (
 )
 from app.services.reranker import RerankResult, rerank_candidates
 
+if TYPE_CHECKING:
+    from app.core.config import Settings
+
 RefusalReason = Literal[
     "no_evidence",
     "below_threshold",
     "model_insufficient_evidence",
     "evidence_gate_invalid",
+]
+RetrievalScoreSource = Literal["dense", "lexical", "fusion", "rerank"]
+RefusalScoreGateSource = Literal[
+    "disabled", "dense", "lexical", "fusion", "rerank"
 ]
 
 SYSTEM_PROMPT = f"""你是 WorkPilot 的知识库问答助手。
@@ -59,6 +68,9 @@ class GroundedAnswerResult:
     top_score: float | None
     second_score: float | None
     score_margin: float | None
+    score_margin_ratio: float | None
+    score_source: RetrievalScoreSource | None
+    score_threshold_applied: bool
     low_margin: bool
     threshold: float
     margin_threshold: float
@@ -71,6 +83,11 @@ class GroundedAnswerResult:
     query_plan_reason: str
     query_plan_model: str | None
     query_plan_provider: str | None
+    coverage_selection_applied: bool
+    coverage_requirement_count: int
+    coverage_covered_requirement_count: int
+    coverage_candidate_count: int
+    coverage_reason: str
     rerank_applied: bool
     rerank_candidate_count: int
     rerank_reason: str
@@ -101,10 +118,87 @@ class _GenerationContext:
     margin_threshold: float
     assessment: EvidenceAssessment
     query_plan: QueryPlan
+    coverage_result: CoverageSelectionResult
     rerank_result: RerankResult
     lexical_rrf_applied: bool
     lexical_candidate_count: int
     chunk_strategy: ChunkStrategy
+
+
+async def stream_answer_with_settings(
+    session: AsyncSession,
+    gateway: ModelGateway,
+    *,
+    query: str,
+    top_k: int,
+    settings: "Settings",
+    chunk_strategy: ChunkStrategy = "heading",
+    temporal_ctx: datetime | None = None,
+) -> AsyncIterator[str | GroundedAnswerResult]:
+    """用完整 Settings 驱动线上流式链路，禁止调用方挑着透传参数。"""
+
+    async for item in stream_answer_with_citations(
+        session,
+        gateway,
+        query=query,
+        top_k=top_k,
+        refusal_score_gate_source=settings.refusal_score_gate_source,
+        refusal_threshold=settings.refusal_threshold,
+        refusal_margin_threshold=settings.refusal_margin_threshold,
+        evidence_gate_max_chars=settings.evidence_gate_max_chars,
+        rerank_evidence_gate_max_chars=settings.rerank_evidence_gate_max_chars,
+        evidence_gate_max_tokens=settings.evidence_gate_max_tokens,
+        query_decomposition_enabled=settings.query_decomposition_enabled,
+        query_decomposition_max_subqueries=settings.query_decomposition_max_subqueries,
+        query_decomposition_max_tokens=settings.query_decomposition_max_tokens,
+        coverage_selection_enabled=settings.coverage_selection_enabled,
+        coverage_rank_cutoff=settings.coverage_rank_cutoff,
+        rerank_enabled=settings.rerank_enabled,
+        rerank_candidate_k=settings.rerank_candidate_k,
+        reranker_base_url=settings.reranker_base_url,
+        reranker_model=settings.reranker_model,
+        reranker_timeout_s=settings.reranker_timeout_s,
+        rerank_max_candidate_chars=settings.rerank_max_candidate_chars,
+        rerank_candidate_text_mode=settings.rerank_candidate_text_mode,
+        lexical_rrf_enabled=settings.lexical_rrf_enabled,
+        lexical_mode=settings.lexical_mode,
+        rrf_k=settings.rrf_k,
+        document_cap_per_version=settings.document_cap_per_version,
+        chunk_strategy=chunk_strategy,
+        max_evidence_chars=settings.answer_max_evidence_chars,
+        max_tokens=settings.answer_max_tokens,
+        temporal_ctx=temporal_ctx,
+    ):
+        yield item
+
+
+async def answer_with_settings(
+    session: AsyncSession,
+    gateway: ModelGateway,
+    *,
+    query: str,
+    top_k: int,
+    settings: "Settings",
+    chunk_strategy: ChunkStrategy = "heading",
+    temporal_ctx: datetime | None = None,
+) -> GroundedAnswerResult:
+    """评测与同步 API 共用的完整 Settings 入口。"""
+
+    result: GroundedAnswerResult | None = None
+    async for item in stream_answer_with_settings(
+        session,
+        gateway,
+        query=query,
+        top_k=top_k,
+        settings=settings,
+        chunk_strategy=chunk_strategy,
+        temporal_ctx=temporal_ctx,
+    ):
+        if isinstance(item, GroundedAnswerResult):
+            result = item
+    if result is None:  # pragma: no cover
+        raise RuntimeError("生成器没有产出结果对象")
+    return result
 
 
 async def stream_answer_with_citations(
@@ -113,6 +207,7 @@ async def stream_answer_with_citations(
     *,
     query: str,
     top_k: int = 5,
+    refusal_score_gate_source: RefusalScoreGateSource = "dense",
     refusal_threshold: float = 0.35,
     refusal_margin_threshold: float = 0.03,
     evidence_gate_max_chars: int = 3000,
@@ -121,6 +216,8 @@ async def stream_answer_with_citations(
     query_decomposition_enabled: bool = False,
     query_decomposition_max_subqueries: int = 4,
     query_decomposition_max_tokens: int = 300,
+    coverage_selection_enabled: bool = False,
+    coverage_rank_cutoff: int = 10,
     rerank_enabled: bool = False,
     rerank_candidate_k: int = 50,
     reranker_base_url: str = "http://127.0.0.1:8011",
@@ -135,6 +232,7 @@ async def stream_answer_with_citations(
     chunk_strategy: ChunkStrategy = "heading",
     max_evidence_chars: int = 12000,
     max_tokens: int = 1200,
+    temporal_ctx: datetime | None = None,
 ) -> AsyncIterator[str | GroundedAnswerResult]:
     """产出正文片段, 最后产出一个结果对象。
 
@@ -148,6 +246,7 @@ async def stream_answer_with_citations(
         gateway,
         query=query,
         top_k=top_k,
+        refusal_score_gate_source=refusal_score_gate_source,
         refusal_threshold=refusal_threshold,
         refusal_margin_threshold=refusal_margin_threshold,
         evidence_gate_max_chars=evidence_gate_max_chars,
@@ -156,6 +255,8 @@ async def stream_answer_with_citations(
         query_decomposition_enabled=query_decomposition_enabled,
         query_decomposition_max_subqueries=query_decomposition_max_subqueries,
         query_decomposition_max_tokens=query_decomposition_max_tokens,
+        coverage_selection_enabled=coverage_selection_enabled,
+        coverage_rank_cutoff=coverage_rank_cutoff,
         rerank_enabled=rerank_enabled,
         rerank_candidate_k=rerank_candidate_k,
         reranker_base_url=reranker_base_url,
@@ -169,6 +270,7 @@ async def stream_answer_with_citations(
         document_cap_per_version=document_cap_per_version,
         chunk_strategy=chunk_strategy,
         max_evidence_chars=max_evidence_chars,
+        temporal_ctx=temporal_ctx,
     )
     if isinstance(prepared, GroundedAnswerResult):
         yield prepared
@@ -195,6 +297,7 @@ async def answer_with_citations(
     *,
     query: str,
     top_k: int = 5,
+    refusal_score_gate_source: RefusalScoreGateSource = "dense",
     refusal_threshold: float = 0.35,
     refusal_margin_threshold: float = 0.03,
     evidence_gate_max_chars: int = 3000,
@@ -203,6 +306,8 @@ async def answer_with_citations(
     query_decomposition_enabled: bool = False,
     query_decomposition_max_subqueries: int = 4,
     query_decomposition_max_tokens: int = 300,
+    coverage_selection_enabled: bool = False,
+    coverage_rank_cutoff: int = 10,
     rerank_enabled: bool = False,
     rerank_candidate_k: int = 50,
     reranker_base_url: str = "http://127.0.0.1:8011",
@@ -217,6 +322,7 @@ async def answer_with_citations(
     chunk_strategy: ChunkStrategy = "heading",
     max_evidence_chars: int = 12000,
     max_tokens: int = 1200,
+    temporal_ctx: datetime | None = None,
 ) -> GroundedAnswerResult:
     """一次性拿到完整结果。评测与 `/api/v1/answer` 用这个入口。
 
@@ -230,6 +336,7 @@ async def answer_with_citations(
         gateway,
         query=query,
         top_k=top_k,
+        refusal_score_gate_source=refusal_score_gate_source,
         refusal_threshold=refusal_threshold,
         refusal_margin_threshold=refusal_margin_threshold,
         evidence_gate_max_chars=evidence_gate_max_chars,
@@ -238,6 +345,8 @@ async def answer_with_citations(
         query_decomposition_enabled=query_decomposition_enabled,
         query_decomposition_max_subqueries=query_decomposition_max_subqueries,
         query_decomposition_max_tokens=query_decomposition_max_tokens,
+        coverage_selection_enabled=coverage_selection_enabled,
+        coverage_rank_cutoff=coverage_rank_cutoff,
         rerank_enabled=rerank_enabled,
         rerank_candidate_k=rerank_candidate_k,
         reranker_base_url=reranker_base_url,
@@ -252,6 +361,7 @@ async def answer_with_citations(
         chunk_strategy=chunk_strategy,
         max_evidence_chars=max_evidence_chars,
         max_tokens=max_tokens,
+        temporal_ctx=temporal_ctx,
     ):
         if isinstance(item, GroundedAnswerResult):
             result = item
@@ -266,6 +376,7 @@ async def _prepare_generation(
     *,
     query: str,
     top_k: int,
+    refusal_score_gate_source: RefusalScoreGateSource,
     refusal_threshold: float,
     refusal_margin_threshold: float,
     evidence_gate_max_chars: int,
@@ -274,6 +385,8 @@ async def _prepare_generation(
     query_decomposition_enabled: bool,
     query_decomposition_max_subqueries: int,
     query_decomposition_max_tokens: int,
+    coverage_selection_enabled: bool,
+    coverage_rank_cutoff: int,
     rerank_enabled: bool,
     rerank_candidate_k: int,
     reranker_base_url: str,
@@ -287,6 +400,7 @@ async def _prepare_generation(
     document_cap_per_version: int,
     chunk_strategy: ChunkStrategy,
     max_evidence_chars: int,
+    temporal_ctx: datetime | None,
 ) -> "_GenerationContext | GroundedAnswerResult":
     """检索 → 阈值拒答 → 证据门控。返回拒答结果, 或放行生成所需的上下文。"""
 
@@ -300,32 +414,70 @@ async def _prepare_generation(
         max_subqueries=query_decomposition_max_subqueries,
         max_tokens=query_decomposition_max_tokens,
     )
-    candidate_k = max(top_k, rerank_candidate_k) if rerank_enabled else top_k
-    candidate_hits = await multi_query_dense_search(
-        session,
-        gateway,
-        queries=query_plan.queries,
-        top_k=candidate_k,
-        strategy=chunk_strategy,
+    if coverage_selection_enabled and not query_decomposition_enabled:
+        raise ValueError("coverage selector 需要同时开启 query decomposition")
+    if coverage_selection_enabled and rerank_enabled:
+        raise ValueError("coverage selector 与 rerank 不能同时作为最终排序器")
+    if coverage_selection_enabled and document_cap_per_version:
+        raise ValueError("coverage selector 暂不与 document cap 叠加")
+    # 候选池深度不再绑在 rerank 开关上。线上与评测都先在同样深度召回/融合。
+    candidate_k = max(top_k, rerank_candidate_k)
+    coverage_result = CoverageSelectionResult(
+        hits=[],
+        applied=False,
+        requirement_count=0,
+        covered_requirement_count=0,
+        candidate_count=0,
+        lexical_candidate_count=0,
+        reason=(
+            "coverage selector 已关闭"
+            if not coverage_selection_enabled
+            else "查询规划未分解，回退原 RRF"
+        ),
     )
     lexical_hits: list[DenseSearchHit] = []
-    if lexical_rrf_enabled:
-        lexical_hits = await lexical_search(
+    if coverage_selection_enabled and query_plan.decomposed:
+        coverage_result = await coverage_aware_hybrid_search(
             session,
-            query=query,
-            top_k=candidate_k,
-            mode=lexical_mode,
-            strategy=chunk_strategy,
-        )
-        # P1-A dev16：两臂并集与 RRF Top-50 的 Recall 完全相同，却把 50/100
-        # 候选精排从约 3.17s 拉到 6.15s。生产链路保持 RRF Top-K -> rerank；
-        # union helper 仅供离线实验，不作为默认候选接口。
-        candidate_hits = reciprocal_rank_fusion(
-            [candidate_hits, lexical_hits],
-            top_k=candidate_k,
+            gateway,
+            queries=query_plan.queries,
+            top_k=top_k,
+            candidate_k=candidate_k,
+            rank_cutoff=coverage_rank_cutoff,
+            lexical_enabled=lexical_rrf_enabled,
+            lexical_mode=lexical_mode,
             rrf_k=rrf_k,
             strategy=chunk_strategy,
+            temporal_ctx=temporal_ctx,
         )
+        candidate_hits = coverage_result.hits
+        lexical_candidate_count = coverage_result.lexical_candidate_count
+    else:
+        candidate_hits = await multi_query_dense_search(
+            session,
+            gateway,
+            queries=query_plan.queries,
+            top_k=candidate_k,
+            strategy=chunk_strategy,
+            temporal_ctx=temporal_ctx,
+        )
+        if lexical_rrf_enabled:
+            lexical_hits = await lexical_search(
+                session,
+                query=query,
+                top_k=candidate_k,
+                mode=lexical_mode,
+                strategy=chunk_strategy,
+                temporal_ctx=temporal_ctx,
+            )
+            # P1-A：生产保持 RRF Top-K -> rerank；union 仅供离线实验。
+            candidate_hits = reciprocal_rank_fusion(
+                [candidate_hits, lexical_hits],
+                top_k=candidate_k,
+                rrf_k=rrf_k,
+                strategy=chunk_strategy,
+            )
+        lexical_candidate_count = len(lexical_hits)
     # cap 放在 rerank 之前: cross-encoder 只按单点相关性排序, 放到之后做
     # 第二篇文档的块根本进不了精排后的 Top-K（台账 E7 B 组）。
     # 非融合路径（关掉词法臂）同样需要, 所以放在 if 之外。
@@ -350,15 +502,26 @@ async def _prepare_generation(
             hits=candidate_hits[:top_k],
             applied=False,
             candidate_count=len(candidate_hits),
-            reason="rerank 已关闭或候选数不足",
+            reason=(
+                coverage_result.reason
+                if coverage_result.applied
+                else "rerank 已关闭或候选数不足"
+            ),
             model=None,
             provider=None,
         )
     hits = rerank_result.hits
+    score_source = retrieval_score_source(
+        hits,
+        rerank_applied=rerank_result.applied,
+        lexical_rrf_applied=lexical_rrf_enabled,
+    )
     signals = evaluate_refusal(
         hits,
         threshold=refusal_threshold,
         margin_threshold=refusal_margin_threshold,
+        score_source=score_source,
+        threshold_enabled=refusal_score_gate_source == score_source,
     )
     top_score, refusal_reason = signals.top_score, signals.refusal_reason
     if refusal_reason is not None:
@@ -370,9 +533,10 @@ async def _prepare_generation(
             threshold=refusal_threshold,
             margin_threshold=refusal_margin_threshold,
             query_plan=query_plan,
+            coverage_result=coverage_result,
             rerank_result=rerank_result,
             lexical_rrf_applied=lexical_rrf_enabled,
-            lexical_candidate_count=len(lexical_hits),
+            lexical_candidate_count=lexical_candidate_count,
             chunk_strategy=chunk_strategy,
         )
 
@@ -386,9 +550,10 @@ async def _prepare_generation(
             threshold=refusal_threshold,
             margin_threshold=refusal_margin_threshold,
             query_plan=query_plan,
+            coverage_result=coverage_result,
             rerank_result=rerank_result,
             lexical_rrf_applied=lexical_rrf_enabled,
-            lexical_candidate_count=len(lexical_hits),
+            lexical_candidate_count=lexical_candidate_count,
             chunk_strategy=chunk_strategy,
         )
 
@@ -408,6 +573,8 @@ async def _prepare_generation(
             second_score=signals.second_score,
             score_margin=signals.score_margin,
             low_margin=signals.low_margin,
+            score_source=score_source,
+            score_threshold_applied=signals.threshold_applied,
             max_tokens=evidence_gate_max_tokens,
         )
     except EvidenceAssessmentError as error:
@@ -421,9 +588,10 @@ async def _prepare_generation(
             evidence_sufficient=False,
             evidence_reason=str(error),
             query_plan=query_plan,
+            coverage_result=coverage_result,
             rerank_result=rerank_result,
             lexical_rrf_applied=lexical_rrf_enabled,
-            lexical_candidate_count=len(lexical_hits),
+            lexical_candidate_count=lexical_candidate_count,
             chunk_strategy=chunk_strategy,
         )
     if not assessment.sufficient:
@@ -439,9 +607,10 @@ async def _prepare_generation(
             evidence_model=assessment.model,
             evidence_provider=assessment.provider,
             query_plan=query_plan,
+            coverage_result=coverage_result,
             rerank_result=rerank_result,
             lexical_rrf_applied=lexical_rrf_enabled,
-            lexical_candidate_count=len(lexical_hits),
+            lexical_candidate_count=lexical_candidate_count,
             chunk_strategy=chunk_strategy,
         )
 
@@ -454,9 +623,10 @@ async def _prepare_generation(
         margin_threshold=refusal_margin_threshold,
         assessment=assessment,
         query_plan=query_plan,
+        coverage_result=coverage_result,
         rerank_result=rerank_result,
         lexical_rrf_applied=lexical_rrf_enabled,
-        lexical_candidate_count=len(lexical_hits),
+        lexical_candidate_count=lexical_candidate_count,
         chunk_strategy=chunk_strategy,
     )
 
@@ -505,6 +675,9 @@ def _generated_result(
         top_score=context.top_score,
         second_score=context.signals.second_score,
         score_margin=context.signals.score_margin,
+        score_margin_ratio=context.signals.score_margin_ratio,
+        score_source=context.signals.score_source,
+        score_threshold_applied=context.signals.threshold_applied,
         low_margin=context.signals.low_margin,
         threshold=context.threshold,
         margin_threshold=context.margin_threshold,
@@ -517,6 +690,13 @@ def _generated_result(
         query_plan_reason=context.query_plan.reason,
         query_plan_model=context.query_plan.model,
         query_plan_provider=context.query_plan.provider,
+        coverage_selection_applied=context.coverage_result.applied,
+        coverage_requirement_count=context.coverage_result.requirement_count,
+        coverage_covered_requirement_count=(
+            context.coverage_result.covered_requirement_count
+        ),
+        coverage_candidate_count=context.coverage_result.candidate_count,
+        coverage_reason=context.coverage_result.reason,
         rerank_applied=context.rerank_result.applied,
         rerank_candidate_count=context.rerank_result.candidate_count,
         rerank_reason=context.rerank_result.reason,
@@ -536,29 +716,92 @@ class RetrievalRefusalSignals:
     top_score: float | None
     second_score: float | None
     score_margin: float | None
+    score_margin_ratio: float | None
+    score_source: RetrievalScoreSource | None
+    threshold_applied: bool
     low_margin: bool
     refusal_reason: RefusalReason | None
 
 
 def evaluate_refusal(
-    hits: list[DenseSearchHit], *, threshold: float, margin_threshold: float = 0.03
+    hits: list[DenseSearchHit],
+    *,
+    threshold: float,
+    margin_threshold: float = 0.03,
+    score_source: RetrievalScoreSource | None = None,
+    threshold_enabled: bool = True,
 ) -> RetrievalRefusalSignals:
     if not -1.0 <= threshold <= 1.0:
         raise ValueError("refusal threshold 必须位于 -1 到 1")
-    if not 0.0 <= margin_threshold <= 2.0:
-        raise ValueError("refusal margin threshold 必须位于 0 到 2")
+    if not 0.0 <= margin_threshold <= 1.0:
+        raise ValueError("refusal margin threshold 必须位于 0 到 1")
     if not hits:
-        return RetrievalRefusalSignals(None, None, None, True, "no_evidence")
-    ranked_scores = sorted((hit.score for hit in hits), reverse=True)
+        return RetrievalRefusalSignals(
+            None, None, None, None, None, False, True, "no_evidence"
+        )
+    resolved_source = score_source or retrieval_score_source(
+        hits, rerank_applied=False, lexical_rrf_applied=False
+    )
+    ranked_scores = sorted(
+        (_score_for_source(hit, resolved_source) for hit in hits), reverse=True
+    )
     top_score = ranked_scores[0]
     second_score = ranked_scores[1] if len(ranked_scores) > 1 else None
     score_margin = top_score - second_score if second_score is not None else None
-    low_margin = score_margin is None or score_margin < margin_threshold
-    if top_score < threshold:
+    score_margin_ratio = (
+        score_margin / max(abs(top_score), 1e-12) if score_margin is not None else None
+    )
+    low_margin = score_margin_ratio is None or score_margin_ratio < margin_threshold
+    if threshold_enabled and top_score < threshold:
         return RetrievalRefusalSignals(
-            top_score, second_score, score_margin, low_margin, "below_threshold"
+            top_score,
+            second_score,
+            score_margin,
+            score_margin_ratio,
+            resolved_source,
+            True,
+            low_margin,
+            "below_threshold",
         )
-    return RetrievalRefusalSignals(top_score, second_score, score_margin, low_margin, None)
+    return RetrievalRefusalSignals(
+        top_score,
+        second_score,
+        score_margin,
+        score_margin_ratio,
+        resolved_source,
+        threshold_enabled,
+        low_margin,
+        None,
+    )
+
+
+def retrieval_score_source(
+    hits: list[DenseSearchHit],
+    *,
+    rerank_applied: bool,
+    lexical_rrf_applied: bool,
+) -> RetrievalScoreSource:
+    """声明最终排序的真实分数来源，不从遗留的 ``hit.score`` 猜量纲。"""
+
+    if rerank_applied or (hits and all(hit.rerank_score is not None for hit in hits)):
+        return "rerank"
+    if lexical_rrf_applied or (hits and all(hit.fusion_score is not None for hit in hits)):
+        return "fusion"
+    if hits and all(hit.lexical_score is not None and hit.dense_score is None for hit in hits):
+        return "lexical"
+    return "dense"
+
+
+def _score_for_source(hit: DenseSearchHit, source: RetrievalScoreSource) -> float:
+    score = {
+        "dense": hit.dense_score if hit.dense_score is not None else hit.score,
+        "lexical": hit.lexical_score if hit.lexical_score is not None else hit.score,
+        "fusion": hit.fusion_score,
+        "rerank": hit.rerank_score,
+    }[source]
+    if score is None:
+        raise ValueError(f"候选缺少声明的 {source} 分数: chunk_id={hit.chunk_id}")
+    return score
 
 
 def _refusal_result(
@@ -570,6 +813,7 @@ def _refusal_result(
     threshold: float,
     margin_threshold: float,
     query_plan: QueryPlan,
+    coverage_result: CoverageSelectionResult,
     rerank_result: RerankResult,
     chunk_strategy: ChunkStrategy,
     lexical_rrf_applied: bool = False,
@@ -588,6 +832,9 @@ def _refusal_result(
         top_score=top_score,
         second_score=signals.second_score,
         score_margin=signals.score_margin,
+        score_margin_ratio=signals.score_margin_ratio,
+        score_source=signals.score_source,
+        score_threshold_applied=signals.threshold_applied,
         low_margin=signals.low_margin,
         threshold=threshold,
         margin_threshold=margin_threshold,
@@ -600,6 +847,11 @@ def _refusal_result(
         query_plan_reason=query_plan.reason,
         query_plan_model=query_plan.model,
         query_plan_provider=query_plan.provider,
+        coverage_selection_applied=coverage_result.applied,
+        coverage_requirement_count=coverage_result.requirement_count,
+        coverage_covered_requirement_count=coverage_result.covered_requirement_count,
+        coverage_candidate_count=coverage_result.candidate_count,
+        coverage_reason=coverage_result.reason,
         rerank_applied=rerank_result.applied,
         rerank_candidate_count=rerank_result.candidate_count,
         rerank_reason=rerank_result.reason,

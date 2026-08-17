@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import close_database, session_factory
 from app.retrieval.citations import EvidenceSegment, build_evidence_segments
 from app.retrieval.dense import DenseSearchHit
+from app.retrieval.strategy import validate_chunk_strategy
 
 
 async def analyze_false_refusals(
@@ -81,6 +82,11 @@ async def analyze_false_refusals(
             )
             answer_evidence = build_evidence_segments(hits, max_chars=answer_max_chars)
             spans = list(generated["span_diagnostics"])
+            minimum_full_visibility_chars = _minimum_full_visibility_chars(
+                hits,
+                spans,
+                max_chars=answer_max_chars,
+            )
             retrieval_statuses = {
                 int(span["span_index"]): str(span["status"])
                 for span in retrieved["span_diagnostics"]
@@ -104,12 +110,15 @@ async def analyze_false_refusals(
                     "question": generated["question"],
                     "gold_answer": generated["gold_answer"],
                     "refusal_reason": generated["refusal_reason"],
+                    "evidence_reason": generated.get("evidence_reason")
+                    or (generated.get("evidence_gate") or {}).get("reason"),
                     "cause": cause,
                     "retrieval": retrieved["retrieval"],
                     "retrieval_span_statuses": retrieval_statuses,
                     "gate_span_coverage": gate_coverage,
                     "sequential_gate_span_coverage": sequential_gate_coverage,
                     "answer_span_coverage": answer_coverage,
+                    "minimum_full_visibility_chars": minimum_full_visibility_chars,
                     "gate_evidence_chars": sum(len(item.quote) for item in gate_evidence),
                     "gate_evidence_segments": len(gate_evidence),
                     "gate_evidence": [_serialize_segment(item) for item in gate_evidence],
@@ -211,29 +220,29 @@ async def _load_hits(
     hits: list[DenseSearchHit] = []
     for item in retrieved:
         chunk_id = str(item["chunk_id"])
-        row = row_by_id.get(chunk_id)
-        if row is None:
+        chunk_row = row_by_id.get(chunk_id)
+        if chunk_row is None:
             raise ValueError(f"检索报告中的 chunk 已不存在: {chunk_id}")
         hits.append(
             DenseSearchHit(
                 chunk_id=UUID(chunk_id),
-                document_id=row["document_id"],
-                version_id=row["version_id"],
-                version_no=int(row["version_no"]),
-                title=str(row["title"]),
-                source_uri=str(row["source_uri"]),
-                content=str(row["content"]),
-                content_tokens=int(row["content_tokens"]),
-                char_start=int(row["char_start"]),
-                char_end=int(row["char_end"]),
+                document_id=chunk_row["document_id"],
+                version_id=chunk_row["version_id"],
+                version_no=int(chunk_row["version_no"]),
+                title=str(chunk_row["title"]),
+                source_uri=str(chunk_row["source_uri"]),
+                content=str(chunk_row["content"]),
+                content_tokens=int(chunk_row["content_tokens"]),
+                char_start=int(chunk_row["char_start"]),
+                char_end=int(chunk_row["char_end"]),
                 score=float(item["score"]),
                 dense_score=_optional_float(item.get("dense_score")),
                 lexical_score=_optional_float(item.get("lexical_score")),
                 fusion_score=_optional_float(item.get("fusion_score")),
                 rerank_score=_optional_float(item.get("rerank_score")),
-                heading_path=list(row["heading_path"] or []),
+                heading_path=list(chunk_row["heading_path"] or []),
                 blocks=blocks_by_id[chunk_id],
-                strategy=str(row["strategy"]),
+                strategy=validate_chunk_strategy(str(chunk_row["strategy"])),
             )
         )
     return hits
@@ -280,6 +289,33 @@ def _span_coverage(span: dict[str, Any], evidence: list[EvidenceSegment]) -> flo
     return sum(right - left for left, right in merged) / (end - start)
 
 
+def _minimum_full_visibility_chars(
+    hits: list[DenseSearchHit],
+    spans: list[dict[str, Any]],
+    *,
+    max_chars: int,
+) -> int | None:
+    """二分求 sequential 打包下让全部 gold span 完整可见的最小字符预算。"""
+
+    if not spans:
+        return 0
+
+    def all_visible(budget: int) -> bool:
+        evidence = build_evidence_segments(hits, max_chars=budget)
+        return all(_span_coverage(span, evidence) >= 1.0 for span in spans)
+
+    if not all_visible(max_chars):
+        return None
+    low, high = 1, max_chars
+    while low < high:
+        middle = (low + high) // 2
+        if all_visible(middle):
+            high = middle
+        else:
+            low = middle + 1
+    return low
+
+
 def _serialize_segment(segment: EvidenceSegment) -> dict[str, Any]:
     return {
         "citation_id": segment.citation_id,
@@ -294,7 +330,11 @@ def _serialize_segment(segment: EvidenceSegment) -> dict[str, Any]:
 
 
 def _optional_float(value: object) -> float | None:
-    return None if value is None else float(value)
+    if value is None:
+        return None
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        raise TypeError("检索分数必须是数值")
+    return float(value)
 
 
 def _markdown_report(payload: dict[str, Any]) -> str:
@@ -325,6 +365,9 @@ def _parse_args() -> argparse.Namespace:
         choices=["round_robin", "sequential"],
         default="round_robin",
     )
+    parser.add_argument("--gate-max-chars", type=int, default=6000)
+    parser.add_argument("--gate-max-segment-chars", type=int, default=1200)
+    parser.add_argument("--answer-max-chars", type=int, default=12000)
     parser.add_argument("--expected-false-refusals", type=int, default=21)
     return parser.parse_args()
 
@@ -337,6 +380,9 @@ def main() -> None:
             generation_reports=args.generation_report,
             output_dir=args.output_dir,
             packing_mode=args.packing_mode,
+            gate_max_chars=args.gate_max_chars,
+            gate_max_segment_chars=args.gate_max_segment_chars,
+            answer_max_chars=args.answer_max_chars,
             expected_false_refusals=args.expected_false_refusals,
         )
     )

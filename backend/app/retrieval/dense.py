@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -59,6 +60,7 @@ async def dense_search(
     query: str,
     top_k: int = 10,
     strategy: ChunkStrategy = "heading",
+    temporal_ctx: datetime | None = None,
 ) -> list[DenseSearchHit]:
     if not query.strip():
         raise ValueError("query 不能为空")
@@ -72,6 +74,7 @@ async def dense_search(
         embedding=result.embeddings[0],
         top_k=top_k,
         strategy=strategy,
+        temporal_ctx=temporal_ctx,
     )
 
 
@@ -83,36 +86,60 @@ async def multi_query_dense_search(
     top_k: int = 10,
     per_query_top_k: int = 50,
     strategy: ChunkStrategy = "heading",
+    temporal_ctx: datetime | None = None,
 ) -> list[DenseSearchHit]:
+    rankings = await multi_query_dense_rankings(
+        session,
+        gateway,
+        queries=queries,
+        per_query_top_k=per_query_top_k,
+        strategy=strategy,
+        temporal_ctx=temporal_ctx,
+    )
+    return _merge_query_rankings(rankings, top_k=top_k)
+
+
+async def multi_query_dense_rankings(
+    session: AsyncSession,
+    gateway: ModelGateway,
+    *,
+    queries: list[str],
+    per_query_top_k: int = 50,
+    strategy: ChunkStrategy = "heading",
+    temporal_ctx: datetime | None = None,
+) -> list[list[DenseSearchHit]]:
+    """保留逐查询排名，供 coverage-aware 最终选证据使用。"""
+
     normalized = list(dict.fromkeys(" ".join(query.split()) for query in queries if query.strip()))
     if not normalized:
         raise ValueError("queries 不能为空")
-    if not 1 <= top_k <= MAX_RETRIEVAL_CANDIDATES:
-        raise ValueError(f"top_k 必须位于 1 到 {MAX_RETRIEVAL_CANDIDATES}")
     if not 1 <= per_query_top_k <= MAX_RETRIEVAL_CANDIDATES:
         raise ValueError(f"per_query_top_k 必须位于 1 到 {MAX_RETRIEVAL_CANDIDATES}")
     strategy = validate_chunk_strategy(strategy)
     if len(normalized) == 1:
-        return await dense_search(
-            session,
-            gateway,
-            query=normalized[0],
-            top_k=top_k,
-            strategy=strategy,
-        )
+        return [
+            await dense_search(
+                session,
+                gateway,
+                query=normalized[0],
+                top_k=per_query_top_k,
+                strategy=strategy,
+                temporal_ctx=temporal_ctx,
+            )
+        ]
 
     result = await gateway.embed(normalized, task_type="multi_query_embedding")
-    rankings = [
+    return [
         await _dense_search_by_vector(
             session,
             gateway,
             embedding=embedding,
             top_k=per_query_top_k,
             strategy=strategy,
+            temporal_ctx=temporal_ctx,
         )
         for embedding in result.embeddings
     ]
-    return _merge_query_rankings(rankings, top_k=top_k)
 
 
 def _merge_query_rankings(
@@ -150,9 +177,20 @@ async def _dense_search_by_vector(
     embedding: list[float],
     top_k: int,
     strategy: ChunkStrategy,
+    temporal_ctx: datetime | None = None,
 ) -> list[DenseSearchHit]:
-    await apply_hnsw_scan_settings(session)
     strategy = validate_chunk_strategy(strategy)
+    if temporal_ctx is None:
+        await apply_hnsw_scan_settings(session)
+        visibility_predicate = "c.is_searchable=true AND v.invalid_at IS NULL"
+    else:
+        # 历史版本的 is_searchable 投影会在新版本激活时被关闭，不能走只覆盖当前版本的
+        # 部分 HNSW。时点查询按版本有效期做精确扫描，宁可慢也不能静默读成当前状态。
+        visibility_predicate = (
+            "v.activated_at IS NOT NULL "
+            "AND v.activated_at <= :temporal_ctx "
+            "AND (v.invalid_at IS NULL OR v.invalid_at > :temporal_ctx)"
+        )
     vector = "[" + ",".join(format(value, ".9g") for value in embedding) + "]"
     # strategy 必须作为已校验的 SQL 字面量出现。绑定参数在 generic plan 下无法证明
     # 部分索引谓词, 会退化为全表扫描或选错 HNSW 分区。
@@ -214,14 +252,13 @@ async def _dense_search_by_vector(
                     FROM chunks c
                     JOIN document_versions v ON v.id=c.version_id
                     JOIN documents d ON d.id=v.document_id
-                    WHERE c.is_searchable=true
+                    WHERE {visibility_predicate}
                       AND {strategy_predicate}
                       AND c.embedding IS NOT NULL
                       AND c.embedding_model=:embedding_model
                       AND c.embedding_provider=:embedding_provider
                       AND c.embedding_revision=:embedding_revision
                       AND d.deleted_at IS NULL
-                      AND v.invalid_at IS NULL
                     ORDER BY c.embedding <=> CAST(:embedding AS vector), c.id
                     LIMIT :top_k
                     """
@@ -232,6 +269,7 @@ async def _dense_search_by_vector(
                     "embedding_provider": gateway.embedding_provider,
                     "embedding_revision": gateway.embedding_revision,
                     "top_k": top_k,
+                    "temporal_ctx": temporal_ctx,
                 },
             )
         )

@@ -6,7 +6,7 @@ import json
 import subprocess
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import fmean
@@ -29,9 +29,15 @@ from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
 from app.services.grounded_answer import (
     SYSTEM_PROMPT,
     GroundedAnswerResult,
-    answer_with_citations,
+    answer_with_settings,
 )
-from eval.mapping import GoldSpan
+from eval.mapping import (
+    GoldEvidenceGroup,
+    GoldSpan,
+    flatten_evidence_groups,
+    parse_evidence_groups,
+    singleton_evidence_groups,
+)
 from eval.metrics.generation import (
     CitationSource,
     CitationValidityResult,
@@ -65,10 +71,16 @@ class GenerationItem:
     gold_answer: str
     gold_spans: list[GoldSpan]
     constraints: dict[str, Any]
+    gold_evidence_groups: list[GoldEvidenceGroup] = field(default_factory=list)
+    temporal_ctx: datetime | None = None
 
     @property
     def answerable(self) -> bool:
         return self.category != "unanswerable"
+
+    @property
+    def evidence_groups(self) -> list[GoldEvidenceGroup]:
+        return self.gold_evidence_groups or singleton_evidence_groups(self.gold_spans)
 
 
 @dataclass(frozen=True)
@@ -114,11 +126,19 @@ class GenerationItemResult:
     top_score: float | None = None
     second_score: float | None = None
     score_margin: float | None = None
+    score_margin_ratio: float | None = None
+    score_source: str | None = None
+    score_threshold_applied: bool | None = None
     low_margin: bool | None = None
     evidence_sufficient: bool | None = None
     evidence_reason: str | None = None
     evidence_model: str | None = None
     evidence_provider: str | None = None
+    coverage_selection_applied: bool | None = None
+    coverage_requirement_count: int | None = None
+    coverage_covered_requirement_count: int | None = None
+    coverage_candidate_count: int | None = None
+    coverage_reason: str | None = None
     rerank_applied: bool | None = None
     error: str | None = None
 
@@ -157,6 +177,13 @@ async def run_generation_baseline(
         )
     chunk_strategy = validate_chunk_strategy(chunk_strategy)
     flags = GENERATION_RETRIEVAL_STRATEGIES[retrieval_strategy]
+    score_source = (
+        "rerank"
+        if flags["rerank"]
+        else "fusion"
+        if flags["lexical_rrf"]
+        else "dense"
+    )
     text_mode = rerank_candidate_text_mode or settings.rerank_candidate_text_mode
     lex_mode = lexical_mode or settings.lexical_mode
     git_sha = _git_sha()
@@ -206,6 +233,9 @@ async def run_generation_baseline(
             # Prompt 是生成轨最容易被悄悄改掉的变量, 指纹进 config_hash:
             # 改了 prompt 就必须重跑, 不能复用旧 run 冒充同一条件下的对照。
             "prompt_fingerprint": prompt_fingerprint(),
+            "refusal_score_gate_source": settings.refusal_score_gate_source,
+            "retrieval_score_source": score_source,
+            "refusal_threshold_applied": settings.refusal_score_gate_source == score_source,
             "refusal_threshold": settings.refusal_threshold,
             "refusal_margin_threshold": settings.refusal_margin_threshold,
             "query_decomposition_enabled": flags["decomposition"],
@@ -218,12 +248,15 @@ async def run_generation_baseline(
             "rerank_evidence_gate_max_chars": settings.rerank_evidence_gate_max_chars,
             "evidence_gate_max_tokens": settings.evidence_gate_max_tokens,
             "query_decomposition_max_subqueries": settings.query_decomposition_max_subqueries,
+            "coverage_selection_enabled": settings.coverage_selection_enabled,
+            "coverage_rank_cutoff": settings.coverage_rank_cutoff,
             "rerank_candidate_k": settings.rerank_candidate_k,
             "reranker_base_url": settings.reranker_base_url,
             "reranker_model": settings.reranker_model,
             "rerank_candidate_text_mode": text_mode,
             "lexical_mode": lex_mode,
             "rrf_k": settings.rrf_k,
+            "document_cap_per_version": settings.document_cap_per_version,
             "answer_max_evidence_chars": settings.answer_max_evidence_chars,
             "answer_max_tokens": settings.answer_max_tokens,
         }
@@ -342,6 +375,22 @@ def _fingerprint_dataset(items: list[GenerationItem]) -> str:
                 }
                 for span in item.gold_spans
             ],
+            "gold_evidence_groups": [
+                {
+                    "fact_id": group.fact_id,
+                    "alternatives": [
+                        {
+                            "version_id": str(span.version_id),
+                            "char_start": span.char_start,
+                            "char_end": span.char_end,
+                            "quote": span.quote,
+                        }
+                        for span in group.alternatives
+                    ],
+                }
+                for group in item.evidence_groups
+            ],
+            "temporal_ctx": item.temporal_ctx.isoformat() if item.temporal_ctx else None,
         }
         for item in items
     ]
@@ -406,8 +455,11 @@ async def _load_items(
             await session.execute(
                 text(
                     """
-                    SELECT id, category, question, gold_answer, gold_spans, constraints,
-                           validate_eval_spans(gold_spans) AS spans_valid
+                    SELECT id, category, question, gold_answer, gold_spans,
+                           gold_evidence_groups, constraints, temporal_ctx,
+                           validate_eval_spans(gold_spans) AS spans_valid,
+                           validate_eval_evidence_groups(gold_evidence_groups)
+                             AS groups_valid
                     FROM eval_items
                     WHERE dataset_id=:dataset_id
                       AND (:origin='all' OR origin=:origin)
@@ -435,6 +487,11 @@ async def _load_items(
             )
             for span in row["gold_spans"]
         ]
+        if not row["groups_valid"]:
+            raise ValueError(f"样本包含无效 gold evidence group: {row['id']}")
+        groups = parse_evidence_groups(
+            row["gold_evidence_groups"], fallback_spans=spans
+        )
         if row["category"] != "unanswerable" and not spans:
             raise ValueError(f"可答样本缺少 gold span: {row['id']}")
         items.append(
@@ -445,6 +502,8 @@ async def _load_items(
                 gold_answer=str(row["gold_answer"] or ""),
                 gold_spans=spans,
                 constraints=dict(row["constraints"] or {}),
+                gold_evidence_groups=groups,
+                temporal_ctx=row["temporal_ctx"],
             )
         )
     return dataset_id, items
@@ -470,32 +529,23 @@ async def _evaluate_item(
     trace_id = f"{run_id}:{item.id}"
     structlog.contextvars.bind_contextvars(trace_id=trace_id)
     try:
-        generated: GroundedAnswerResult = await answer_with_citations(
+        effective_settings = settings.model_copy(
+            update={
+                "query_decomposition_enabled": flags["decomposition"],
+                "rerank_enabled": flags["rerank"],
+                "lexical_rrf_enabled": flags["lexical_rrf"],
+                "rerank_candidate_text_mode": text_mode,
+                "lexical_mode": lex_mode,
+            }
+        )
+        generated: GroundedAnswerResult = await answer_with_settings(
             session,
             gateway,
             query=item.question,
             top_k=top_k,
-            refusal_threshold=settings.refusal_threshold,
-            refusal_margin_threshold=settings.refusal_margin_threshold,
-            evidence_gate_max_chars=settings.evidence_gate_max_chars,
-            rerank_evidence_gate_max_chars=settings.rerank_evidence_gate_max_chars,
-            evidence_gate_max_tokens=settings.evidence_gate_max_tokens,
-            query_decomposition_enabled=flags["decomposition"],
-            query_decomposition_max_subqueries=settings.query_decomposition_max_subqueries,
-            query_decomposition_max_tokens=settings.query_decomposition_max_tokens,
-            rerank_enabled=flags["rerank"],
-            rerank_candidate_k=settings.rerank_candidate_k,
-            reranker_base_url=settings.reranker_base_url,
-            reranker_model=settings.reranker_model,
-            reranker_timeout_s=settings.reranker_timeout_s,
-            rerank_max_candidate_chars=settings.rerank_max_candidate_chars,
-            rerank_candidate_text_mode=text_mode,
-            lexical_rrf_enabled=flags["lexical_rrf"],
-            lexical_mode=lex_mode,
-            rrf_k=settings.rrf_k,
+            settings=effective_settings,
             chunk_strategy=chunk_strategy,
-            max_evidence_chars=settings.answer_max_evidence_chars,
-            max_tokens=settings.answer_max_tokens,
+            temporal_ctx=item.temporal_ctx,
         )
     # 模型侧失败按条记账, 不是整批丢弃: 20 条里第 3 条超上下文就丢掉整次跑批,
     # 等于把"这个档位在哪些题上做不到"这个最有信息量的结果也一起丢了。
@@ -546,7 +596,11 @@ async def _evaluate_item(
     )
     constraint_result = evaluate_constraints(generated.answer, item.constraints)
     aligned_citations = sum(
-        _citation_aligned(citation, item.gold_spans, theta=theta)
+        _citation_aligned(
+            citation,
+            flatten_evidence_groups(item.evidence_groups),
+            theta=theta,
+        )
         for citation in generated.citations
     )
     return GenerationItemResult(
@@ -567,11 +621,19 @@ async def _evaluate_item(
         top_score=generated.top_score,
         second_score=generated.second_score,
         score_margin=generated.score_margin,
+        score_margin_ratio=generated.score_margin_ratio,
+        score_source=generated.score_source,
+        score_threshold_applied=generated.score_threshold_applied,
         low_margin=generated.low_margin,
         evidence_sufficient=generated.evidence_sufficient,
         evidence_reason=generated.evidence_reason,
         evidence_model=generated.evidence_model,
         evidence_provider=generated.evidence_provider,
+        coverage_selection_applied=generated.coverage_selection_applied,
+        coverage_requirement_count=generated.coverage_requirement_count,
+        coverage_covered_requirement_count=generated.coverage_covered_requirement_count,
+        coverage_candidate_count=generated.coverage_candidate_count,
+        coverage_reason=generated.coverage_reason,
         rerank_applied=generated.rerank_applied,
     )
 
@@ -731,6 +793,9 @@ async def _store_result(
             "top_score": result.top_score,
             "second_score": result.second_score,
             "score_margin": result.score_margin,
+            "score_margin_ratio": result.score_margin_ratio,
+            "score_source": result.score_source,
+            "threshold_applied": result.score_threshold_applied,
             "low_margin": result.low_margin,
         },
         "evidence_gate": {
@@ -739,6 +804,13 @@ async def _store_result(
             "model": result.evidence_model,
             "provider": result.evidence_provider,
             "rerank_applied": result.rerank_applied,
+        },
+        "coverage_selection": {
+            "applied": result.coverage_selection_applied,
+            "requirement_count": result.coverage_requirement_count,
+            "covered_requirement_count": result.coverage_covered_requirement_count,
+            "candidate_count": result.coverage_candidate_count,
+            "reason": result.coverage_reason,
         },
         "citation_validity": result.citation_validity.to_dict(),
         "constraint_pass": result.constraint_result.to_dict(),
@@ -943,6 +1015,9 @@ def _json_item(result: GenerationItemResult) -> dict[str, object]:
             "top_score": result.top_score,
             "second_score": result.second_score,
             "score_margin": result.score_margin,
+            "score_margin_ratio": result.score_margin_ratio,
+            "score_source": result.score_source,
+            "threshold_applied": result.score_threshold_applied,
             "low_margin": result.low_margin,
         },
         "evidence_gate": {
@@ -951,6 +1026,13 @@ def _json_item(result: GenerationItemResult) -> dict[str, object]:
             "model": result.evidence_model,
             "provider": result.evidence_provider,
             "rerank_applied": result.rerank_applied,
+        },
+        "coverage_selection": {
+            "applied": result.coverage_selection_applied,
+            "requirement_count": result.coverage_requirement_count,
+            "covered_requirement_count": result.coverage_covered_requirement_count,
+            "candidate_count": result.coverage_candidate_count,
+            "reason": result.coverage_reason,
         },
         "citation_validity": result.citation_validity.to_dict(),
         "constraint_pass": result.constraint_result.to_dict(),

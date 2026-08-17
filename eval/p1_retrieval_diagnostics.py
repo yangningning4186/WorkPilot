@@ -101,12 +101,12 @@ SELECT c.id AS chunk_id, d.id AS document_id, c.version_id, v.version_no,
 FROM chunks c
 JOIN document_versions v ON v.id=c.version_id
 JOIN documents d ON d.id=v.document_id
-WHERE c.is_searchable=true AND c.strategy='heading'
+WHERE __VISIBILITY__ AND c.strategy='heading'
   AND c.version_id=:version_id AND c.embedding IS NOT NULL
   AND c.embedding_model=:embedding_model
   AND c.embedding_provider=:embedding_provider
   AND c.embedding_revision=:embedding_revision
-  AND d.deleted_at IS NULL AND v.invalid_at IS NULL
+  AND d.deleted_at IS NULL
 ORDER BY c.embedding <=> CAST(:embedding AS vector), c.id
 """
 
@@ -763,16 +763,27 @@ async def _oracle_doc_hits(
     gateway: ModelGateway,
     embedding: list[float],
     version_id: UUID,
+    temporal_ctx: datetime | None = None,
 ) -> list[DenseSearchHit]:
+    visibility = (
+        "c.is_searchable=true AND v.invalid_at IS NULL"
+        if temporal_ctx is None
+        else (
+            "v.activated_at IS NOT NULL "
+            "AND v.activated_at <= :temporal_ctx "
+            "AND (v.invalid_at IS NULL OR v.invalid_at > :temporal_ctx)"
+        )
+    )
     rows = (
         await session.execute(
-            text(ORACLE_DOC_SQL),
+            text(ORACLE_DOC_SQL.replace("__VISIBILITY__", visibility)),
             {
                 "embedding": _vector(embedding),
                 "version_id": version_id,
                 "embedding_model": gateway.embedding_model,
                 "embedding_revision": gateway.embedding_revision,
                 "embedding_provider": gateway.embedding_provider,
+                "temporal_ctx": temporal_ctx,
             },
         )
     ).mappings()

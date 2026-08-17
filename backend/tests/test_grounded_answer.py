@@ -55,13 +55,13 @@ def test_refusal_threshold_is_strict_and_handles_empty_results() -> None:
     )
 
     assert evaluate_refusal([], threshold=0.5) == RetrievalRefusalSignals(
-        None, None, None, True, "no_evidence"
+        None, None, None, None, None, False, True, "no_evidence"
     )
     assert evaluate_refusal([hit], threshold=0.5) == RetrievalRefusalSignals(
-        0.5, None, None, True, None
+        0.5, None, None, None, "dense", True, True, None
     )
     assert evaluate_refusal([hit], threshold=0.5001) == RetrievalRefusalSignals(
-        0.5, None, None, True, "below_threshold"
+        0.5, None, None, None, "dense", True, True, "below_threshold"
     )
 
     with pytest.raises(ValueError, match="-1 到 1"):
@@ -88,7 +88,42 @@ def test_refusal_signals_include_top1_top2_margin() -> None:
     assert signals.top_score == 0.7
     assert signals.second_score == 0.68
     assert signals.score_margin == pytest.approx(0.02)
+    assert signals.score_margin_ratio == pytest.approx(0.02 / 0.7)
+    assert signals.score_source == "dense"
+    assert signals.threshold_applied is True
     assert signals.low_margin is True
+
+
+def test_refusal_uses_declared_final_ranker_score_and_can_disable_uncalibrated_gate() -> None:
+    hit = DenseSearchHit(
+        chunk_id=uuid7(),
+        document_id=uuid7(),
+        version_id=uuid7(),
+        version_no=1,
+        title="hybrid",
+        source_uri="hybrid.md",
+        content="evidence",
+        # 遗留原始分很高，但最终 RRF 分很低；门不能再偷偷读取 score。
+        score=9.0,
+        heading_path=[],
+        blocks=[],
+        fusion_score=0.02,
+    )
+
+    applied = evaluate_refusal(
+        [hit], threshold=0.35, score_source="fusion", threshold_enabled=True
+    )
+    disabled = evaluate_refusal(
+        [hit], threshold=0.35, score_source="fusion", threshold_enabled=False
+    )
+
+    assert applied.top_score == 0.02
+    assert applied.score_source == "fusion"
+    assert applied.threshold_applied is True
+    assert applied.refusal_reason == "below_threshold"
+    assert disabled.top_score == 0.02
+    assert disabled.threshold_applied is False
+    assert disabled.refusal_reason is None
 
 
 def test_evidence_assessment_parser_is_strict_and_accepts_wrapped_json() -> None:
@@ -600,7 +635,8 @@ async def test_retrieval_generation_and_block_citation_chain(
     assert result.evidence_sufficient is True
     assert result.evidence_model == "fake-chat"
     assert result.top_score is not None
-    assert result.top_score >= result.threshold
+    assert result.score_source == "fusion"
+    assert result.score_threshold_applied is False
     assert result.answer.endswith("[S1]")
     assert len(result.citations) == 1
     citation = result.citations[0]
@@ -639,7 +675,8 @@ async def test_retrieval_generation_and_block_citation_chain(
         payload = response.json()
         assert payload["refused"] is False
         assert payload["refusal_reason"] is None
-        assert payload["top_score"] >= payload["threshold"]
+        assert payload["score_source"] == "fusion"
+        assert payload["score_threshold_applied"] is False
         assert payload["citations"][0]["block_id"] == str(citation.block_id)
         assert payload["citations"][0]["quote"] == citation.quote
 
@@ -696,6 +733,7 @@ async def test_low_score_refuses_before_generation(
         gateway,
         query="如何制作提拉米苏?",
         top_k=1,
+        refusal_score_gate_source="fusion",
         refusal_threshold=1.0,
         query_decomposition_enabled=False,
     )

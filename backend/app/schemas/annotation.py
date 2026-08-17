@@ -115,6 +115,11 @@ class GoldSpanInput(BaseModel):
         return self
 
 
+class GoldEvidenceGroupInput(BaseModel):
+    fact_id: str = Field(min_length=1, max_length=100)
+    alternatives: list[GoldSpanInput] = Field(min_length=1, max_length=20)
+
+
 class GoldToolInput(BaseModel):
     """agent_task 的期望工具调用。
 
@@ -131,6 +136,9 @@ class AnnotationItemUpsert(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     gold_answer: str | None = Field(default=None, max_length=20000)
     gold_spans: list[GoldSpanInput] = Field(default_factory=list, max_length=20)
+    gold_evidence_groups: list[GoldEvidenceGroupInput] = Field(
+        default_factory=list, max_length=20
+    )
     gold_tools: list[GoldToolInput] = Field(default_factory=list, max_length=20)
     must_include: list[str] = Field(default_factory=list, max_length=30)
     must_not_include: list[str] = Field(default_factory=list, max_length=30)
@@ -143,6 +151,8 @@ class AnnotationItemUpsert(BaseModel):
         if self.category == "unanswerable":
             if self.gold_spans:
                 raise ValueError("unanswerable 样本不能包含 gold span")
+            if self.gold_evidence_groups:
+                raise ValueError("unanswerable 样本不能包含 gold evidence group")
             if self.gold_answer and self.gold_answer.strip():
                 raise ValueError("unanswerable 样本不能包含 gold answer")
             if self.gold_tools:
@@ -161,11 +171,22 @@ class AnnotationItemUpsert(BaseModel):
                     raise ValueError("可答检索样本至少需要一个 gold span")
                 if not self.gold_answer or not self.gold_answer.strip():
                     raise ValueError("可答检索样本需要 gold answer")
+        if self.gold_evidence_groups:
+            if len(self.gold_evidence_groups) != len(self.gold_spans):
+                raise ValueError("每个 canonical gold span 必须对应一个事实组")
+            fact_ids = [group.fact_id for group in self.gold_evidence_groups]
+            if len(fact_ids) != len(set(fact_ids)):
+                raise ValueError("fact_id 不能重复")
+            for span, group in zip(
+                self.gold_spans, self.gold_evidence_groups, strict=True
+            ):
+                if group.alternatives[0] != span:
+                    raise ValueError("事实组第一个 alternative 必须是 canonical gold span")
         if self.category == "temporal":
             if self.temporal_ctx is None:
                 raise ValueError("temporal 样本需要 temporal_ctx")
-        elif self.temporal_ctx is not None:
-            raise ValueError("只有 temporal 样本可以设置 temporal_ctx")
+        elif self.category != "unanswerable" and self.temporal_ctx is not None:
+            raise ValueError("只有 temporal/unanswerable 样本可以设置 temporal_ctx")
         return self
 
 
@@ -176,6 +197,7 @@ class AnnotationItemResponse(BaseModel):
     question: str
     gold_answer: str | None
     gold_spans: list[GoldSpanInput]
+    gold_evidence_groups: list[GoldEvidenceGroupInput]
     gold_tools: list[GoldToolInput]
     must_include: list[str]
     must_not_include: list[str]

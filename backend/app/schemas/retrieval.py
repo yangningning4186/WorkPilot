@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
@@ -31,6 +32,7 @@ class PdfIngestRequest(BaseModel):
 class DenseSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     top_k: int = Field(default=10, ge=1, le=50)
+    temporal_ctx: datetime | None = None
 
 
 class DenseSearchHitResponse(BaseModel):
@@ -60,6 +62,7 @@ class DenseSearchResponse(BaseModel):
 class GroundedAnswerRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     top_k: int = Field(default=5, ge=1, le=20)
+    temporal_ctx: datetime | None = None
 
 
 class CitationResponse(BaseModel):
@@ -93,6 +96,9 @@ class GroundedAnswerResponse(BaseModel):
     top_score: float | None
     second_score: float | None
     score_margin: float | None
+    score_margin_ratio: float | None
+    score_source: Literal["dense", "lexical", "fusion", "rerank"] | None
+    score_threshold_applied: bool
     low_margin: bool
     threshold: float
     margin_threshold: float
@@ -105,6 +111,11 @@ class GroundedAnswerResponse(BaseModel):
     query_plan_reason: str
     query_plan_model: str | None
     query_plan_provider: str | None
+    coverage_selection_applied: bool
+    coverage_requirement_count: int
+    coverage_covered_requirement_count: int
+    coverage_candidate_count: int
+    coverage_reason: str
     rerank_applied: bool
     rerank_candidate_count: int
     rerank_reason: str

@@ -9,6 +9,7 @@ from app.llm.gateway import ModelGateway
 from app.schemas.annotation import (
     AnnotationDatasetCreate,
     AnnotationItemUpsert,
+    GoldEvidenceGroupInput,
     GoldSpanInput,
     GoldToolInput,
     ResolveSpanRequest,
@@ -106,6 +107,9 @@ async def test_annotation_resolves_selection_saves_and_detects_stale_span(
 
     assert selected.quote == "😀B"
     assert item.status == "valid"
+    assert item.gold_evidence_groups == [
+        GoldEvidenceGroupInput(fact_id="R1", alternatives=item.gold_spans)
+    ]
     datasets = await list_datasets(db_session)
     assert datasets[0].valid_count == 1
 
@@ -185,6 +189,41 @@ def test_temporal_and_gold_tool_contracts_fail_closed() -> None:
             gold_answer="x",
             gold_spans=[span],
             gold_tools=[GoldToolInput(name="search_knowledge")],
+        )
+
+    unanswerable_at_time = AnnotationItemUpsert(
+        dataset_id=dataset_id,
+        category="unanswerable",
+        question="截至当时库里有答案吗?",
+        temporal_ctx="2026-08-14T00:00:00Z",
+    )
+    assert unanswerable_at_time.temporal_ctx is not None
+
+
+def test_evidence_group_requires_canonical_span_as_first_alternative() -> None:
+    dataset_id = "00000000-0000-0000-0000-000000000001"
+    canonical = GoldSpanInput(
+        version_id="00000000-0000-0000-0000-000000000002",
+        char_start=0,
+        char_end=1,
+        quote="x",
+    )
+    alternative = GoldSpanInput(
+        version_id="00000000-0000-0000-0000-000000000002",
+        char_start=1,
+        char_end=2,
+        quote="y",
+    )
+    with pytest.raises(ValueError, match="canonical"):
+        AnnotationItemUpsert(
+            dataset_id=dataset_id,
+            category="single_hop",
+            question="What?",
+            gold_answer="x",
+            gold_spans=[canonical],
+            gold_evidence_groups=[
+                GoldEvidenceGroupInput(fact_id="R1", alternatives=[alternative, canonical])
+            ],
         )
 
 

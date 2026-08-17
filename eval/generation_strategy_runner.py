@@ -49,6 +49,8 @@ CONTROLLED_CONFIG_KEYS: tuple[str, ...] = (
     "refusal_threshold",
     "refusal_margin_threshold",
     "query_decomposition_enabled",
+    "coverage_selection_enabled",
+    "coverage_rank_cutoff",
     "rerank_enabled",
     "lexical_rrf_enabled",
     "embedding_model",

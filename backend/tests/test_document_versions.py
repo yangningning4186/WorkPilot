@@ -5,11 +5,15 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
+from app.llm.gateway import ModelGateway
+from app.retrieval.dense import dense_search
+from app.retrieval.lexical import lexical_search
 from app.services.document_versions import (
     VersionNotReadyError,
     activate_document_version,
     create_candidate_version,
 )
+from tests.fakes import DeterministicProvider
 
 pytestmark = pytest.mark.integration
 
@@ -130,6 +134,77 @@ async def test_activation_switches_version_and_visibility_atomically(
     assert rows[0].is_searchable is False
     assert rows[1].invalid_at is None
     assert rows[1].is_searchable is True
+
+
+async def test_temporal_retrieval_uses_version_validity_not_current_projection(
+    db_session: AsyncSession,
+) -> None:
+    document_id = await _seed_document(db_session)
+    v1 = await create_candidate_version(
+        db_session,
+        document_id=document_id,
+        content_hash="temporal-v1",
+        parser="markdown",
+        parser_version="1",
+    )
+    await _make_ready(db_session, v1.id, "historical marker")
+    await activate_document_version(db_session, v1.id)
+    historical_time = (
+        await db_session.execute(
+            text("SELECT activated_at FROM document_versions WHERE id=:id"),
+            {"id": v1.id},
+        )
+    ).scalar_one()
+    await db_session.rollback()
+
+    v2 = await create_candidate_version(
+        db_session,
+        document_id=document_id,
+        content_hash="temporal-v2",
+        parser="markdown",
+        parser_version="1",
+    )
+    await _make_ready(db_session, v2.id, "current marker")
+    await activate_document_version(db_session, v2.id)
+    await db_session.execute(
+        text(
+            """
+            UPDATE chunks SET embedding_model='fake-embedding',
+                              embedding_provider='deterministic_test',
+                              embedding_revision='temporal-test'
+            WHERE version_id=ANY(:version_ids)
+            """
+        ),
+        {"version_ids": [v1.id, v2.id]},
+    )
+    await db_session.commit()
+    gateway = ModelGateway(
+        DeterministicProvider(),
+        embedding_dimensions=1024,
+        embedding_revision="temporal-test",
+    )
+
+    historical_dense = await dense_search(
+        db_session,
+        gateway,
+        query="marker",
+        top_k=10,
+        temporal_ctx=historical_time,
+    )
+    current_lexical = await lexical_search(
+        db_session, query="marker", top_k=10, mode="coverage"
+    )
+    historical_lexical = await lexical_search(
+        db_session,
+        query="marker",
+        top_k=10,
+        mode="coverage",
+        temporal_ctx=historical_time,
+    )
+
+    assert {hit.version_id for hit in historical_dense} == {v1.id}
+    assert {hit.version_id for hit in historical_lexical} == {v1.id}
+    assert {hit.version_id for hit in current_lexical} == {v2.id}
 
 
 async def test_failed_candidate_keeps_old_version_searchable(db_session: AsyncSession) -> None:

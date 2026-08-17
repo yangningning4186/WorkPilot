@@ -19,6 +19,7 @@ from app.schemas.annotation import (
     AnnotationItemResponse,
     AnnotationItemUpsert,
     AnnotationLocationResponse,
+    GoldEvidenceGroupInput,
     GoldSpanInput,
     GoldSpanResponse,
     GoldToolInput,
@@ -46,6 +47,7 @@ async def list_datasets(session: AsyncSession) -> list[AnnotationDatasetResponse
                                CASE i.category
                                  WHEN 'unanswerable' THEN
                                    jsonb_array_length(i.gold_spans)=0
+                                   AND jsonb_array_length(i.gold_evidence_groups)=0
                                    AND jsonb_array_length(i.gold_tools)=0
                                    AND COALESCE(btrim(i.gold_answer), '')=''
                                  WHEN 'global' THEN
@@ -53,19 +55,23 @@ async def list_datasets(session: AsyncSession) -> list[AnnotationDatasetResponse
                                    AND jsonb_array_length(i.gold_tools)=0
                                    AND (jsonb_array_length(i.gold_spans)=0
                                         OR validate_eval_spans(i.gold_spans))
+                                   AND validate_eval_evidence_groups(i.gold_evidence_groups)
                                  WHEN 'agent_task' THEN
                                    jsonb_array_length(i.gold_tools)>0
                                    AND (jsonb_array_length(i.gold_spans)=0
                                         OR validate_eval_spans(i.gold_spans))
+                                   AND validate_eval_evidence_groups(i.gold_evidence_groups)
                                  WHEN 'temporal' THEN
                                    jsonb_array_length(i.gold_spans)>0
                                    AND validate_eval_spans(i.gold_spans)
+                                   AND validate_eval_evidence_groups(i.gold_evidence_groups)
                                    AND COALESCE(btrim(i.gold_answer), '')<>''
                                    AND i.temporal_ctx IS NOT NULL
                                    AND jsonb_array_length(i.gold_tools)=0
                                  ELSE
                                    jsonb_array_length(i.gold_spans)>0
                                    AND validate_eval_spans(i.gold_spans)
+                                   AND validate_eval_evidence_groups(i.gold_evidence_groups)
                                    AND COALESCE(btrim(i.gold_answer), '')<>''
                                    AND jsonb_array_length(i.gold_tools)=0
                                END
@@ -301,7 +307,9 @@ async def list_items(session: AsyncSession, *, dataset_id: UUID) -> AnnotationIt
                 text(
                     """
                     SELECT i.*,
-                           validate_eval_spans(i.gold_spans) AS spans_valid
+                           validate_eval_spans(i.gold_spans) AS spans_valid,
+                           validate_eval_evidence_groups(i.gold_evidence_groups)
+                             AS groups_valid
                     FROM eval_items i
                     WHERE i.dataset_id=:dataset_id
                     ORDER BY i.updated_at DESC, i.created_at DESC
@@ -322,8 +330,11 @@ async def create_item(
     session: AsyncSession, request: AnnotationItemUpsert
 ) -> AnnotationItemResponse:
     spans = await validate_gold_spans(session, request.gold_spans)
+    groups = await validate_evidence_groups(
+        session, request.gold_evidence_groups, canonical_spans=spans
+    )
     item_id = uuid7()
-    await _write_item(session, item_id, request, spans, create=True)
+    await _write_item(session, item_id, request, spans, groups, create=True)
     return await get_item(session, item_id)
 
 
@@ -331,7 +342,10 @@ async def update_item(
     session: AsyncSession, item_id: UUID, request: AnnotationItemUpsert
 ) -> AnnotationItemResponse:
     spans = await validate_gold_spans(session, request.gold_spans)
-    await _write_item(session, item_id, request, spans, create=False)
+    groups = await validate_evidence_groups(
+        session, request.gold_evidence_groups, canonical_spans=spans
+    )
+    await _write_item(session, item_id, request, spans, groups, create=False)
     return await get_item(session, item_id)
 
 
@@ -352,7 +366,9 @@ async def get_item(session: AsyncSession, item_id: UUID) -> AnnotationItemRespon
             await session.execute(
                 text(
                     """
-                    SELECT *, validate_eval_spans(gold_spans) AS spans_valid
+                    SELECT *, validate_eval_spans(gold_spans) AS spans_valid,
+                           validate_eval_evidence_groups(gold_evidence_groups)
+                             AS groups_valid
                     FROM eval_items WHERE id=:id
                     """
                 ),
@@ -393,11 +409,34 @@ async def validate_gold_spans(
     return validated
 
 
+async def validate_evidence_groups(
+    session: AsyncSession,
+    groups: list[GoldEvidenceGroupInput],
+    *,
+    canonical_spans: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if not canonical_spans:
+        return []
+    if not groups:
+        return [
+            {"fact_id": f"R{index}", "alternatives": [span]}
+            for index, span in enumerate(canonical_spans, start=1)
+        ]
+    validated: list[dict[str, object]] = []
+    for group in groups:
+        alternatives = await validate_gold_spans(session, group.alternatives)
+        validated.append(
+            {"fact_id": group.fact_id.strip(), "alternatives": alternatives}
+        )
+    return validated
+
+
 async def _write_item(
     session: AsyncSession,
     item_id: UUID,
     request: AnnotationItemUpsert,
     spans: list[dict[str, object]],
+    groups: list[dict[str, object]],
     *,
     create: bool,
 ) -> None:
@@ -412,6 +451,7 @@ async def _write_item(
         "question": request.question.strip(),
         "gold_answer": request.gold_answer.strip() if request.gold_answer else None,
         "gold_spans": json.dumps(spans, ensure_ascii=False),
+        "gold_evidence_groups": json.dumps(groups, ensure_ascii=False),
         "gold_tools": json.dumps(
             [tool.model_dump(mode="json") for tool in request.gold_tools],
             ensure_ascii=False,
@@ -435,10 +475,12 @@ async def _write_item(
                     """
                     INSERT INTO eval_items
                         (id, dataset_id, category, question, gold_answer, gold_spans,
+                         gold_evidence_groups,
                          gold_tools, constraints, difficulty, origin, temporal_ctx)
                     VALUES
                         (:id, :dataset_id, :category, :question, :gold_answer,
-                         CAST(:gold_spans AS jsonb), CAST(:gold_tools AS jsonb),
+                         CAST(:gold_spans AS jsonb), CAST(:gold_evidence_groups AS jsonb),
+                         CAST(:gold_tools AS jsonb),
                          CAST(:constraints AS jsonb),
                          :difficulty, :origin, :temporal_ctx)
                     """
@@ -453,6 +495,7 @@ async def _write_item(
                     UPDATE eval_items SET
                         dataset_id=:dataset_id, category=:category, question=:question,
                         gold_answer=:gold_answer, gold_spans=CAST(:gold_spans AS jsonb),
+                        gold_evidence_groups=CAST(:gold_evidence_groups AS jsonb),
                         gold_tools=CAST(:gold_tools AS jsonb),
                         constraints=CAST(:constraints AS jsonb), difficulty=:difficulty,
                         origin=:origin, temporal_ctx=:temporal_ctx
@@ -469,6 +512,10 @@ async def _write_item(
 
 def _item_response(row: Any) -> AnnotationItemResponse:
     spans = [GoldSpanInput.model_validate(item) for item in row["gold_spans"]]
+    groups = [
+        GoldEvidenceGroupInput.model_validate(item)
+        for item in row["gold_evidence_groups"]
+    ]
     tools = [GoldToolInput.model_validate(item) for item in row["gold_tools"]]
     issues: list[str] = []
     spans_valid = bool(row["spans_valid"])
@@ -497,10 +544,12 @@ def _item_response(row: Any) -> AnnotationItemResponse:
                 issues.append("missing_gold_answer")
     if row["category"] == "temporal" and row["temporal_ctx"] is None:
         issues.append("missing_temporal_ctx")
-    elif row["category"] != "temporal" and row["temporal_ctx"] is not None:
+    elif row["category"] not in {"temporal", "unanswerable"} and row["temporal_ctx"] is not None:
         issues.append("unexpected_temporal_ctx")
     if spans and not spans_valid:
         issues.append("stale_gold_spans")
+    if spans_valid and not bool(row["groups_valid"]):
+        issues.append("invalid_gold_evidence_groups")
     status: Literal["valid", "stale", "invalid"] = (
         "valid" if not issues else ("stale" if "stale_gold_spans" in issues else "invalid")
     )
@@ -512,6 +561,7 @@ def _item_response(row: Any) -> AnnotationItemResponse:
         question=row["question"],
         gold_answer=row["gold_answer"],
         gold_spans=spans,
+        gold_evidence_groups=groups,
         gold_tools=tools,
         must_include=list(constraints.get("must_include") or []),
         must_not_include=list(constraints.get("must_not_include") or []),

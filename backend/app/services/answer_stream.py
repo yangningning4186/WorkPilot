@@ -16,7 +16,7 @@ from app.retrieval.citations import REFUSAL_TEXT, Citation
 from app.services.general_answer import stream_general_answer
 from app.services.grounded_answer import (
     GroundedAnswerResult,
-    stream_answer_with_citations,
+    stream_answer_with_settings,
 )
 
 # 中文按句号断句最自然; 英文与代码退化为定长切片。
@@ -96,15 +96,12 @@ async def produce_answer(
     held = ""
     releasing = False
 
-    async for item in stream_answer_with_citations(
+    async for item in stream_answer_with_settings(
         session,
         gateway,
         query=query,
         top_k=top_k,
-        refusal_threshold=settings.refusal_threshold,
-        refusal_margin_threshold=settings.refusal_margin_threshold,
-        max_evidence_chars=settings.answer_max_evidence_chars,
-        max_tokens=settings.answer_max_tokens,
+        settings=settings,
     ):
         if isinstance(item, GroundedAnswerResult):
             result = item

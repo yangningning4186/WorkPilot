@@ -67,8 +67,10 @@ async def validate_suite(session: AsyncSession, suite: EvalSuite) -> dict[str, o
             await session.execute(
                 text(
                     """
-                    SELECT d.name, i.category, i.gold_spans,
-                           validate_eval_spans(i.gold_spans) AS spans_valid
+                    SELECT d.name, i.category, i.gold_spans, i.gold_evidence_groups,
+                           validate_eval_spans(i.gold_spans) AS spans_valid,
+                           validate_eval_evidence_groups(i.gold_evidence_groups)
+                             AS groups_valid
                     FROM eval_items i
                     JOIN eval_datasets d ON d.id=i.dataset_id
                     WHERE d.name=ANY(:dataset_names) AND i.origin=:origin
@@ -97,12 +99,22 @@ async def validate_suite(session: AsyncSession, suite: EvalSuite) -> dict[str, o
             f"actual={dict(category_counts)}"
         )
     stale = sum(not bool(row["spans_valid"]) for row in rows)
+    invalid_groups = sum(not bool(row["groups_valid"]) for row in rows)
     missing_answerable_spans = sum(
         row["category"] != "unanswerable" and not row["gold_spans"] for row in rows
     )
-    if stale or missing_answerable_spans:
+    missing_answerable_groups = sum(
+        row["category"] not in {"unanswerable", "agent_task"}
+        and row["gold_spans"]
+        and not row["gold_evidence_groups"]
+        for row in rows
+    )
+    if stale or invalid_groups or missing_answerable_spans or missing_answerable_groups:
         raise ValueError(
-            f"suite gold 无效: stale={stale}, missing_answerable_spans={missing_answerable_spans}"
+            "suite gold 无效: "
+            f"stale={stale}, invalid_groups={invalid_groups}, "
+            f"missing_answerable_spans={missing_answerable_spans}, "
+            f"missing_answerable_groups={missing_answerable_groups}"
         )
     return {
         "name": suite.name,
@@ -111,5 +123,7 @@ async def validate_suite(session: AsyncSession, suite: EvalSuite) -> dict[str, o
         "dataset_counts": dict(actual_dataset_counts),
         "category_counts": dict(category_counts),
         "stale_gold_spans": stale,
+        "invalid_gold_evidence_groups": invalid_groups,
+        "missing_answerable_groups": missing_answerable_groups,
         "missing_answerable_spans": missing_answerable_spans,
     }

@@ -157,35 +157,49 @@ dense 与 sparse 是**同一次前向同时输出**的，存储成本接近零�
 
 ---
 
-## 4. 检索流水线（M1 完整形态）
+## 4. 检索流水线（当前实现，2026-08-17）
 
 ```
 用户 query
   │
-① 查询改写 [light]
-  │  ├ 指代消解："它的负样本怎么构造" → "SimCLR 的负样本怎么构造"
-  │  ├ 多查询扩展：生成 3 个同义改写
-  │  └ HyDE：生成假想答案再检索
+① 查询分解 [默认关闭；实验开关]
+  │  └ 开启时最多 4 个子查询；失败回退原查询
   │
 ② 前置过滤（不是后置！）
   │  ├ 当前可见：is_searchable = true
   │  ├ 历史问题：activated_at <= temporal_ctx
   │  │            AND (invalid_at IS NULL OR invalid_at > temporal_ctx)
+  │  │   历史版本的 is_searchable 已关闭，因此走版本有效期约束下的精确扫描，
+  │  │   不复用只覆盖当前版本的部分 HNSW
   │  └ 元数据：doc_type、tags、来源、时间范围
   │     → 后置过滤的坏处：top-k 被无关文档占满，符合条件的挤不进来
   │
-③ 并发双路召回（各 top-50）
+③ 双路召回（统一候选池深度 50；线上与评测同口径）
   │  ├ dense 向量  pgvector HNSW（部分索引 + iterative_scan）
-  │  └ 词法检索    PG 全文索引 + zhparser
+  │  └ 词法检索    PG tsvector：英文 stemming + 中文 bigram，默认 ts_rank
   │
-④ RRF 融合 → top-30      score(d) = Σ_r 1/(k + rank_r(d))，k=60
+④ RRF 融合 → top-50      score(d) = Σ_r 1/(k + rank_r(d))，k=60
   │
-⑤ rerank [bge-reranker-v2-m3] → top-5
+⑤ 最终选择 [两种实验能力均默认关闭且互斥]
+  │  ├ coverage-aware：真实子问题各自检索，分配互补候选后补满 Top-5
+  │  └ rerank：RRF top-50 → bge-reranker-v2-m3
   │
-⑥ 拒答判定：rerank 最高分 < τ → "资料库中未找到相关信息"
+⑥ 最终 Top-5（候选池加宽不改变生成输入深度）
   │
-⑦ 生成 [main]：强制句末输出引用标记，后处理解析成 citation 事件
+⑦ 组合拒答
+  │  ├ 数值分数门：必须声明 dense / lexical / fusion / rerank 分数源；当前默认关闭
+  │  └ LLM 证据充分性门：按最终排序打包证据，异常 fail-closed
+  │
+⑧ 生成 [main]：最多 12000 字符证据，强制句末引用；非法引用 fail-closed
 ```
+
+同步 `/api/v1/answer`、主聊天的流式 worker 与生成评测都通过
+`stream_answer_with_settings` / `answer_with_settings` 进入同一实现。调用方不得再挑选式
+透传配置，否则新增检索开关会再次造成线上、流式与评测静默分叉。
+
+P1-K 已实现真实子问题 coverage selector。旧 flat-span benchmark 上是 0/14；benchmark-v2
+事实组口径下 P1-K 与 RRF 都是 2/14，净恢复仍为 0，因此默认保持关闭。gold coverage 9/9
+是不可部署上限，不能当作当前 planner/ranker 的真实收益。
 
 ### 4.1 命名纠正：PG 全文检索不是 BM25 ★
 
@@ -213,12 +227,17 @@ dense 与 sparse 是**同一次前向同时输出**的，存储成本接近零�
 
 代价是丢弃了分数的绝对强度信息，所以 rerank 不能省——它把绝对相关性补回来了。
 
-### 4.3 拒答阈值 τ
+### 4.3 拒答分数契约与阈值 τ
 
-用 dev 集的 `unanswerable` 样本 + 可答样本画 ROC，选 **F1 最优点**，
-并明确记录代价：τ 调高会让部分可答问题被误拒。这个权衡曲线本身就是面试素材。
+`DenseSearchHit.score` 是检索臂的遗留原始分，不能代表最终排序置信度。当前契约按最终
+排序器显式取分：dense 用 `dense_score`，单词法用 `lexical_score`，RRF 用
+`fusion_score`，成功精排用 `rerank_score`。API 与评测逐条记录 `score_source` 和
+`score_threshold_applied`；top1/top2 margin 改用相对差，避免随分数量纲漂移。
 
-M0 先拍一个保守值，M1（E7）做正式调优。
+同一个 `0.35` 不能跨四种分数复用。因此数值门默认 `disabled`，由证据充分性门承担
+当前拒答；只有在固定最终排序器、用 dev 的 `unanswerable` 与可答样本完成校准后，才把
+`REFUSAL_SCORE_GATE_SOURCE` 切到对应分数源。切换检索器或 rerank 降级时若分数源不匹配，
+数值门自动不生效，并在结果中明确报告，而不是拿错量纲硬判。
 
 ---
 
@@ -271,12 +290,13 @@ SSE       → citation 事件（独立事件，不阻塞正文流）
 
 **指标必须分解到组件**，否则无法归因是检索坏了还是生成坏了。
 
-### 检索层（span-level，跨策略公平）
+### 检索层（事实组级，跨策略公平）
 
 ```
-chunk c 命中 gold span g  ⟺  overlap(c, g) / len(g) ≥ 0.5
+chunk c 命中事实组 R ⟺ ∃g ∈ R.alternatives:
+                         overlap(c, g) / len(g) ≥ 0.5
 
-Recall@k = |{g : ∃c ∈ top-k, c 命中 g}| / |gold_spans|
+Recall@k = |{R : ∃c ∈ top-k, c 命中 R}| / |gold_evidence_groups|
 ```
 
 | 指标 | 说明 |

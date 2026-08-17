@@ -90,7 +90,8 @@ Judge 校准已完成；M2 已选择三档路由方向并进入最终交付阶�
 
 ### 已实现
 
-- 入库、流式问答、引用高亮、组合拒答、鉴权限流、混合检索、rerank 与四策略对照
+- 入库、流式问答、引用高亮、证据充分性拒答、鉴权限流、混合检索、rerank 与四策略对照
+  （数值分数门已按排序器分源，待固定分数源校准后再启用）
 - 固定综述 Agent：六步状态机、三维预算、checkpoint、`SIGKILL` 恢复、HITL 与 effectively-once 写回
 - `light/main/heavy/external` 路由、fallback、确定性升档、精确缓存、GPU 批次成本口径与 admin 成本看板
 - 80 条 human 评测集（70 dev + 10 隔离 test）、严格配对 diff、bootstrap 与 badcase 棘轮

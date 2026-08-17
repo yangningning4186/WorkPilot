@@ -31,7 +31,7 @@ from app.services.annotation import (
     resolve_source_file,
 )
 from app.services.demo_sessions import DemoSession
-from app.services.grounded_answer import answer_with_citations
+from app.services.grounded_answer import answer_with_settings
 from app.services.markdown_ingestion import LibraryPathError, ingest_markdown_file
 from app.services.pdf_ingestion import ingest_pdf_file, pdf_parser_config_from_settings
 from app.services.runs import demo_session_can_access_version
@@ -150,6 +150,7 @@ async def search_dense(
         gateway,
         query=request.query,
         top_k=request.top_k,
+        temporal_ctx=request.temporal_ctx,
     )
     await session.commit()
     return DenseSearchResponse(hits=[DenseSearchHitResponse(**vars(hit)) for hit in hits])
@@ -164,32 +165,13 @@ async def answer(
 ) -> GroundedAnswerResponse:
     settings = get_settings()
     try:
-        result = await answer_with_citations(
+        result = await answer_with_settings(
             session,
             gateway,
             query=request.query,
             top_k=request.top_k,
-            refusal_threshold=settings.refusal_threshold,
-            refusal_margin_threshold=settings.refusal_margin_threshold,
-            evidence_gate_max_chars=settings.evidence_gate_max_chars,
-            rerank_evidence_gate_max_chars=settings.rerank_evidence_gate_max_chars,
-            evidence_gate_max_tokens=settings.evidence_gate_max_tokens,
-            query_decomposition_enabled=settings.query_decomposition_enabled,
-            query_decomposition_max_subqueries=settings.query_decomposition_max_subqueries,
-            query_decomposition_max_tokens=settings.query_decomposition_max_tokens,
-            rerank_enabled=settings.rerank_enabled,
-            rerank_candidate_k=settings.rerank_candidate_k,
-            reranker_base_url=settings.reranker_base_url,
-            reranker_model=settings.reranker_model,
-            reranker_timeout_s=settings.reranker_timeout_s,
-            rerank_max_candidate_chars=settings.rerank_max_candidate_chars,
-            rerank_candidate_text_mode=settings.rerank_candidate_text_mode,
-            lexical_rrf_enabled=settings.lexical_rrf_enabled,
-            lexical_mode=settings.lexical_mode,
-            rrf_k=settings.rrf_k,
-            document_cap_per_version=settings.document_cap_per_version,
-            max_evidence_chars=settings.answer_max_evidence_chars,
-            max_tokens=settings.answer_max_tokens,
+            settings=settings,
+            temporal_ctx=request.temporal_ctx,
         )
     except CitationValidationError as error:
         await session.commit()
@@ -212,6 +194,9 @@ async def answer(
         top_score=result.top_score,
         second_score=result.second_score,
         score_margin=result.score_margin,
+        score_margin_ratio=result.score_margin_ratio,
+        score_source=result.score_source,
+        score_threshold_applied=result.score_threshold_applied,
         low_margin=result.low_margin,
         threshold=result.threshold,
         margin_threshold=result.margin_threshold,
@@ -224,6 +209,11 @@ async def answer(
         query_plan_reason=result.query_plan_reason,
         query_plan_model=result.query_plan_model,
         query_plan_provider=result.query_plan_provider,
+        coverage_selection_applied=result.coverage_selection_applied,
+        coverage_requirement_count=result.coverage_requirement_count,
+        coverage_covered_requirement_count=result.coverage_covered_requirement_count,
+        coverage_candidate_count=result.coverage_candidate_count,
+        coverage_reason=result.coverage_reason,
         rerank_applied=result.rerank_applied,
         rerank_candidate_count=result.rerank_candidate_count,
         rerank_reason=result.rerank_reason,

@@ -3,7 +3,14 @@ from dataclasses import asdict, dataclass
 from statistics import fmean
 from typing import Literal
 
-from eval.mapping import GoldSpan, RetrievedChunk, hits, overlap_ratio
+from eval.mapping import (
+    GoldEvidenceGroup,
+    GoldSpan,
+    RetrievedChunk,
+    hits,
+    overlap_ratio,
+    singleton_evidence_groups,
+)
 from eval.metrics.retrieval import take_token_budget
 
 SpanStatus = Literal[
@@ -28,6 +35,8 @@ class SpanDiagnostic:
     best_retrieved_overlap: float
     mapped_chunk_count: int
     same_version_retrieved: bool
+    fact_id: str | None = None
+    alternative_count: int = 1
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -41,29 +50,52 @@ def diagnose_spans(
     top_k: int,
     token_budget: int,
     theta: float,
+    evidence_groups: list[GoldEvidenceGroup] | None = None,
 ) -> list[SpanDiagnostic]:
     budget_ranked = take_token_budget(retrieved, token_budget)
     diagnostics: list[SpanDiagnostic] = []
-    for index, span in enumerate(spans):
+    groups = evidence_groups or singleton_evidence_groups(spans)
+    for index, group in enumerate(groups):
+        span = group.alternatives[0]
         first_hit_rank = next(
             (
                 rank
                 for rank, chunk in enumerate(retrieved, start=1)
-                if hits(chunk, span, theta=theta)
+                if any(
+                    hits(chunk, alternative, theta=theta)
+                    for alternative in group.alternatives
+                )
             ),
             None,
         )
-        mapped = [chunk for chunk in candidates if hits(chunk, span, theta=theta)]
+        mapped = [
+            chunk
+            for chunk in candidates
+            if any(
+                hits(chunk, alternative, theta=theta)
+                for alternative in group.alternatives
+            )
+        ]
+        group_versions = {alternative.version_id for alternative in group.alternatives}
         same_version = [
-            chunk for chunk in retrieved if chunk.version_id == span.version_id
+            chunk for chunk in retrieved if chunk.version_id in group_versions
         ]
         best_overlap = max(
-            (overlap_ratio(chunk, span) for chunk in same_version), default=0.0
+            (
+                overlap_ratio(chunk, alternative)
+                for chunk in same_version
+                for alternative in group.alternatives
+            ),
+            default=0.0,
         )
         if first_hit_rank is not None and first_hit_rank <= top_k:
             status: SpanStatus = (
                 "hit"
-                if any(hits(chunk, span, theta=theta) for chunk in budget_ranked)
+                if any(
+                    hits(chunk, alternative, theta=theta)
+                    for chunk in budget_ranked
+                    for alternative in group.alternatives
+                )
                 else "outside_token_budget"
             )
         elif first_hit_rank is not None:
@@ -86,6 +118,8 @@ def diagnose_spans(
                 best_retrieved_overlap=best_overlap,
                 mapped_chunk_count=len(mapped),
                 same_version_retrieved=bool(same_version),
+                fact_id=group.fact_id,
+                alternative_count=len(group.alternatives),
             )
         )
     return diagnostics

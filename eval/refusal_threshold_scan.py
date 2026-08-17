@@ -7,7 +7,8 @@
 口径与线上严格对齐（`app/services/grounded_answer.py::evaluate_refusal`）：
 
 - 硬门是**唯一**的一条：`top_score < threshold` → `below_threshold`。
-  `top_score` 是候选池里所有 hit 分数的最大值。
+  `top_score` 必须来自报告显式声明的最终排序器（dense / lexical / fusion / rerank），
+  不再允许把不同量纲的遗留 `hit.score` 混扫。
 - `score_margin`（top1 − top2）**不直接触发拒答**，它只作为信号送进证据充分性门控。
   因此 margin 阈值**无法离线调**——离线改它对最终拒答的影响是 0，
   真实影响全在 LLM 门控里。本脚本只报它的可分性，不给建议值。
@@ -22,6 +23,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -107,6 +109,8 @@ def composite_scan(
 def load_observations(paths: Sequence[Path]) -> tuple[list[Observation], dict[str, Any]]:
     observations: list[Observation] = []
     configured: set[float] = set()
+    score_sources: set[str] = set()
+    threshold_applied: set[bool] = set()
     datasets: set[str] = set()
     seen: set[str] = set()
     for path in paths:
@@ -118,10 +122,16 @@ def load_observations(paths: Sequence[Path]) -> tuple[list[Observation], dict[st
             )
         datasets.add(dataset)
         config = payload.get("config") or {}
+        configured_source = config.get("retrieval_score_source")
+        if configured_source is not None:
+            score_sources.add(str(configured_source))
+        if config.get("refusal_threshold_applied") is not None:
+            threshold_applied.add(bool(config["refusal_threshold_applied"]))
         if config.get("refusal_threshold") is not None:
             configured.add(float(config["refusal_threshold"]))
         for item in payload["items"]:
-            if item.get("error") is not None or item.get("top_score") is None:
+            top_score = _top_score(item)
+            if item.get("error") is not None or top_score is None:
                 continue
             item_id = str(item["item_id"])
             if item_id in seen:
@@ -132,34 +142,54 @@ def load_observations(paths: Sequence[Path]) -> tuple[list[Observation], dict[st
                     item_id=item_id,
                     category=str(item["category"]),
                     answerable=bool(item["answerable"]),
-                    top_score=float(item["top_score"]),
+                    top_score=top_score,
                     margin=_margin(item),
                 )
             )
     if len(configured) > 1:
         raise ScanRefused(f"多份报告的 refusal_threshold 不一致: {sorted(configured)}")
+    if len(score_sources) > 1:
+        raise ScanRefused(f"多份报告的 score source 不一致: {sorted(score_sources)}")
+    if len(threshold_applied) > 1:
+        raise ScanRefused("多份报告的 refusal_threshold_applied 不一致")
     if not observations:
         raise ScanRefused("没有可用样本")
     return observations, {
         "datasets": sorted(datasets),
         "configured_threshold": next(iter(configured), None),
+        "score_source": next(iter(score_sources), None),
+        "threshold_applied": next(iter(threshold_applied), None),
         "reports": [str(path) for path in paths],
     }
 
 
 def _margin(item: dict[str, Any]) -> float | None:
-    """top1 − top2。
+    """优先读取线上已按分数源归一的相对 margin，兼容旧检索报告。
 
     报告里没有直接存 `second_score`，只能从 `retrieved` 的分数集合里取。
     注意 `retrieved` 是**最终排序**（rerank 之后），不是按 score 排的，所以必须
     自己取最大与次大，不能拿前两条相减——那会算出负数。
     """
 
+    signals = item.get("refusal_signals")
+    if isinstance(signals, dict) and signals.get("score_margin_ratio") is not None:
+        return float(signals["score_margin_ratio"])
     scores = sorted(
         (float(chunk["score"]) for chunk in item.get("retrieved") or [] if chunk.get("score") is not None),
         reverse=True,
     )
     return scores[0] - scores[1] if len(scores) > 1 else None
+
+
+def _top_score(item: dict[str, Any]) -> float | None:
+    """兼容检索报告的顶层字段与生成报告的 refusal_signals。"""
+
+    value = item.get("top_score")
+    if value is None:
+        signals = item.get("refusal_signals")
+        if isinstance(signals, dict):
+            value = signals.get("top_score")
+    return float(value) if value is not None else None
 
 
 def scan(observations: Sequence[Observation], *, configured_threshold: float) -> dict[str, Any]:
@@ -184,8 +214,17 @@ def scan(observations: Sequence[Observation], *, configured_threshold: float) ->
 
 
 def _sweep_points(observations: Sequence[Observation]) -> list[float]:
-    """给人看的等距扫描点，与最优阈值的搜索无关（那个走 analyze_refusal 的分割点）。"""
-    return [round(0.20 + 0.025 * step, 3) for step in range(21)]
+    """按当前分数源的真实支持集扫描，不能把 cosine 的区间硬套给 RRF。"""
+
+    scores = sorted({item.top_score for item in observations})
+    if not scores:
+        return []
+    epsilon = max(max(abs(score) for score in scores), 1.0) * 1e-12
+    return [
+        scores[0] - epsilon,
+        *((left + right) / 2 for left, right in pairwise(scores)),
+        scores[-1] + epsilon,
+    ]
 
 
 def _margin_separability(observations: Sequence[Observation]) -> dict[str, Any]:
@@ -325,8 +364,10 @@ def markdown(payload: dict[str, Any]) -> str:
     lines = [
         "# 拒答阈值扫描（E7）",
         "",
-        f"- 数据集：{'、'.join(meta['datasets'])}（{meta['item_count']} 条，"
-        f"可答 {overall['answerable_count']} / 不可答 {overall['unanswerable_count']}）",
+        (
+            f"- 数据集：{'、'.join(meta['datasets'])}（{meta['item_count']} 条，"
+            f"可答 {overall['answerable_count']} / 不可答 {overall['unanswerable_count']}）"
+        ),
         f"- 现行阈值：`{meta['configured_threshold']}`",
         f"- top_score AUROC：**{_fmt(overall['auroc'])}**",
         "",
@@ -365,8 +406,10 @@ def markdown(payload: dict[str, Any]) -> str:
     recommendation = payload["recommendation"]
     lines += [
         "",
-        f"**结论：{'维持现值' if recommendation['action'] == 'keep' else '建议改为 ' + str(recommendation['to'])}**"
-        f" —— {recommendation['reason']}",
+        (
+            f"**结论：{'维持现值' if recommendation['action'] == 'keep' else '建议改为 ' + str(recommendation['to'])}**"
+            f" —— {recommendation['reason']}"
+        ),
         "",
         "## 分类别 AUROC",
         "",

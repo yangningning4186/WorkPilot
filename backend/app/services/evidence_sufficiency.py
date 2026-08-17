@@ -1,6 +1,6 @@
 import json
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from app.llm.escalation import EscalationRejected, run_with_escalation
 from app.llm.gateway import ModelGateway
@@ -51,6 +51,8 @@ async def assess_evidence_sufficiency(
     second_score: float | None,
     score_margin: float | None,
     low_margin: bool,
+    score_source: Literal["dense", "lexical", "fusion", "rerank"] = "dense",
+    score_threshold_applied: bool = True,
     max_tokens: int = 300,
 ) -> EvidenceAssessment:
     if not evidence:
@@ -62,6 +64,8 @@ async def assess_evidence_sufficiency(
             "second_score": second_score,
             "top1_top2_margin": score_margin,
             "low_margin": low_margin,
+            "score_source": score_source,
+            "score_threshold_applied": score_threshold_applied,
         },
         "evidence": [
             {
