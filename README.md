@@ -2,7 +2,8 @@
 
 > 把你读过、存过、想过的一切，变成**可溯源的问答**和**可执行的任务**。
 
-一个人从 0 到上线的全栈 AI 应用，覆盖 RAG、Agent、记忆系统、评测体系、成本治理五条主线。
+一个人从 0 到上线的全栈 AI 应用。当前实现聚焦 RAG、固定 Agent、评测体系与成本治理；
+长期记忆、知识图谱和主动关联保留为后续蓝图，不把设计稿冒充已上线能力。
 
 **作者是第一个也是最重的用户——每天真实在用。**
 
@@ -17,11 +18,11 @@
 
 WorkPilot 提供三种能力：
 
-| 能力 | 例子 | 硬要求 |
-|---|---|---|
-| **问** | "我之前看的那篇讲对比学习的论文，负样本是怎么构造的？" | 答案带引用，精确到文件 + 页码，可点击跳原文；找不到就**说找不到**，不编 |
-| **做** | "把我这个月读的 8 篇 RAG 论文整理成综述，按方法分类，标出彼此差异" | 先出计划让人确认，逐步执行可见可中断，失败可断点续跑 |
-| **想起** | "今天这篇的思路，和你三个月前标过的那篇是同一问题的两种解法" | 主动关联发现，每日 digest |
+| 能力 | 状态 | 例子 | 硬要求 |
+|---|---|---|---|
+| **问** | ✅ 已实现 | "我之前看的那篇讲对比学习的论文，负样本是怎么构造的？" | 答案带引用，精确到文件 + 页码，可点击跳原文；找不到就**说找不到**，不编 |
+| **做** | ✅ 固定综述已实现 | "把我这个月读的 8 篇 RAG 论文整理成综述，按方法分类，标出彼此差异" | 流程固定，先确认再写回；步骤可见、可中断、可从 checkpoint 恢复 |
+| **想起** | 🔭 长期蓝图 | "今天这篇的思路，和你三个月前标过的那篇是同一问题的两种解法" | 依赖尚未实现的长期记忆、知识图谱与每日 digest |
 
 ---
 
@@ -39,19 +40,23 @@ badcase 来自我每天的真实使用，不是编出来的测试用例。
 
 ---
 
-## 技术栈
+## 当前实现的技术栈
 
-| 层 | 选型 |
+| 层 | 已实现选型 |
 |---|---|
-| 前端 | Next.js 15 (App Router) · TypeScript · shadcn/ui · Vercel AI SDK |
+| 前端 | Next.js 16 (App Router) · React 19 · TypeScript · 原生 CSS · react-markdown · 自写 SSE 客户端 |
 | 后端 | Python 3.12 · FastAPI · Pydantic · SQLAlchemy · Arq |
-| Agent | LangGraph（显式状态机 + checkpoint 续跑） |
-| 知识 | MinerU / Docling 解析 · bge-m3 向量 · PostgreSQL + pgvector · PG 词法检索 · bge-reranker-v2-m3 |
-| 记忆 | 自建三层记忆（时序有效性建模 + 四操作冲突消解） |
-| 模型 | 自建网关 → 三档路由（Qwen3.5-4B / Qwen3.6-35B-A3B / DeepSeek-V4-Flash）+ 商用 API 对照 |
-| 可观测 | Langfuse · OpenTelemetry |
-| 评测 | 自建评测框架（span-level 标注 · paired bootstrap · weighted Kappa）· 分层 CI 门禁 |
-| 基础设施 | Redis · MinIO · OrbStack + Docker Compose |
+| Agent | LangGraph 固定 `literature_review` 状态机 · PostgreSQL checkpoint · owner-only HITL · 幂等写回 |
+| 知识 | MinerU / PyMuPDF · bge-m3 dense 向量 · PostgreSQL + pgvector · PG 词法检索 · bge-reranker-v2-m3 |
+| 模型 | 统一网关 · `light/main/heavy/external` 路由与 fallback · 置信度升档 · Redis 精确缓存 |
+| 评测 | span-level 标注 · 规则轨 + Judge · paired bootstrap · weighted Kappa · 两层 CI 门禁 |
+| 基础设施 | PostgreSQL + pgvector · Redis · OrbStack / Docker Compose |
+
+### 长期蓝图（尚未实现）
+
+长期记忆与 `/memory` 页面、自由规划的通用 Agent、个人知识图谱、每日 digest、语义缓存、
+sparse 第三路检索、Obsidian/Zotero/web_clip connector、Langfuse/OpenTelemetry、MinIO 和公网部署
+都仍在 [MVP Backlog](docs/11-MVP边界.md#5-backlog按解锁顺序) 或最终交付清单中。
 
 ---
 
@@ -80,23 +85,31 @@ badcase 来自我每天的真实使用，不是编出来的测试用例。
 
 ## 项目状态
 
-✅ M0 本地闭环与正式基线已收口；🚧 M1 进行中。
+**状态快照：2026-08-17。** M0 已收口；M1 的检索与固定 Agent 工程闭环已完成，
+Judge 正式校准尚未收口；M2 已选择三档路由方向并进入最终交付阶段。当前停止扩功能。
 
-- 入库、流式问答、引用高亮、拒答、安全边界、混合检索、rerank 与四策略对照已完成
-- 评测基线为 **80 条 human（70 dev + 10 隔离 test）**；当前 Judge 先做六类中间校准；
-  固定 Agent 已产出首个真实 `agent_task` 种子，待人工复核后再扩充并升级七类
-- 70 条 dev 扩展检索与两轮 heading 生成已经收口（均 70/70、0 error），10 条 test 未访问；
-  evidence gate 修复后拒答正确率从 49/70 提升到 57/70，可答题实际回答从 36/57 提升到 44/57
-- 修复后六类 Judge 包已冻结为 70 个唯一 case，人工标签表/复核指南和 DeepSeek heavy
-  健康检查均已准备；该数据范围的内网模型发送已获授权，正式 Judge 只等待人工标签收口
-- 当前主线转为剩余 11 条 retrieval miss、1 条证据预算缺失和固定综述工作流；
-  10 条 test 在最终评测前不跑、不调参
-- 固定综述 Agent 的可靠性骨架已落地：四张执行表、`literature_review` 固定 LangGraph、
-  PostgreSQL checkpoint、新 SSE 事件、owner-only HITL，以及 effectively-once 的 Markdown 写回；
-  三维预算熔断、真实 worker `SIGKILL` 自动恢复和前端创建/时间线/HITL 页面也已完成；
-  `evidence_quotes` 已改为模型选编号、服务端回填原文，20 篇最终 20/20；真实
-  `agent_task` 种子已启动构造，但仍保持待人工复核，不冒充七类正式基线
-- 公网部署仍是全项目最后一步
+### 已实现
+
+- 入库、流式问答、引用高亮、组合拒答、鉴权限流、混合检索、rerank 与四策略对照
+- 固定综述 Agent：六步状态机、三维预算、checkpoint、`SIGKILL` 恢复、HITL 与 effectively-once 写回
+- `light/main/heavy/external` 路由、fallback、确定性升档、精确缓存、GPU 批次成本口径与 admin 成本看板
+- 80 条 human 评测集（70 dev + 10 隔离 test）、严格配对 diff、bootstrap、夜间 gate 工具与 badcase 棘轮
+- 当前验证：后端 **411/411**、前端 Playwright **37/37**，Ruff、mypy、ESLint、TypeScript 全部通过
+
+### 已有数据，但结论有边界
+
+- 人工引用准确率 **95.45%（42/44）**；修复后不可答题 **13/13** 正确拒答，
+  可答题实际回答从 36/57 提升到 44/57，仍有 13 条误拒
+- Judge 降档的判者间一致率为 **97.14%**、QWK **0.9191**，但 95% CI 下界为 0.7842；
+  尚无独立人工盲标，不能据此宣称 `main` Judge 已被证明准确
+- HNSW 调参在当前 40 篇语料规模下未真正命中向量索引；语料扩容后必须重跑
+
+### 收口中
+
+- 作者盲标 validation 19 条，完成六类 Judge 正式校准；扩充并人工复核 `agent_task`
+- 生成首份 `eval/snapshots/baseline.json`，实际运行 nightly dev + Judge 门禁
+- 保持 10 条 test 隔离，最终里程碑只运行一次
+- README 完整使用说明、前端打磨、安全清单、独立演示环境、博客、视频和公网部署
 
 - 开发范围以 [11 MVP 边界](docs/11-MVP边界.md) 为准（设计文档描述完整蓝图，含 Backlog 内容）
 - 逐周进度见 [09 排期与任务清单](docs/09-排期与任务清单.md)

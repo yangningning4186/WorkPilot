@@ -1825,3 +1825,229 @@ textarea:focus-visible,
   font-size: 12px;
   line-height: 1.6;
 }
+
+/* ------------------------------------------------------------------ 成本页 */
+
+.cost-frame {
+  display: block;
+}
+
+.cost-body {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 34px 28px 64px;
+}
+
+.cost-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 22px;
+}
+
+.cost-head h1 {
+  margin: 6px 0 8px;
+  font-size: 27px;
+  letter-spacing: -0.02em;
+}
+
+.cost-head p {
+  max-width: 52ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.cost-windows {
+  display: flex;
+  gap: 6px;
+}
+
+.cost-windows button {
+  padding: 7px 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.cost-windows button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+
+.cost-notice {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.cost-notice.warn {
+  border-color: rgb(163 58 43 / 24%);
+  background: rgb(163 58 43 / 6%);
+  color: var(--danger);
+}
+
+.cost-notice code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.cost-totals {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin-bottom: 26px;
+}
+
+.cost-totals > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 15px 17px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface);
+}
+
+.cost-totals span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cost-totals strong {
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cost-body h2 {
+  margin: 30px 0 12px;
+  font-size: 16px;
+}
+
+.cost-hint {
+  max-width: 74ch;
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.cost-cards {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}
+
+.cost-card {
+  padding: 15px 17px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface);
+}
+
+.cost-card header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 11px;
+}
+
+.cost-card header strong {
+  font-size: 15px;
+}
+
+.cost-card-models {
+  overflow: hidden;
+  max-width: 16ch;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cost-card dl {
+  display: grid;
+  gap: 7px 12px;
+  grid-template-columns: 1fr 1fr;
+  margin: 0;
+}
+
+.cost-card dl > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cost-card dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.cost-card dd {
+  margin: 0;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cost-card .cost-warn dd {
+  color: var(--danger);
+}
+
+.cost-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface);
+}
+
+.cost-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.cost-table th,
+.cost-table td {
+  padding: 10px 13px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.cost-table th {
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cost-table tr:last-child td {
+  border-bottom: none;
+}
+
+.cost-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-label {
+  font-weight: 600;
+}
+
+.batch-meta {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}

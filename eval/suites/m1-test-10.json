@@ -1,0 +1,29 @@
+{
+  "name": "m1-test-10",
+  "description": "M1 里程碑留出集；10 条五类人工题，**只在方案冻结后跑一次**，用于产出最终数字。每访问一次必须在 docs/experiments/ 记一笔（docs/06 §1.2 的 R7 纪律）。不参与任何调参、阈值选择或策略比较。",
+  "origin": "human",
+  "item_count": 10,
+  "datasets": [
+    { "name": "core-test-handwritten-zh-v1", "item_count": 4 },
+    { "name": "core-test-handwritten-en-v1", "item_count": 6 }
+  ],
+  "provenance": {
+    "core-test-handwritten-zh-v1": {
+      "reviewer": "xingzhi",
+      "reviewed_at": "2026-08-16",
+      "note": "助手阅读原文后撰写，作者逐条复核并显式 promotion 为 human；与 dev 按 document version 隔离。"
+    },
+    "core-test-handwritten-en-v1": {
+      "reviewer": "xingzhi",
+      "reviewed_at": "2026-08-16",
+      "note": "助手阅读原文后撰写，作者逐条复核并显式 promotion 为 human；与 dev 按 document version 隔离。"
+    }
+  },
+  "category_counts": {
+    "single_hop": 2,
+    "multi_hop": 2,
+    "temporal": 2,
+    "unanswerable": 2,
+    "global": 2
+  }
+}

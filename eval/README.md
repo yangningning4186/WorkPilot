@@ -314,6 +314,52 @@ markdown 里各列几条，`report.json` 始终保留全部逐样本差值。
 一侧跑批报错），两侧就一起剔除，剔除数量记在「仅一侧适用」列——
 否则比较的是两批不同的样本。因此对照报告里的绝对值可能与单次跑批报告的聚合值不同。
 
+## 夜间门禁
+
+`gate.py` 在 `compare.py` 之上加"什么算不合格"，判定引擎完全复用后者，
+所以配对、兼容性校验、逐样本 delta 都是同一套口径。
+**跑在本机/集群，不在 GitHub Actions**——runner 既到不了推理集群也到不了私人库，
+PR 层是静态检查 + pytest（[docs/06 §4.1](../docs/06-评测体系.md)）。
+
+```bash
+# 1. 从一次可信的跑批导出 baseline 快照，提交进 git
+PYTHONPATH=backend backend/.venv/bin/python -m eval.gate snapshot \
+  eval/outputs/dev-suite-retrieval/<run> --output eval/snapshots/baseline.json
+
+# 2. 用候选跑批比对。--against 从该 git ref 读快照，所以在分支上也能对着 main 判
+PYTHONPATH=backend backend/.venv/bin/python -m eval.gate check \
+  eval/outputs/dev-suite-retrieval/<run> --against main \
+  --output-dir eval/outputs/gate/<label>
+```
+
+**快照只含数字与 UUID，不含任何原文**：字段走白名单（不是黑名单），
+`answer` / `gold_answer` / `citations[].title` / `span_diagnostics[].quote` /
+`source_uri` / `document_id` 一律不留，所以它可以提交进 git 而不触碰约束 7。
+将来给报告加字段时新字段默认不进快照，不会悄悄把原文带进版本库。
+gold span 的身份改存 sha256 前 16 位指纹——挡得住重标与解析版本漂移，也不泄露 quote。
+
+判定规则（阈值依据见 [docs/06 §4.2](../docs/06-评测体系.md)）：
+
+| 规则 | 条件 |
+|---|---|
+| `no_regression` | 规则轨指标的**聚合值**不许回退。逐样本胜负只报不拦——按逐样本拦会把净收益的改动也拦下来 |
+| `no_comparable_samples` | 某个受门禁指标一条可配对样本都没有 → 判不合格，不是"这项跳过" |
+| `cost_increase` | token 口径上涨 ≤ 20%（实测噪声最坏 8.8%）；算不出来就不放行 |
+
+fail-closed：候选跑批含失败样本、gold span 指纹与 baseline 不一致、数据集不一致、
+受控配置漂移，一律**拒绝判定**（退出码 2），与"判为不合格"（退出码 1）分开。
+门禁刻意不提供 `--allow-config-drift` 这种后门。
+
+> 想让一次有取舍的改动通过，正确动作是重新生成 baseline 快照并把取舍写进台账，
+> 不是放宽阈值。门禁的作用是逼取舍显式化。
+
+## badcase 棘轮
+
+修复不是终点。可复现的 badcase 除了进 `regression` 评测集，还要在
+`backend/tests/test_regression_badcases.py` 的 `BADCASES` 里登记，并指明哪几条用例挡住它。
+元测试会把 `covered_by` 解析成真实的测试函数，**改名或删掉就直接红**。
+两条路径不互相替代：评测集量的是指标，pytest 挡的是回归，而且每个 PR 都在跑。
+
 ## E1 四策略生成轨
 
 检索轨证明"哪套分块更容易把 gold span 捞回来"，生成轨证明"捞回来之后答案与引用是不是更好"。

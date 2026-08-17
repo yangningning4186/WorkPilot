@@ -153,6 +153,12 @@ async def run_dense_baseline(
             "rerank_candidate_text_mode": text_mode,
             "lexical_mode": lex_mode,
             "rrf_k": settings.rrf_k,
+            # HNSW 的候选扫描参数直接决定 dense 臂能召回什么，必须进 config_hash。
+            # 不进的话两次只改 ef_search 的跑批会算出同一个 hash，
+            # `reuse_completed` 会把上一次的结果原样返回——实验看起来跑了，其实没跑。
+            "hnsw_ef_search": settings.hnsw_ef_search,
+            "hnsw_iterative_scan": settings.hnsw_iterative_scan,
+            "hnsw_max_scan_tuples": settings.hnsw_max_scan_tuples,
         }
         config_hash = hashlib.sha256(
             json.dumps(config, sort_keys=True, separators=(",", ":")).encode()

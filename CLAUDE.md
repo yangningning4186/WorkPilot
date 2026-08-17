@@ -60,14 +60,19 @@ cd frontend && npm install && npm run dev
 # 评测（评测模式强制关闭 fallback，否则实验不可复现）
 uv run python -m eval.run --dataset core-dev --label exp-hybrid-rrf --no-fallback
 uv run python -m eval.compare baseline exp-hybrid-rrf    # 快照 diff + bootstrap 置信区间
-uv run python -m eval.gate --against main --dataset smoke  # PR 门禁，纯规则轨
+uv run python -m eval.gate --against main --dataset core-dev  # 夜间门禁，跑在本机
 
-# 质量
+# 质量（= PR 门禁的全部内容，见 .github/workflows/ci.yml）
 uv run ruff check app tests migrations ../eval --config pyproject.toml
 uv run mypy app
 uv run pytest
 cd ../frontend && npm run lint && npm run typecheck
 ```
+
+**门禁只有两层**：PR 层是静态检查 + pytest（GitHub Actions），夜间层是真语料 + Judge
+（跑在本机/集群）。PR 层**不跑评测** —— 理由与代价见 [06 §4.1](docs/06-评测体系.md)。
+所以 badcase 回流除了进 `regression` 集，**必须同时固化成 `backend/tests/` 的用例**，
+那才是每个 PR 都在挡的那一层。
 
 ---
 

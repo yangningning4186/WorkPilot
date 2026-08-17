@@ -204,6 +204,90 @@ export function fetchLibrary(query: string): Promise<LibraryResponse> {
   return request<LibraryResponse>(`/api/v1/library${search}`);
 }
 
+/**
+ * 成本看板。
+ *
+ * 金额一律是 `string | null` 而不是 number：本机自部署价格表为 0，
+ * "没有可用价格"和"测过、就是不要钱"是两回事，缺价时给 null 并附 cost_status，
+ * 绝不折成 0（docs/07 §7.4）。前端渲染时也必须保持这个区别。
+ */
+export interface CostTierUsage {
+  tier: string;
+  call_count: number;
+  cached_count: number;
+  failed_count: number;
+  fallback_count: number;
+  prompt_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cache_hit_rate: number;
+  p50_latency_ms: number | null;
+  p95_latency_ms: number | null;
+  models: string[];
+}
+
+export interface CostTaskTypeUsage {
+  task_type: string;
+  tier: string;
+  call_count: number;
+  total_tokens: number;
+  cache_hit_rate: number;
+}
+
+export interface CostBatchSummary {
+  batch_id: string;
+  label: string;
+  tier: string;
+  model: string;
+  gpu_model: string | null;
+  node_count: number;
+  task_count: number;
+  total_tokens: number;
+  output_tokens: number;
+  wall_s: string;
+  gpu_s: string;
+  gpu_s_per_task: string;
+  tokens_per_task: number;
+  tasks_per_s: string;
+  tokens_per_s: string;
+  mean_concurrency: string;
+  client_occupancy: string;
+  price_usd_per_hour: string | null;
+  price_source: string | null;
+  cost_usd: string | null;
+  cost_per_task_usd: string | null;
+  cost_per_ktok_usd: string | null;
+  cost_status: string;
+  cost_reason: string | null;
+}
+
+export interface CostOverviewResponse {
+  totals: {
+    call_count: number;
+    cached_count: number;
+    cache_hit_rate: number;
+    total_tokens: number;
+    failed_count: number;
+    fallback_count: number;
+    batch_count: number;
+    priced_batch_count: number;
+    unpriced_batch_count: number;
+    cost_usd: string | null;
+    cost_status: string;
+    window_from: string | null;
+    window_to: string | null;
+  };
+  by_tier: CostTierUsage[];
+  by_task_type: CostTaskTypeUsage[];
+  batches: CostBatchSummary[];
+  undeployed_tiers: string[];
+}
+
+/** 需要 admin 登录；未登录时后端返回 401。 */
+export function fetchCostOverview(days: number): Promise<CostOverviewResponse> {
+  return request<CostOverviewResponse>(`/api/v1/cost/overview?days=${days}`);
+}
+
 /** 触发同步。需要 admin 登录，未登录时后端返回 401（前端据此提示）。 */
 export function syncSource(sourceId: string): Promise<unknown> {
   return request<unknown>(`/api/v1/sources/${sourceId}/sync`, {

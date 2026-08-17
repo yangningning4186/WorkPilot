@@ -1487,6 +1487,16 @@ def _parse_args() -> argparse.Namespace:
     run.add_argument("--base-url", required=True)
     run.add_argument("--api-key-env", default="CLUSTER_API_KEY")
     run.add_argument("--timeout-s", type=float, default=60.0)
+    # 不给就用端点默认值，而各档的默认值并不相同：main 开着思考链，heavy 没开。
+    # 跨档比 Judge 时这就不是受控对照了——思考链会顶在 JSON 前面，严格解析直接失败，
+    # 那测出来的是"能不能闭嘴"，不是"判得准不准"。所以它必须能显式指定。
+    run.add_argument(
+        "--enable-thinking",
+        dest="enable_thinking",
+        action="store_true",
+        default=None,
+    )
+    run.add_argument("--no-enable-thinking", dest="enable_thinking", action="store_false")
 
     import_cmd = sub.add_parser(
         "import", help="校验标签/输出并生成或应用版本化 DB patch"
@@ -1537,6 +1547,7 @@ async def _run_cli(args: argparse.Namespace) -> dict[str, object]:
         api_key=api_key,
         chat_model=args.model,
         embedding_model="judge-does-not-use-embedding",
+        enable_thinking=args.enable_thinking,
         timeout_s=args.timeout_s,
         trust_env=False,
     )
