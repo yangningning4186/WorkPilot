@@ -10,7 +10,10 @@ dependencies = [
   "bcrypt>=4.2,<5",
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
+  "jsonschema>=4.25,<5",
   "langgraph>=1.2.9,<1.3",
+  # MCP v1 的异步 ClientSession 与 stdio / Streamable HTTP transport。
+  "mcp>=1.28.1,<2",
   "openpyxl>=3.1,<4",
   "pgvector>=0.4,<1",
   "pydantic-settings>=2.10,<3",
@@ -34,6 +37,7 @@ dev = [
   "pytest-asyncio>=1.1,<2",
   "ruff>=0.12,<1",
   "types-pyyaml>=6.0.12,<7",
+  "types-jsonschema>=4.25,<5",
 ]
 
 [tool.uv]

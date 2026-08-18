@@ -51,7 +51,7 @@ badcase 来自我每天的真实使用，不是编出来的测试用例。
 | Agent | LangGraph 固定 `literature_review` 状态机 · PostgreSQL checkpoint · owner-only HITL · 幂等写回 |
 | 记忆 | 两阶段事实抽取 · ADD/UPDATE/DELETE/NOOP · 时序有效性 · pgvector 召回 · owner-only `/memory` |
 | 办公编辑 | owner 会话限时授权 · Markdown / python-docx / openpyxl 格式执行器 · 冲突保护 · 恢复副本 · 原子写入 |
-| Cowork 桌面 | Tauri 2 · 随机 localhost sidecar · 会话 root/network capability · 文件/搜索/网页/PDF/Office/Artifact 工具 · Progress / Artifacts |
+| Cowork 桌面 | Tauri 2 · 随机 localhost sidecar · 会话 root/network capability · 文件/搜索/网页/PDF/Office/Artifact · 策展式 MCP client · 渐进加载 Skill · Progress / Artifacts |
 | 知识 | MinerU / PyMuPDF · bge-m3 dense 向量 · PostgreSQL + pgvector · PG 词法检索 · bge-reranker-v2-m3 |
 | 模型 | 统一网关 · `light/main/heavy/external` 路由与 fallback · 置信度升档 · Redis 精确缓存 |
 | 评测 | span-level 标注 · 规则轨 + Judge · paired bootstrap · weighted Kappa · 两层 CI 门禁 |
@@ -79,6 +79,13 @@ npm run dev:desktop
 对目录内的通用文本和 Word / Excel 可直接读写，PDF 可受控读取，并能生成 Artifact；
 这些操作在目录授权后不再逐条弹确认。
 读取公开网页/远程 PDF 需要在当前 Cowork 会话内额外授予 `network.read`。
+
+MCP client 配置示例见 [`config/mcp.yaml.example`](config/mcp.yaml.example)。复制为
+`config/mcp.yaml` 后，先通过 `POST /api/v1/integrations/mcp/{server}/probe` 审阅并固定
+远端工具目录哈希；未逐项启用、目录发生漂移或声明有副作用的工具都不会进入 Cowork。
+当前没有逐字段内容污点追踪，因此 `data_scope: deny` 同样保持不可见，必须由管理员显式
+设为 `corpus_allowed` 才允许数据出站。
+本地 Skill 放在 `skills/<name>/SKILL.md`，格式与边界见 [`skills/README.md`](skills/README.md)。
 
 ---
 

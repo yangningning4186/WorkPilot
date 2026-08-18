@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.budget import BudgetedGateway, BudgetMeter
+from app.agent.cowork_extensions import register_mcp_tools, register_skill_tools
 from app.agent.cowork_runtime import run_cowork_graph
 from app.agent.cowork_tools import CoworkToolRegistry, build_default_cowork_registry
 from app.agent.state import BudgetState
@@ -18,6 +19,7 @@ from app.core.config import Settings, get_settings
 from app.core.run_bus import RunBus
 from app.llm.audit import SqlLlmCallAudit
 from app.llm.gateway import ModelGateway, build_model_gateway
+from app.mcp.client import McpClientManager
 from app.services.model_budget import build_cost_guard
 from app.services.runs import (
     append_events,
@@ -134,9 +136,16 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                 "started_at_ms": 0,
             }
             meter = BudgetMeter(budget, chars_per_token=settings.cost_estimate_chars_per_token)
-            registry: CoworkToolRegistry = (
-                ctx.get("cowork_registry") or build_default_cowork_registry()
-            )
+            configured_registry = ctx.get("cowork_registry")
+            if configured_registry is None:
+                registry = build_default_cowork_registry()
+                register_skill_tools(registry, settings)
+                manager = ctx.get("mcp_manager")
+                if isinstance(manager, McpClientManager):
+                    await register_mcp_tools(registry, manager)
+            else:
+                registry = configured_registry
+            assert isinstance(registry, CoworkToolRegistry)
             state = await run_cowork_graph(
                 session,
                 run_id=run_id,

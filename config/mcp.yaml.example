@@ -1,0 +1,22 @@
+# 复制为 config/mcp.yaml 后生效。服务与工具都必须显式 enabled。
+# 首次连接先不填 catalog_sha256，调用：
+# POST /api/v1/integrations/mcp/<server>/probe
+# 审阅工具目录后把返回的 sha256 固定到下面；目录发生漂移时 worker 会停止注册。
+mcpServers:
+  local-example:
+    enabled: false
+    trusted: false
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-everything"]
+    env: {}
+    catalog_sha256:
+    tools:
+      echo:
+        enabled: false
+        # 未声明时默认 true；当前版本仅向 Agent 注册明确只读的工具。
+        side_effect: false
+        # 当前版本没有内容污点追踪；只有显式 corpus_allowed 才会注册。
+        data_scope: corpus_allowed
+        when_to_use: "需要验证 MCP 连接并回显一段非敏感文本时"
+        when_not_to_use: "输入包含资料库原文、凭证或其他敏感数据时"

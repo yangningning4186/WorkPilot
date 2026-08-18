@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agent.cowork_extensions import register_skill_tools
 from app.agent.cowork_runtime import initialize_cowork_state, resume_cowork_after_human
 from app.agent.cowork_tools import build_default_cowork_registry
 from app.agent.review_graph import initialize_review_state
@@ -361,10 +362,12 @@ async def create_cowork_run(
         trace_id=trace_id,
     )
     try:
+        registry = build_default_cowork_registry()
+        register_skill_tools(registry, settings)
         await initialize_cowork_state(
             session,
             run_id=run.id,
-            registry=build_default_cowork_registry(),
+            registry=registry,
             bus=bus,
         )
     except ValueError as error:

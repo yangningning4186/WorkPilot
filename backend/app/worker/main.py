@@ -10,6 +10,8 @@ from app.core.logging import configure_logging
 from app.core.queue import redis_settings
 from app.core.redis import close_redis, redis_client
 from app.core.run_bus import RedisRunBus
+from app.mcp.client import McpClientManager
+from app.mcp.config import load_mcp_configuration
 from app.worker.answer_run import answer_run
 from app.worker.cowork_run import cowork_run
 from app.worker.maintenance import cost_sweeper_tick, memory_dispatch_tick, watchdog_tick
@@ -23,9 +25,18 @@ async def startup(ctx: dict[str, Any]) -> None:
     ctx["settings"] = settings
     ctx["session_factory"] = session_factory
     ctx["bus"] = RedisRunBus(redis_client)
+    ctx["mcp_manager"] = McpClientManager(
+        load_mcp_configuration(settings.cowork_mcp_config_path),
+        connect_timeout_s=settings.cowork_mcp_connect_timeout_s,
+        call_timeout_s=settings.cowork_mcp_call_timeout_s,
+        result_max_chars=settings.cowork_mcp_result_max_chars,
+    )
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
+    manager = ctx.get("mcp_manager")
+    if isinstance(manager, McpClientManager):
+        await manager.aclose()
     await close_redis()
     await close_database()
 

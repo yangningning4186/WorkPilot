@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import mimetypes
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -188,12 +192,18 @@ class CoworkToolSpec:
     handler: ToolHandler | None
     path_argument: str | None = None
     execution: ToolExecution = "local"
+    input_schema: dict[str, Any] | None = None
+
+    def resolved_input_schema(self) -> dict[str, Any]:
+        if self.input_schema is not None:
+            return self.input_schema
+        return self.args_model.model_json_schema()
 
     def catalog_entry(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "description": self.description,
-            "input_schema": self.args_model.model_json_schema(),
+            "input_schema": self.resolved_input_schema(),
             "capability": self.capability,
             "risk": self.risk,
             "effect": self.effect,
@@ -205,6 +215,8 @@ class CoworkToolSpec:
 class CoworkToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, CoworkToolSpec] = {}
+        self._system_instructions: list[str] = []
+        self._runtime_snapshot: dict[str, Any] = {}
 
     def register(self, spec: CoworkToolSpec) -> None:
         if not spec.name or spec.name in self._tools:
@@ -228,12 +240,39 @@ class CoworkToolRegistry:
     def catalog(self) -> list[dict[str, Any]]:
         return [self._tools[name].catalog_entry() for name in sorted(self._tools)]
 
+    def add_system_instructions(self, instructions: str) -> None:
+        normalized = instructions.strip()
+        if normalized:
+            self._system_instructions.append(normalized)
+
+    def system_instructions(self) -> str:
+        return "\n\n".join(self._system_instructions)
+
+    def update_runtime_snapshot(self, key: str, value: Any) -> None:
+        # round-trip 同时复制并验证所有扩展元数据可进入 canonical checkpoint。
+        self._runtime_snapshot[key] = json.loads(
+            json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        )
+
+    def runtime_snapshot(self) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            json.loads(
+                json.dumps(
+                    self._runtime_snapshot,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                )
+            ),
+        )
+
     def tool_definitions(self) -> list[ToolDefinition]:
         return [
             ToolDefinition(
                 name=self._tools[name].name,
                 description=self._tools[name].description,
-                parameters=self._tools[name].args_model.model_json_schema(),
+                parameters=self._tools[name].resolved_input_schema(),
             )
             for name in sorted(self._tools)
         ]
@@ -255,6 +294,14 @@ class CoworkToolRegistry:
 
     def parse_arguments(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         spec = self.get(name)
+        if spec.input_schema is not None:
+            try:
+                Draft202012Validator.check_schema(spec.input_schema)
+                Draft202012Validator(spec.input_schema).validate(arguments)
+            except (SchemaError, JsonSchemaValidationError) as error:
+                raise CoworkToolError(
+                    f"工具 {name} 参数不符合 MCP schema：{error.message}"
+                ) from error
         try:
             parsed = spec.args_model.model_validate(arguments)
         except ValidationError as error:

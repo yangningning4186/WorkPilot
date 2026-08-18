@@ -13,6 +13,7 @@ from app.api.cowork import router as cowork_router
 from app.api.dependencies import enforce_ip_rate_limit
 from app.api.editor import router as editor_router
 from app.api.health import router as health_router
+from app.api.integrations import router as integrations_router
 from app.api.library import router as library_router
 from app.api.memory import router as memory_router
 from app.api.retrieval import router as retrieval_router
@@ -74,6 +75,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(cowork_router, dependencies=rate_limited)
     app.include_router(editor_router, dependencies=rate_limited)
     app.include_router(health_router)
+    app.include_router(integrations_router, dependencies=rate_limited)
     app.include_router(library_router, dependencies=rate_limited)
     app.include_router(memory_router, dependencies=rate_limited)
     app.include_router(retrieval_router, dependencies=rate_limited)

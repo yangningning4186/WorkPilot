@@ -81,6 +81,14 @@ class Settings(BaseSettings):
     cowork_web_max_redirects: int = Field(default=5, ge=0, le=10)
     cowork_web_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1_024, le=100 * 1024 * 1024)
     cowork_web_text_max_chars: int = Field(default=60_000, ge=1_000, le=500_000)
+    # MCP 配置与 Skill 内容都由本机管理员维护，不接受模型动态改写。
+    cowork_mcp_config_path: Path = Path("../config/mcp.yaml")
+    cowork_mcp_connect_timeout_s: float = Field(default=15.0, gt=0, le=120)
+    cowork_mcp_call_timeout_s: float = Field(default=60.0, gt=0, le=600)
+    cowork_mcp_result_max_chars: int = Field(default=20_000, ge=1_000, le=100_000)
+    cowork_skills_path: Path = Path("../skills")
+    cowork_skill_max_files: int = Field(default=200, ge=1, le=2_000)
+    cowork_skill_max_bytes: int = Field(default=256 * 1024, ge=1_024, le=2 * 1024 * 1024)
     # canonical checkpoint 永远保留完整历史；这些参数只控制发给模型的 outbound 视图。
     cowork_compaction_enabled: bool = True
     cowork_compaction_trigger_ratio: float = Field(default=0.85, gt=0.0, le=1.0)
