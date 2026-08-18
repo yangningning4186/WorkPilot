@@ -32,6 +32,11 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.memory_blind_review \
 
 缺评分、缺 reviewer/时间、item 顺序漂移或不足 5 条都会 fail-closed，不生成满意度报告。
 
+A5 owner 盲评后发现的 `a5-003/004/010` 不回写到已冻结的 seed，单独放在
+`eval/suites/a5-memory-quality-regression.json`。该集同时要求：记忆不得压缩通用答案的
+关键信息，回答不得暴露 `[M1]`、`personal_memory` 或“根据记忆”等内部表述。
+它是事后回归集，不得替代原始 A5 作为独立增益证据。
+
 ## Dense-only 基线
 
 先在本地 `http://127.0.0.1:8000/annotation` 标注 gold spans，再运行：
