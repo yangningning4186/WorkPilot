@@ -37,6 +37,8 @@ def test_memory_eval_rules_and_prompt_boundary() -> None:
     assert explicit == (False, [], ["根据您提供的个人记忆"])
     background = evaluate_answer("根据您提供的背景信息，使用 FastAPI", case)
     assert background == (False, [], ["根据您提供的背景信息"])
+    generic_source = evaluate_answer("根据您提供的信息，使用 FastAPI", case)
+    assert generic_source == (False, [], ["根据您提供的信息"])
     context = render_memory_context(case.memories)
     assert context.startswith("<user_context>\n")
     assert "<personal_memory>" not in context
