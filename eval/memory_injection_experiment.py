@@ -135,9 +135,18 @@ def render_memory_context(memories: list[str]) -> str:
 def evaluate_answer(answer: str, case: MemoryCase) -> tuple[bool, list[str], list[str]]:
     folded = answer.casefold()
     missing = [term for term in case.must_include if term.casefold() not in folded]
-    forbidden_terms = tuple(dict.fromkeys((*case.must_not_include, *FORBIDDEN_MEMORY_DISCLOSURES)))
-    forbidden = [term for term in forbidden_terms if term.casefold() in folded]
+    forbidden = find_disclosure_hits(answer, extra_terms=case.must_not_include)
     return not missing and not forbidden, missing, forbidden
+
+
+def find_disclosure_hits(answer: str, *, extra_terms: list[str] | None = None) -> list[str]:
+    """返回确定性来源泄漏命中；语义 Judge 也必须服从这条硬失败轨。"""
+
+    folded = answer.casefold()
+    forbidden_terms = tuple(
+        dict.fromkeys((*(extra_terms or []), *FORBIDDEN_MEMORY_DISCLOSURES))
+    )
+    return [term for term in forbidden_terms if term.casefold() in folded]
 
 
 async def run_experiment(

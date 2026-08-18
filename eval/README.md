@@ -38,6 +38,23 @@ A5 owner 盲评后发现的 `a5-003/004/010` 不回写到已冻结的 seed，单
 个人记忆/背景的内部来源或“根据记忆”等表述。
 它是事后回归集，不得替代原始 A5 作为独立增益证据。
 
+独立的下一轮使用预注册 A6 suite 与匿名配对语义 Judge，不再以关键词覆盖率作为主结论：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.memory_semantic_experiment generate \
+  --suite eval/suites/a6-memory-semantic-preregistered.json --label <label> \
+  --allow-synthetic --allow-model-send --authorization-note '<generation approval>'
+
+PYTHONPATH=backend backend/.venv/bin/python -m eval.memory_semantic_experiment judge \
+  --package eval/outputs/memory-semantic/<label> \
+  --provider openai_compatible --model <independent-judge-model> --base-url <approved-v1-url> \
+  --allow-model-send --authorization-note '<judge approval>'
+```
+
+生成和 Judge 必须分别授权。Judge 看不到 `memory_on/off` 臂名；正式结论默认拒绝生成模型
+自评。任务完整性、记忆使用与来源泄漏分开计分，确定性泄漏轨仍是硬失败。完整预注册门槛
+见 `docs/experiments/2026-08-18-A6-长期记忆语义评测预注册.md`。
+
 ## Dense-only 基线
 
 先在本地 `http://127.0.0.1:8000/annotation` 标注 gold spans，再运行：
