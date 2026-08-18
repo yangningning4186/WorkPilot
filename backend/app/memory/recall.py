@@ -5,7 +5,11 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm.gateway import ModelGateway
-from app.memory.prompt import MEMORY_CONTEXT_PREFIX, MEMORY_CONTEXT_SUFFIX
+from app.memory.prompt import (
+    MEMORY_CONTEXT_PREFIX,
+    MEMORY_CONTEXT_SUFFIX,
+    escape_memory_fact,
+)
 from app.memory.store import (
     MemoryRecord,
     list_pinned_memories,
@@ -58,7 +62,7 @@ async def recall_memory_context(
     for memory in unique:
         # 类别和编号只是内部检索元数据；放进 prompt 会诱导模型
         # 向用户复述“根据记忆 [M1]”，又没有任何产品价值。
-        line = f"- {memory.fact}\n"
+        line = f"- {escape_memory_fact(memory.fact)}\n"
         if used_chars + len(line) > max_chars:
             continue
         lines.append(line)

@@ -26,6 +26,7 @@ from app.memory.prompt import (
     MEMORY_CONTEXT_PREFIX,
     MEMORY_CONTEXT_SUFFIX,
     MEMORY_USAGE_POLICY,
+    escape_memory_fact,
 )
 from eval.stats import MetricSamples, RatioPoint, paired_bootstrap
 
@@ -37,9 +38,17 @@ FORBIDDEN_MEMORY_DISCLOSURES = (
     "[m",
     "(m",
     "（m",
+    "<user_context",
+    "</user_context",
+    "user_context",
     "<personal_memory",
     "</personal_memory",
     "根据记忆",
+    "根据您提供的个人记忆",
+    "根据你提供的个人记忆",
+    "根据您提供的背景信息",
+    "根据你提供的背景信息",
+    "根据背景信息",
     "个人记忆中",
     "《个人记忆》",
 )
@@ -117,7 +126,7 @@ def _string_list(value: object, field: str, *, allow_empty: bool = False) -> lis
 
 
 def render_memory_context(memories: list[str]) -> str:
-    lines = "".join(f"- {fact}\n" for fact in memories)
+    lines = "".join(f"- {escape_memory_fact(fact)}\n" for fact in memories)
     return MEMORY_CONTEXT_PREFIX + lines + MEMORY_CONTEXT_SUFFIX
 
 

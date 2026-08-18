@@ -15,13 +15,13 @@ from app.llm.types import Message
 from app.memory.prompt import MEMORY_USAGE_POLICY
 
 SYSTEM_PROMPT = f"""你正在回答一个知识库里没有找到答案的问题。
-现在允许你使用通用知识，并在提供 personal_memory 时应用相关用户背景，但必须遵守:
+现在允许你使用通用知识，并在提供 user_context 时应用相关用户背景，但必须遵守:
 1. 开头一句话点明本次回答没有资料库证据、不来自用户的资料库；
-   不得把 personal_memory 冒充为资料库来源。
+   不得把 user_context 冒充为资料库来源。
 2. 不确定的地方直接说不确定, 不要编造具体数字、版本号、论文标题或引文。
 3. 不要输出 [S1] 这类引用标签——本次没有任何证据可供溯源。
 4. 如果这个问题本身需要用户自己的资料才能回答(例如"我的笔记里怎么说"),
-   且 personal_memory 也没有相关信息, 就直说通用知识回答不了,
+   且 user_context 也没有相关信息, 就直说通用知识回答不了,
    并建议把相关资料导入资料库。
 
 {MEMORY_USAGE_POLICY}

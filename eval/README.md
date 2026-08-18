@@ -34,7 +34,8 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.memory_blind_review \
 
 A5 owner 盲评后发现的 `a5-003/004/010` 不回写到已冻结的 seed，单独放在
 `eval/suites/a5-memory-quality-regression.json`。该集同时要求：记忆不得压缩通用答案的
-关键信息，回答不得暴露 `[M1]`、`personal_memory` 或“根据记忆”等内部表述。
+关键信息，回答不得暴露 `[M1]`、`user_context`、`personal_memory`、
+个人记忆/背景的内部来源或“根据记忆”等表述。
 它是事后回归集，不得替代原始 A5 作为独立增益证据。
 
 ## Dense-only 基线

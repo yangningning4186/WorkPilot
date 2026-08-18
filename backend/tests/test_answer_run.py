@@ -236,7 +236,7 @@ async def test_recall_context_is_injected_for_owner_but_never_demo(
         nonlocal recall_calls
         del args, kwargs
         recall_calls += 1
-        return RecalledMemoryContext(memories=[], text="<personal_memory>owner</personal_memory>")
+        return RecalledMemoryContext(memories=[], text="<user_context>owner</user_context>")
 
     monkeypatch.setattr(answer_run_module, "recall_memory_context", fake_recall)
     owner_run_id = await _seed_run(db_session)
@@ -274,7 +274,7 @@ async def test_recall_context_is_injected_for_owner_but_never_demo(
     await answer_run(demo_ctx, str(demo_run.id), 3)
 
     assert recall_calls == 1
-    assert owner_contexts == ["<personal_memory>owner</personal_memory>"]
+    assert owner_contexts == ["<user_context>owner</user_context>"]
     assert demo_contexts == [""]
 
 
