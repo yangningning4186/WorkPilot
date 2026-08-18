@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useAdminSession } from "@/components/admin-session";
-import { Topbar } from "@/components/topbar";
+import { WorkdeskAppShell } from "@/components/workdesk-shell";
 import {
   ApiError,
   createMemory,
@@ -255,9 +255,9 @@ export default function MemoryPage() {
   );
 
   return (
-    <main className="app-frame memory-frame">
-      <Topbar />
-      <div className="memory-body">
+    <WorkdeskAppShell icon="more" sectionTitle="记忆与设置">
+      <div className="memory-frame workdesk-route-surface">
+        <div className="memory-body">
         <header className="memory-header">
           <div>
             <span className="eyebrow">Personal context</span>
@@ -359,7 +359,8 @@ export default function MemoryPage() {
             </section>
           </>
         )}
+        </div>
       </div>
-    </main>
+    </WorkdeskAppShell>
   );
 }

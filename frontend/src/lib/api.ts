@@ -451,6 +451,73 @@ export function fetchUnattendedInbox(
   );
 }
 
+export interface SkillSummary {
+  name: string;
+  description: string;
+  trigger: string[];
+  anti_trigger: string[];
+  tools: string[];
+  sha256: string;
+}
+
+export interface SkillsStatusResponse {
+  source_path: string;
+  snapshot_sha256: string;
+  skills: SkillSummary[];
+  errors: string[];
+}
+
+export interface McpServerStatus {
+  name: string;
+  enabled: boolean;
+  trusted: boolean;
+  transport: "stdio" | "streamable_http" | "http";
+  configured_tools: number;
+  eligible_read_tools: number;
+  blocked_side_effect_tools: number;
+  blocked_data_scope_tools: number;
+  catalog_sha256: string | null;
+}
+
+export interface McpStatusResponse {
+  source_path: string | null;
+  servers: McpServerStatus[];
+}
+
+export interface McpProbeTool {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  configured_policy: {
+    enabled: boolean;
+    side_effect: boolean;
+    data_scope: "deny" | "corpus_allowed";
+    when_to_use: string;
+    when_not_to_use: string;
+  } | null;
+}
+
+export interface McpProbeResponse {
+  server: string;
+  catalog_sha256: string;
+  tools: McpProbeTool[];
+}
+
+export function fetchSkillsStatus(): Promise<SkillsStatusResponse> {
+  return request<SkillsStatusResponse>("/api/v1/integrations/skills");
+}
+
+export function fetchMcpStatus(): Promise<McpStatusResponse> {
+  return request<McpStatusResponse>("/api/v1/integrations/mcp");
+}
+
+export function probeMcpServer(serverName: string): Promise<McpProbeResponse> {
+  return request<McpProbeResponse>(
+    `/api/v1/integrations/mcp/${encodeURIComponent(serverName)}/probe`,
+    { method: "POST" },
+  );
+}
+
 /** 资料库读模型，字段与后端 app/schemas/library.py 一一对应。 */
 export type DocumentState = "ready" | "parsing" | "failed" | "stale";
 

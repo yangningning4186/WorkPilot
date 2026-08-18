@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 
 import { AdminSessionControl, useAdminSession } from "@/components/admin-session";
 import { AnswerMarkdown } from "@/components/answer-markdown";
+import { WorkdeskIcon, WorkdeskNavigation } from "@/components/workdesk-shell";
 import {
   ApiError,
   addCoworkRoot,
@@ -70,37 +71,6 @@ const RESEARCH_PROMPTS = [
   { label: "观点提取", prompt: "提取所有文档中的核心观点、证据与分歧，并按主题归纳。" },
 ];
 
-type WorkdeskIconName =
-  | "add"
-  | "agent"
-  | "automation"
-  | "more"
-  | "search"
-  | "folder"
-  | "file"
-  | "shield"
-  | "send"
-  | "spark"
-  | "stop";
-
-function WorkdeskIcon({ name }: { name: WorkdeskIconName }) {
-  return (
-    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
-      {name === "add" && <><circle cx="12" cy="12" r="8.5" /><path d="M12 8v8M8 12h8" /></>}
-      {name === "agent" && <><path d="M5 7.5A3.5 3.5 0 0 1 8.5 4h7A3.5 3.5 0 0 1 19 7.5v5a3.5 3.5 0 0 1-3.5 3.5H11l-4.5 3v-3.7A3.5 3.5 0 0 1 5 12.5z" /><path d="M9 9.5h6M9 12.5h4" /></>}
-      {name === "automation" && <><circle cx="12" cy="12" r="7.5" /><path d="M12 8v4l2.5 2M5.8 4.8 4 6.6M18.2 4.8 20 6.6" /></>}
-      {name === "more" && <><circle cx="7" cy="7" r="2" /><circle cx="17" cy="7" r="2" /><circle cx="7" cy="17" r="2" /><path d="M17 14v6M14 17h6" /></>}
-      {name === "search" && <><circle cx="10.5" cy="10.5" r="6" /><path d="m15 15 4.5 4.5" /></>}
-      {name === "folder" && <path d="M3.5 7.5A2.5 2.5 0 0 1 6 5h4l2 2h6a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 18 19H6a2.5 2.5 0 0 1-2.5-2.5z" />}
-      {name === "file" && <><path d="M7 3.5h6l4 4v13H7z" /><path d="M13 3.5v4h4M9.5 12h5M9.5 15h5" /></>}
-      {name === "shield" && <><path d="M12 3.5 19 6v5.5c0 4.4-2.8 7.3-7 9-4.2-1.7-7-4.6-7-9V6z" /><path d="m9 12 2 2 4-4" /></>}
-      {name === "send" && <><path d="m5 12 13-7-4.5 14-2.5-5.5z" /><path d="m11 13.5 7-8.5" /></>}
-      {name === "spark" && <><path d="m12 3 1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5z" /><path d="m18.5 16 .6 2.4 2.4.6-2.4.6-.6 2.4-.6-2.4-2.4-.6 2.4-.6z" /></>}
-      {name === "stop" && <rect height="9" rx="2" width="9" x="7.5" y="7.5" />}
-    </svg>
-  );
-}
-
 function readableError(reason: unknown): string {
   if (reason instanceof ApiError) {
     if (reason.status === 401) return "需要 owner 身份。桌面版会在启动时自动建立。";
@@ -165,8 +135,18 @@ export default function CoworkPage() {
     const load = async () => {
       try {
         const response = await fetchConversations();
+        if (cancelled) return;
         let items = response.items;
-        let selected = items[0];
+        const query = new URLSearchParams(window.location.search);
+        const requestedId = query.get("conversation");
+        let selected: ConversationSummary | undefined;
+        if (query.get("new") === "1") {
+          window.history.replaceState(null, "", "/cowork");
+          selected = await createConversation(`Cowork ${items.length + 1}`);
+          items = [selected, ...items];
+        } else {
+          selected = items.find((item) => item.id === requestedId) ?? items[0];
+        }
         if (selected === undefined) {
           selected = await createConversation("Cowork 工作台");
           items = [selected];
@@ -417,12 +397,10 @@ export default function CoworkPage() {
           <button aria-label="搜索任务" className="workdesk-icon-button" type="button"><WorkdeskIcon name="search" /></button>
         </div>
 
-        <nav className="workdesk-primary-nav" aria-label="工作台导航">
-          <button className="active" disabled={busy || running} onClick={() => void createSession()} type="button"><WorkdeskIcon name="add" /><span>新建任务</span></button>
-          <Link href="/library"><WorkdeskIcon name="agent" /><span>资料与连接器</span></Link>
-          <Link href="/automations"><WorkdeskIcon name="automation" /><span>自动化与收件箱</span></Link>
-          <Link href="/memory"><WorkdeskIcon name="more" /><span>记忆与设置</span></Link>
-        </nav>
+        <WorkdeskNavigation
+          newTaskDisabled={busy || running}
+          onNewTask={() => void createSession()}
+        />
 
         <section className="workdesk-sidebar-group">
           <header><span>任务</span><small>{conversations.length}</small></header>

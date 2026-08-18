@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { Topbar } from "@/components/topbar";
+import { WorkdeskAppShell } from "@/components/workdesk-shell";
 import {
   ApiError,
   createCoworkSchedule,
@@ -193,8 +193,8 @@ export default function AutomationsPage() {
   const pendingCount = inbox.filter((item) => item.status === "pending").length;
 
   return (
-    <main className="automation-page">
-      <Topbar />
+    <WorkdeskAppShell icon="automation" sectionTitle="自动化与收件箱">
+      <div className="automation-page workdesk-route-surface">
       <section className="automation-hero">
         <div>
           <span className="automation-kicker">SCHEDULED COWORK</span>
@@ -240,6 +240,7 @@ export default function AutomationsPage() {
           <Link className="automation-open-cowork" href="/cowork">打开 Cowork 运行记录 →</Link>
         </aside>
       </section>
-    </main>
+      </div>
+    </WorkdeskAppShell>
   );
 }

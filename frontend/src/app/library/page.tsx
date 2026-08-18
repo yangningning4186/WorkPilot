@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
 import { useAdminSession } from "@/components/admin-session";
-import { Topbar } from "@/components/topbar";
+import { WorkdeskAppShell } from "@/components/workdesk-shell";
 import {
   ApiError,
   type DocumentState,
@@ -144,9 +144,9 @@ export default function LibraryPage() {
   );
 
   return (
-    <main className="app-frame library-frame">
-      <Topbar />
-      <div className="library-body">
+    <WorkdeskAppShell icon="agent" sectionTitle="资料与连接器">
+      <div className="library-frame workdesk-route-surface">
+        <div className="library-body">
         <section className="library-header">
           <div>
             <span className="eyebrow">Library</span>
@@ -248,7 +248,8 @@ export default function LibraryPage() {
           </>
         )}
         {loading && data === null && <p className="library-empty">正在读取资料库…</p>}
+        </div>
       </div>
-    </main>
+    </WorkdeskAppShell>
   );
 }
