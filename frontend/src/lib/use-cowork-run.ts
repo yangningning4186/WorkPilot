@@ -42,7 +42,10 @@ export interface CoworkRunView {
   phase: CoworkRunPhase;
   tools: CoworkToolCatalogEntry[];
   steps: CoworkProgressStep[];
-  summary: string;
+  /** 仅由 message.delta 累积的最终回答正文。 */
+  answer: string;
+  /** step.update / interaction.resolved 提供的运行进度说明。 */
+  progressSummary: string;
   artifactEvents: ArtifactPayload[];
   interrupt: InterruptPayload | null;
   error: string | null;
@@ -53,7 +56,8 @@ const EMPTY: CoworkRunView = {
   phase: "idle",
   tools: [],
   steps: [],
-  summary: "",
+  answer: "",
+  progressSummary: "",
   artifactEvents: [],
   interrupt: null,
   error: null,
@@ -92,7 +96,11 @@ function applyEvent(state: CoworkRunView, envelope: StreamEnvelope): CoworkRunVi
     case "step.update": {
       const data = envelope.data as StepUpdatePayload;
       if (data.step_id === undefined) {
-        return { ...next, phase: "executing", summary: data.summary ?? state.summary };
+        return {
+          ...next,
+          phase: "executing",
+          progressSummary: data.summary ?? state.progressSummary ?? "",
+        };
       }
       const status =
         data.status === "recovering"
@@ -145,8 +153,10 @@ function applyEvent(state: CoworkRunView, envelope: StreamEnvelope): CoworkRunVi
         ...next,
         phase: "executing",
         interrupt: null,
-        summary:
-          data.status === "rejected" ? "用户未批准这项请求，Cowork 正在调整方案。" : state.summary,
+        progressSummary:
+          data.status === "rejected"
+            ? "用户未批准这项请求，Cowork 正在调整方案。"
+            : state.progressSummary ?? "",
       };
     }
     case "artifact": {
@@ -161,7 +171,7 @@ function applyEvent(state: CoworkRunView, envelope: StreamEnvelope): CoworkRunVi
     }
     case "message.delta": {
       const data = envelope.data as MessageDeltaPayload;
-      return { ...next, summary: state.summary + data.text };
+      return { ...next, answer: (state.answer ?? "") + data.text };
     }
     case "run.done": {
       const data = envelope.data as RunDonePayload;
@@ -173,7 +183,7 @@ function applyEvent(state: CoworkRunView, envelope: StreamEnvelope): CoworkRunVi
     case "error": {
       const data = envelope.data as ErrorPayload;
       if (data.code === "cancelled") {
-        return { ...next, phase: "cancelled", summary: data.user_message, error: null };
+        return { ...next, phase: "cancelled", answer: data.user_message, error: null };
       }
       return { ...next, phase: "error", error: data.user_message };
     }

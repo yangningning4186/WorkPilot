@@ -28,7 +28,9 @@ test.describe("Cowork 工作台", () => {
     await expect(page.getByText("扫描 Word / Excel")).toBeVisible();
     await expect(page.getByText("读取文档结构")).toBeVisible();
     await expect(page.getByText("执行完成").first()).toBeVisible();
-    await expect(page.getByText("已将季度汇报改为管理层语气，并保留原有数据。")).toBeVisible();
+    await expect(page.locator(".workdesk-run-answer")).toHaveText(
+      "已将季度汇报改为管理层语气，并保留原有数据。",
+    );
     await expect(page.getByText("季度汇报.docx", { exact: true })).toBeVisible();
     await expect(page.getByText("已更新标题与结论段")).toBeVisible();
     await expect(page.getByRole("button", { name: /批准|确认应用/ })).toHaveCount(0);

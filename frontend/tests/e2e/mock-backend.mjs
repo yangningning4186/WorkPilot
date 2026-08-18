@@ -911,6 +911,7 @@ const server = createServer((request, response) => {
       const runId = nextRunId();
       const conversationId = body.conversation_id;
       const artifactId = "8c0e4c55-0000-4d00-8000-000000000001";
+      const finalAnswer = "已将季度汇报改为管理层语气，并保留原有数据。";
       const waitsForCancel = body.goal.includes("保持运行直到我停止");
       const initialEvents = [
         { type: "plan", data: { workflow_type: "cowork", mode: "dynamic_tool_loop", tools: [] } },
@@ -926,7 +927,8 @@ const server = createServer((request, response) => {
         { type: "tool.start", data: { step_id: `${runId}-step-2`, step_idx: 2, tool: "edit_word" } },
         { type: "tool.result", data: { step_id: `${runId}-step-2`, step_idx: 2, tool: "edit_word", reused: false, effect_ref: "file:/Users/demo/Documents/Quarterly/季度汇报.docx#sha256=abc" } },
         { type: "artifact", data: { kind: "file", title: "季度汇报.docx", artifact_id: artifactId, effect_ref: "file:/Users/demo/Documents/Quarterly/季度汇报.docx#sha256=abc" } },
-        { type: "message.delta", data: { text: "已将季度汇报改为管理层语气，并保留原有数据。" } },
+        { type: "step.update", data: { status: "done", summary: finalAnswer } },
+        { type: "message.delta", data: { text: finalAnswer } },
         { type: "message.done", data: { message_id: `${runId}-message`, status: "completed" } },
         { type: "run.done", data: { workflow_type: "cowork", status: "done" } },
       ];

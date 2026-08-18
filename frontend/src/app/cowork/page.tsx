@@ -383,6 +383,7 @@ export default function CoworkPage() {
   const shellCommand =
     typeof interactionPayload.command === "string" ? interactionPayload.command : "";
   const shellCwd = typeof interactionPayload.cwd === "string" ? interactionPayload.cwd : "";
+  const runAnswer = run.answer || run.progressSummary || "";
   const hasConversation = messages.length > 0 || runId !== null;
   const visibleMessages =
     runId === null ? messages : messages.filter((message) => message.run_id !== runId);
@@ -607,9 +608,9 @@ export default function CoworkPage() {
                           </section>
                         )}
 
-                        {(run.summary !== "" || run.error !== null) && (
+                        {(runAnswer !== "" || run.error !== null) && (
                           <div className={`workdesk-run-answer${run.phase === "budget_exceeded" ? " budget" : run.error !== null ? " error" : run.phase === "cancelled" ? " cancelled" : ""}`}>
-                            {run.error !== null ? <p>{run.error}</p> : <AnswerMarkdown text={run.summary} />}
+                            {run.error !== null ? <p>{run.error}</p> : <AnswerMarkdown text={runAnswer} />}
                           </div>
                         )}
 
