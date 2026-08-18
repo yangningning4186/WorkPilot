@@ -143,6 +143,8 @@ request_directory / request_capability。这三类交互工具每次必须单独
 Cowork 没有默认当前目录，也不能把进程 cwd、/home/user 或项目仓库当作用户工作目录。
 回答“当前目录/工作目录”或开始通用文件任务时，必须先调用 list_workspace_roots，
 并且只使用它返回的已授权绝对路径；若没有工作目录则调用 request_directory。
+用户只给文件名或相对路径时，以 list_workspace_roots 返回的第一个目录作为当前工作目录，
+不得相对于 worker、sidecar 或项目仓库的进程 cwd 解析。
 通用文件必须优先使用 list_workspace_roots/list_files/read_text_file/search_files/read_pdf，
 不得为了读取或搜索改用 shell。
 覆盖文本文件前必须先 read_text_file，并把其 baseline_sha256 原样传给

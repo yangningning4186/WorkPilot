@@ -279,12 +279,29 @@ class CoworkToolRegistry:
             raw_path = getattr(parsed, spec.path_argument, None)
             if not isinstance(raw_path, str):  # pragma: no cover - schema 定义漂移
                 raise CoworkToolError(f"工具 {name} 缺少路径参数 {spec.path_argument}")
+            requested_path = Path(raw_path)
+            if not requested_path.is_absolute():
+                roots = await list_session_roots(
+                    context.session,
+                    conversation_id=context.conversation_id,
+                )
+                if not roots:
+                    raise CoworkToolError("当前会话没有工作目录，请先选择本地文件夹")
+                # 页面把第一个授权 root 显示为当前工作目录；相对路径必须使用同一语义，
+                # 不能落到 worker/sidecar 自身的进程 cwd。
+                requested_path = Path(roots[0].canonical_path) / requested_path
             # 注册表做统一前置授权；具体 Office 入口会再次按格式能力校验。
-            await authorize_path(
+            authorization = await authorize_path(
                 context.session,
                 conversation_id=context.conversation_id,
-                target_path=Path(raw_path),
+                target_path=requested_path,
                 capability=spec.capability,
+            )
+            parsed = spec.args_model.model_validate(
+                {
+                    **parsed.model_dump(mode="python"),
+                    spec.path_argument: str(authorization.target_path),
+                }
             )
         elif spec.capability in GLOBAL_CAPABILITIES:
             await authorize_capability(
@@ -292,6 +309,8 @@ class CoworkToolRegistry:
                 conversation_id=context.conversation_id,
                 capability=spec.capability,
             )
+
+        canonical_arguments = parsed.model_dump(mode="json")
 
         # 约束 #9 按真实副作用而不是 UI 风险标签判定。Shell / 外部动作虽然
         # risk=external，仍必须在副作用发生前取得幂等租约。
@@ -303,7 +322,7 @@ class CoworkToolRegistry:
             run_id=context.run_id,
             plan_step_id=context.plan_step_id,
             tool_name=spec.name,
-            args=arguments,
+            args=canonical_arguments,
             worker_id=context.worker_id,
             lease_s=context.settings.run_lease_s,
         )
@@ -760,6 +779,7 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             name="list_workspace_roots",
             description=(
                 "列出当前会话由用户明确选择并授权的工作目录。"
+                "第一个目录是相对路径使用的当前工作目录。"
                 "回答当前目录或开始通用文件任务时先调用；Cowork 没有其他默认 cwd。"
             ),
             args_model=ListWorkspaceRootsArgs,
@@ -870,6 +890,7 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             name="create_artifact",
             description=(
                 "在已授权目录原子生成 UTF-8 文本交付物，并登记到 Artifacts 区。"
+                "只提供文件名或相对路径时会写入当前工作目录。"
                 "可生成 Markdown、文本、JSON、CSV、HTML 等文本格式；"
                 "覆盖现有文件前必须提供 baseline_sha256。"
             ),

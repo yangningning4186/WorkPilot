@@ -81,7 +81,7 @@ async def test_general_tools_create_index_and_reuse_artifact_exactly_once(
     assert root["path"] == str(tmp_path)
     assert root["access_mode"] == "read_write"
     arguments = {
-        "path": str(tmp_path / "report.md"),
+        "path": "report.md",
         "content": "# Report\n\nEvidence-backed result.\n",
         "kind": "report",
         "title": "Research report",
@@ -93,6 +93,7 @@ async def test_general_tools_create_index_and_reuse_artifact_exactly_once(
     assert first.reused is False
     assert replay.reused is True
     assert replay.output["artifact_id"] == first.output["artifact_id"]
+    assert first.output["file"]["path"] == str(tmp_path / "report.md")
     assert (tmp_path / "report.md").read_text(encoding="utf-8").startswith("# Report")
     artifacts = await list_artifacts(db_session, conversation_id=conversation_id)
     assert len(artifacts) == 1
