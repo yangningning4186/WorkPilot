@@ -34,14 +34,19 @@ async def watchdog_tick(ctx: dict[str, Any]) -> int:
         # 先入队再唤醒: 客户端读到"正在恢复"时任务已经在队列里, 不会看到一段空窗。
         await queue.enqueue_review_run(run_id, attempt=attempt)
         await bus.publish(run_id)
+    for run_id, attempt in reaped.recovered_cowork:
+        await queue.enqueue_cowork_run(run_id, attempt=attempt)
+        await bus.publish(run_id)
     for run_id in reaped.failed:
         # 唤醒还挂在 SSE 上的客户端, 让它们立刻读到 error 事件而不是干等心跳。
         await bus.publish(run_id)
     if reaped.recovered:
         logger.warning("重新入队失联的固定综述 run", count=len(reaped.recovered))
+    if reaped.recovered_cowork:
+        logger.warning("重新入队失联的 Cowork run", count=len(reaped.recovered_cowork))
     if reaped.failed:
         logger.warning("回收失联 run", count=len(reaped.failed))
-    return len(reaped.failed) + len(reaped.recovered)
+    return len(reaped.failed) + len(reaped.recovered) + len(reaped.recovered_cowork)
 
 
 async def cost_sweeper_tick(ctx: dict[str, Any]) -> int:

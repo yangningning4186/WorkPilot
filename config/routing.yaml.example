@@ -18,6 +18,7 @@ tiers:
       api_key: ${CLUSTER_API_KEY}
       model: ${TIER_LIGHT_MODEL}
       enable_thinking: ${TIER_LIGHT_ENABLE_THINKING}
+      context_window_tokens: ${TIER_LIGHT_CONTEXT_WINDOW_TOKENS}
     # fallback 不传递：每档写全自己的链路，别指望接上 main 的那一串。
     fallback: [main, heavy, external]
 
@@ -29,6 +30,7 @@ tiers:
       api_key: ${CLUSTER_API_KEY}
       model: ${TIER_MAIN_MODEL}
       enable_thinking: ${TIER_MAIN_ENABLE_THINKING}
+      context_window_tokens: ${TIER_MAIN_CONTEXT_WINDOW_TOKENS}
     fallback: [heavy, external]
 
   # 规划、反思、判分：这些环节错了会级联放大，省钱最不划算。
@@ -39,6 +41,7 @@ tiers:
       api_key: ${CLUSTER_API_KEY}
       model: ${TIER_HEAVY_MODEL}
       enable_thinking: ${TIER_HEAVY_ENABLE_THINKING}
+      context_window_tokens: ${TIER_HEAVY_CONTEXT_WINDOW_TOKENS}
     fallback: [main, external]
 
   # 商用 API：对照基线 + 集群整体不可用时的兜底。它自己不再 fallback。
@@ -48,6 +51,7 @@ tiers:
       base_url: ${TIER_EXTERNAL_BASE_URL}
       api_key: ${EXTERNAL_API_KEY}
       model: ${TIER_EXTERNAL_MODEL}
+      context_window_tokens: ${TIER_EXTERNAL_CONTEXT_WINDOW_TOKENS}
     fallback: []
 
 # 左边是代码里真实传给 gateway 的 task_type，不是 docs/07 §2 表格里的类别名。
@@ -58,9 +62,17 @@ routes:
   general_answer: main
   agent_generate_review: main
   agent_compare_documents: main
+  cowork_decision: main
 
   # —— 改写/分解：高频、对单次质量不敏感，后面还有检索与 rerank 兜底。
   query_decomposition: light
+  contextual_query_rewrite: light
+  edit_rewrite: light
+  edit_word: main
+  edit_excel: main
+  conversation_summary: main
+  cowork_compaction: main
+  memory_op: light
 
   # —— 结构化抽取：**刻意留在 main**。
   # docs/07 §3 的设计是 light 起步、置信度不达标再升档，但那套升档机制还没实现。
@@ -69,6 +81,7 @@ routes:
   evidence_sufficiency: main
   agent_extract_card: main
   eval_agent_evidence_anchor: main
+  eval_memory_injection: main
 
   # —— 判分：错了会污染整个评测体系，最不该省钱的一档。
   judge: heavy
@@ -81,7 +94,8 @@ routes:
 #
 # 现在刻意都是未启用状态：把主答路径的证据门控换到 4B 上是一次会改变线上答案的
 # 变更，必须先有对照数据（§3 要测的是升档率、质量增益、相比全走 main 的净省），
-# 不能顺手翻过去。另外 light 的 max_model_len 只有 8192，长证据会直接超上下文。
+# 不能顺手翻过去。light 曾因部署参数只有 8192 而让长证据直接超上下文；当前示例按
+# 32768 配置，但分档仍必须服从每个 endpoint 声明的真实 context_window_tokens。
 escalation:
   evidence_sufficiency: main
   agent_extract_card: main

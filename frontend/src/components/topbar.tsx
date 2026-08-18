@@ -25,6 +25,15 @@ export function Topbar() {
         <Link aria-current={pathname === "/library" ? "page" : undefined} href="/library">
           资料库
         </Link>
+        <Link
+          aria-current={pathname.startsWith("/workspace") ? "page" : undefined}
+          href="/workspace"
+        >
+          文件编辑
+        </Link>
+        <Link aria-current={pathname === "/cowork" ? "page" : undefined} href="/cowork">
+          Cowork
+        </Link>
         <Link aria-current={pathname === "/memory" ? "page" : undefined} href="/memory">
           记忆
         </Link>

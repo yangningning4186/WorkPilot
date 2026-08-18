@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 
 import { useAdminSession } from "@/components/admin-session";
 import { Topbar } from "@/components/topbar";
@@ -76,6 +77,15 @@ function DocumentRow({ document }: { document: LibraryDocument }) {
         </span>
       </td>
       <td className="time">{formatTime(document.updated_at)}</td>
+      <td>
+        {document.source_editable ? (
+          <Link className="document-edit-link" href="/workspace">
+            去工作台
+          </Link>
+        ) : (
+          <span className="document-readonly">只读</span>
+        )}
+      </td>
     </tr>
   );
 }
@@ -220,6 +230,7 @@ export default function LibraryPage() {
                     <th className="numeric">可检索 chunk</th>
                     <th>引用定位</th>
                     <th>更新时间</th>
+                    <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>

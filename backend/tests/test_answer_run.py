@@ -18,6 +18,7 @@ from app.services.runs import (
     append_message,
     create_run,
     ensure_conversation,
+    finish_run,
     get_run,
     list_events,
     request_cancel,
@@ -75,13 +76,27 @@ def _producer(
     citations: list[Citation] | None = None,
     delay_s: float = 0.0,
     memory_contexts: list[str] | None = None,
+    conversation_contexts: list[str] | None = None,
+    retrieval_queries: list[str | None] | None = None,
 ):
     async def produce(
-        session, gateway, *, query, top_k, settings, memory_context=""
+        session,
+        gateway,
+        *,
+        query,
+        top_k,
+        settings,
+        memory_context="",
+        conversation_context="",
+        retrieval_query=None,
     ) -> AsyncIterator[Any]:
         del session, gateway, query, top_k
         if memory_contexts is not None:
             memory_contexts.append(memory_context)
+        if conversation_contexts is not None:
+            conversation_contexts.append(conversation_context)
+        if retrieval_queries is not None:
+            retrieval_queries.append(retrieval_query)
         for piece in split_deltas(answer, max_chars=settings.run_delta_flush_chars):
             if delay_s:
                 await asyncio.sleep(delay_s)
@@ -306,6 +321,89 @@ async def test_recall_failure_degrades_to_answer_without_memory(
     assert contexts == [""]
 
 
+async def test_previous_turn_is_passed_as_conversation_context_and_rewritten_for_retrieval(
+    db_engine: AsyncEngine,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answer_run_module = importlib.import_module("app.worker.answer_run")
+    conversation_id = await ensure_conversation(db_session, scope="local_owner")
+    previous = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="RAG 有哪些优势？",
+        budget_tokens=1000,
+        budget_calls=5,
+        budget_wall_ms=60_000,
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=previous.goal,
+        run_id=previous.id,
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="assistant",
+        content="第一是可溯源，第二是知识可更新。",
+        run_id=previous.id,
+    )
+    assert await finish_run(db_session, run_id=previous.id, status="done")
+    current = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="第二点展开说说",
+        budget_tokens=1000,
+        budget_calls=5,
+        budget_wall_ms=60_000,
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=current.goal,
+        run_id=current.id,
+    )
+    await db_session.commit()
+
+    async def fake_rewrite(*args: Any, **kwargs: Any) -> str:
+        del args, kwargs
+        return "RAG 的知识可更新优势是什么？"
+
+    compactions: list[dict[str, Any]] = []
+
+    async def fake_compact(*args: Any, **kwargs: Any) -> bool:
+        del args
+        compactions.append(kwargs)
+        return False
+
+    monkeypatch.setattr(answer_run_module, "compact_conversation_context", fake_compact)
+    monkeypatch.setattr(answer_run_module, "resolve_contextual_query", fake_rewrite)
+    contexts: list[str] = []
+    queries: list[str | None] = []
+    ctx = await _make_ctx(
+        db_engine,
+        _producer(
+            "展开回答",
+            citations=[],
+            conversation_contexts=contexts,
+            retrieval_queries=queries,
+        ),
+        memory_recall_enabled=False,
+        memory_extraction_enabled=False,
+    )
+
+    await answer_run(ctx, str(current.id), 3)
+
+    assert "RAG 有哪些优势" in contexts[0]
+    assert "第二点展开说说" not in contexts[0]
+    assert queries == ["RAG 的知识可更新优势是什么？"]
+    assert compactions[0]["conversation_id"] == conversation_id
+    assert compactions[0]["current_run_id"] == current.id
+
+
 async def test_second_worker_cannot_double_run_the_same_job(
     db_engine: AsyncEngine, db_session: AsyncSession
 ) -> None:
@@ -368,9 +466,26 @@ async def test_producer_failure_surfaces_as_error_event_not_silent_success(
     run_id = await _seed_run(db_session)
 
     async def broken(
-        session, gateway, *, query, top_k, settings, memory_context=""
+        session,
+        gateway,
+        *,
+        query,
+        top_k,
+        settings,
+        memory_context="",
+        conversation_context="",
+        retrieval_query=None,
     ) -> AsyncIterator[Any]:
-        del session, gateway, query, top_k, settings, memory_context
+        del (
+            session,
+            gateway,
+            query,
+            top_k,
+            settings,
+            memory_context,
+            conversation_context,
+            retrieval_query,
+        )
         yield AnswerDelta(text="半截")
         raise RuntimeError("provider 挂了")
 
@@ -416,3 +531,9 @@ def test_settings_keep_heartbeat_shorter_than_lease() -> None:
 
     settings = Settings()
     assert settings.run_heartbeat_s < settings.run_lease_s
+    assert settings.conversation_summary_trigger_ratio == 0.9
+    assert int(
+        settings.tier_main_context_window_tokens
+        * settings.conversation_summary_trigger_ratio
+    ) == 92_160
+    assert settings.conversation_summary_keep_recent_turns <= settings.conversation_context_max_turns

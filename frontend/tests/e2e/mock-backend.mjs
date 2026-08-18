@@ -14,6 +14,7 @@
  */
 
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { deflateSync } from "node:zlib";
 
 import {
@@ -37,8 +38,63 @@ const sessions = new Map();
 const requestLog = [];
 /** 已签发的 admin token。真后端存在 Redis，这里内存等价。 */
 const adminTokens = new Set();
+/** owner session token → 工作台写权限过期时间。 */
+const editorPermissions = new Map();
+/** owner Cowork 会话的目录权限与交付物。 */
+const coworkRoots = new Map();
+const coworkArtifacts = new Map();
+const coworkEventLogs = new Map();
 /** 后端是否配了 DEMO_ADMIN_PASSWORD_HASH；关掉用来验收 503 的提示文案。 */
 let adminConfigured = true;
+
+let workspaceFiles = new Map();
+
+function workspaceHash(content) {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function resetWorkspaceFiles() {
+  const definitions = [
+    {
+      file_id: "mock-word-file",
+      name: "项目简报.docx",
+      source_name: "文档资料",
+      source_uri: "office/项目简报.docx",
+      kind: "word",
+      size_bytes: 18432,
+      updated_at_ns: 1787010000000000000,
+      content: "[段落 0] 项目简报\n\n[段落 1] 当前进展需要进一步整理。",
+    },
+    {
+      file_id: "mock-excel-file",
+      name: "季度预算.xlsx",
+      source_name: "文档资料",
+      source_uri: "office/季度预算.xlsx",
+      kind: "excel",
+      size_bytes: 12600,
+      updated_at_ns: 1787009000000000000,
+      content: "工作表：预算\n[预算!A1] 项目\n[预算!B1] 金额\n[预算!A2] 模型\n[预算!B2] 1000",
+    },
+    {
+      file_id: "mock-markdown-file",
+      name: "检索评测笔记.md",
+      source_name: "文档资料",
+      source_uri: "notes/检索评测笔记.md",
+      kind: "markdown",
+      size_bytes: MD_FILE_CONTENT.length,
+      updated_at_ns: 1787008000000000000,
+      content: MD_FILE_CONTENT,
+    },
+  ];
+  workspaceFiles = new Map(
+    definitions.map((file) => [
+      file.file_id,
+      { ...file, baseline_sha256: workspaceHash(file.content), editable: true },
+    ]),
+  );
+}
+
+resetWorkspaceFiles();
 
 let memoryCounter = 10;
 let memories = [];
@@ -93,6 +149,7 @@ const ADMIN_PASSWORD = "demo-admin-pw";
 
 let runCounter = 0;
 let sessionCounter = 0;
+let conversationCounter = 0;
 let adminCounter = 0;
 
 function nextRunId() {
@@ -131,16 +188,78 @@ function isAdmin(request) {
   return token !== undefined && adminTokens.has(token);
 }
 
+function adminToken(request) {
+  const token = cookies(request).workpilot_admin_session;
+  return token !== undefined && adminTokens.has(token) ? token : null;
+}
+
+function hasEditorPermission(request) {
+  const token = adminToken(request);
+  if (token === null) return false;
+  return (editorPermissions.get(token) ?? 0) > Date.now();
+}
+
 function createSession() {
   sessionCounter += 1;
   const suffix = String(sessionCounter).padStart(12, "0");
   const token = `mock-session-${suffix}`;
+  const conversationId = nextConversationId();
   const session = {
-    conversation_id: `9b0e4c55-0000-4d00-8000-${suffix}`,
+    conversation_id: conversationId,
+    conversations: new Map([
+      [conversationId, { id: conversationId, title: null, created_at: new Date().toISOString() }],
+    ]),
     versions: new Set(),
   };
   sessions.set(token, session);
   return { token, ...session };
+}
+
+function nextConversationId() {
+  conversationCounter += 1;
+  return `9b0e4c55-0000-4d00-8000-${String(conversationCounter).padStart(12, "0")}`;
+}
+
+function conversationMessages(session, conversationId) {
+  const items = [];
+  for (const run of runs.values()) {
+    if (run.session_token !== session.token || run.conversation_id !== conversationId) continue;
+    const baseSeq = items.length + 1;
+    items.push({
+      id: `${run.id}-user`,
+      seq: baseSeq,
+      role: "user",
+      content: run.goal,
+      status: "completed",
+      run_id: run.id,
+      citations: [],
+      answer_mode: run.answer_mode,
+      created_at: "2026-08-18T01:00:00Z",
+    });
+    const scenario = SCENARIOS[run.scenario];
+    const done = scenario.events.findIndex((event) => event.type === "message.done") + 1;
+    if (done > 0 && run.last_sent_seq >= done) {
+      const content = scenario.events
+        .filter((event, index) => index < done && event.type === "message.delta")
+        .map((event) => event.data.text)
+        .join("");
+      const citations = scenario.events
+        .filter((event, index) => index < done && event.type === "citation")
+        .map((event) => event.data);
+      items.push({
+        id: `${run.id}-assistant`,
+        seq: baseSeq + 1,
+        role: "assistant",
+        content,
+        status: "completed",
+        run_id: run.id,
+        citations,
+        answer_mode: run.answer_mode,
+        created_at: "2026-08-18T01:00:01Z",
+      });
+    }
+  }
+  return items;
 }
 
 async function readBody(request) {
@@ -246,7 +365,7 @@ async function streamEvents(request, response, run) {
     connection: "keep-alive",
     "x-accel-buffering": "no", // 别让中间层缓冲，缓冲了 delta 就不是流式的了
   });
-  // 仅 mock 有：把 EventSource 默认 3s 重连压到 250ms，断线用例才不用干等。
+  // 仅 mock 有：把客户端重连间隔压到 250ms，断线用例才不用干等。
   response.write("retry: 250\n\n");
 
   let closed = false;
@@ -270,7 +389,7 @@ async function streamEvents(request, response, run) {
     }
 
     if (scenario.drop_after_seq === seq && !run.dropped) {
-      // 掐断且不发终态：模拟网络断开，浏览器会自己带 Last-Event-ID 重连。
+      // 掐断且不发终态：模拟网络断开，客户端会带 after_seq 游标重连。
       run.dropped = true;
       response.destroy();
       return;
@@ -340,9 +459,15 @@ const server = createServer((request, response) => {
   if (path === "/__reset" && request.method === "POST") {
     runs.clear();
     sessions.clear();
+    conversationCounter = 0;
     adminTokens.clear();
+    editorPermissions.clear();
+    coworkRoots.clear();
+    coworkArtifacts.clear();
+    coworkEventLogs.clear();
     adminConfigured = true;
     resetMemories();
+    resetWorkspaceFiles();
     requestLog.length = 0;
     json(response, 200, { status: "reset" });
     return;
@@ -403,7 +528,202 @@ const server = createServer((request, response) => {
     return;
   }
 
+  // ------------------------------------------------------------ 多轮会话
+
+  if (path === "/api/v1/conversations" && request.method === "GET") {
+    const existing = currentSession(request);
+    const session = existing ?? createSession();
+    const items = [...session.conversations.values()].map((conversation) => {
+      const messages = conversationMessages(session, conversation.id);
+      return {
+        ...conversation,
+        message_count: messages.length,
+        latest_message: messages.at(-1)?.content ?? null,
+        last_message_at: messages.at(-1)?.created_at ?? null,
+        updated_at: messages.at(-1)?.created_at ?? conversation.created_at,
+      };
+    });
+    json(
+      response,
+      200,
+      { items: items.reverse(), total: items.length },
+      existing === null
+        ? {
+            "set-cookie": `workpilot_session=${session.token}; Max-Age=1800; Path=/; HttpOnly; SameSite=Lax`,
+          }
+        : {},
+    );
+    return;
+  }
+
+  if (path === "/api/v1/conversations" && request.method === "POST") {
+    void readBody(request).then((body) => {
+      const existing = currentSession(request);
+      const session = existing ?? createSession();
+      const id = nextConversationId();
+      const createdAt = new Date().toISOString();
+      const created = {
+        id,
+        title: typeof body.title === "string" ? body.title : "新会话",
+        message_count: 0,
+        latest_message: null,
+        last_message_at: null,
+        created_at: createdAt,
+        updated_at: createdAt,
+      };
+      session.conversations.set(id, created);
+      // sessions 里存的是同一个 Map；更新默认 id 只为兼容旧用例未显式传 conversation。
+      sessions.get(session.token).conversation_id = id;
+      json(
+        response,
+        201,
+        created,
+        existing === null
+          ? {
+              "set-cookie": `workpilot_session=${session.token}; Max-Age=1800; Path=/; HttpOnly; SameSite=Lax`,
+            }
+          : {},
+      );
+    });
+    return;
+  }
+
+  const conversationMatch = path.match(/^\/api\/v1\/conversations\/([^/]+)$/);
+  if (conversationMatch && request.method === "DELETE") {
+    const session = currentSession(request);
+    const conversationId = conversationMatch[1];
+    if (session === null || !session.conversations.has(conversationId)) {
+      json(response, 404, { detail: "会话不存在" });
+      return;
+    }
+    const active = [...runs.values()].some(
+      (run) =>
+        run.session_token === session.token &&
+        run.conversation_id === conversationId &&
+        !["done", "failed", "cancelled", "budget_exceeded"].includes(run.status),
+    );
+    if (active) {
+      json(response, 409, { detail: "会话仍有任务在运行" });
+      return;
+    }
+    session.conversations.delete(conversationId);
+    for (const [runId, run] of runs) {
+      if (run.session_token === session.token && run.conversation_id === conversationId) {
+        runs.delete(runId);
+      }
+    }
+    session.conversation_id = session.conversations.keys().next().value ?? null;
+    response.writeHead(204);
+    response.end();
+    return;
+  }
+
+  const conversationMessagesMatch = path.match(
+    /^\/api\/v1\/conversations\/([^/]+)\/messages$/,
+  );
+  if (conversationMessagesMatch && request.method === "GET") {
+    const session = currentSession(request);
+    const conversationId = conversationMessagesMatch[1];
+    if (session === null || !session.conversations.has(conversationId)) {
+      json(response, 404, { detail: "会话不存在" });
+      return;
+    }
+    const items = conversationMessages(session, conversationId);
+    json(response, 200, { items, total: items.length });
+    return;
+  }
+
   // ------------------------------------------------------------ owner 私有记忆
+
+  const coworkRootsMatch = path.match(/^\/api\/v1\/cowork\/sessions\/([^/]+)\/roots$/);
+  if (coworkRootsMatch && request.method === "GET") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    const conversationId = coworkRootsMatch[1];
+    if (!coworkRoots.has(conversationId)) {
+      coworkRoots.set(conversationId, [
+        {
+          id: "8a0e4c55-0000-4d00-8000-000000000001",
+          conversation_id: conversationId,
+          requested_path: "/Users/demo/Documents/Quarterly",
+          canonical_path: "/Users/demo/Documents/Quarterly",
+          label: "Quarterly",
+          access_mode: "read_write",
+          enabled: true,
+          created_at: "2026-08-18T03:00:00Z",
+          updated_at: "2026-08-18T03:00:00Z",
+        },
+      ]);
+    }
+    json(response, 200, { items: coworkRoots.get(conversationId) });
+    return;
+  }
+
+  if (coworkRootsMatch && request.method === "POST") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    void readBody(request).then((body) => {
+      const conversationId = coworkRootsMatch[1];
+      const item = {
+        id: `8a0e4c55-0000-4d00-8000-${String((coworkRoots.get(conversationId) ?? []).length + 2).padStart(12, "0")}`,
+        conversation_id: conversationId,
+        requested_path: body.path,
+        canonical_path: body.path,
+        label: String(body.path).split("/").at(-1) || "授权目录",
+        access_mode: body.access_mode,
+        enabled: true,
+        created_at: "2026-08-18T03:00:00Z",
+        updated_at: "2026-08-18T03:00:00Z",
+      };
+      const items = coworkRoots.get(conversationId) ?? [];
+      items.push(item);
+      coworkRoots.set(conversationId, items);
+      json(response, 201, item);
+    });
+    return;
+  }
+
+  const coworkRootDeleteMatch = path.match(
+    /^\/api\/v1\/cowork\/sessions\/([^/]+)\/roots\/([^/]+)$/,
+  );
+  if (coworkRootDeleteMatch && request.method === "DELETE") {
+    const items = coworkRoots.get(coworkRootDeleteMatch[1]) ?? [];
+    coworkRoots.set(coworkRootDeleteMatch[1], items.filter((item) => item.id !== coworkRootDeleteMatch[2]));
+    response.writeHead(204);
+    response.end();
+    return;
+  }
+
+  const coworkGrantsMatch = path.match(/^\/api\/v1\/cowork\/sessions\/([^/]+)\/grants$/);
+  if (coworkGrantsMatch && request.method === "GET") {
+    const roots = coworkRoots.get(coworkGrantsMatch[1]) ?? [];
+    const capabilities = ["filesystem.read", "filesystem.write", "office.word.edit", "office.excel.edit"];
+    json(response, 200, {
+      items: roots.flatMap((root, rootIndex) => capabilities.map((capability, index) => ({
+        id: `8b0e4c55-0000-4d00-8000-${String(rootIndex * 10 + index + 1).padStart(12, "0")}`,
+        conversation_id: coworkGrantsMatch[1],
+        session_root_id: root.id,
+        capability,
+        grant_source: "root_access_mode",
+        expires_at: null,
+        revoked_at: null,
+        active: true,
+        created_at: "2026-08-18T03:00:00Z",
+        updated_at: "2026-08-18T03:00:00Z",
+      }))),
+    });
+    return;
+  }
+
+  const coworkArtifactsMatch = path.match(/^\/api\/v1\/cowork\/sessions\/([^/]+)\/artifacts$/);
+  if (coworkArtifactsMatch && request.method === "GET") {
+    json(response, 200, { items: coworkArtifacts.get(coworkArtifactsMatch[1]) ?? [] });
+    return;
+  }
 
   if (path === "/api/v1/memories" && request.method === "GET") {
     if (!isAdmin(request)) {
@@ -531,17 +851,29 @@ const server = createServer((request, response) => {
       const session = existingSession ?? createSession();
       if (
         body.conversation_id !== undefined &&
-        body.conversation_id !== session.conversation_id
+        !session.conversations.has(body.conversation_id)
       ) {
         json(response, 404, { detail: "对话不存在" });
         return;
+      }
+      if (
+        body.conversation_id === undefined &&
+        (session.conversation_id === null || !session.conversations.has(session.conversation_id))
+      ) {
+        const id = nextConversationId();
+        session.conversation_id = id;
+        session.conversations.set(id, {
+          id,
+          title: null,
+          created_at: new Date().toISOString(),
+        });
       }
       const query = typeof body.query === "string" ? body.query : "";
       // 模式跟着 run 走, 与后端一致(agent_runs.answer_mode), 不靠猜问题内容。
       const answerMode = body.mode === "general" ? "general" : "grounded";
       const run = {
         id: nextRunId(),
-        conversation_id: session.conversation_id,
+        conversation_id: body.conversation_id ?? session.conversation_id,
         session_token: session.token,
         goal: query,
         answer_mode: answerMode,
@@ -567,6 +899,83 @@ const server = createServer((request, response) => {
           : {},
       );
     });
+    return;
+  }
+
+  if (path === "/api/v1/runs/cowork" && request.method === "POST") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    void readBody(request).then((body) => {
+      const runId = nextRunId();
+      const conversationId = body.conversation_id;
+      const artifactId = "8c0e4c55-0000-4d00-8000-000000000001";
+      const waitsForCancel = body.goal.includes("保持运行直到我停止");
+      const initialEvents = [
+        { type: "plan", data: { workflow_type: "cowork", mode: "dynamic_tool_loop", tools: [] } },
+        { type: "step.update", data: { step_id: `${runId}-step-0`, step_idx: 0, tool: "list_office_files", status: "pending" } },
+      ];
+      const events = waitsForCancel ? initialEvents : [
+        ...initialEvents,
+        { type: "tool.start", data: { step_id: `${runId}-step-0`, step_idx: 0, tool: "list_office_files" } },
+        { type: "tool.result", data: { step_id: `${runId}-step-0`, step_idx: 0, tool: "list_office_files", reused: false, effect_ref: null } },
+        { type: "step.update", data: { step_id: `${runId}-step-1`, step_idx: 1, tool: "inspect_office_file", status: "pending" } },
+        { type: "tool.result", data: { step_id: `${runId}-step-1`, step_idx: 1, tool: "inspect_office_file", reused: false, effect_ref: null } },
+        { type: "step.update", data: { step_id: `${runId}-step-2`, step_idx: 2, tool: "edit_word", status: "pending" } },
+        { type: "tool.start", data: { step_id: `${runId}-step-2`, step_idx: 2, tool: "edit_word" } },
+        { type: "tool.result", data: { step_id: `${runId}-step-2`, step_idx: 2, tool: "edit_word", reused: false, effect_ref: "file:/Users/demo/Documents/Quarterly/季度汇报.docx#sha256=abc" } },
+        { type: "artifact", data: { kind: "file", title: "季度汇报.docx", artifact_id: artifactId, effect_ref: "file:/Users/demo/Documents/Quarterly/季度汇报.docx#sha256=abc" } },
+        { type: "message.delta", data: { text: "已将季度汇报改为管理层语气，并保留原有数据。" } },
+        { type: "message.done", data: { message_id: `${runId}-message`, status: "completed" } },
+        { type: "run.done", data: { workflow_type: "cowork", status: "done" } },
+      ];
+      coworkEventLogs.set(runId, events);
+      runs.set(runId, {
+        id: runId,
+        conversation_id: conversationId,
+        session_token: null,
+        goal: body.goal,
+        answer_mode: "grounded",
+        workflow_type: "cowork",
+        status: waitsForCancel ? "executing" : "done",
+        cancelled: false,
+        last_sent_seq: 0,
+      });
+      coworkArtifacts.set(conversationId, [
+        {
+          id: artifactId,
+          conversation_id: conversationId,
+          run_id: runId,
+          session_root_id: "8a0e4c55-0000-4d00-8000-000000000001",
+          kind: "file",
+          title: "季度汇报.docx",
+          uri: "/Users/demo/Documents/Quarterly/季度汇报.docx",
+          mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          meta: { change_count: 2, summary: "已更新标题与结论段" },
+          created_at: "2026-08-18T03:10:00Z",
+          updated_at: "2026-08-18T03:10:00Z",
+        },
+      ]);
+      json(response, 202, { run_id: runId, conversation_id: conversationId, status: "queued", workflow_type: "cowork" });
+    });
+    return;
+  }
+
+  const coworkEventLogMatch = path.match(/^\/api\/v1\/runs\/([^/]+)\/event-log$/);
+  if (coworkEventLogMatch && request.method === "GET") {
+    const runId = coworkEventLogMatch[1];
+    const afterSeq = Number.parseInt(url.searchParams.get("after_seq") ?? "0", 10);
+    const items = (coworkEventLogs.get(runId) ?? [])
+      .map((event, index) => ({
+        id: `${runId}:${index + 1}`,
+        run_id: runId,
+        seq: String(index + 1),
+        type: event.type,
+        data: event.data,
+      }))
+      .filter((event) => Number(event.seq) > afterSeq);
+    json(response, 200, { items });
     return;
   }
 
@@ -727,18 +1136,161 @@ const server = createServer((request, response) => {
     return;
   }
 
+  // ------------------------------------------------------------ 办公工作台
+
+  if (path === "/api/v1/editor/permission" && request.method === "GET") {
+    const token = adminToken(request);
+    if (token === null) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    const expiresAt = editorPermissions.get(token) ?? 0;
+    json(response, 200, {
+      granted: expiresAt > Date.now(),
+      scope: "local_office_write",
+      expires_in_s: Math.max(0, Math.floor((expiresAt - Date.now()) / 1000)),
+    });
+    return;
+  }
+
+  if (path === "/api/v1/editor/permission" && request.method === "POST") {
+    const token = adminToken(request);
+    if (token === null) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    editorPermissions.set(token, Date.now() + 60 * 60 * 1000);
+    json(response, 200, {
+      granted: true,
+      scope: "local_office_write",
+      expires_in_s: 3600,
+    });
+    return;
+  }
+
+  if (path === "/api/v1/editor/permission" && request.method === "DELETE") {
+    const token = adminToken(request);
+    if (token === null) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    editorPermissions.delete(token);
+    response.writeHead(204);
+    response.end();
+    return;
+  }
+
+  if (path === "/api/v1/editor/files" && request.method === "GET") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    const items = [...workspaceFiles.values()].map((file) => ({
+      file_id: file.file_id,
+      name: file.name,
+      source_name: file.source_name,
+      source_uri: file.source_uri,
+      kind: file.kind,
+      size_bytes: file.size_bytes,
+      updated_at_ns: file.updated_at_ns,
+    }));
+    json(response, 200, { items });
+    return;
+  }
+
+  const workspaceExecuteMatch = path.match(/^\/api\/v1\/editor\/files\/([^/]+)\/execute$/);
+  if (workspaceExecuteMatch && request.method === "POST") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    if (!hasEditorPermission(request)) {
+      json(response, 403, { detail: "尚未授予本地办公文档写权限" });
+      return;
+    }
+    void readBody(request).then((body) => {
+      const file = workspaceFiles.get(workspaceExecuteMatch[1]);
+      if (file === undefined) {
+        json(response, 404, { detail: "办公文档不存在" });
+        return;
+      }
+      if (body.baseline_sha256 !== file.baseline_sha256) {
+        json(response, 409, { detail: { code: "document_conflict" } });
+        return;
+      }
+      const instruction = typeof body.instruction === "string" ? body.instruction : "";
+      let content;
+      if (file.kind === "word") {
+        content = `[段落 0] 项目简报\n\n[段落 1] 已由 WorkPilot 直接修改：${instruction}`;
+      } else if (file.kind === "excel") {
+        content = `${file.content}\n[预算!C2] =B2*2`;
+      } else {
+        content = `# 检索评测笔记\n\n已由 WorkPilot 直接修改：${instruction}`;
+      }
+      const changed = {
+        ...file,
+        content,
+        size_bytes: Buffer.byteLength(content),
+        baseline_sha256: workspaceHash(content),
+        updated_at_ns: Date.now() * 1_000_000,
+      };
+      workspaceFiles.set(file.file_id, changed);
+      json(response, 200, {
+        file: changed,
+        summary: "已按指令直接修改办公文档",
+        change_count: 1,
+        model: "fake-office-model",
+        provider: "deterministic_test",
+        backup_uri: `.workpilot-backups/mock/${file.source_uri}`,
+      });
+    });
+    return;
+  }
+
+  const workspaceFileMatch = path.match(/^\/api\/v1\/editor\/files\/([^/]+)$/);
+  if (workspaceFileMatch && request.method === "GET") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    const file = workspaceFiles.get(workspaceFileMatch[1]);
+    if (file === undefined) {
+      json(response, 404, { detail: "办公文档不存在" });
+      return;
+    }
+    json(response, 200, file);
+    return;
+  }
+
   const cancelMatch = path.match(/^\/api\/v1\/runs\/([^/]+)\/cancel$/);
   if (cancelMatch && request.method === "POST") {
     const run = runs.get(cancelMatch[1]);
-    if (run === undefined || currentSession(request)?.token !== run.session_token) {
+    const authorized = run?.workflow_type === "cowork"
+      ? isAdmin(request)
+      : currentSession(request)?.token === run?.session_token;
+    if (run === undefined || !authorized) {
       json(response, 404, { detail: "run 不存在" });
       return;
     }
-    run.cancelled = true;
+    if (!run.cancelled) {
+      run.cancelled = true;
+      if (run.workflow_type === "cowork") {
+        run.status = "cancelled";
+        const events = coworkEventLogs.get(run.id) ?? [];
+        events.push(
+          { type: "step.update", data: { step_id: `${run.id}-step-0`, step_idx: 0, tool: "list_office_files", status: "skipped", summary: "用户停止，未执行此步骤" } },
+          { type: "error", data: { code: "cancelled", retryable: true, user_message: "Cowork 任务已停止。已完成的文件修改会保留。" } },
+          { type: "run.done", data: { workflow_type: "cowork", status: "cancelled" } },
+        );
+        coworkEventLogs.set(run.id, events);
+      }
+    }
     json(response, 200, {
       run_id: run.id,
       conversation_id: run.conversation_id,
       goal: run.goal,
+      answer_mode: run.answer_mode,
+      workflow_type: run.workflow_type ?? "answer",
       status: run.status,
       cancel_requested: true,
       used_tokens: 128,

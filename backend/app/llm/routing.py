@@ -55,6 +55,7 @@ class EndpointSpec:
     model: str
     enable_thinking: bool | None
     timeout_s: float
+    context_window_tokens: int
 
     @property
     def available(self) -> bool:
@@ -203,7 +204,12 @@ def _tristate(value: object, env: Mapping[str, str], *, where: str) -> bool | No
 
 
 def _endpoint(
-    tier: Tier, raw: object, env: Mapping[str, str], *, default_timeout_s: float
+    tier: Tier,
+    raw: object,
+    env: Mapping[str, str],
+    *,
+    default_timeout_s: float,
+    default_context_window_tokens: int,
 ) -> EndpointSpec:
     where = f"config/routing.yaml tiers.{tier}.primary"
     if not isinstance(raw, dict):
@@ -212,6 +218,21 @@ def _endpoint(
     timeout = raw.get("timeout_s", default_timeout_s)
     if not isinstance(timeout, int | float) or timeout <= 0:
         raise RoutingConfigError(f"{where}.timeout_s 必须是正数，实际是 {timeout!r}")
+    context_window_raw = _expand(
+        raw.get("context_window_tokens", default_context_window_tokens),
+        env,
+        where=f"{where}.context_window_tokens",
+    ).strip()
+    try:
+        context_window_tokens = int(context_window_raw)
+    except ValueError as error:
+        raise RoutingConfigError(
+            f"{where}.context_window_tokens 必须是正整数，实际是 {context_window_raw!r}"
+        ) from error
+    if context_window_tokens < 1024:
+        raise RoutingConfigError(
+            f"{where}.context_window_tokens 不能小于 1024，实际是 {context_window_tokens}"
+        )
     return EndpointSpec(
         tier=tier,
         provider=_expand(raw.get("provider", "openai_compatible"), env, where=where),
@@ -220,6 +241,7 @@ def _endpoint(
         model=_expand(raw.get("model"), env, where=where),
         enable_thinking=thinking,
         timeout_s=float(timeout),
+        context_window_tokens=context_window_tokens,
     )
 
 
@@ -243,6 +265,12 @@ def parse_routing_table(document: object, env: Mapping[str, str]) -> RoutingTabl
     default_timeout = defaults.get("timeout_s", 30)
     if not isinstance(default_timeout, int | float) or default_timeout <= 0:
         raise RoutingConfigError(f"defaults.timeout_s 必须是正数，实际是 {default_timeout!r}")
+    default_context_window = defaults.get("context_window_tokens", 32768)
+    if not isinstance(default_context_window, int) or default_context_window < 1024:
+        raise RoutingConfigError(
+            "defaults.context_window_tokens 必须是不小于 1024 的整数，"
+            f"实际是 {default_context_window!r}"
+        )
 
     raw_tiers = document.get("tiers")
     if not isinstance(raw_tiers, dict) or not raw_tiers:
@@ -266,7 +294,11 @@ def parse_routing_table(document: object, env: Mapping[str, str]) -> RoutingTabl
         tiers[name] = TierSpec(
             name=name,
             primary=_endpoint(
-                name, raw_spec.get("primary"), env, default_timeout_s=float(default_timeout)
+                name,
+                raw_spec.get("primary"),
+                env,
+                default_timeout_s=float(default_timeout),
+                default_context_window_tokens=default_context_window,
             ),
             fallback=fallback,
         )
@@ -359,14 +391,20 @@ def routing_env(settings: "Settings") -> dict[str, str]:
         "TIER_LIGHT_BASE_URL": settings.tier_light_base_url,
         "TIER_LIGHT_MODEL": settings.tier_light_model,
         "TIER_LIGHT_ENABLE_THINKING": flag(settings.tier_light_enable_thinking),
+        "TIER_LIGHT_CONTEXT_WINDOW_TOKENS": str(settings.tier_light_context_window_tokens),
         "TIER_MAIN_BASE_URL": settings.tier_main_base_url,
         "TIER_MAIN_MODEL": settings.tier_main_model,
         "TIER_MAIN_ENABLE_THINKING": flag(settings.tier_main_enable_thinking),
+        "TIER_MAIN_CONTEXT_WINDOW_TOKENS": str(settings.tier_main_context_window_tokens),
         "TIER_HEAVY_BASE_URL": settings.tier_heavy_base_url,
         "TIER_HEAVY_MODEL": settings.tier_heavy_model,
         "TIER_HEAVY_ENABLE_THINKING": flag(settings.tier_heavy_enable_thinking),
+        "TIER_HEAVY_CONTEXT_WINDOW_TOKENS": str(settings.tier_heavy_context_window_tokens),
         "TIER_EXTERNAL_BASE_URL": settings.tier_external_base_url,
         "TIER_EXTERNAL_MODEL": settings.tier_external_model,
+        "TIER_EXTERNAL_CONTEXT_WINDOW_TOKENS": str(
+            settings.tier_external_context_window_tokens
+        ),
         "EXTERNAL_API_KEY": settings.external_api_key,
         "CLUSTER_API_KEY": settings.cluster_api_key,
     }

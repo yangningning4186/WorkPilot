@@ -3,7 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,19 +51,68 @@ class Settings(BaseSettings):
     local_library_path: Path = Path("../data/library")
     # Agent 写回与资料库导入目录物理隔离；output_path 只能是该根目录内的相对 .md 路径。
     agent_output_path: Path = Path("../data/agent-output")
+    # 办公工作台只加载受控大小的 Markdown；AI 改写进一步限制单次选区，避免把整本书
+    # 塞进 light 档或让一个异常 replacement 撑爆浏览器。
+    editor_max_document_chars: int = Field(default=500_000, ge=1_000, le=5_000_000)
+    editor_max_selection_chars: int = Field(default=12_000, ge=100, le=100_000)
+    editor_max_replacement_chars: int = Field(default=50_000, ge=100, le=500_000)
+    editor_rewrite_max_tokens: int = Field(default=4_096, ge=64, le=32_768)
+    editor_permission_ttl_s: int = Field(default=3_600, ge=300, le=8 * 60 * 60)
+    workspace_max_file_bytes: int = Field(default=20 * 1024 * 1024, ge=1_024, le=200 * 1024 * 1024)
+    workspace_max_files: int = Field(default=2_000, ge=1, le=20_000)
+    workspace_max_scan_entries: int = Field(default=50_000, ge=100, le=2_000_000)
+    workspace_max_excel_cells: int = Field(default=5_000, ge=10, le=100_000)
+    workspace_max_excel_scan_cells: int = Field(default=200_000, ge=100, le=5_000_000)
+    workspace_max_operations: int = Field(default=100, ge=1, le=1_000)
+    workspace_backup_versions_per_file: int = Field(default=10, ge=1, le=100)
+    workspace_edit_max_tokens: int = Field(default=8_192, ge=128, le=32_768)
+    # Cowork 是现有 answer/review 运行时上的第三种工作流。目录授权与 artifact API
+    # 可先独立上线；真正的通用工具循环仍可用此总开关紧急关闭。
+    cowork_enabled: bool = True
+    cowork_max_steps: int = Field(default=12, ge=1, le=50)
+    cowork_decision_max_tokens: int = Field(default=2_048, ge=128, le=16_384)
+    cowork_tool_result_max_chars: int = Field(default=20_000, ge=1_000, le=100_000)
+    # canonical checkpoint 永远保留完整历史；这些参数只控制发给模型的 outbound 视图。
+    cowork_compaction_enabled: bool = True
+    cowork_compaction_trigger_ratio: float = Field(default=0.85, gt=0.0, le=1.0)
+    cowork_compaction_keep_recent_tool_rounds: int = Field(default=2, ge=0, le=20)
+    cowork_compaction_max_summary_chars: int = Field(default=4_000, ge=200, le=20_000)
+    cowork_compaction_input_max_chars: int = Field(default=60_000, ge=1_000, le=500_000)
+    cowork_compaction_max_tokens: int = Field(default=800, ge=64, le=4_096)
+    # provider 实际窗口小于部署声明时，最多压缩并重试这么多次，防止 400 死循环。
+    cowork_context_overflow_max_recoveries: int = Field(default=2, ge=1, le=5)
+    # JSON 数组；条目按 shlex 解析后做 argv 精确前缀匹配。含 shell 操作符的命令
+    # 永远不能命中 allowlist，只能逐命令展示并审批。
+    cowork_shell_allowlist: list[str] = Field(default_factory=list)
+    cowork_shell_timeout_s: float = Field(default=120.0, gt=0, le=3_600)
+    cowork_shell_terminate_grace_s: float = Field(default=2.0, ge=0, le=30)
+    cowork_shell_max_output_bytes: int = Field(default=64 * 1024, ge=1_024, le=4 * 1024 * 1024)
+    cowork_cancel_poll_s: float = Field(default=0.5, ge=0.05, le=5.0)
+    # 桌面壳启动 sidecar 时由父进程生成随机 token 并只通过进程环境传入。开启后，
+    # 所有 HTTP 请求都必须携带固定 header，防止本机其他网页调用 localhost API。
+    desktop_mode_enabled: bool = False
+    desktop_launch_token: SecretStr = SecretStr("")
     # 三档 + external(docs/07 §1)。未部署的档位留空, 路由表加载时按"不可用"处理:
     # 线上沿 fallback 链下移并在启动时告警, 评测模式直接失败, 绝不静默替换。
     tier_light_base_url: str = ""
     tier_light_model: str = ""
     tier_light_enable_thinking: bool | None = None
+    # 必须填写部署时真实的 max_model_len，而不是模型原生能力。Prompt 预算按这个值
+    # 在发送前硬校验，避免把“模型支持 256K”误当成“当前 vLLM 也部署了 256K”。
+    tier_light_context_window_tokens: int = Field(default=32_768, ge=1024, le=2_000_000)
     tier_main_base_url: str = "http://localhost:8000/v1"
     tier_main_model: str = "local-chat"
     tier_main_enable_thinking: bool | None = None
+    tier_main_context_window_tokens: int = Field(default=102_400, ge=1024, le=2_000_000)
     tier_heavy_base_url: str = ""
     tier_heavy_model: str = ""
     tier_heavy_enable_thinking: bool | None = None
+    tier_heavy_context_window_tokens: int = Field(default=1_048_576, ge=1024, le=2_000_000)
     tier_external_base_url: str = ""
     tier_external_model: str = ""
+    tier_external_context_window_tokens: int = Field(default=128_000, ge=1024, le=2_000_000)
+    # 预留给 ChatML 包装、token 估算误差和 provider 侧特殊 token。
+    llm_context_safety_tokens: int = Field(default=512, ge=0, le=32_768)
     external_api_key: str = ""
     cluster_api_key: str = ""
     routing_config_path: Path = Path("../config/routing.yaml")
@@ -124,9 +173,9 @@ class Settings(BaseSettings):
     # 数值分数门必须绑定明确的排序器分数。默认关闭，因为现有 0.35 只在历史
     # 混合报告上扫过，而 dense cosine、RRF 与 cross-encoder 并不共享量纲；
     # 关闭时仍保留 fail-closed 的证据充分性门控。
-    refusal_score_gate_source: Literal[
-        "disabled", "dense", "lexical", "fusion", "rerank"
-    ] = "disabled"
+    refusal_score_gate_source: Literal["disabled", "dense", "lexical", "fusion", "rerank"] = (
+        "disabled"
+    )
     refusal_threshold: float = Field(default=0.35, ge=-1.0, le=1.0)
     # margin 使用 (top1-top2)/abs(top1) 的相对差，避免随排序器量纲漂移。
     refusal_margin_threshold: float = Field(default=0.03, ge=0.0, le=1.0)
@@ -136,6 +185,20 @@ class Settings(BaseSettings):
     query_decomposition_enabled: bool = False
     query_decomposition_max_subqueries: int = Field(default=4, ge=2, le=8)
     query_decomposition_max_tokens: int = Field(default=300, ge=64, le=2048)
+    # 当前会话的短期上下文。只取已完成问答轮次；长期记忆仍是 owner 级跨会话层。
+    conversation_context_enabled: bool = True
+    # 原文历史不再固定卡在 6 回合 / 6000 字符；上限由当前回答模型的完整 token 窗口
+    # 动态决定。这里仅保留数据库读取与异常输入的防御性上界。
+    conversation_context_max_turns: int = Field(default=500, ge=0, le=2000)
+    conversation_context_max_chars: int = Field(default=100_000, ge=200, le=500_000)
+    contextual_query_rewrite_max_tokens: int = Field(default=300, ge=64, le=1024)
+    # 未归档历史达到当前回答模型完整输入窗口的 90% 时滚动压缩。
+    conversation_summary_enabled: bool = True
+    conversation_summary_trigger_ratio: float = Field(default=0.9, gt=0.0, le=1.0)
+    conversation_summary_keep_recent_turns: int = Field(default=4, ge=1, le=50)
+    conversation_summary_max_chars: int = Field(default=2400, ge=200, le=10000)
+    conversation_summary_input_max_chars: int = Field(default=100_000, ge=1000, le=500_000)
+    conversation_summary_max_tokens: int = Field(default=600, ge=64, le=2048)
     # owner 长期记忆。demo 路径无视开关也不抽取/召回；两项仍可独立紧急关闭。
     memory_extraction_enabled: bool = True
     memory_recall_enabled: bool = True
@@ -179,6 +242,13 @@ class Settings(BaseSettings):
         if isinstance(value, str) and value.isdecimal():
             return int(value)
         return value
+
+    @model_validator(mode="after")
+    def validate_desktop_launch_token(self) -> "Settings":
+        token = self.desktop_launch_token.get_secret_value()
+        if self.desktop_mode_enabled and len(token) < 32:
+            raise ValueError("desktop 模式要求至少 32 字符的随机 launch token")
+        return self
 
 
 @lru_cache

@@ -1,12 +1,15 @@
 /** 后端 HTTP 客户端。字段保持 snake_case，与后端契约一致。 */
 
+import type { CitationPayload, StreamEnvelope } from "./run-protocol";
+import { getDesktopContext } from "./desktop";
+
 // 默认走 Next.js 同源 rewrite，浏览器不再直接跨域访问后端。
 // NEXT_PUBLIC_API_BASE 仅保留给明确需要直连 API 的部署方式。
 export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "").replace(/\/$/, "");
 
 /** grounded = 依据资料库回答；general = 用户在拒答后显式选择的通用知识回答。 */
 export type AnswerMode = "grounded" | "general";
-export type WorkflowType = "answer" | "literature_review";
+export type WorkflowType = "answer" | "literature_review" | "cowork";
 
 export interface CreateRunRequest {
   query: string;
@@ -34,6 +37,38 @@ export interface CreateRunResponse {
   workflow_type: WorkflowType;
 }
 
+export interface ConversationSummary {
+  id: string;
+  title: string | null;
+  message_count: number;
+  latest_message: string | null;
+  last_message_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationListResponse {
+  items: ConversationSummary[];
+  total: number;
+}
+
+export interface ConversationMessage {
+  id: string;
+  seq: number;
+  role: "user" | "assistant";
+  content: string;
+  status: string;
+  run_id: string | null;
+  citations: CitationPayload[];
+  answer_mode: AnswerMode | null;
+  created_at: string;
+}
+
+export interface ConversationMessageListResponse {
+  items: ConversationMessage[];
+  total: number;
+}
+
 export interface RunStatusResponse {
   run_id: string;
   conversation_id: string;
@@ -57,14 +92,27 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const desktop = await getDesktopContext();
+  const headers = new Headers(init?.headers);
+  if (init?.body !== undefined && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+  if (desktop !== null) {
+    headers.set("x-workpilot-launch-token", desktop.launch_token);
+  }
+  return fetch(`${desktop?.api_base ?? API_BASE}${path}`, {
     ...init,
     // 安全层落地后会用 Cookie session 做对象级鉴权，这里先统一带上凭据，
     // 免得到时候每个调用点都要改一遍。
-    credentials: "include",
-    headers: { "content-type": "application/json", ...init?.headers },
+    // 桌面身份由每次启动的 header 证明，不向 localhost 带 webview cookie。
+    credentials: desktop === null ? "include" : "omit",
+    headers,
   });
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await apiFetch(path, init);
   if (!response.ok) {
     throw new ApiError(response.status, await response.text());
   }
@@ -73,11 +121,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 /** 204 之类没有响应体的接口；套用 request 会在 response.json() 上炸掉。 */
 async function requestVoid(path: string, init?: RequestInit): Promise<void> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    credentials: "include",
-    headers: { "content-type": "application/json", ...init?.headers },
-  });
+  const response = await apiFetch(path, init);
   if (!response.ok) {
     throw new ApiError(response.status, await response.text());
   }
@@ -93,7 +137,7 @@ async function requestVoid(path: string, init?: RequestInit): Promise<void> {
 export type AdminAuthState = "authenticated" | "anonymous" | "unconfigured";
 
 export async function fetchAdminSession(): Promise<AdminAuthState> {
-  const response = await fetch(`${API_BASE}/api/v1/auth/admin/session`, {
+  const response = await apiFetch("/api/v1/auth/admin/session", {
     credentials: "include",
     // 会话状态绝不能吃缓存，否则登出后顶栏还显示已登录。
     cache: "no-store",
@@ -125,6 +169,29 @@ export function createRun(body: CreateRunRequest): Promise<CreateRunResponse> {
   });
 }
 
+export function fetchConversations(): Promise<ConversationListResponse> {
+  return request<ConversationListResponse>("/api/v1/conversations");
+}
+
+export function createConversation(title = "新会话"): Promise<ConversationSummary> {
+  return request<ConversationSummary>("/api/v1/conversations", {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  });
+}
+
+export function deleteConversation(conversationId: string): Promise<void> {
+  return requestVoid(`/api/v1/conversations/${conversationId}`, { method: "DELETE" });
+}
+
+export function fetchConversationMessages(
+  conversationId: string,
+): Promise<ConversationMessageListResponse> {
+  return request<ConversationMessageListResponse>(
+    `/api/v1/conversations/${conversationId}/messages`,
+  );
+}
+
 export function createReviewRun(body: CreateReviewRunRequest): Promise<CreateRunResponse> {
   return request<CreateRunResponse>("/api/v1/runs/reviews", {
     method: "POST",
@@ -150,8 +217,145 @@ export function cancelRun(runId: string): Promise<RunStatusResponse> {
   return request<RunStatusResponse>(`/api/v1/runs/${runId}/cancel`, { method: "POST" });
 }
 
-export function runEventsUrl(runId: string, afterSeq: bigint): string {
-  return `${API_BASE}/api/v1/runs/${runId}/events?after_seq=${afterSeq.toString()}`;
+export function steerCoworkRun(runId: string, message: string): Promise<RunStatusResponse> {
+  return request<RunStatusResponse>(`/api/v1/runs/${runId}/steering`, {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  });
+}
+
+export interface CoworkInteractionResponse {
+  approved?: boolean;
+  answer?: string;
+  path?: string;
+}
+
+export function respondToCoworkInteraction(
+  runId: string,
+  resumeToken: string,
+  body: CoworkInteractionResponse,
+): Promise<RunStatusResponse> {
+  return request<RunStatusResponse>(
+    `/api/v1/runs/${runId}/interactions/${resumeToken}/respond`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function fetchRunEventStream(
+  runId: string,
+  afterSeq: bigint,
+  signal: AbortSignal,
+): Promise<Response> {
+  return apiFetch(`/api/v1/runs/${runId}/events?after_seq=${afterSeq.toString()}`, {
+    cache: "no-store",
+    headers: { accept: "text/event-stream" },
+    signal,
+  });
+}
+
+export interface CreateCoworkRunRequest {
+  goal: string;
+  conversation_id: string;
+}
+
+export type CoworkAccessMode = "read_only" | "read_write";
+export type CoworkCapability =
+  | "filesystem.read"
+  | "filesystem.write"
+  | "office.word.edit"
+  | "office.excel.edit"
+  | "shell.execute"
+  | "external.action";
+
+export interface CoworkRoot {
+  id: string;
+  conversation_id: string;
+  requested_path: string;
+  canonical_path: string;
+  label: string;
+  access_mode: CoworkAccessMode;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CoworkGrant {
+  id: string;
+  conversation_id: string;
+  session_root_id: string | null;
+  capability: CoworkCapability;
+  grant_source: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CoworkArtifact {
+  id: string;
+  conversation_id: string;
+  run_id: string | null;
+  session_root_id: string | null;
+  kind: "file" | "report" | "diff" | "table";
+  title: string;
+  uri: string;
+  mime_type: string | null;
+  meta: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export function createCoworkRun(body: CreateCoworkRunRequest): Promise<CreateRunResponse> {
+  return request<CreateRunResponse>("/api/v1/runs/cowork", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function fetchCoworkRoots(conversationId: string): Promise<{ items: CoworkRoot[] }> {
+  return request<{ items: CoworkRoot[] }>(
+    `/api/v1/cowork/sessions/${conversationId}/roots`,
+  );
+}
+
+export function addCoworkRoot(
+  conversationId: string,
+  body: { path: string; access_mode: CoworkAccessMode; label?: string },
+): Promise<CoworkRoot> {
+  return request<CoworkRoot>(`/api/v1/cowork/sessions/${conversationId}/roots`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function revokeCoworkRoot(conversationId: string, rootId: string): Promise<void> {
+  return requestVoid(`/api/v1/cowork/sessions/${conversationId}/roots/${rootId}`, {
+    method: "DELETE",
+  });
+}
+
+export function fetchCoworkGrants(conversationId: string): Promise<{ items: CoworkGrant[] }> {
+  return request<{ items: CoworkGrant[] }>(
+    `/api/v1/cowork/sessions/${conversationId}/grants`,
+  );
+}
+
+export function fetchCoworkArtifacts(
+  conversationId: string,
+): Promise<{ items: CoworkArtifact[] }> {
+  return request<{ items: CoworkArtifact[] }>(
+    `/api/v1/cowork/sessions/${conversationId}/artifacts`,
+  );
+}
+
+export function fetchRunEventLog(
+  runId: string,
+  afterSeq: bigint,
+): Promise<{ items: StreamEnvelope[] }> {
+  return request<{ items: StreamEnvelope[] }>(
+    `/api/v1/runs/${runId}/event-log?after_seq=${afterSeq.toString()}&limit=200`,
+  );
 }
 
 /** 资料库读模型，字段与后端 app/schemas/library.py 一一对应。 */
@@ -165,6 +369,7 @@ export interface LibraryDocument {
   doc_type: string;
   source_name: string;
   source_kind: string;
+  source_editable: boolean;
   state: DocumentState;
   parser: string | null;
   parse_error: string | null;
@@ -202,6 +407,76 @@ export interface LibraryResponse {
 export function fetchLibrary(query: string): Promise<LibraryResponse> {
   const search = query.trim() === "" ? "" : `?query=${encodeURIComponent(query.trim())}`;
   return request<LibraryResponse>(`/api/v1/library${search}`);
+}
+
+/** 办公工作台：权限按 owner session 限时授予，文件范围固定在已注册本地资料目录。 */
+export interface EditorPermission {
+  granted: boolean;
+  scope: "local_office_write";
+  expires_in_s: number;
+}
+
+export type WorkspaceFileKind = "markdown" | "word" | "excel";
+
+export interface WorkspaceFileSummary {
+  file_id: string;
+  name: string;
+  source_name: string;
+  source_uri: string;
+  kind: WorkspaceFileKind;
+  size_bytes: number;
+  updated_at_ns: number;
+}
+
+export interface WorkspaceFile extends WorkspaceFileSummary {
+  content: string;
+  baseline_sha256: string;
+  editable: boolean;
+}
+
+export interface WorkspaceInstructionResponse {
+  file: WorkspaceFile;
+  summary: string;
+  change_count: number;
+  model: string;
+  provider: string;
+  backup_uri: string | null;
+}
+
+export function fetchEditorPermission(): Promise<EditorPermission> {
+  return request<EditorPermission>("/api/v1/editor/permission");
+}
+
+export function grantEditorPermission(): Promise<EditorPermission> {
+  return request<EditorPermission>("/api/v1/editor/permission", { method: "POST" });
+}
+
+export function revokeEditorPermission(): Promise<void> {
+  return requestVoid("/api/v1/editor/permission", { method: "DELETE" });
+}
+
+export function fetchWorkspaceFiles(): Promise<{ items: WorkspaceFileSummary[] }> {
+  return request<{ items: WorkspaceFileSummary[] }>("/api/v1/editor/files");
+}
+
+export function fetchWorkspaceFile(fileId: string): Promise<WorkspaceFile> {
+  return request<WorkspaceFile>(`/api/v1/editor/files/${encodeURIComponent(fileId)}`);
+}
+
+export function executeWorkspaceInstruction(
+  fileId: string,
+  body: {
+    baseline_sha256: string;
+    instruction: string;
+    content?: string;
+    selection_start?: number;
+    selection_end?: number;
+  },
+): Promise<WorkspaceInstructionResponse> {
+  return request<WorkspaceInstructionResponse>(
+    `/api/v1/editor/files/${encodeURIComponent(fileId)}/execute`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
 }
 
 /** owner 私有长期记忆；匿名 demo 永远不能读取这些字段。 */

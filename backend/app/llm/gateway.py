@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from decimal import Decimal
 from time import monotonic
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
 
 import structlog
@@ -30,10 +30,15 @@ from app.llm.types import (
     Message,
     ModelProvider,
     ProviderNotDispatchedError,
+    ToolCallingProvider,
+    ToolDefinition,
     Usage,
 )
 
 logger = structlog.get_logger(__name__)
+
+_CHAT_REQUEST_OVERHEAD_TOKENS = 4
+_CHAT_MESSAGE_OVERHEAD_TOKENS = 8
 
 
 class EmbeddingDimensionError(ValueError):
@@ -42,6 +47,69 @@ class EmbeddingDimensionError(ValueError):
 
 class EmbeddingIdentityError(ValueError):
     pass
+
+
+class ModelContextOverflowError(ValueError):
+    """本地预算判断已确定请求超过目标部署的上下文窗口，禁止发送。"""
+
+
+class NativeToolCallingUnsupportedError(ProviderNotDispatchedError):
+    """路由链里的 provider 都没有实现原生 tool-calling。"""
+
+
+def request_character_count(
+    messages: list[Message], tools: list[ToolDefinition] | None = None
+) -> int:
+    """估算 canonical 消息与工具 schema 的请求体字符量。"""
+
+    total = 0
+    for message in messages:
+        total += len(message.content)
+        if message.tool_call_id is not None:
+            total += len(message.tool_call_id)
+        total += sum(
+            len(call.id) + len(call.name) + len(call.arguments) for call in message.tool_calls
+        )
+    if tools is not None:
+        total += sum(
+            len(tool.name) + len(tool.description) + len(str(tool.parameters)) for tool in tools
+        )
+    return total
+
+
+@dataclass(frozen=True)
+class PromptBudget:
+    """一次具体模型调用的上下文预算。
+
+    当前没有在服务进程内加载各模型 tokenizer；发送前按 UTF-8 字节数估算，取
+    1 byte = 1 token 的保守上界，并额外计入消息包装与安全余量。字节级 BPE 的 token
+    数不会高于输入字节数，因此中文、生僻字和 emoji 都不会被字符均值低估；真正的
+    provider usage 仍用于调用后审计。
+    """
+
+    task_type: str
+    tier: Tier
+    model: str
+    context_window_tokens: int
+    max_output_tokens: int
+    safety_tokens: int
+
+    @property
+    def max_input_tokens(self) -> int:
+        return max(0, self.context_window_tokens - self.max_output_tokens - self.safety_tokens)
+
+    def estimate_messages_tokens(
+        self, messages: list[Message], tools: list[ToolDefinition] | None = None
+    ) -> int:
+        content_tokens = request_character_count(messages, tools)
+        return (
+            content_tokens
+            + _CHAT_REQUEST_OVERHEAD_TOKENS
+            + _CHAT_MESSAGE_OVERHEAD_TOKENS * len(messages)
+        )
+
+    def fits(self, messages: list[Message], tools: list[ToolDefinition] | None = None) -> bool:
+        return self.estimate_messages_tokens(messages, tools) <= self.max_input_tokens
 
 
 @dataclass
@@ -176,12 +244,16 @@ class ModelGateway:
         mode: RoutingMode = "online",
         completion_cache: CompletionCache | None = None,
         cache_ttl_s: int = 24 * 60 * 60,
+        default_context_window_tokens: int = 32_768,
+        context_safety_tokens: int = 512,
     ) -> None:
         self._chat_provider = provider
         self._pool = pool
         self._mode = mode
         self._cache = completion_cache
         self._cache_ttl_s = cache_ttl_s
+        self._default_context_window_tokens = default_context_window_tokens
+        self._context_safety_tokens = context_safety_tokens
         self._embedding_provider = embedding_provider or provider
         # 流式接口只吐文本, 拿不到响应里的 model 字段; 但"这条答案是谁生成的"必须能记录
         # (评测要报 actual_models), 所以在网关层暴露配置身份。
@@ -207,13 +279,87 @@ class ModelGateway:
         temperature: float = 0.0,
         tier_override: Tier | None = None,
     ) -> CompletionResult:
+        return await self._complete(
+            messages,
+            task_type=task_type,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tier_override=tier_override,
+            tools=None,
+            parallel_tool_calls=False,
+        )
+
+    async def complete_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool = True,
+        task_type: str = "generate",
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+        tier_override: Tier | None = None,
+    ) -> CompletionResult:
+        if not tools:
+            raise ValueError("原生 tool-calling 至少需要一个工具")
+        return await self._complete(
+            messages,
+            task_type=task_type,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tier_override=tier_override,
+            tools=tools,
+            parallel_tool_calls=parallel_tool_calls,
+        )
+
+    async def _complete(
+        self,
+        messages: list[Message],
+        *,
+        task_type: str,
+        max_tokens: int,
+        temperature: float,
+        tier_override: Tier | None,
+        tools: list[ToolDefinition] | None,
+        parallel_tool_calls: bool,
+    ) -> CompletionResult:
         attempts = self._chain(task_type, tier_override=tier_override)
-        cacheable = self._cache is not None and is_cacheable(
-            temperature=temperature, mode=self._mode
+        cacheable = (
+            tools is None
+            and self._cache is not None
+            and is_cacheable(temperature=temperature, mode=self._mode)
         )
         for index, (tier, provider) in enumerate(attempts):
             is_last = index == len(attempts) - 1
             pricing = self._pricing.for_tier(tier)
+            prompt_budget = self._prompt_budget_for(
+                task_type=task_type,
+                tier=tier,
+                provider=provider,
+                max_tokens=max_tokens,
+            )
+            if not prompt_budget.fits(messages, tools):
+                if is_last:
+                    raise self._context_overflow(prompt_budget, messages, tools)
+                self._log_context_fallback(
+                    prompt_budget,
+                    attempts[index + 1][0],
+                    messages=messages,
+                    tools=tools,
+                )
+                continue
+
+            tool_method = None
+            if tools is not None:
+                candidate = getattr(provider, "complete_with_tools", None)
+                if not callable(candidate):
+                    if is_last:
+                        raise NativeToolCallingUnsupportedError(
+                            f"provider {provider.name}/{provider.chat_model} 不支持原生 tool-calling"
+                        )
+                    self._log_fallback(task_type, tier, attempts[index + 1][0], dispatched=False)
+                    continue
+                tool_method = cast("ToolCallingProvider", provider).complete_with_tools
 
             cache_key: str | None = None
             if cacheable:
@@ -249,16 +395,26 @@ class ModelGateway:
                     return hit
 
             estimated_usage = Usage(
-                input_tokens=self._estimate_tokens(sum(len(item.content) for item in messages)),
+                input_tokens=self._estimate_tokens(request_character_count(messages, tools)),
                 output_tokens=max_tokens,
             )
             # 预留在 try 之外: 预算不足要立刻抛出去, 换个档位重试只会更快烧完额度。
             reservation = await self._reserve(pricing, estimated_usage)
             started = monotonic()
             try:
-                result = await provider.complete(
-                    messages, max_tokens=max_tokens, temperature=temperature
-                )
+                if tools is None:
+                    result = await provider.complete(
+                        messages, max_tokens=max_tokens, temperature=temperature
+                    )
+                else:
+                    assert tool_method is not None
+                    result = await tool_method(
+                        messages,
+                        tools=tools,
+                        parallel_tool_calls=parallel_tool_calls,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    )
             except ProviderNotDispatchedError:
                 await reservation.release()
                 await self._audit(
@@ -403,6 +559,21 @@ class ModelGateway:
         for index, (tier, provider) in enumerate(attempts):
             is_last = index == len(attempts) - 1
             pricing = self._pricing.for_tier(tier)
+            prompt_budget = self._prompt_budget_for(
+                task_type=task_type,
+                tier=tier,
+                provider=provider,
+                max_tokens=max_tokens,
+            )
+            if not prompt_budget.fits(messages):
+                if is_last:
+                    raise self._context_overflow(prompt_budget, messages)
+                self._log_context_fallback(
+                    prompt_budget,
+                    attempts[index + 1][0],
+                    messages=messages,
+                )
+                continue
             estimated_usage = Usage(
                 input_tokens=self._estimate_tokens(sum(len(item.content) for item in messages)),
                 output_tokens=max_tokens,
@@ -490,7 +661,77 @@ class ModelGateway:
         table = self._pool.table
         return (table.tier_for(task_type), table.escalation_for(task_type))
 
-    def _log_fallback(self, task_type: str, source: Tier, target: Tier, *, dispatched: bool) -> None:
+    def prompt_budget(
+        self,
+        task_type: str,
+        *,
+        max_tokens: int,
+        tier_override: Tier | None = None,
+    ) -> PromptBudget:
+        """返回该任务首选可用档位的预算，供业务层在调用前裁剪可选上下文。"""
+
+        tier, provider = self._chain(task_type, tier_override=tier_override)[0]
+        return self._prompt_budget_for(
+            task_type=task_type,
+            tier=tier,
+            provider=provider,
+            max_tokens=max_tokens,
+        )
+
+    def _prompt_budget_for(
+        self,
+        *,
+        task_type: str,
+        tier: Tier,
+        provider: ModelProvider,
+        max_tokens: int,
+    ) -> PromptBudget:
+        context_window_tokens = self._default_context_window_tokens
+        if self._pool is not None:
+            context_window_tokens = self._pool.table.tiers[tier].primary.context_window_tokens
+        return PromptBudget(
+            task_type=task_type,
+            tier=tier,
+            model=provider.chat_model,
+            context_window_tokens=context_window_tokens,
+            max_output_tokens=max_tokens,
+            safety_tokens=self._context_safety_tokens,
+        )
+
+    @staticmethod
+    def _context_overflow(
+        budget: PromptBudget,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None = None,
+    ) -> ModelContextOverflowError:
+        estimated = budget.estimate_messages_tokens(messages, tools)
+        return ModelContextOverflowError(
+            f"任务 {budget.task_type} 的输入约 {estimated} tokens，输出预留 "
+            f"{budget.max_output_tokens} tokens，超过 {budget.tier}/{budget.model} 的 "
+            f"{budget.context_window_tokens}-token 上下文窗口"
+        )
+
+    @staticmethod
+    def _log_context_fallback(
+        budget: PromptBudget,
+        target: Tier,
+        *,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None = None,
+    ) -> None:
+        logger.warning(
+            "模型上下文窗口不足，发送前切换档位",
+            task_type=budget.task_type,
+            from_tier=budget.tier,
+            to_tier=target,
+            estimated_input_tokens=budget.estimate_messages_tokens(messages, tools),
+            reserved_output_tokens=budget.max_output_tokens,
+            context_window_tokens=budget.context_window_tokens,
+        )
+
+    def _log_fallback(
+        self, task_type: str, source: Tier, target: Tier, *, dispatched: bool
+    ) -> None:
         logger.warning(
             "档位 fallback",
             task_type=task_type,
@@ -686,4 +927,6 @@ def build_model_gateway(
         mode=mode,
         completion_cache=completion_cache,
         cache_ttl_s=settings.llm_cache_ttl_s,
+        default_context_window_tokens=settings.tier_main_context_window_tokens,
+        context_safety_tokens=settings.llm_context_safety_tokens,
     )

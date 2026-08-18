@@ -52,6 +52,7 @@ async def db_session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
             text(
                 """
                 TRUNCATE TABLE
+                    artifacts, capability_grants, session_roots,
                     memory_extraction_jobs, memories,
                     feedback, llm_calls, cost_reservations, daily_cost_budgets,
                     eval_results, eval_runs, eval_items, eval_datasets,

@@ -10,6 +10,7 @@ from app.agent.budget import (
     BudgetMeter,
     RunBudgetExceededError,
 )
+from app.llm.gateway import ModelContextOverflowError
 from app.llm.types import (
     CompletionResult,
     Message,
@@ -45,9 +46,7 @@ class RecordingGateway:
         self.dispatched += 1
         if self.error is not None:
             raise self.error
-        return CompletionResult(
-            text="回答", model="fake-chat", provider="fake", usage=self.usage
-        )
+        return CompletionResult(text="回答", model="fake-chat", provider="fake", usage=self.usage)
 
 
 def _messages(chars: int = 40) -> list[Message]:
@@ -137,9 +136,21 @@ async def test_undispatched_failure_is_not_charged_but_unknown_failure_is() -> N
 
     unknown = BudgetMeter(review_budget(), chars_per_token=1.0)
     with pytest.raises(TimeoutError):
-        await BudgetedGateway(
-            RecordingGateway(error=TimeoutError("读超时")), unknown
-        ).complete(_messages(40), max_tokens=60)
+        await BudgetedGateway(RecordingGateway(error=TimeoutError("读超时")), unknown).complete(
+            _messages(40), max_tokens=60
+        )
     # 请求可能已经打到模型上, 少记会让熔断失效, 因此按预留量保守记账。
     assert unknown.budget["used_calls"] == 1
     assert unknown.budget["used_tokens"] == 100
+
+
+async def test_local_context_overflow_is_not_charged_as_a_dispatched_call() -> None:
+    meter = BudgetMeter(review_budget(), chars_per_token=1.0)
+    with pytest.raises(ModelContextOverflowError):
+        await BudgetedGateway(
+            RecordingGateway(error=ModelContextOverflowError("本地窗口预检失败")),
+            meter,
+        ).complete(_messages(40), max_tokens=60)
+
+    assert meter.budget["used_calls"] == 0
+    assert meter.budget["used_tokens"] == 0

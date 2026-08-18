@@ -14,11 +14,19 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from app.agent.state import BudgetState
+from app.llm.gateway import ModelContextOverflowError, PromptBudget, request_character_count
 from app.llm.pricing import estimate_tokens
-from app.llm.types import CompletionResult, Message, ProviderNotDispatchedError, Usage
+from app.llm.providers.openai_compatible import ProviderContextOverflowError
+from app.llm.types import (
+    CompletionResult,
+    Message,
+    ProviderNotDispatchedError,
+    ToolDefinition,
+    Usage,
+)
 
 BudgetDimension = Literal["tokens", "calls", "wall_ms"]
 
@@ -61,6 +69,28 @@ class CompletionClient(Protocol):
         max_tokens: int = 1024,
         temperature: float = 0.0,
     ) -> CompletionResult: ...
+
+
+class ToolCompletionClient(Protocol):
+    async def complete_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool = True,
+        task_type: str = "generate",
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> CompletionResult: ...
+
+
+class PromptBudgetClient(Protocol):
+    def prompt_budget(
+        self,
+        task_type: str,
+        *,
+        max_tokens: int,
+    ) -> PromptBudget: ...
 
 
 class BudgetMeter:
@@ -112,9 +142,7 @@ class BudgetMeter:
 
         elapsed = self.elapsed_ms()
         if elapsed > self._budget["max_wall_ms"]:
-            raise RunBudgetExceededError(
-                "wall_ms", used=elapsed, limit=self._budget["max_wall_ms"]
-            )
+            raise RunBudgetExceededError("wall_ms", used=elapsed, limit=self._budget["max_wall_ms"])
 
     def reserve(self, *, projected_tokens: int) -> None:
         """调用前预留。任一维度超限立即抛，且抛之前不记任何消耗。"""
@@ -126,9 +154,7 @@ class BudgetMeter:
             )
         projected = self._budget["used_tokens"] + projected_tokens
         if projected > self._budget["max_tokens"]:
-            raise RunBudgetExceededError(
-                "tokens", used=projected, limit=self._budget["max_tokens"]
-            )
+            raise RunBudgetExceededError("tokens", used=projected, limit=self._budget["max_tokens"])
 
     def settle(self, usage: Usage) -> None:
         """调用成功后按实际用量结算。"""
@@ -146,10 +172,21 @@ class BudgetMeter:
         self._budget["used_calls"] += 1
         self._budget["used_tokens"] += projected_tokens
 
-    def project_tokens(self, messages: list[Message], *, max_tokens: int) -> int:
+    def settle_rejected(self) -> None:
+        """服务端明确因上下文过长拒绝：记一次调用，但没有生成 token 用量。"""
+
+        self._budget["used_calls"] += 1
+
+    def project_tokens(
+        self,
+        messages: list[Message],
+        *,
+        max_tokens: int,
+        tools: list[ToolDefinition] | None = None,
+    ) -> int:
         return (
             estimate_tokens(
-                sum(len(item.content) for item in messages),
+                request_character_count(messages, tools),
                 chars_per_token=self._chars_per_token,
             )
             + max_tokens
@@ -162,6 +199,10 @@ class BudgetedGateway:
     def __init__(self, gateway: CompletionClient, meter: BudgetMeter) -> None:
         self._gateway = gateway
         self._meter = meter
+
+    def prompt_budget(self, task_type: str, *, max_tokens: int) -> PromptBudget:
+        gateway = cast("PromptBudgetClient", self._gateway)
+        return gateway.prompt_budget(task_type, max_tokens=max_tokens)
 
     async def complete(
         self,
@@ -180,8 +221,44 @@ class BudgetedGateway:
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
-        except ProviderNotDispatchedError:
+        except (ProviderNotDispatchedError, ModelContextOverflowError):
             # 能证明请求没发出去, 不记账。这是唯一允许不记账的失败。
+            raise
+        except ProviderContextOverflowError:
+            self._meter.settle_rejected()
+            raise
+        except Exception:
+            self._meter.settle_conservative(projected_tokens=projected)
+            raise
+        self._meter.settle(result.usage)
+        return result
+
+    async def complete_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool = True,
+        task_type: str = "generate",
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> CompletionResult:
+        gateway = cast("ToolCompletionClient", self._gateway)
+        projected = self._meter.project_tokens(messages, max_tokens=max_tokens, tools=tools)
+        self._meter.reserve(projected_tokens=projected)
+        try:
+            result = await gateway.complete_with_tools(
+                messages,
+                tools=tools,
+                parallel_tool_calls=parallel_tool_calls,
+                task_type=task_type,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except (ProviderNotDispatchedError, ModelContextOverflowError):
+            raise
+        except ProviderContextOverflowError:
+            self._meter.settle_rejected()
             raise
         except Exception:
             self._meter.settle_conservative(projected_tokens=projected)

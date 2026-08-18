@@ -11,7 +11,14 @@ export type RunEventType =
   | "message.done"
   | "plan"
   | "step.update"
+  | "tool.start"
+  | "tool.result"
+  | "tool.error"
+  | "context.compacted"
+  | "steering.queued"
+  | "steering.applied"
   | "interrupt"
+  | "interaction.resolved"
   | "artifact"
   | "run.done"
   | "error";
@@ -78,8 +85,21 @@ export interface AgentPlanStepPayload {
 }
 
 export interface PlanPayload {
-  workflow_type: "literature_review";
-  steps: AgentPlanStepPayload[];
+  workflow_type: "literature_review" | "cowork";
+  steps?: AgentPlanStepPayload[];
+  mode?: "dynamic_tool_loop";
+  tools?: CoworkToolCatalogEntry[];
+}
+
+export interface CoworkToolCatalogEntry {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  capability: string;
+  risk: "read" | "write" | "external";
+  effect: "none" | "filesystem" | "external";
+  parallel_safe: boolean;
+  execution?: "local" | "interaction";
 }
 
 /**
@@ -92,16 +112,50 @@ export interface StepUpdatePayload {
   status: AgentStepStatus | "recovering";
   summary?: string;
   recovery_count?: number;
+  tool?: string;
+}
+
+export interface ToolEventPayload {
+  step_id?: string;
+  step_idx?: number;
+  tool: string | null;
+  error?: string;
+  phase?: string;
+  reused?: boolean;
+  effect_ref?: string | null;
+}
+
+export interface ContextCompactedPayload {
+  reason: "threshold" | "provider_overflow";
+  mode: "summary" | "summary_fallback" | "trim";
+  revision: number;
+  summary_upto: number;
+  archived_messages: number;
+  before_tokens: number;
+  after_tokens: number;
 }
 
 export interface InterruptPayload {
-  kind: "write_confirm";
+  inbox_id?: string;
+  kind:
+    | "write_confirm"
+    | "ask_user"
+    | "directory_request"
+    | "capability_request"
+    | "shell_approval";
   resume_token: string;
   payload: Record<string, unknown>;
 }
 
+export interface InteractionResolvedPayload {
+  inbox_id: string;
+  kind: "ask_user" | "directory_request" | "capability_request" | "shell_approval";
+  status: "answered" | "approved" | "rejected";
+}
+
 export interface ArtifactPayload {
-  kind: "review_preview" | "written_note";
+  kind: "review_preview" | "written_note" | "file";
+  artifact_id?: string;
   title: string;
   content?: string;
   effect_ref?: string;
@@ -111,8 +165,9 @@ export interface ArtifactPayload {
 }
 
 export interface RunDonePayload {
-  workflow_type: "literature_review";
-  effect_ref: string | null;
+  workflow_type: "answer" | "literature_review" | "cowork";
+  effect_ref?: string | null;
+  status?: "done" | "failed" | "cancelled" | "budget_exceeded";
 }
 
 export type RunEventData =
@@ -122,7 +177,10 @@ export type RunEventData =
   | MessageDonePayload
   | PlanPayload
   | StepUpdatePayload
+  | ToolEventPayload
+  | ContextCompactedPayload
   | InterruptPayload
+  | InteractionResolvedPayload
   | ArtifactPayload
   | RunDonePayload
   | ErrorPayload;

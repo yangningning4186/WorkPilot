@@ -16,13 +16,14 @@
 
 信息在增长，能被再次调用的部分却在萎缩。
 
-WorkPilot 提供三种能力：
+WorkPilot 提供四种能力：
 
 | 能力 | 状态 | 例子 | 硬要求 |
 |---|---|---|---|
 | **问** | ✅ 已实现 | "我之前看的那篇讲对比学习的论文，负样本是怎么构造的？" | 答案带引用，精确到文件 + 页码，可点击跳原文；找不到就**说找不到**，不编 |
 | **做** | ✅ 固定综述已实现 | "把我这个月读的 8 篇 RAG 论文整理成综述，按方法分类，标出彼此差异" | 流程固定，先确认再写回；步骤可见、可中断、可从 checkpoint 恢复 |
 | **记住** | ✅ owner 长期记忆已实现 | "以后回答先给结论，再补依据" | 仅登录 owner 抽取与召回；可查看、编辑、删除、置顶和恢复历史版本 |
+| **编辑** | ✅ 本地办公工作台已实现 | "把这份 Word 的结论改得更精炼，并更新 Excel 汇总公式" | owner 先授予限时权限；权限内直接写入 `.md` / `.docx` / `.xlsx`，有冲突检测、备份和原子替换 |
 | **想起** | 🔭 长期蓝图 | "今天这篇和三个月前那篇有什么关联" | 依赖尚未实现的知识图谱与每日 digest |
 
 ---
@@ -49,6 +50,8 @@ badcase 来自我每天的真实使用，不是编出来的测试用例。
 | 后端 | Python 3.12 · FastAPI · Pydantic · SQLAlchemy · Arq |
 | Agent | LangGraph 固定 `literature_review` 状态机 · PostgreSQL checkpoint · owner-only HITL · 幂等写回 |
 | 记忆 | 两阶段事实抽取 · ADD/UPDATE/DELETE/NOOP · 时序有效性 · pgvector 召回 · owner-only `/memory` |
+| 办公编辑 | owner 会话限时授权 · Markdown / python-docx / openpyxl 格式执行器 · 冲突保护 · 恢复副本 · 原子写入 |
+| Cowork 桌面 | Tauri 2 · 随机 localhost sidecar · 会话 root capability · Word / Excel tool registry · Progress / Artifacts |
 | 知识 | MinerU / PyMuPDF · bge-m3 dense 向量 · PostgreSQL + pgvector · PG 词法检索 · bge-reranker-v2-m3 |
 | 模型 | 统一网关 · `light/main/heavy/external` 路由与 fallback · 置信度升档 · Redis 精确缓存 |
 | 评测 | span-level 标注 · 规则轨 + Judge · paired bootstrap · weighted Kappa · 两层 CI 门禁 |
@@ -59,6 +62,21 @@ badcase 来自我每天的真实使用，不是编出来的测试用例。
 自由规划的通用 Agent、个人知识图谱、每日 digest、语义缓存、
 sparse 第三路检索、Obsidian/Zotero/web_clip connector、Langfuse/OpenTelemetry、MinIO 和公网部署
 都仍在 [MVP Backlog](docs/11-MVP边界.md#5-backlog按解锁顺序) 或最终交付清单中。
+
+### 启动 Cowork 桌面版
+
+先启动 `deploy/` 中的 PostgreSQL 与 Redis，并安装 Rust stable 以及当前平台的
+Tauri 2 系统依赖，然后：
+
+```bash
+cd frontend
+npm ci
+npm run dev:desktop
+```
+
+桌面壳会自动选择随机本机端口，生成当次启动 token，执行 Alembic 迁移，
+并同时启动 FastAPI 与 Arq worker。目录必须经系统选择器授权；授权后该会话
+对目录内 Word / Excel 直接执行，不再逐操作弹确认。
 
 ---
 
@@ -78,6 +96,7 @@ sparse 第三路检索、Obsidian/Zotero/web_clip connector、Langfuse/OpenTelem
 | [10 简历与面试](docs/10-简历与面试.md) | 简历模板、必答题清单、诚实清单 |
 | **[11 MVP 边界](docs/11-MVP边界.md)** | **唯一约束开发范围的文档**，含 Backlog 与解锁顺序 |
 | [12 安全与部署](docs/12-安全与部署.md) | 威胁模型、鉴权限流费用熔断、SSRF、上线检查清单 |
+| [13 办公工作台与本地文档编辑](docs/13-办公工作台与文档编辑.md) | 限时写权限、Markdown/Word/Excel 格式执行器、备份与冲突保护 |
 | [ADR](docs/adr/) | 架构决策记录 |
 | [实验台账](docs/experiments/) | 每次优化的"改了什么 → 指标怎么变" |
 
@@ -97,6 +116,7 @@ Judge 校准已完成；三档路由主线收口后，owner 长期记忆已按�
 - 固定综述 Agent：六步状态机、三维预算、checkpoint、`SIGKILL` 恢复、HITL 与 effectively-once 写回
 - `light/main/heavy/external` 路由、fallback、确定性升档、精确缓存、GPU 批次成本口径与 admin 成本看板
 - owner 长期记忆：登录后异步抽取、四操作时序更新、相关记忆召回注入，以及 `/memory` 管理与历史恢复；匿名 demo 全路径隔离
+- owner 本地办公工作台：授权后按自然语言指令直接修改 `.md`、`.docx`、`.xlsx`，具备 source 路径约束、外部修改冲突检测、恢复副本与原子替换；当前不是通用 Office 或多 Agent 系统
 - 80 条 human 评测集（70 dev + 10 隔离 test）、严格配对 diff、bootstrap 与 badcase 棘轮
 - 夜间 gate 已在**检索轨与生成轨**双双点亮：两份 baseline 快照均已提交，
   检索轨的通过 / 阻断 / 拒判三条路径各用真报告实跑验证过

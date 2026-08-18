@@ -1,0 +1,126 @@
+# 15 · 桌面 Cowork 架构与开发基线
+
+> 状态：后端 Cowork 工具循环、会话能力授权和 Word/Excel 执行链已实现。本文是从当前
+> Web/RAG 产品演进到 OpenWorker 类本地 Cowork 的开发基线；Tauri 安装包仍未完成。
+
+## 1. 目标形态
+
+用户在统一工作台输入目标，选择要共享的本地目录并授予只读或读写权限。Agent 在后台持续
+规划和调用工具，前端实时展示 Progress、文件变更与 Artifacts。读写目录授权成功后，目录内
+Markdown、`.docx`、`.xlsx` 可直接修改，不再对每个段落或单元格弹确认。
+
+```text
+Tauri desktop
+  ├─ Next.js workbench (Chat / Progress / Artifacts / Access)
+  └─ Python sidecar @ 127.0.0.1:random
+       ├─ FastAPI + launch-token middleware
+       ├─ answer / literature_review / cowork runs
+       ├─ tool registry + capability policy
+       ├─ RAG / memory / evidence
+       └─ Markdown / Word / Excel executors
+              │
+              ├─ PostgreSQL: runs, grants, artifacts, audit
+              └─ user-granted session roots: real files
+```
+
+## 2. 已落地的第一批契约
+
+- `agent_runs.workflow_type` 接受 `cowork`，继续复用 run events、预算、checkpoint 和幂等边界。
+- `session_roots` 按 owner conversation 保存规范化目录和 `read_only/read_write` 模式。
+- `capability_grants` 独立表达文件读写、Word/Excel 编辑、Shell 和外部操作权限。
+- 创建读写 root 时一次性派生文件与 Office 能力；Shell/外部能力不继承。
+- `artifacts` 按 conversation/run 索引交付物，文件内容仍保存在用户目录。
+- 桌面模式支持每次启动令牌；未携带令牌的 localhost HTTP 请求统一拒绝。
+- capability 引擎对每个目标重新做 realpath/containment 检查，拒绝 `..` 和符号链接越界。
+- LangGraph `cowork.v2` runner 已实现 provider 原生 tool-calling、canonical
+  `assistant.tool_calls → tool(tool_call_id)` 历史、PostgreSQL checkpoint、run budget、
+  工具事件、失败回传、worker 心跳与失联重新入队；恢复时可升级仍在执行的 v1 checkpoint。
+- Cowork 会在首选模型输入预算的 85% 触发 outbound-only compaction：canonical `messages`
+  永不裁剪，checkpoint 只额外保存滚动摘要、完整工具轮次边界和 outbound tool-result 上限。
+  Provider 返回实际超窗错误时，会压缩后受次数上限和 token 递减保护重试。
+- Tool registry 已登记 `list_office_files`、`inspect_office_file`、`edit_word`、
+  `edit_excel`、`ask_user`、运行中授权工具与受控 `run_shell`，并为每个工具声明
+  capability、risk、effect 和 parallel-safe 属性。
+- `run_shell` 需要独立 `shell.execute` grant。无 shell 操作符且 argv 精确前缀命中部署
+  allowlist 的命令可直接执行；其余命令逐次进入 Inbox 审批。执行不使用 shell 字符串拼接
+  （审批过的操作符命令除外），只继承最小环境，输出有上限，cancel/timeout 会终止进程组。
+  Shell 与文件写入一样在执行前取得 `tool_invocations` 租约；执行器按 call id 二次核验审批，
+  worker 在命令完成后、checkpoint 前崩溃时复用已落库结果而不重放命令。
+- Word/Excel Cowork 入口会在执行器内部再次校验会话 root capability；写工具在副作用前
+  抢占 `tool_invocations` 幂等租约，成功后自动登记 Artifact。
+- Excel 编辑对图表、图片、透视表、图表工作表与切片器 fail closed，公式采用安全函数白名单；
+  目录扫描跳过依赖、隐藏目录与备份目录，并受遍历条目上限约束。
+
+对应 API：
+
+| API | 用途 |
+|---|---|
+| `GET/POST /api/v1/cowork/sessions/{id}/roots` | 查看或授予会话目录 |
+| `DELETE /api/v1/cowork/sessions/{id}/roots/{root_id}` | 撤销目录及其派生能力 |
+| `GET/POST /api/v1/cowork/sessions/{id}/grants` | 查看或显式授予能力 |
+| `DELETE /api/v1/cowork/sessions/{id}/grants/{grant_id}` | 独立撤销能力 |
+| `GET /api/v1/cowork/sessions/{id}/artifacts` | 获取交付区索引 |
+| `POST /api/v1/runs/cowork` | 初始化 checkpoint 并把动态工具任务投入 worker |
+| `POST /api/v1/runs/{id}/steering` | 在当前工具批次后的安全边界注入新用户指令 |
+| `POST /api/v1/runs/{id}/interactions/{token}/respond` | 回答问题或处理目录、能力、命令审批 |
+
+## 3. 运行时落地顺序
+
+### A. 桌面启动闭环
+
+建立 `desktop/` Tauri 工程；选择空闲端口，生成随机 launch token，启动 Python sidecar，
+完成健康检查后加载工作台。关闭窗口、崩溃恢复和自动升级都必须正确回收 sidecar。
+
+### B. 单 Agent 通用工具循环（首版已完成）
+
+模型通过 gateway/provider 的原生 `tools` 参数输出 tool call，不再把 action JSON 塞进文本。
+运行时将工具描述、JSON Schema、风险等级、所需 capability、只读/写入属性统一登记；模型
+返回的 assistant `tool_calls` 与每条带 `tool_call_id` 的 tool result 原样进入 canonical 历史。
+同一批调用只有全部为 `parallel_safe` 只读工具时才使用独立数据库 session 并行，混合批次和
+任何写调用都串行。每次调用产生 `tool.start/tool.result/tool.error` 事件，并沿用
+`tool_invocations` 幂等租约。
+
+上下文压缩只改变下一次 provider 请求的视图。原始用户目标始终保留；较早的完整
+`assistant.tool_calls + tool results` 才能跨过摘要边界，绝不制造孤立 tool call。摘要失败会
+重试一次，仍失败则在后台任务中使用确定性事实摘录；provider 的 400 超窗响应会进入同一
+恢复通道，但只有 outbound token 数确实下降才允许重试，且最多重试配置的次数。每次边界
+推进记录 `context.compacted` 事件，canonical checkpoint 可继续用于审计、恢复和效果评测。
+
+当前首批工具限定为 Office 目录列举、Word/Excel 结构化预览、Word 受限编辑、Excel 受限
+编辑和 Artifact 登记。写操作串行，多只读工具可在同一模型轮次并行执行。下一批再加入通用
+文本读取/搜索、Markdown 写入和资料库检索。Shell 仅开放受 capability、argv allowlist、
+逐命令审批、超时和进程组取消共同约束的 `run_shell`，不提供无边界的 Full Access 模式。
+
+### C. 现有 Office 工作台迁移（Cowork 路径已完成）
+
+当前 SHA-256 冲突检查、备份、原子替换和格式重开验证已复用到 Cowork session root。
+Cowork Word/Excel 执行器入口直接调用 capability 引擎，不依赖 Redis `local_office_write`，
+目录授权后不产生逐操作确认。旧 `/workspace` 流程仍保留 Redis 授权作为兼容入口。
+
+### D. 前端四区
+
+- Chat：输入目标、附加目录/文件、查看最终答复。
+- Progress：按 run event 展示计划、工具、重试、错误和预算。
+- Artifacts：预览、打开、定位和恢复生成/修改的文件。
+- Access：展示每个 root 和 capability，支持升级、降级和撤销。
+
+## 4. 多 Agent 进入条件
+
+当前架构能承载后续多 Agent，但第一阶段不并发委派。只有下列条件均满足后才增加
+supervisor/explore/office specialist：
+
+1. 单 Agent 办公任务集的成功率、写入冲突率和权限拒绝率有稳定基线。
+2. 子任务可携带最小化 root/capability，而不是复制主 Agent 全部权限。
+3. 子 Agent 有独立预算、事件、取消和 Artifact 来源记录。
+4. 同文件并发写有显式串行或合并协议。
+5. 对照实验能证明多 Agent 相比单 Agent 在成功率或耗时上有净收益。
+
+## 5. 近期验收标准
+
+- 未授权目录、只读目录写入、错误 Office 后缀、符号链接逃逸全部 fail closed。
+- 撤销 root 后派生 capability 立即失效；权限有效时不出现逐操作确认。
+- 桌面模式无 launch token 无法访问包括健康检查在内的任何 HTTP 路由。
+- `answer`、`literature_review` 和现有 Office 工作台回归测试不受影响。
+- 所有文件写操作继续具备备份、原子替换、格式验证、冲突检测与可审计事件。
+- 压缩前后 canonical 消息逐字节不变；摘要失败、provider 超窗和错误窗口配置都不会形成
+  无界重试，已完成的写入仍保留。

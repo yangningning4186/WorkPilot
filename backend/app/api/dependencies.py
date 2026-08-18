@@ -14,6 +14,7 @@ from app.llm.audit import SqlLlmCallAudit
 from app.llm.gateway import ModelGateway, build_model_gateway
 from app.services.admin_sessions import AdminSessionStore, RedisAdminSessionStore
 from app.services.demo_sessions import DemoSession, resolve_demo_session
+from app.services.editor_permissions import EditorPermissionStore, RedisEditorPermissionStore
 from app.services.model_budget import build_cost_guard
 from app.services.rate_limit import IpRateLimiter, RedisIpRateLimiter
 from app.services.request_identity import RequestIdentity
@@ -25,6 +26,10 @@ def get_run_bus() -> RunBus:
 
 def get_admin_session_store() -> AdminSessionStore:
     return RedisAdminSessionStore(redis_client)
+
+
+def get_editor_permission_store() -> EditorPermissionStore:
+    return RedisEditorPermissionStore(redis_client)
 
 
 def get_ip_rate_limiter() -> IpRateLimiter:
@@ -76,6 +81,9 @@ async def require_admin_session(
 ) -> None:
     """要求有效 admin Cookie；未配置密码也绝不隐式放行。"""
 
+    if getattr(request.state, "desktop_authenticated", False):
+        return
+
     token = request.cookies.get(settings.admin_cookie_name)
     if token is None:
         raise HTTPException(status_code=401, detail="需要 demo admin 登录")
@@ -95,6 +103,11 @@ async def get_request_identity(
     store: Annotated[AdminSessionStore, Depends(get_admin_session_store)],
 ) -> RequestIdentity:
     """登录 admin 映射为 owner；没有 admin Cookie 才签发匿名 demo 身份。"""
+
+    # 桌面启动令牌已由最外层 middleware 恒时比较过；它就是单用户
+    # 本机应用的 owner session。这样 Tauri 不需要再保存一份管理员口令。
+    if getattr(request.state, "desktop_authenticated", False):
+        return RequestIdentity(scope="local_owner")
 
     admin_token = request.cookies.get(settings.admin_cookie_name)
     if admin_token is not None:
@@ -132,6 +145,24 @@ async def require_owner_identity(
     if not identity.is_owner:
         raise HTTPException(status_code=401, detail="需要先登录 owner")
     return identity
+
+
+async def require_editor_write_permission(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+    store: Annotated[EditorPermissionStore, Depends(get_editor_permission_store)],
+) -> None:
+    """写权限绑定 owner session，过期后必须由用户重新授权。"""
+
+    token = request.cookies.get(settings.admin_cookie_name)
+    if token is None:
+        raise HTTPException(status_code=401, detail="需要先登录 owner")
+    try:
+        remaining = await store.ttl(token)
+    except RedisError as error:
+        raise HTTPException(status_code=503, detail="文档权限服务不可用") from error
+    if remaining <= 0:
+        raise HTTPException(status_code=403, detail="尚未授予本地办公文档写权限或权限已过期")
 
 
 async def enforce_ip_rate_limit(

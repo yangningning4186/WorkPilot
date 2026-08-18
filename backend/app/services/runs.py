@@ -21,7 +21,7 @@ TERMINAL_RUN_STATUSES = frozenset({"done", "failed", "cancelled", "budget_exceed
 # 内联进 SQL 的常量白名单, 不接受外部输入。
 _TERMINAL_SQL = "(" + ", ".join(f"'{status}'" for status in sorted(TERMINAL_RUN_STATUSES)) + ")"
 MESSAGE_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
-WorkflowType = Literal["answer", "literature_review"]
+WorkflowType = Literal["answer", "literature_review", "cowork"]
 
 
 class RunNotFoundError(LookupError):
@@ -160,8 +160,8 @@ async def create_run(
         raise ValueError("run 目标不能为空")
     if answer_mode not in {"grounded", "general"}:
         raise ValueError("answer_mode 只能是 grounded 或 general")
-    if workflow_type not in {"answer", "literature_review"}:
-        raise ValueError("workflow_type 只能是 answer 或 literature_review")
+    if workflow_type not in {"answer", "literature_review", "cowork"}:
+        raise ValueError("workflow_type 只能是 answer、literature_review 或 cowork")
     run_id = uuid7()
     await session.execute(
         text(
@@ -610,8 +610,14 @@ async def request_cancel(
                     f"""
                     UPDATE agent_runs
                     SET cancel_requested_at = COALESCE(cancel_requested_at, now()),
-                        status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
-                        finished_at = CASE WHEN status = 'queued' THEN now() ELSE finished_at END,
+                        status = CASE
+                            WHEN status IN ('queued', 'waiting_human') THEN 'cancelled'
+                            ELSE status
+                        END,
+                        finished_at = CASE
+                            WHEN status IN ('queued', 'waiting_human') THEN now()
+                            ELSE finished_at
+                        END,
                         updated_at = now()
                     WHERE id = :run_id
                       AND (
@@ -654,6 +660,7 @@ class ReapedRuns:
 
     failed: list[UUID]
     recovered: list[tuple[UUID, int]]
+    recovered_cowork: list[tuple[UUID, int]]
 
 
 async def reap_expired_runs(
@@ -663,7 +670,7 @@ async def reap_expired_runs(
 
     普通流式回答不自动重试: 一次已经发出去的模型调用是否计费无法确认, 静默重放
     等于重复计费(docs/08 §3.1)。能自动恢复的只有**同时**满足三个条件的 run:
-    `literature_review` 工作流、已经落过 checkpoint、且自动恢复次数没用完
+    `literature_review/cowork` 工作流、已经落过 checkpoint、且自动恢复次数没用完
     (ADR-0007)。前两条保证重跑从最近 checkpoint 继续且副作用走幂等协议,
     第三条保证一个稳定把 worker 拖垮的 run 不会被无限重投。
     """
@@ -673,47 +680,54 @@ async def reap_expired_runs(
     if max_recovery < 0:
         raise ValueError("自动恢复次数上限不能为负")
     recoverable_predicate = """
-        ar.workflow_type = 'literature_review'
+        ar.workflow_type IN ('literature_review', 'cowork')
         AND ar.recovery_count < :max_recovery
         AND EXISTS (
             SELECT 1 FROM agent_checkpoints ac WHERE ac.run_id = ar.id
         )
     """
+    recovered_rows = (
+        (
+            await session.execute(
+                text(
+                    f"""
+                    UPDATE agent_runs
+                    SET status = 'queued',
+                        recovery_count = recovery_count + 1,
+                        worker_id = NULL,
+                        lease_until = NULL,
+                        heartbeat_at = NULL,
+                        updated_at = now()
+                    WHERE id IN (
+                        SELECT ar.id FROM agent_runs ar
+                        WHERE ar.status NOT IN {_TERMINAL_SQL}
+                          AND ar.lease_until IS NOT NULL
+                          AND ar.lease_until < now()
+                          AND {recoverable_predicate}
+                        ORDER BY ar.lease_until
+                        LIMIT :limit
+                        FOR UPDATE SKIP LOCKED
+                    )
+                    RETURNING id, recovery_count, workflow_type
+                    """
+                ),
+                {"limit": limit, "max_recovery": max_recovery},
+            )
+        )
+        .mappings()
+        .all()
+    )
     recovered = [
         (UUID(str(row["id"])), int(row["recovery_count"]))
-        for row in (
-            (
-                await session.execute(
-                    text(
-                        f"""
-                        UPDATE agent_runs
-                        SET status = 'queued',
-                            recovery_count = recovery_count + 1,
-                            worker_id = NULL,
-                            lease_until = NULL,
-                            heartbeat_at = NULL,
-                            updated_at = now()
-                        WHERE id IN (
-                            SELECT ar.id FROM agent_runs ar
-                            WHERE ar.status NOT IN {_TERMINAL_SQL}
-                              AND ar.lease_until IS NOT NULL
-                              AND ar.lease_until < now()
-                              AND {recoverable_predicate}
-                            ORDER BY ar.lease_until
-                            LIMIT :limit
-                            FOR UPDATE SKIP LOCKED
-                        )
-                        RETURNING id, recovery_count
-                        """
-                    ),
-                    {"limit": limit, "max_recovery": max_recovery},
-                )
-            )
-            .mappings()
-            .all()
-        )
+        for row in recovered_rows
+        if row["workflow_type"] == "literature_review"
     ]
-    for run_id, attempt in recovered:
+    recovered_cowork = [
+        (UUID(str(row["id"])), int(row["recovery_count"]))
+        for row in recovered_rows
+        if row["workflow_type"] == "cowork"
+    ]
+    for run_id, attempt in recovered + recovered_cowork:
         await append_events(
             session,
             run_id=run_id,
@@ -786,7 +800,9 @@ async def reap_expired_runs(
             {"run_id": run_id},
         )
     return ReapedRuns(
-        failed=[UUID(str(run_id)) for run_id in run_ids], recovered=recovered
+        failed=[UUID(str(run_id)) for run_id in run_ids],
+        recovered=recovered,
+        recovered_cowork=recovered_cowork,
     )
 
 
@@ -823,6 +839,21 @@ async def append_message(
             "run_id": run_id,
             "trace_id": trace_id,
         },
+    )
+    await session.execute(
+        text(
+            """
+            UPDATE conversations
+            SET updated_at = now(),
+                title = CASE
+                    WHEN :role = 'user' AND (title IS NULL OR title = '新会话')
+                    THEN left(:content, 80)
+                    ELSE title
+                END
+            WHERE id = :conversation_id
+            """
+        ),
+        {"conversation_id": conversation_id, "role": role, "content": content.strip()},
     )
     return message_id
 

@@ -2,31 +2,57 @@
 
 import { useEffect, useState } from "react";
 
-import { runEventsUrl } from "./api";
-import { type RunEventType, isTerminalEvent, parseEnvelope } from "./run-protocol";
+import { fetchRunEventStream } from "./api";
+import { envelopeSeq, isTerminalEvent, parseEnvelope } from "./run-protocol";
 import { type RunState, applyEnvelope, initialRunState } from "./run-state";
 
-const EVENT_TYPES: RunEventType[] = [
-  "message.start",
-  "message.delta",
-  "citation",
-  "message.done",
-  "plan",
-  "step.update",
-  "interrupt",
-  "artifact",
-  "run.done",
-  "error",
-];
+const DEFAULT_RETRY_MS = 1_000;
+
+interface ParsedSseFrame {
+  data: string | null;
+  retryMs: number | null;
+}
+
+function parseSseFrame(frame: string): ParsedSseFrame {
+  const data: string[] = [];
+  let retryMs: number | null = null;
+  for (const line of frame.split(/\r\n|\r|\n/)) {
+    if (line === "" || line.startsWith(":")) continue;
+    const separator = line.indexOf(":");
+    const field = separator < 0 ? line : line.slice(0, separator);
+    const value = separator < 0 ? "" : line.slice(separator + 1).replace(/^ /, "");
+    if (field === "data") data.push(value);
+    if (field === "retry" && /^\d+$/.test(value)) retryMs = Number(value);
+  }
+  return { data: data.length === 0 ? null : data.join("\n"), retryMs };
+}
+
+function takeFrame(buffer: string): [string, string] | null {
+  const boundary = /(?:\r\n|\r|\n){2}/.exec(buffer);
+  if (boundary?.index === undefined) return null;
+  const end = boundary.index + boundary[0].length;
+  return [buffer.slice(0, boundary.index), buffer.slice(end)];
+}
+
+function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timeout = window.setTimeout(done, delayMs);
+    signal.addEventListener("abort", done, { once: true });
+    function done() {
+      window.clearTimeout(timeout);
+      signal.removeEventListener("abort", done);
+      resolve();
+    }
+  });
+}
 
 /**
  * 订阅一个 run 的事件流。
  *
  * B1 刷新恢复：从 after_seq=0 重新拉，服务端先补历史再续实时，折叠逻辑与实时路径同一套。
- * B2 断线续传：EventSource 自动重连时用的是**最初那个 URL**（after_seq=0），带回
- *    Last-Event-ID；服务端让 Last-Event-ID 优先于查询参数，重连才会从断点续发而不是
- *    从头重放。也正因如此，这里不需要自己维护游标。
- * B5 并发隔离：每个 run 一个 EventSource 与一份 state，不共用全局状态。
+ * B2 断线续传：fetch 流断开后使用已消费的最大 seq 重新请求，不依赖浏览器自动维护
+ *    Last-Event-ID。这样既能携带桌面启动 header，也不会从头重放正文。
+ * B5 并发隔离：每个 run 一条 fetch 流、一个 AbortController 与一份 state，不共用游标。
  */
 export function useRunStream(runId: string | null): RunState {
   const [state, setState] = useState<RunState>(initialRunState);
@@ -43,31 +69,77 @@ export function useRunStream(runId: string | null): RunState {
     if (runId === null) {
       return;
     }
+    const controller = new AbortController();
+    let stopped = false;
+    let cursor = 0n;
+    let retryMs = DEFAULT_RETRY_MS;
 
-    const source = new EventSource(runEventsUrl(runId, 0n), { withCredentials: true });
+    const fail = (message: string) => {
+      setState((previous) => ({
+        ...previous,
+        phase: "error",
+        error: { code: "stream_failed", retryable: true, user_message: message },
+      }));
+    };
 
-    const handle = (event: MessageEvent<string>) => {
-      const envelope = parseEnvelope(event.data);
-      // 畸形事件直接丢弃，不能让它打断整条长连接。
-      if (envelope === null || envelope.run_id !== runId) {
-        return;
-      }
-      setState((previous) => applyEnvelope(previous, envelope));
-      if (isTerminalEvent(envelope.type)) {
-        // 终态之后不会再有事件；不关的话浏览器会一直重连。
-        source.close();
+    const consume = async () => {
+      while (!stopped) {
+        try {
+          const response = await fetchRunEventStream(runId, cursor, controller.signal);
+          if (!response.ok) {
+            fail(`无法连接任务事件流（${response.status}）`);
+            return;
+          }
+          if (response.body === null) {
+            fail("任务事件流没有返回可读取的内容");
+            return;
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (!stopped) {
+            const { done, value } = await reader.read();
+            buffer += decoder.decode(value, { stream: !done });
+            let next = takeFrame(buffer);
+            while (next !== null) {
+              const [rawFrame, remaining] = next;
+              buffer = remaining;
+              const frame = parseSseFrame(rawFrame);
+              if (frame.retryMs !== null) retryMs = frame.retryMs;
+              if (frame.data !== null) {
+                const envelope = parseEnvelope(frame.data);
+                // 畸形或串 run 的事件直接丢弃，不能让它打断整条长连接。
+                if (envelope !== null && envelope.run_id === runId) {
+                  const seq = envelopeSeq(envelope);
+                  if (seq > cursor) cursor = seq;
+                  setState((previous) => applyEnvelope(previous, envelope));
+                  if (isTerminalEvent(envelope.type)) {
+                    stopped = true;
+                    await reader.cancel();
+                    return;
+                  }
+                }
+              }
+              next = takeFrame(buffer);
+            }
+            if (done) break;
+          }
+        } catch (reason) {
+          if (stopped || controller.signal.aborted) return;
+          // 保留 SSE 的自动重连语义。HTTP 错误在上面明确结束，只有瞬时断网或
+          // 服务端中断走这里。
+          void reason;
+        }
+        if (!stopped) await waitForRetry(retryMs, controller.signal);
       }
     };
 
-    for (const type of EVENT_TYPES) {
-      source.addEventListener(type, handle as EventListener);
-    }
+    void consume();
 
     return () => {
-      for (const type of EVENT_TYPES) {
-        source.removeEventListener(type, handle as EventListener);
-      }
-      source.close();
+      stopped = true;
+      controller.abort();
     };
   }, [runId]);
 

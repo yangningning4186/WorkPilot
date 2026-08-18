@@ -9,9 +9,11 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 import { ApiError, type AdminAuthState, fetchAdminSession, loginAdmin, logoutAdmin } from "@/lib/api";
+import { isTauriRuntime } from "@/lib/desktop";
 
 interface AdminSessionValue {
   /** `unknown` 表示还没问过后端，用来区分"确认未登录"和"还不知道"。 */
@@ -100,6 +102,11 @@ function loginErrorMessage(error: unknown): string {
  */
 export function AdminSessionControl() {
   const { state, login, logout } = useAdminSession();
+  const desktop = useSyncExternalStore(
+    () => () => undefined,
+    isTauriRuntime,
+    () => false,
+  );
   const [open, setOpen] = useState(false);
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -149,11 +156,13 @@ export function AdminSessionControl() {
     return (
       <div className="admin-session">
         <span className="admin-badge" title="owner 私有会话：可使用个人记忆与管理功能">
-          owner
+          {desktop ? "desktop owner" : "owner"}
         </span>
-        <button className="link-button" onClick={() => void logout()} type="button">
-          登出
-        </button>
+        {!desktop && (
+          <button className="link-button" onClick={() => void logout()} type="button">
+            登出
+          </button>
+        )}
       </div>
     );
   }

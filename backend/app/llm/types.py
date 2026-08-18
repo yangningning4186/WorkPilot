@@ -1,10 +1,10 @@
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 from uuid import UUID
 
-Role = Literal["system", "user", "assistant"]
+Role = Literal["system", "user", "assistant", "tool"]
 
 
 class ProviderNotDispatchedError(RuntimeError):
@@ -16,9 +16,32 @@ class ProviderNotDispatchedError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ToolDefinition:
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    strict: bool = True
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
 class Message:
+    """Provider-neutral canonical chat message.
+
+    Tool history deliberately mirrors the OpenAI message contract: the assistant owns
+    ``tool_calls`` and every tool result points back with ``tool_call_id``.
+    """
+
     role: Role
-    content: str
+    content: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_call_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -33,6 +56,7 @@ class CompletionResult:
     model: str
     provider: str
     usage: Usage = field(default_factory=Usage)
+    tool_calls: tuple[ToolCall, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -67,6 +91,18 @@ class ModelProvider(Protocol):
     async def embed(self, texts: list[str]) -> EmbeddingResult: ...
 
     async def aclose(self) -> None: ...
+
+
+class ToolCallingProvider(Protocol):
+    async def complete_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool,
+        max_tokens: int,
+        temperature: float,
+    ) -> CompletionResult: ...
 
 
 @dataclass(frozen=True)

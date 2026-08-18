@@ -15,7 +15,7 @@ from re import findall
 import pytest
 import yaml
 
-from app.llm.gateway import ModelGateway, TierProviderPool
+from app.llm.gateway import ModelContextOverflowError, ModelGateway, TierProviderPool
 from app.llm.pricing import GatewayPricing, ModelPricing
 from app.llm.routing import (
     EndpointSpec,
@@ -33,14 +33,18 @@ ENV = {
     "TIER_LIGHT_BASE_URL": "http://light.test/v1",
     "TIER_LIGHT_MODEL": "light-model",
     "TIER_LIGHT_ENABLE_THINKING": "",
+    "TIER_LIGHT_CONTEXT_WINDOW_TOKENS": "32768",
     "TIER_MAIN_BASE_URL": "http://main.test/v1",
     "TIER_MAIN_MODEL": "main-model",
     "TIER_MAIN_ENABLE_THINKING": "",
+    "TIER_MAIN_CONTEXT_WINDOW_TOKENS": "102400",
     "TIER_HEAVY_BASE_URL": "http://heavy.test/v1",
     "TIER_HEAVY_MODEL": "heavy-model",
     "TIER_HEAVY_ENABLE_THINKING": "",
+    "TIER_HEAVY_CONTEXT_WINDOW_TOKENS": "1048576",
     "TIER_EXTERNAL_BASE_URL": "http://external.test/v1",
     "TIER_EXTERNAL_MODEL": "external-model",
+    "TIER_EXTERNAL_CONTEXT_WINDOW_TOKENS": "128000",
     "EXTERNAL_API_KEY": "external-key",
     "CLUSTER_API_KEY": "cluster-key",
 }
@@ -157,9 +161,27 @@ def test_repo_routing_table_loads_and_covers_the_documented_task_types() -> None
 
     assert table.tier_for("grounded_answer") == "main"
     assert table.tier_for("query_decomposition") == "light"
+    assert table.tier_for("conversation_summary") == "main"
+    assert table.tier_for("cowork_compaction") == "main"
     assert table.tier_for("judge") == "heavy"
     # 未登记的 task_type 落到甜点档而不是报错——新任务上线忘了加路由是常态。
     assert table.tier_for("brand_new_task") == "main"
+    assert table.tiers["light"].primary.context_window_tokens == 32768
+    assert table.tiers["main"].primary.context_window_tokens == 102400
+
+
+def test_context_window_must_be_a_positive_deployment_limit() -> None:
+    document = _minimal()
+    tiers = document["tiers"]
+    assert isinstance(tiers, dict)
+    light = tiers["light"]
+    assert isinstance(light, dict)
+    primary = light["primary"]
+    assert isinstance(primary, dict)
+    primary["context_window_tokens"] = 512
+
+    with pytest.raises(RoutingConfigError, match="不能小于 1024"):
+        parse_routing_table(document, ENV)
 
 
 def test_every_routed_task_type_actually_exists_in_the_code() -> None:
@@ -330,6 +352,69 @@ async def test_task_type_picks_the_configured_tier() -> None:
 
     assert result.text == "light 答的"
     assert [record.tier for record in sink.records] == ["light"]
+
+
+async def test_gateway_skips_a_tier_that_cannot_fit_the_prompt() -> None:
+    """超窗请求不得先撞 provider；应在发送前选择能容纳它的 fallback。"""
+
+    document = _minimal()
+    tiers = document["tiers"]
+    assert isinstance(tiers, dict)
+    for tier_name, window in (("light", 1024), ("main", 8192)):
+        tier = tiers[tier_name]
+        assert isinstance(tier, dict)
+        primary = tier["primary"]
+        assert isinstance(primary, dict)
+        primary["context_window_tokens"] = window
+    light = FailingProvider("light")
+    main = DeterministicProvider(4, completion_text="main 容纳了长 prompt")
+    table = parse_routing_table(document, ENV)
+    gateway = ModelGateway(
+        main,
+        embedding_dimensions=4,
+        pool=_pool(table, {"light": light, "main": main}),
+        context_safety_tokens=0,
+    )
+
+    result = await gateway.complete(
+        [Message(role="user", content="长" * 1500)],
+        task_type="rewrite",
+        max_tokens=100,
+    )
+
+    assert result.text == "main 容纳了长 prompt"
+    assert light.calls == 0
+
+
+async def test_gateway_rejects_before_dispatch_when_no_tier_can_fit() -> None:
+    document = _minimal()
+    tiers = document["tiers"]
+    assert isinstance(tiers, dict)
+    for tier_name in ("main", "heavy"):
+        tier = tiers[tier_name]
+        assert isinstance(tier, dict)
+        primary = tier["primary"]
+        assert isinstance(primary, dict)
+        primary["context_window_tokens"] = 1024
+    main = DeterministicProvider(4, completion_text="不应调用")
+    heavy = DeterministicProvider(4, completion_text="也不应调用")
+    table = parse_routing_table(document, ENV)
+    gateway = ModelGateway(
+        main,
+        embedding_dimensions=4,
+        pool=_pool(table, {"main": main, "heavy": heavy}),
+        context_safety_tokens=0,
+    )
+
+    with pytest.raises(ModelContextOverflowError, match="超过 heavy/fake-chat"):
+        await gateway.complete(
+            [Message(role="user", content="长" * 1500)],
+            task_type="generate",
+            max_tokens=100,
+        )
+
+    assert main.last_messages == []
+    assert heavy.last_messages == []
 
 
 async def test_fallback_records_both_attempts_with_their_real_tiers() -> None:

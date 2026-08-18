@@ -6,9 +6,10 @@ import pytest
 from app.llm.gateway import EmbeddingDimensionError, EmbeddingIdentityError, ModelGateway
 from app.llm.providers.openai_compatible import (
     OpenAICompatibleProvider,
+    ProviderContextOverflowError,
     ProviderResponseError,
 )
-from app.llm.types import Message
+from app.llm.types import Message, ToolCall, ToolDefinition
 from tests.fakes import DeterministicProvider
 
 
@@ -95,6 +96,116 @@ async def test_openai_compatible_provider_maps_wire_format() -> None:
     assert requests[0].headers["authorization"] == "Bearer secret"
     assert json.loads(requests[0].content)["chat_template_kwargs"] == {"enable_thinking": False}
     assert json.loads(requests[1].content)["input"] == ["one", "two"]
+
+
+async def test_gateway_maps_native_parallel_tool_calls_and_canonical_history() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "model": "served-chat",
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call-a",
+                                    "type": "function",
+                                    "function": {"name": "inspect", "arguments": '{"path":"a"}'},
+                                },
+                                {
+                                    "id": "call-b",
+                                    "type": "function",
+                                    "function": {"name": "inspect", "arguments": '{"path":"b"}'},
+                                },
+                            ],
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 8},
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="chat",
+        embedding_model="embed",
+        client=client,
+    )
+    gateway = ModelGateway(provider, embedding_dimensions=2)
+    result = await gateway.complete_with_tools(
+        [
+            Message(role="user", content="inspect both"),
+            Message(
+                role="assistant",
+                tool_calls=(ToolCall(id="previous", name="inspect", arguments='{"path":"old"}'),),
+            ),
+            Message(role="tool", tool_call_id="previous", content='{"ok":true}'),
+        ],
+        tools=[
+            ToolDefinition(
+                name="inspect",
+                description="Inspect one file",
+                parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+            )
+        ],
+        parallel_tool_calls=True,
+    )
+    await client.aclose()
+
+    assert [call.id for call in result.tool_calls] == ["call-a", "call-b"]
+    payload = json.loads(requests[0].content)
+    assert payload["parallel_tool_calls"] is True
+    assert payload["tools"][0]["function"]["strict"] is True
+    assert payload["messages"][1]["tool_calls"][0]["id"] == "previous"
+    assert payload["messages"][2] == {
+        "role": "tool",
+        "content": '{"ok":true}',
+        "tool_call_id": "previous",
+    }
+
+
+async def test_openai_compatible_provider_classifies_context_overflow_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "context_length_exceeded",
+                    "message": "This model's maximum context length is 4096 tokens.",
+                }
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="chat",
+        embedding_model="embed",
+        client=client,
+    )
+
+    with pytest.raises(ProviderContextOverflowError, match="context_length_exceeded"):
+        await provider.complete(
+            [Message(role="user", content="oversized")],
+            max_tokens=20,
+            temperature=0.0,
+        )
+    await client.aclose()
 
 
 @pytest.mark.asyncio

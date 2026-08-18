@@ -124,7 +124,7 @@ export function applyEnvelope(state: RunState, envelope: StreamEnvelope): RunSta
     }
     case "plan": {
       const data = envelope.data as PlanPayload;
-      next.agentPlan = data.steps;
+      next.agentPlan = data.steps ?? [];
       next.phase = "executing";
       return next;
     }
@@ -138,9 +138,47 @@ export function applyEnvelope(state: RunState, envelope: StreamEnvelope): RunSta
         next.phase = "executing";
         return next;
       }
+      const existing = state.agentPlan.find((step) => step.id === data.step_id);
+      const changed: AgentPlanStepPayload = {
+        id: data.step_id,
+        idx: data.step_idx ?? state.agentPlan.length,
+        description: data.summary ?? `调用 ${data.tool ?? "Cowork 工具"}`,
+        tool: data.tool ?? null,
+        depends_on: [],
+        status: data.status as AgentStepStatus,
+        summary: data.summary,
+      };
+      next.agentPlan = existing
+        ? state.agentPlan.map((step) =>
+            step.id === data.step_id ? { ...step, ...changed } : step,
+          )
+        : [...state.agentPlan, changed];
+      next.phase = "executing";
+      return next;
+    }
+    case "tool.start": {
+      const data = envelope.data as import("./run-protocol").ToolEventPayload;
+      next.agentPlan = state.agentPlan.map((step) =>
+        step.id === data.step_id ? { ...step, status: "running" } : step,
+      );
+      next.phase = "executing";
+      return next;
+    }
+    case "tool.result": {
+      const data = envelope.data as import("./run-protocol").ToolEventPayload;
       next.agentPlan = state.agentPlan.map((step) =>
         step.id === data.step_id
-          ? { ...step, status: data.status as AgentStepStatus, summary: data.summary }
+          ? { ...step, status: "done", summary: data.reused ? "已复用安全执行结果" : "执行完成" }
+          : step,
+      );
+      next.phase = "executing";
+      return next;
+    }
+    case "tool.error": {
+      const data = envelope.data as import("./run-protocol").ToolEventPayload;
+      next.agentPlan = state.agentPlan.map((step) =>
+        step.id === data.step_id
+          ? { ...step, status: "failed", summary: data.error ?? "工具执行失败" }
           : step,
       );
       next.phase = "executing";

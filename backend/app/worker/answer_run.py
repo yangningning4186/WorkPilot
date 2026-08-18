@@ -34,6 +34,11 @@ from app.services.answer_stream import (
     produce_answer,
     produce_general_answer,
 )
+from app.services.conversation_context import (
+    compact_conversation_context,
+    load_conversation_context,
+    resolve_contextual_query,
+)
 from app.services.cost_budget import BudgetExceededError
 from app.services.model_budget import build_cost_guard
 from app.services.runs import (
@@ -150,6 +155,95 @@ async def answer_run(
             )
             try:
                 finished: AnswerFinished | None = None
+                conversation_context = ""
+                retrieval_query = run.goal
+                if settings.conversation_context_enabled:
+                    answer_task_type = (
+                        "general_answer" if run.answer_mode == "general" else "grounded_answer"
+                    )
+                    answer_max_tokens = (
+                        settings.general_answer_max_tokens
+                        if run.answer_mode == "general"
+                        else settings.answer_max_tokens
+                    )
+                    answer_prompt_budget = gateway.prompt_budget(
+                        answer_task_type,
+                        max_tokens=answer_max_tokens,
+                    )
+                    conversation_token_limit = max(
+                        200,
+                        min(
+                            answer_prompt_budget.max_input_tokens,
+                            int(
+                                answer_prompt_budget.context_window_tokens
+                                * settings.conversation_summary_trigger_ratio
+                            ),
+                        ),
+                    )
+                    if settings.conversation_summary_enabled:
+                        try:
+                            compacted = await compact_conversation_context(
+                                session,
+                                gateway,
+                                conversation_id=run.conversation_id,
+                                current_run_id=run_id,
+                                context_window_tokens=(
+                                    answer_prompt_budget.context_window_tokens
+                                ),
+                                trigger_ratio=settings.conversation_summary_trigger_ratio,
+                                keep_recent_turns=(
+                                    settings.conversation_summary_keep_recent_turns
+                                ),
+                                max_summary_chars=settings.conversation_summary_max_chars,
+                                max_input_chars=(
+                                    settings.conversation_summary_input_max_chars
+                                ),
+                                max_tokens=settings.conversation_summary_max_tokens,
+                            )
+                            # 摘要是独立 checkpoint；后续记忆或检索降级时不应随业务
+                            # session.rollback() 一起丢失。无触发时 commit 也是空操作。
+                            await session.commit()
+                            if compacted:
+                                logger.info(
+                                    "会话历史摘要已滚动更新",
+                                    run_id=str(run_id),
+                                    conversation_id=str(run.conversation_id),
+                                )
+                        except Exception:
+                            await session.rollback()
+                            logger.exception(
+                                "会话历史摘要更新失败，回退原文上下文",
+                                run_id=str(run_id),
+                            )
+                    try:
+                        context = await load_conversation_context(
+                            session,
+                            conversation_id=run.conversation_id,
+                            current_run_id=run_id,
+                            max_turns=settings.conversation_context_max_turns,
+                            max_chars=settings.conversation_context_max_chars,
+                            max_input_tokens=conversation_token_limit,
+                        )
+                        conversation_context = context.text
+                        if context.text:
+                            try:
+                                retrieval_query = await resolve_contextual_query(
+                                    gateway,
+                                    current_query=run.goal,
+                                    context=context,
+                                    max_tokens=settings.contextual_query_rewrite_max_tokens,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "多轮追问改写失败，回退当前问题",
+                                    run_id=str(run_id),
+                                )
+                    except Exception:
+                        await session.rollback()
+                        logger.exception(
+                            "会话上下文加载失败，降级为单轮回答",
+                            run_id=str(run_id),
+                        )
                 memory_context = ""
                 if settings.memory_recall_enabled and await run_uses_owner_memory(
                     session, run_id
@@ -158,7 +252,7 @@ async def answer_run(
                         recalled = await recall_memory_context(
                             session,
                             gateway,
-                            query=run.goal,
+                            query=retrieval_query,
                             top_k=settings.memory_recall_top_k,
                             pinned_limit=settings.memory_pinned_limit,
                             max_chars=settings.memory_context_max_chars,
@@ -176,6 +270,8 @@ async def answer_run(
                     top_k=top_k,
                     settings=settings,
                     memory_context=memory_context,
+                    conversation_context=conversation_context,
+                    retrieval_query=retrieval_query,
                 ):
                     _check_control(control)
                     if isinstance(event, AnswerDelta):

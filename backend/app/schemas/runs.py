@@ -11,7 +11,14 @@ RunEventType = Literal[
     "message.done",
     "plan",
     "step.update",
+    "tool.start",
+    "tool.result",
+    "tool.error",
+    "context.compacted",
+    "steering.queued",
+    "steering.applied",
     "interrupt",
+    "interaction.resolved",
     "artifact",
     "run.done",
     "error",
@@ -19,7 +26,7 @@ RunEventType = Literal[
 
 
 AnswerMode = Literal["grounded", "general"]
-WorkflowType = Literal["answer", "literature_review"]
+WorkflowType = Literal["answer", "literature_review", "cowork"]
 
 
 class CreateRunRequest(BaseModel):
@@ -37,9 +44,25 @@ class CreateReviewRunRequest(BaseModel):
     conversation_id: UUID | None = None
 
 
+class CreateCoworkRunRequest(BaseModel):
+    goal: str = Field(min_length=1, max_length=4000)
+    # root grant 绑定 conversation，因此 Cowork 必须显式选择已有 owner 会话。
+    conversation_id: UUID
+
+
 class ResumeRunRequest(BaseModel):
     resume_token: str = Field(min_length=1, max_length=200)
     approved: bool
+
+
+class CoworkSteeringRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+
+
+class CoworkInteractionResponseRequest(BaseModel):
+    approved: bool = True
+    answer: str | None = Field(default=None, max_length=4000)
+    path: str | None = Field(default=None, max_length=4096)
 
 
 class CreateRunResponse(BaseModel):
@@ -72,3 +95,9 @@ class RunEventEnvelope(BaseModel):
     seq: str
     type: str
     data: dict[str, Any]
+
+
+class RunEventListResponse(BaseModel):
+    """给不能保持 EventSource 的桌面 bridge 使用的增量事件快照。"""
+
+    items: list[RunEventEnvelope]

@@ -19,6 +19,7 @@ class LibraryDocument(BaseModel):
     doc_type: str
     source_name: str
     source_kind: str
+    source_editable: bool
     state: DocumentState
     parser: str | None
     parse_error: str | None

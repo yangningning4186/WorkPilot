@@ -67,7 +67,7 @@ test.describe("资料库页", () => {
     await expect(page.locator("tbody tr")).toContainText("扫描件年报");
 
     await page.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "问答" }).click();
-    await expect(page.getByRole("heading", { name: /从你的资料里/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /一段会话/ })).toBeVisible();
     await page
       .getByRole("navigation", { name: "主导航" })
       .getByRole("link", { name: "资料库" })

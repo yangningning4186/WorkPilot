@@ -177,10 +177,10 @@ async def acquire_invocation(
             result=result if isinstance(result, dict) else None,
             effect_ref=None if existing["effect_ref"] is None else str(existing["effect_ref"]),
         )
-    raise InvocationInFlightError("相同 write_note 正在执行，请稍后重试")
+    raise InvocationInFlightError("相同工具调用正在执行，请稍后重试")
 
 
-async def _complete_invocation(
+async def complete_invocation(
     session: AsyncSession,
     *,
     key: str,
@@ -210,10 +210,10 @@ async def _complete_invocation(
         )
     ).scalar_one_or_none()
     if completed is None:
-        raise InvocationInFlightError("write_note 租约已被其他 worker 接管")
+        raise InvocationInFlightError("工具调用租约已被其他 worker 接管")
 
 
-async def _fail_invocation(
+async def fail_invocation(
     session: AsyncSession, *, key: str, worker_id: str, error: str
 ) -> None:
     await session.execute(
@@ -331,7 +331,7 @@ async def write_note(
             if after_replace is not None:
                 after_replace()
         result = {"path": str(target), "content_sha256": digest}
-        await _complete_invocation(
+        await complete_invocation(
             session,
             key=lease.idempotency_key,
             worker_id=worker_id,
@@ -340,7 +340,7 @@ async def write_note(
         )
         await session.commit()
     except Exception as error:
-        await _fail_invocation(
+        await fail_invocation(
             session,
             key=lease.idempotency_key,
             worker_id=worker_id,

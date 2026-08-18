@@ -10,12 +10,18 @@ from app.llm.types import (
     EmbeddingResult,
     Message,
     ProviderNotDispatchedError,
+    ToolCall,
+    ToolDefinition,
     Usage,
 )
 
 
 class ProviderResponseError(RuntimeError):
     pass
+
+
+class ProviderContextOverflowError(ProviderResponseError):
+    """Provider 已接收请求，并明确拒绝了超出上下文窗口的输入。"""
 
 
 # 只有在建连阶段就失败的错误才能证明请求没有发出去; 读超时和连接中断都可能已经计费,
@@ -38,6 +44,24 @@ def _dispatch_guard() -> Iterator[None]:
         raise ProviderNotDispatchedError(str(error)) from error
 
 
+def _is_context_overflow(response: httpx.Response, body: str) -> bool:
+    if response.status_code not in {400, 413, 422}:
+        return False
+    normalized = body.casefold()
+    markers = (
+        "context_length_exceeded",
+        "maximum context length",
+        "max context length",
+        "context window",
+        "max_model_len",
+        "maximum model length",
+        "prompt is too long",
+        "input is too long",
+        "too many tokens",
+    )
+    return any(marker in normalized for marker in markers)
+
+
 def _raise_with_body(response: httpx.Response, body: str) -> None:
     """把服务端的解释带进异常。
 
@@ -49,9 +73,12 @@ def _raise_with_body(response: httpx.Response, body: str) -> None:
     detail = body.strip()
     if len(detail) > 600:
         detail = detail[:600] + "…"
-    raise ProviderResponseError(
-        f"模型服务返回 {response.status_code}：{detail or '（响应体为空）'}"
+    error_type = (
+        ProviderContextOverflowError
+        if _is_context_overflow(response, body)
+        else ProviderResponseError
     )
+    raise error_type(f"模型服务返回 {response.status_code}：{detail or '（响应体为空）'}")
 
 
 class OpenAICompatibleProvider:
@@ -98,12 +125,61 @@ class OpenAICompatibleProvider:
         max_tokens: int,
         temperature: float,
     ) -> CompletionResult:
+        return await self._complete(
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+    async def complete_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool,
+        max_tokens: int,
+        temperature: float,
+    ) -> CompletionResult:
+        if not tools:
+            raise ValueError("原生 tool-calling 至少需要一个工具")
+        return await self._complete(
+            messages,
+            tools=tools,
+            parallel_tool_calls=parallel_tool_calls,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+    async def _complete(
+        self,
+        messages: list[Message],
+        *,
+        max_tokens: int,
+        temperature: float,
+        tools: list[ToolDefinition] | None = None,
+        parallel_tool_calls: bool = False,
+    ) -> CompletionResult:
         request_payload: dict[str, Any] = {
             "model": self.chat_model,
-            "messages": [vars(message) for message in messages],
+            "messages": [self._message_payload(message) for message in messages],
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        if tools is not None:
+            request_payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                        "strict": tool.strict,
+                    },
+                }
+                for tool in tools
+            ]
+            request_payload["tool_choice"] = "auto"
+            request_payload["parallel_tool_calls"] = parallel_tool_calls
         if self._enable_thinking is not None:
             request_payload["chat_template_kwargs"] = {"enable_thinking": self._enable_thinking}
         with _dispatch_guard():
@@ -117,18 +193,41 @@ class OpenAICompatibleProvider:
         payload: dict[str, Any] = response.json()
         try:
             message = payload["choices"][0]["message"]
-            content = message["content"]
+            if not isinstance(message, dict):
+                raise TypeError("message")
+            content = message.get("content")
         except (KeyError, IndexError, TypeError) as error:
-            raise ProviderResponseError("模型响应缺少 choices[0].message.content") from error
+            raise ProviderResponseError("模型响应缺少 choices[0].message") from error
+        raw_tool_calls = message.get("tool_calls") or []
+        if not isinstance(raw_tool_calls, list):
+            raise ProviderResponseError("模型响应的 tool_calls 不是数组")
+        tool_calls: list[ToolCall] = []
+        seen_call_ids: set[str] = set()
+        for raw in raw_tool_calls:
+            try:
+                call_id = str(raw["id"])
+                if raw.get("type") != "function":
+                    raise KeyError("type")
+                function = raw["function"]
+                name = str(function["name"])
+                arguments = function["arguments"]
+                if not isinstance(arguments, str):
+                    raise TypeError("arguments")
+            except (KeyError, TypeError) as error:
+                raise ProviderResponseError("模型响应包含非法 function tool_call") from error
+            if not call_id or not name or call_id in seen_call_ids:
+                raise ProviderResponseError("模型响应包含空名称或重复 tool_call id")
+            seen_call_ids.add(call_id)
+            tool_calls.append(ToolCall(id=call_id, name=name, arguments=arguments))
         # reasoning 模型在推理耗尽 max_tokens 时会回 content=null。此处若直接 str()
         # 会得到字符串 "None"，把"模型没给内容"静默伪装成内容，调用方拿到的是假数据。
-        if content is None:
+        if content is None and not tool_calls:
             finish_reason = payload["choices"][0].get("finish_reason")
             raise ProviderResponseError(
                 f"模型返回空 content(finish_reason={finish_reason})；"
                 "reasoning 模型可能已耗尽 max_tokens，调大后重试"
             )
-        text = str(content)
+        text = "" if content is None else str(content)
         usage = payload.get("usage") or {}
         return CompletionResult(
             text=text,
@@ -138,7 +237,29 @@ class OpenAICompatibleProvider:
                 input_tokens=int(usage.get("prompt_tokens", 0)),
                 output_tokens=int(usage.get("completion_tokens", 0)),
             ),
+            tool_calls=tuple(tool_calls),
         )
+
+    @staticmethod
+    def _message_payload(message: Message) -> dict[str, Any]:
+        payload: dict[str, Any] = {"role": message.role, "content": message.content}
+        if message.tool_calls:
+            if message.role != "assistant":
+                raise ValueError("只有 assistant 消息可以携带 tool_calls")
+            payload["content"] = message.content or None
+            payload["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": call.arguments},
+                }
+                for call in message.tool_calls
+            ]
+        if message.tool_call_id is not None:
+            if message.role != "tool":
+                raise ValueError("只有 tool 消息可以携带 tool_call_id")
+            payload["tool_call_id"] = message.tool_call_id
+        return payload
 
     async def stream(
         self,
@@ -149,7 +270,7 @@ class OpenAICompatibleProvider:
     ) -> AsyncIterator[str]:
         request_payload: dict[str, Any] = {
             "model": self.chat_model,
-            "messages": [vars(message) for message in messages],
+            "messages": [self._message_payload(message) for message in messages],
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": True,

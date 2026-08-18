@@ -9,6 +9,73 @@ import { answerCopy, ask, citationCards, mockRequests } from "./helpers";
  * 所以"实时看到的"和"刷新后看到的"必须逐字一致，断线重连也不许把正文重放两遍。
  */
 test.describe("流式恢复与失败态", () => {
+  test("桌面 SSE 使用 sidecar API base 并携带 launch header", async ({ page }) => {
+    const appPort = Number(process.env.E2E_APP_PORT ?? 3100);
+    const sidecarBase = `http://127.0.0.1:${appPort}/desktop-sidecar`;
+    const launchToken = "desktop-launch-token-test";
+    const runId = "7d0e4c55-0000-4d00-8000-000000000001";
+    let eventRequest: { url: string; launchToken: string | undefined } | null = null;
+
+    await page.addInitScript(
+      ({ apiBase, token }) => {
+        Object.defineProperty(window, "isTauri", { configurable: true, value: true });
+        Object.defineProperty(window, "__TAURI_INTERNALS__", {
+          configurable: true,
+          value: {
+            invoke: async (command: string) => {
+              if (command !== "desktop_context") throw new Error(`unexpected command: ${command}`);
+              return { api_base: apiBase, launch_token: token };
+            },
+          },
+        });
+      },
+      { apiBase: sidecarBase, token: launchToken },
+    );
+    await page.route(`${sidecarBase}/**`, async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.pathname.endsWith(`/runs/${runId}/events`)) {
+        eventRequest = {
+          url: request.url(),
+          launchToken: request.headers()["x-workpilot-launch-token"],
+        };
+        const envelopes = [
+          { seq: "1", type: "message.start", data: { message_id: `${runId}-message` } },
+          { seq: "2", type: "message.delta", data: { text: "桌面事件流已连接。" } },
+          { seq: "3", type: "message.done", data: { message_id: `${runId}-message` } },
+        ];
+        const body = envelopes
+          .map(
+            (event) =>
+              `id: ${runId}:${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify({ id: `${runId}:${event.seq}`, run_id: runId, ...event })}\n\n`,
+          )
+          .join("");
+        await route.fulfill({
+          body,
+          contentType: "text/event-stream; charset=utf-8",
+          status: 200,
+        });
+        return;
+      }
+      if (url.pathname.endsWith("/conversations")) {
+        await route.fulfill({ json: { items: [], total: 0 }, status: 200 });
+        return;
+      }
+      if (url.pathname.endsWith("/auth/admin/session")) {
+        await route.fulfill({ json: { authenticated: true }, status: 200 });
+        return;
+      }
+      await route.fulfill({ json: { detail: "not mocked" }, status: 404 });
+    });
+
+    await page.goto(`/?run=${runId}`);
+    await expect(answerCopy(page)).toHaveText("桌面事件流已连接。");
+    expect(eventRequest).toEqual({
+      url: `${sidecarBase}/api/v1/runs/${runId}/events?after_seq=0`,
+      launchToken,
+    });
+  });
+
   test("B1 刷新恢复：刷新后正文与引用逐字一致", async ({ page }) => {
     await ask(page, "混合检索为什么比单路召回更稳定？");
     await expect(citationCards(page)).toHaveCount(2);
@@ -99,7 +166,7 @@ test.describe("流式恢复与失败态", () => {
     await reopened.close();
   });
 
-  /** B5 并发隔离：两个 run 各自一条 EventSource、各自一份 state，正文不许串台。 */
+  /** B5 并发隔离：两个 run 各自一条 fetch SSE、各自一份 state，正文不许串台。 */
   test("B5 并发隔离：两个标签页的回答互不污染", async ({ page, context }) => {
     const second = await context.newPage();
     await ask(page, "混合检索为什么比单路召回更稳定？");

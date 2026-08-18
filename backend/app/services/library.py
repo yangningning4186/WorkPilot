@@ -127,6 +127,10 @@ async def get_library_overview(
             doc_type=row["doc_type"],
             source_name=row["source_name"],
             source_kind=row["source_kind"],
+            source_editable=(
+                row["source_kind"] == "local_dir"
+                and str(row["source_uri"]).lower().endswith((".md", ".markdown"))
+            ),
             state=_document_state(dict(row)),
             parser=row["parser"],
             parse_error=row["candidate_parse_error"],

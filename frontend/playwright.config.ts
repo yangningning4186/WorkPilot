@@ -4,7 +4,7 @@ import { defineConfig, devices } from "@playwright/test";
  * 前端验收：提问 → SSE 回答 → 点击引用 → 原文高亮。
  *
  * 被测的是产线构建（next build + next start），不是 dev server：
- * dev 下 StrictMode 会把 effect 跑两遍，EventSource 也就开两条，
+ * dev 下 StrictMode 会把 effect 跑两遍，fetch SSE 也就开两条，
  * 那既不是用户看到的东西，也会让断线续传这类用例的时序断言失真。
  *
  * 后端是 tests/e2e/mock-backend.mjs 按剧本回放的假后端，理由见该文件头注释。

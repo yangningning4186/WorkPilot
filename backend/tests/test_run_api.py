@@ -33,6 +33,7 @@ class RecordingQueue:
     def __init__(self) -> None:
         self.enqueued: list[tuple[UUID, int]] = []
         self.enqueued_reviews: list[UUID] = []
+        self.enqueued_cowork: list[UUID] = []
 
     async def enqueue_answer_run(self, run_id: UUID, *, top_k: int) -> None:
         self.enqueued.append((run_id, top_k))
@@ -40,12 +41,18 @@ class RecordingQueue:
     async def enqueue_review_run(self, run_id: UUID, *, attempt: int = 0) -> None:
         self.enqueued_reviews.append(run_id)
 
+    async def enqueue_cowork_run(self, run_id: UUID, *, attempt: int = 0) -> None:
+        self.enqueued_cowork.append(run_id)
+
 
 class BrokenQueue:
     async def enqueue_answer_run(self, run_id: UUID, *, top_k: int) -> None:
         raise ConnectionError("redis 不可达")
 
     async def enqueue_review_run(self, run_id: UUID, *, attempt: int = 0) -> None:
+        raise ConnectionError("redis 不可达")
+
+    async def enqueue_cowork_run(self, run_id: UUID, *, attempt: int = 0) -> None:
         raise ConnectionError("redis 不可达")
 
 
@@ -132,6 +139,89 @@ async def _create_http_run(client: httpx.AsyncClient, query: str = "问题") -> 
     response = await client.post("/api/v1/runs", json={"query": query})
     assert response.status_code == 202
     return response.json()
+
+
+async def test_conversations_are_explicitly_created_listed_and_identity_isolated(
+    db_session: AsyncSession,
+) -> None:
+    owner, _ = _client(db_session, RecordingQueue(), admin=True)
+    async with owner:
+        created = await owner.post("/api/v1/conversations", json={"title": "RAG 方案"})
+        assert created.status_code == 201
+        conversation_id = created.json()["id"]
+        run = await owner.post(
+            "/api/v1/runs",
+            json={"query": "先解释召回", "conversation_id": conversation_id},
+        )
+        assert run.status_code == 202
+        listed = await owner.get("/api/v1/conversations")
+        messages = await owner.get(f"/api/v1/conversations/{conversation_id}/messages")
+
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["id"] == conversation_id
+    assert listed.json()["items"][0]["message_count"] == 1
+    assert messages.status_code == 200
+    assert [item["content"] for item in messages.json()["items"]] == ["先解释召回"]
+
+    anonymous, _ = _client(db_session, RecordingQueue())
+    async with anonymous:
+        foreign = await anonymous.get(f"/api/v1/conversations/{conversation_id}/messages")
+    assert foreign.status_code == 404
+
+
+async def test_delete_conversation_is_isolated_blocks_active_run_and_cascades(
+    db_session: AsyncSession,
+) -> None:
+    owner, _ = _client(db_session, RecordingQueue(), admin=True)
+    async with owner:
+        created = await owner.post("/api/v1/conversations", json={"title": "待删除会话"})
+        conversation_id = created.json()["id"]
+        run_response = await owner.post(
+            "/api/v1/runs",
+            json={"query": "正在回答的问题", "conversation_id": conversation_id},
+        )
+        run_id = run_response.json()["run_id"]
+
+        busy = await owner.delete(f"/api/v1/conversations/{conversation_id}")
+        assert busy.status_code == 409
+
+        foreign, _ = _client(db_session, RecordingQueue())
+        async with foreign:
+            hidden = await foreign.delete(f"/api/v1/conversations/{conversation_id}")
+        assert hidden.status_code == 404
+
+        await db_session.execute(
+            text(
+                """
+                UPDATE agent_runs
+                SET status = 'done', finished_at = now()
+                WHERE id = :run_id
+                """
+            ),
+            {"run_id": UUID(run_id)},
+        )
+        await db_session.commit()
+
+        deleted = await owner.delete(f"/api/v1/conversations/{conversation_id}")
+        missing = await owner.get(f"/api/v1/conversations/{conversation_id}/messages")
+
+    assert deleted.status_code == 204
+    assert deleted.content == b""
+    assert missing.status_code == 404
+    counts = (
+        await db_session.execute(
+            text(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM conversations WHERE id = :conversation_id),
+                    (SELECT COUNT(*) FROM agent_runs WHERE id = :run_id),
+                    (SELECT COUNT(*) FROM messages WHERE conversation_id = :conversation_id)
+                """
+            ),
+            {"conversation_id": UUID(conversation_id), "run_id": UUID(run_id)},
+        )
+    ).one()
+    assert counts == (0, 0, 0)
 
 
 async def test_create_run_sets_http_only_session_and_enqueues(
@@ -299,11 +389,24 @@ async def test_events_endpoint_replays_history_as_sse(
             f"/api/v1/runs/{run_id}/events",
             headers={"Last-Event-ID": f"{run_id}:1"},
         )
+        event_log = await client.get(f"/api/v1/runs/{run_id}/event-log?after_seq=1")
 
     assert f"id: {run_id}:1" in body
     assert "event: message.delta" in body
     assert f"id: {run_id}:1" not in resumed.text
     assert f"id: {run_id}:2" in resumed.text
+    assert event_log.status_code == 200
+    assert event_log.json() == {
+        "items": [
+            {
+                "id": f"{run_id}:2",
+                "run_id": str(run_id),
+                "seq": "2",
+                "type": "message.done",
+                "data": {"message_id": "m"},
+            }
+        ]
+    }
 
 
 async def test_events_endpoint_404s_for_unknown_run(db_session: AsyncSession) -> None:
@@ -325,6 +428,7 @@ async def test_other_session_cannot_read_stream_or_cancel_run(
         assert (await owner.get(f"/api/v1/runs/{run_id}")).status_code == 200
         assert (await intruder.get(f"/api/v1/runs/{run_id}")).status_code == 404
         assert (await intruder.get(f"/api/v1/runs/{run_id}/events")).status_code == 404
+        assert (await intruder.get(f"/api/v1/runs/{run_id}/event-log")).status_code == 404
         assert (await intruder.post(f"/api/v1/runs/{run_id}/cancel")).status_code == 404
 
         still_queued = await get_run(db_session, run_id)
@@ -347,6 +451,29 @@ async def test_cancel_marks_request_and_wakes_subscribers(db_session: AsyncSessi
     assert payload["cancel_requested"] is True
     # 执行中的 run 由 worker 自己收尾, 接口不直接改成终态。
     assert payload["status"] == "executing"
+
+
+async def test_cancel_queued_run_appends_terminal_events(db_session: AsyncSession) -> None:
+    client, _ = _client(db_session, RecordingQueue())
+    async with client:
+        created = await _create_http_run(client)
+        run_id = UUID(created["run_id"])
+
+        response = await client.post(f"/api/v1/runs/{run_id}/cancel")
+        repeated = await client.post(f"/api/v1/runs/{run_id}/cancel")
+        event_log = await client.get(f"/api/v1/runs/{run_id}/event-log")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    assert repeated.status_code == 200
+    assert repeated.json()["next_seq"] == response.json()["next_seq"]
+    terminal = event_log.json()["items"][-2:]
+    assert [event["type"] for event in terminal] == ["error", "run.done"]
+    assert terminal[0]["data"]["code"] == "cancelled"
+    assert terminal[1]["data"] == {
+        "workflow_type": "answer",
+        "status": "cancelled",
+    }
 
 
 async def test_forged_or_expired_cookie_rotates_to_new_session(
