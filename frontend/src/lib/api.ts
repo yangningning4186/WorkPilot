@@ -81,6 +81,9 @@ export interface RunStatusResponse {
   used_calls: number;
   next_seq: number;
   error: string | null;
+  schedule_id: string | null;
+  unattended: boolean;
+  run_trigger: "manual" | "schedule" | "catchup";
 }
 
 export class ApiError extends Error {
@@ -356,6 +359,95 @@ export function fetchRunEventLog(
 ): Promise<{ items: StreamEnvelope[] }> {
   return request<{ items: StreamEnvelope[] }>(
     `/api/v1/runs/${runId}/event-log?after_seq=${afterSeq.toString()}&limit=200`,
+  );
+}
+
+export interface CoworkSchedule {
+  id: string;
+  conversation_id: string;
+  title: string;
+  goal: string;
+  schedule_kind: "once" | "cron";
+  cron_expression: string | null;
+  run_at: string | null;
+  timezone: string;
+  enabled: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_run_id: string | null;
+  last_run_status: string | null;
+  run_count: number;
+  skipped_count: number;
+  pending_inbox_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateCoworkScheduleRequest {
+  conversation_id: string;
+  title: string;
+  goal: string;
+  schedule_kind: "once" | "cron";
+  cron_expression?: string;
+  run_at?: string;
+  timezone: string;
+}
+
+export interface UnattendedInboxItem {
+  id: string;
+  run_id: string;
+  conversation_id: string;
+  schedule_id: string | null;
+  schedule_title: string | null;
+  run_goal: string;
+  run_status: string;
+  kind: "ask_user" | "directory_request" | "capability_request" | "shell_approval";
+  status: "pending" | "answered" | "approved" | "rejected" | "cancelled";
+  resume_token: string;
+  request: Record<string, unknown>;
+  response: Record<string, unknown> | null;
+  created_at: string;
+  responded_at: string | null;
+}
+
+export function fetchCoworkSchedules(): Promise<{ items: CoworkSchedule[]; total: number }> {
+  return request<{ items: CoworkSchedule[]; total: number }>("/api/v1/automations");
+}
+
+export function createCoworkSchedule(
+  body: CreateCoworkScheduleRequest,
+): Promise<CoworkSchedule> {
+  return request<CoworkSchedule>("/api/v1/automations", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateCoworkSchedule(
+  scheduleId: string,
+  body: Partial<Pick<CoworkSchedule, "title" | "goal" | "enabled" | "cron_expression" | "run_at" | "timezone">>,
+): Promise<CoworkSchedule> {
+  return request<CoworkSchedule>(`/api/v1/automations/${scheduleId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteCoworkSchedule(scheduleId: string): Promise<void> {
+  return requestVoid(`/api/v1/automations/${scheduleId}`, { method: "DELETE" });
+}
+
+export function runCoworkSchedule(scheduleId: string): Promise<RunStatusResponse> {
+  return request<RunStatusResponse>(`/api/v1/automations/${scheduleId}/run`, {
+    method: "POST",
+  });
+}
+
+export function fetchUnattendedInbox(
+  includeResolved = false,
+): Promise<{ items: UnattendedInboxItem[]; total: number }> {
+  return request<{ items: UnattendedInboxItem[]; total: number }>(
+    `/api/v1/automations/inbox/items?include_resolved=${includeResolved ? "true" : "false"}`,
   );
 }
 

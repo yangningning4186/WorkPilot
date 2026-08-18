@@ -50,6 +50,16 @@ class InboxRecord:
     response: dict[str, Any] | None
     created_at: datetime
     responded_at: datetime | None
+    unattended: bool
+
+
+@dataclass(frozen=True)
+class UnattendedInboxRecord:
+    item: InboxRecord
+    run_goal: str
+    run_status: str
+    schedule_id: UUID | None
+    schedule_title: str | None
 
 
 _STEERING_COLUMNS = """
@@ -57,8 +67,9 @@ _STEERING_COLUMNS = """
 """
 _INBOX_COLUMNS = """
     id, run_id, conversation_id, kind, status, resume_token, tool_call_id,
-    plan_step_id, request, response, created_at, responded_at
+    plan_step_id, request, response, created_at, responded_at, unattended
 """
+_INBOX_COLUMN_NAMES = [column.strip() for column in _INBOX_COLUMNS.split(",")]
 
 
 def _inbox_record(row: Any) -> InboxRecord:
@@ -152,10 +163,12 @@ async def create_inbox_item(
                     f"""
                     INSERT INTO cowork_inbox_items
                         (id, run_id, conversation_id, kind, resume_token, tool_call_id,
-                         plan_step_id, request)
-                    VALUES
-                        (:id, :run_id, :conversation_id, :kind, :resume_token, :tool_call_id,
-                         :plan_step_id, CAST(:request AS jsonb))
+                         plan_step_id, request, unattended)
+                    SELECT
+                        :id, :run_id, :conversation_id, :kind, :resume_token, :tool_call_id,
+                        :plan_step_id, CAST(:request AS jsonb), runs.unattended
+                    FROM agent_runs AS runs
+                    WHERE runs.id = :run_id
                     RETURNING {_INBOX_COLUMNS}
                     """
                 ),
@@ -175,6 +188,56 @@ async def create_inbox_item(
         .one()
     )
     return _inbox_record(row)
+
+
+async def list_unattended_inbox(
+    session: AsyncSession,
+    *,
+    include_resolved: bool = False,
+    limit: int = 100,
+) -> list[UnattendedInboxRecord]:
+    if not 1 <= limit <= 200:
+        raise ValueError("inbox limit 必须位于 1 到 200")
+    status_clause = "" if include_resolved else "AND inbox.status = 'pending'"
+    qualified = ", ".join(f"inbox.{column}" for column in _INBOX_COLUMN_NAMES)
+    rows = (
+        (
+            await session.execute(
+                text(
+                    f"""
+                    SELECT {qualified}, runs.goal AS run_goal, runs.status AS run_status,
+                           runs.schedule_id, schedules.title AS schedule_title
+                    FROM cowork_inbox_items AS inbox
+                    JOIN agent_runs AS runs ON runs.id = inbox.run_id
+                    JOIN conversations AS conversations ON conversations.id = inbox.conversation_id
+                    LEFT JOIN cowork_schedules AS schedules ON schedules.id = runs.schedule_id
+                    WHERE inbox.unattended = true
+                      AND conversations.scope = 'local_owner'
+                      AND conversations.demo_session_id IS NULL
+                      {status_clause}
+                    ORDER BY (inbox.status = 'pending') DESC, inbox.created_at DESC, inbox.id DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    records: list[UnattendedInboxRecord] = []
+    for row in rows:
+        item_values = {column: row[column] for column in _INBOX_COLUMN_NAMES}
+        records.append(
+            UnattendedInboxRecord(
+                item=InboxRecord(**item_values),
+                run_goal=str(row["run_goal"]),
+                run_status=str(row["run_status"]),
+                schedule_id=row["schedule_id"],
+                schedule_title=row["schedule_title"],
+            )
+        )
+    return records
 
 
 async def get_pending_inbox_item(

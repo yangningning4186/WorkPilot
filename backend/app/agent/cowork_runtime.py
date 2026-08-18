@@ -334,6 +334,7 @@ async def initialize_cowork_state(
     run_id: UUID,
     registry: CoworkToolRegistry,
     bus: RunBus | None = None,
+    commit: bool = True,
 ) -> CoworkState:
     run = await get_run(session, run_id)
     if run is None:
@@ -404,8 +405,9 @@ async def initialize_cowork_state(
             )
         ],
     )
-    await session.commit()
-    if bus is not None:
+    if commit:
+        await session.commit()
+    if commit and bus is not None:
         await bus.publish(run_id)
     return state
 

@@ -420,7 +420,7 @@ export default function CoworkPage() {
         <nav className="workdesk-primary-nav" aria-label="工作台导航">
           <button className="active" disabled={busy || running} onClick={() => void createSession()} type="button"><WorkdeskIcon name="add" /><span>新建任务</span></button>
           <Link href="/library"><WorkdeskIcon name="agent" /><span>资料与连接器</span></Link>
-          <Link href="/review"><WorkdeskIcon name="automation" /><span>自动化与综述</span></Link>
+          <Link href="/automations"><WorkdeskIcon name="automation" /><span>自动化与收件箱</span></Link>
           <Link href="/memory"><WorkdeskIcon name="more" /><span>记忆与设置</span></Link>
         </nav>
 

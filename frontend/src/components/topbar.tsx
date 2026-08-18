@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 
 import { AdminSessionControl } from "@/components/admin-session";
 
-/** 两个页面共用的顶栏。当前页高亮由 pathname 决定，不用各自维护状态。 */
+/** 各页面共用的顶栏。当前页高亮由 pathname 决定，不用各自维护状态。 */
 export function Topbar() {
   const pathname = usePathname();
 
@@ -33,6 +33,12 @@ export function Topbar() {
         </Link>
         <Link aria-current={pathname === "/cowork" ? "page" : undefined} href="/cowork">
           Cowork
+        </Link>
+        <Link
+          aria-current={pathname === "/automations" ? "page" : undefined}
+          href="/automations"
+        >
+          自动化
         </Link>
         <Link aria-current={pathname === "/memory" ? "page" : undefined} href="/memory">
           记忆

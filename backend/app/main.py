@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.annotation import page_router as annotation_page_router
 from app.api.annotation import router as annotation_router
 from app.api.auth import router as auth_router
+from app.api.automations import router as automations_router
 from app.api.conversations import router as conversations_router
 from app.api.cost import router as cost_router
 from app.api.cowork import router as cowork_router
@@ -70,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(annotation_page_router, dependencies=rate_limited)
     app.include_router(annotation_router, dependencies=rate_limited)
     app.include_router(auth_router, dependencies=rate_limited)
+    app.include_router(automations_router, dependencies=rate_limited)
     app.include_router(cost_router, dependencies=rate_limited)
     app.include_router(conversations_router, dependencies=rate_limited)
     app.include_router(cowork_router, dependencies=rate_limited)

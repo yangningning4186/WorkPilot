@@ -8,6 +8,10 @@ from app.core.queue import get_run_queue
 from app.core.run_bus import RunBus
 from app.memory.store import list_dispatchable_memory_jobs
 from app.services.cost_budget import sweep_expired_reservations
+from app.services.cowork_schedules import (
+    dispatch_due_schedules,
+    list_dispatchable_scheduled_runs,
+)
 from app.services.runs import reap_expired_runs
 
 logger = structlog.get_logger(__name__)
@@ -76,3 +80,36 @@ async def memory_dispatch_tick(ctx: dict[str, Any]) -> int:
     for job_id, attempt in jobs:
         await queue.enqueue_memory_job(job_id, attempt=attempt)
     return len(jobs)
+
+
+async def scheduler_dispatch_tick(ctx: dict[str, Any]) -> int:
+    """补跑到期计划，并补偿“已落 DB、Redis 首次入队失败”的窗口。"""
+
+    settings = ctx["settings"]
+    if not settings.cowork_enabled:
+        return 0
+    session_factory = ctx["session_factory"]
+    first_tick = not bool(ctx.get("cowork_scheduler_started"))
+    async with session_factory() as session:
+        created = await dispatch_due_schedules(
+            session,
+            settings=settings,
+            trigger="catchup" if first_tick else "schedule",
+        )
+        await session.commit()
+        dispatchable = await list_dispatchable_scheduled_runs(session)
+    ctx["cowork_scheduler_started"] = True
+    queue = ctx.get("run_queue") or await get_run_queue()
+    bus: RunBus = ctx["bus"]
+    enqueued = 0
+    for run_id in dispatchable:
+        try:
+            await queue.enqueue_cowork_run(run_id)
+        except Exception:
+            logger.exception("自动化 run 入队失败，等待下次 tick 补偿", run_id=str(run_id))
+            continue
+        await bus.publish(run_id)
+        enqueued += 1
+    if created:
+        logger.info("创建到期的 Cowork 自动化 run", count=len(created))
+    return enqueued

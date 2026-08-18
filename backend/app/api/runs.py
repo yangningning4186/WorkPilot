@@ -87,6 +87,9 @@ def _run_status_response(run: RunRecord) -> RunStatusResponse:
         used_calls=run.used_calls,
         next_seq=run.next_seq,
         error=run.error,
+        schedule_id=run.schedule_id,
+        unattended=run.unattended,
+        run_trigger=run.run_trigger,
     )
 
 

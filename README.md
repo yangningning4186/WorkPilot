@@ -51,7 +51,7 @@ badcase 来自我每天的真实使用，不是编出来的测试用例。
 | Agent | LangGraph 固定 `literature_review` 状态机 · PostgreSQL checkpoint · owner-only HITL · 幂等写回 |
 | 记忆 | 两阶段事实抽取 · ADD/UPDATE/DELETE/NOOP · 时序有效性 · pgvector 召回 · owner-only `/memory` |
 | 办公编辑 | owner 会话限时授权 · Markdown / python-docx / openpyxl 格式执行器 · 冲突保护 · 恢复副本 · 原子写入 |
-| Cowork 桌面 | Tauri 2 · 随机 localhost sidecar · 会话 root/network capability · 文件/搜索/网页/PDF/Office/Artifact · 策展式 MCP client · 渐进加载 Skill · Progress / Artifacts |
+| Cowork 桌面 | Tauri 2 · 随机 localhost sidecar · 会话 root/network capability · 文件/搜索/网页/PDF/Office/Artifact · 策展式 MCP client · 渐进加载 Skill · Scheduler / Unattended Inbox |
 | 知识 | MinerU / PyMuPDF · bge-m3 dense 向量 · PostgreSQL + pgvector · PG 词法检索 · bge-reranker-v2-m3 |
 | 模型 | 统一网关 · `light/main/heavy/external` 路由与 fallback · 置信度升档 · Redis 精确缓存 |
 | 评测 | span-level 标注 · 规则轨 + Judge · paired bootstrap · weighted Kappa · 两层 CI 门禁 |
@@ -87,6 +87,11 @@ MCP client 配置示例见 [`config/mcp.yaml.example`](config/mcp.yaml.example)�
 设为 `corpus_allowed` 才允许数据出站。
 本地 Skill 放在 `skills/<name>/SKILL.md`，格式与边界见 [`skills/README.md`](skills/README.md)。
 
+顶部“自动化”入口可以为已有 Cowork 会话创建单次或五段 cron 计划。计划在本机 worker
+中派发；应用重启后对错过的时间点最多补跑一次，同一会话已有运行中或等待人工处理的任务时
+跳过本轮，避免任务堆叠。计划运行需要补充信息、申请目录/能力或审批 Shell 时会安全暂停并
+进入 Unattended Inbox；无人值守模式不会自动续期授权，也不会自动批准高风险动作。
+
 ---
 
 ## 文档索引
@@ -116,7 +121,7 @@ MCP client 配置示例见 [`config/mcp.yaml.example`](config/mcp.yaml.example)�
 
 ## 项目状态
 
-**状态快照：2026-08-18。** M0 已收口；M1 的检索、固定 Agent 与六类 binary correctness
+**状态快照：2026-08-19。** M0 已收口；M1 的检索、固定 Agent 与六类 binary correctness
 Judge 校准已完成；三档路由主线收口后，owner 长期记忆已按明确授权从 Backlog 解锁。
 
 ### 已实现
@@ -127,6 +132,8 @@ Judge 校准已完成；三档路由主线收口后，owner 长期记忆已按�
 - `light/main/heavy/external` 路由、fallback、确定性升档、精确缓存、GPU 批次成本口径与 admin 成本看板
 - owner 长期记忆：登录后异步抽取、四操作时序更新、相关记忆召回注入，以及 `/memory` 管理与历史恢复；匿名 demo 全路径隔离
 - owner 本地办公工作台：授权后按自然语言指令直接修改 `.md`、`.docx`、`.xlsx`，具备 source 路径约束、外部修改冲突检测、恢复副本与原子替换；当前不是通用 Office 或多 Agent 系统
+- Cowork 自动化：持久化单次/cron 计划、错过补跑一次、会话级重叠保护、Redis 入队补偿，
+  以及集中处理无人值守任务提问和审批的 Inbox
 - 80 条 human 评测集（70 dev + 10 隔离 test）、严格配对 diff、bootstrap 与 badcase 棘轮
 - 夜间 gate 已在**检索轨与生成轨**双双点亮：两份 baseline 快照均已提交，
   检索轨的通过 / 阻断 / 拒判三条路径各用真报告实跑验证过

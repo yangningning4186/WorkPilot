@@ -84,6 +84,9 @@ class RunStatusResponse(BaseModel):
     used_calls: int
     next_seq: int
     error: str | None
+    schedule_id: UUID | None = None
+    unattended: bool = False
+    run_trigger: Literal["manual", "schedule", "catchup"] = "manual"
 
 
 class RunEventEnvelope(BaseModel):

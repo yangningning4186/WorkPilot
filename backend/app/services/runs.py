@@ -69,6 +69,9 @@ class RunRecord:
     used_calls: int
     next_seq: int
     error: str | None
+    schedule_id: UUID | None
+    unattended: bool
+    run_trigger: Literal["manual", "schedule", "catchup"]
     workflow_type: WorkflowType = "answer"
     # grounded = 依据资料库回答; general = 用户显式选择的通用知识回答(不可溯源)。
     answer_mode: Literal["grounded", "general"] = "grounded"
@@ -85,7 +88,7 @@ class RunRecord:
 _RUN_COLUMNS = """
     id, conversation_id, goal, status, worker_id, lease_until, cancel_requested_at,
     budget_tokens, budget_calls, budget_wall_ms, used_tokens, used_calls, next_seq, error,
-    answer_mode, workflow_type
+    answer_mode, workflow_type, schedule_id, unattended, run_trigger
 """
 _RUN_COLUMNS_QUALIFIED = ", ".join(f"ar.{column.strip()}" for column in _RUN_COLUMNS.split(","))
 
@@ -155,6 +158,9 @@ async def create_run(
     budget_wall_ms: int,
     answer_mode: str = "grounded",
     workflow_type: WorkflowType = "answer",
+    schedule_id: UUID | None = None,
+    unattended: bool = False,
+    run_trigger: Literal["manual", "schedule", "catchup"] = "manual",
 ) -> RunRecord:
     if not goal.strip():
         raise ValueError("run 目标不能为空")
@@ -162,16 +168,21 @@ async def create_run(
         raise ValueError("answer_mode 只能是 grounded 或 general")
     if workflow_type not in {"answer", "literature_review", "cowork"}:
         raise ValueError("workflow_type 只能是 answer、literature_review 或 cowork")
+    if run_trigger not in {"manual", "schedule", "catchup"}:
+        raise ValueError("run_trigger 无效")
+    if schedule_id is not None and workflow_type != "cowork":
+        raise ValueError("只有 Cowork run 可以关联 schedule")
     run_id = uuid7()
     await session.execute(
         text(
             """
             INSERT INTO agent_runs
                 (id, conversation_id, goal, status,
-                 budget_tokens, budget_calls, budget_wall_ms, answer_mode, workflow_type)
+                 budget_tokens, budget_calls, budget_wall_ms, answer_mode, workflow_type,
+                 schedule_id, unattended, run_trigger)
             VALUES (:id, :conversation_id, :goal, 'queued',
                     :budget_tokens, :budget_calls, :budget_wall_ms, :answer_mode,
-                    :workflow_type)
+                    :workflow_type, :schedule_id, :unattended, :run_trigger)
             """
         ),
         {
@@ -183,6 +194,9 @@ async def create_run(
             "budget_wall_ms": budget_wall_ms,
             "answer_mode": answer_mode,
             "workflow_type": workflow_type,
+            "schedule_id": schedule_id,
+            "unattended": unattended,
+            "run_trigger": run_trigger,
         },
     )
     run = await get_run(session, run_id)

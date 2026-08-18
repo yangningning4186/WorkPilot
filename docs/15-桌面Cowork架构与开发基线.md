@@ -56,6 +56,12 @@ Tauri desktop
   都重新解析并拒绝本机、私有、链路本地与保留地址，响应大小和重定向数有上限。
 - Excel 编辑对图表、图片、透视表、图表工作表与切片器 fail closed，公式采用安全函数白名单；
   目录扫描跳过依赖、隐藏目录与备份目录，并受遍历条目上限约束。
+- `cowork_schedules` 持久化单次和五段 cron 计划。worker 启动时对错过的计划最多补跑一次，
+  周期计划直接推进到当前时间之后的下一个触发点；同一会话存在 queued/executing/
+  waiting_human run 时跳过本轮，且 DB 已创建、Redis 首次入队失败的窗口由 tick 补偿。
+- 计划创建的 run 标记为 `unattended`。它们发出的提问、目录/能力申请和 Shell 审批仍复用
+  原有 Inbox 与 resume token，只增加跨会话聚合视图；无人值守不授予 standing approval，
+  不改变 capability 与副作用工具的执行闸门。
 
 对应 API：
 
@@ -69,6 +75,10 @@ Tauri desktop
 | `POST /api/v1/runs/cowork` | 初始化 checkpoint 并把动态工具任务投入 worker |
 | `POST /api/v1/runs/{id}/steering` | 在当前工具批次后的安全边界注入新用户指令 |
 | `POST /api/v1/runs/{id}/interactions/{token}/respond` | 回答问题或处理目录、能力、命令审批 |
+| `GET/POST /api/v1/automations` | 列出或创建 Cowork 自动化计划 |
+| `PATCH/DELETE /api/v1/automations/{id}` | 暂停、启用、修改或删除计划 |
+| `POST /api/v1/automations/{id}/run` | 在重叠保护下立即运行计划 |
+| `GET /api/v1/automations/inbox/items` | 聚合无人值守 run 等待处理的请求 |
 
 ## 3. 运行时落地顺序
 
@@ -110,7 +120,19 @@ Cowork Word/Excel 执行器入口直接调用 capability 引擎，不依赖 Redi
 - Artifacts：预览、打开、定位和恢复生成/修改的文件。
 - Access：展示每个 root 和 capability，支持升级、降级和撤销。
 
-## 4. 多 Agent 进入条件
+## 4. Scheduler 与 Unattended Inbox（首版已完成）
+
+Scheduler 不依赖前端页面存活。Arq worker 周期扫描 `next_run_at`，用
+`FOR UPDATE SKIP LOCKED` 抢占到期计划；每次触发创建全新的 Cowork run 和 checkpoint，
+不会复用上一轮模型历史。单次计划触发或因重叠跳过后自动停用；周期计划不会逐个重放离线
+期间所有时间点，而是只补一次并计算当前时间之后的下一轮。
+
+Unattended Inbox 是人工决策的聚合读模型，不是更高权限的执行模式。运行遇到原有 HITL
+边界时仍写入同一条 `cowork_inbox_items` 记录并进入 `waiting_human`；全局收件箱按 owner
+身份过滤，答复仍通过既有 first-responder-wins 的 resume token 原子更新。目录失效、能力过期、
+非 allowlist Shell 或外部副作用不会因为任务来自 Scheduler 而自动放行。
+
+## 5. 多 Agent 进入条件
 
 当前架构能承载后续多 Agent，但第一阶段不并发委派。只有下列条件均满足后才增加
 supervisor/explore/office specialist：
@@ -121,7 +143,7 @@ supervisor/explore/office specialist：
 4. 同文件并发写有显式串行或合并协议。
 5. 对照实验能证明多 Agent 相比单 Agent 在成功率或耗时上有净收益。
 
-## 5. 近期验收标准
+## 6. 近期验收标准
 
 - 未授权目录、只读目录写入、错误 Office 后缀、符号链接逃逸全部 fail closed。
 - 撤销 root 后派生 capability 立即失效；权限有效时不出现逐操作确认。
@@ -130,3 +152,5 @@ supervisor/explore/office specialist：
 - 所有文件写操作继续具备备份、原子替换、格式验证、冲突检测与可审计事件。
 - 压缩前后 canonical 消息逐字节不变；摘要失败、provider 超窗和错误窗口配置都不会形成
   无界重试，已完成的写入仍保留。
+- 到期计划并发扫描只派发一次；离线期间的 cron 不形成补跑风暴；同一会话不会重叠执行，
+  等待人工决定的任务可从全局 Inbox 安全恢复且不会获得额外 capability。

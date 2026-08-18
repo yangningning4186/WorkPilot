@@ -14,7 +14,12 @@ from app.mcp.client import McpClientManager
 from app.mcp.config import load_mcp_configuration
 from app.worker.answer_run import answer_run
 from app.worker.cowork_run import cowork_run
-from app.worker.maintenance import cost_sweeper_tick, memory_dispatch_tick, watchdog_tick
+from app.worker.maintenance import (
+    cost_sweeper_tick,
+    memory_dispatch_tick,
+    scheduler_dispatch_tick,
+    watchdog_tick,
+)
 from app.worker.memory_run import memory_extraction_job
 from app.worker.review_run import review_run
 
@@ -47,6 +52,7 @@ class WorkerSettings:
         # watchdog 频率要明显高于租约时长, 否则失联的 run 会长时间停在"正在回答"。
         cron(watchdog_tick, second={0, 20, 40}, run_at_startup=True),
         cron(memory_dispatch_tick, second={10, 30, 50}, run_at_startup=True),
+        cron(scheduler_dispatch_tick, second={5, 20, 35, 50}, run_at_startup=True),
         cron(cost_sweeper_tick, minute=set(range(0, 60, 5))),
     ]
     redis_settings = redis_settings()
