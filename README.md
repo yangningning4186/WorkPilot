@@ -53,13 +53,13 @@ badcase 来自我每天的真实使用，不是编出来的测试用例。
 | 办公编辑 | owner 会话限时授权 · Markdown / python-docx / openpyxl 格式执行器 · 冲突保护 · 恢复副本 · 原子写入 |
 | Cowork 桌面 | Tauri 2 · 随机 localhost sidecar · 会话 root/network capability · 文件/搜索/网页/PDF/Office/Artifact · 策展式 MCP client · 渐进加载 Skill · Scheduler / Unattended Inbox |
 | 知识 | MinerU / PyMuPDF · bge-m3 dense 向量 · PostgreSQL + pgvector · PG 词法检索 · bge-reranker-v2-m3 |
-| 模型 | 统一网关 · `light/main/heavy/external` 路由与 fallback · 置信度升档 · Redis 精确缓存 |
+| 模型 | 统一网关 · OpenAI / Anthropic / Gemini / DeepSeek / Qwen / Ollama · 会话级模型切换 · `light/main/heavy/external` fallback · 本机加密密钥 |
 | 评测 | span-level 标注 · 规则轨 + Judge · paired bootstrap · weighted Kappa · 两层 CI 门禁 |
 | 基础设施 | PostgreSQL + pgvector · Redis · OrbStack / Docker Compose |
 
 ### 长期蓝图（尚未实现）
 
-多 Agent 委派、个人知识图谱、每日 digest、语义缓存、
+可写多 Agent 委派、个人知识图谱、每日 digest、语义缓存、
 sparse 第三路检索、Obsidian/Zotero/web_clip connector、Langfuse/OpenTelemetry、MinIO 和公网部署
 都仍在 [MVP Backlog](docs/11-MVP边界.md#5-backlog按解锁顺序) 或最终交付清单中。
 
@@ -80,12 +80,13 @@ npm run dev:desktop
 这些操作在目录授权后不再逐条弹确认。
 读取公开网页/远程 PDF 需要在当前 Cowork 会话内额外授予 `network.read`。
 
-MCP client 配置示例见 [`config/mcp.yaml.example`](config/mcp.yaml.example)。复制为
-`config/mcp.yaml` 后，先通过 `POST /api/v1/integrations/mcp/{server}/probe` 审阅并固定
-远端工具目录哈希；未逐项启用、目录发生漂移或声明有副作用的工具都不会进入 Cowork。
+MCP 服务可以直接在桌面端 MCP 页面新增、探测、固定目录、绑定 OAuth 连接器并逐工具配置；
+配置示例仍见 [`config/mcp.yaml.example`](config/mcp.yaml.example)。未逐项启用或目录发生漂移
+的工具不会进入 Cowork；副作用工具只有声明为逐次审批后才可启用，并走统一调用租约。
 当前没有逐字段内容污点追踪，因此 `data_scope: deny` 同样保持不可见，必须由管理员显式
 设为 `corpus_allowed` 才允许数据出站。
-本地 Skill 放在 `skills/<name>/SKILL.md`，格式与边界见 [`skills/README.md`](skills/README.md)。
+本地 Skill 放在 `skills/<name>/SKILL.md`，桌面端支持安装、更新、启停、删除和 ZIP 导入，
+格式与边界见 [`skills/README.md`](skills/README.md)。
 
 顶部“自动化”入口可以为已有 Cowork 会话创建单次或五段 cron 计划。计划在本机 worker
 中派发；应用重启后对错过的时间点最多补跑一次，同一会话已有运行中或等待人工处理的任务时
@@ -112,6 +113,7 @@ MCP client 配置示例见 [`config/mcp.yaml.example`](config/mcp.yaml.example)�
 | [12 安全与部署](docs/12-安全与部署.md) | 威胁模型、鉴权限流费用熔断、SSRF、上线检查清单 |
 | [13 办公工作台与本地文档编辑](docs/13-办公工作台与文档编辑.md) | 限时写权限、Markdown/Word/Excel 格式执行器、备份与冲突保护 |
 | [15 桌面 Cowork 架构与开发基线](docs/15-桌面Cowork架构与开发基线.md) | 会话授权、通用工具循环、网页/PDF、Artifact 与桌面安全基线 |
+| [16 OpenWorker P0/P1 对齐](docs/16-OpenWorker-P0-P1对齐.md) | Provider、连接器、MCP、Skills、浏览器、交付物、自动化与只读子 Agent 的实现矩阵 |
 | [ADR](docs/adr/) | 架构决策记录 |
 | [实验台账](docs/experiments/) | 每次优化的"改了什么 → 指标怎么变" |
 

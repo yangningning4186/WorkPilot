@@ -5,7 +5,13 @@ import pytest
 
 from app.core.config import Settings
 from app.services import cowork_web
-from app.services.cowork_web import CoworkWebError, _normalized_url, _pinned_request, fetch_url
+from app.services.cowork_web import (
+    CoworkWebError,
+    _normalized_url,
+    _pinned_request,
+    fetch_url,
+    search_web,
+)
 
 
 def test_web_url_validation_rejects_credentials_localhost_and_non_http() -> None:
@@ -58,6 +64,38 @@ async def test_fetch_url_extracts_readable_html_and_revalidates_redirects(
     assert result.title == "Example Report"
     assert "Heading" in result.content and "Useful text" in result.content
     assert "hidden" not in result.content and "ignore" not in result.content
+
+
+async def test_web_search_extracts_and_unwraps_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def public_target(url: str) -> tuple[str, ...]:
+        del url
+        return ("93.184.216.34",)
+
+    monkeypatch.setattr(cowork_web, "_assert_public_target", public_target)
+    html = (
+        '<a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Freport">Report</a>'
+        '<a href="https://second.example/docs">Documentation</a>'
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, headers={"content-type": "text/html"}, text=html
+            )
+        )
+    ) as client:
+        results = await search_web(
+            "example report",
+            max_results=5,
+            settings=Settings(),
+            client=client,
+        )
+
+    assert [(item.title, item.url) for item in results] == [
+        ("Report", "https://example.com/report"),
+        ("Documentation", "https://second.example/docs"),
+    ]
 
 
 async def test_fetch_url_rejects_oversized_and_unsupported_content(

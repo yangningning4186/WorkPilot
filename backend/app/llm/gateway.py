@@ -930,3 +930,49 @@ def build_model_gateway(
         default_context_window_tokens=settings.tier_main_context_window_tokens,
         context_safety_tokens=settings.llm_context_safety_tokens,
     )
+
+
+def build_custom_model_gateway(
+    settings: Settings,
+    *,
+    chat_provider: ModelProvider,
+    context_window_tokens: int,
+    audit_sink: AuditSink | None = None,
+    budget_guard: BudgetGuard | None = None,
+    run_id: UUID | None = None,
+    completion_cache: CompletionCache | None = None,
+) -> ModelGateway:
+    """为会话显式选择的 Provider 构造网关。
+
+    只替换 chat provider；资料库 embedding 身份继续使用部署级配置，避免用户切换
+    对话模型后把同一资料库写进另一个向量空间。
+    """
+
+    embedding_provider = OpenAICompatibleProvider(
+        base_url=settings.embedding_base_url or settings.tier_main_base_url,
+        api_key=settings.cluster_api_key,
+        chat_model=settings.tier_main_model,
+        embedding_model=settings.embedding_model,
+        timeout_s=settings.model_timeout_s,
+        trust_env=settings.model_trust_env,
+    )
+    if completion_cache is None and settings.llm_cache_enabled:
+        from app.core.redis import redis_client
+        from app.llm.cache import RedisCompletionCache
+
+        completion_cache = RedisCompletionCache(redis_client)
+    return ModelGateway(
+        chat_provider,
+        embedding_dimensions=settings.embedding_dim,
+        embedding_revision=settings.embedding_revision,
+        embedding_provider=embedding_provider,
+        audit_sink=audit_sink,
+        budget_guard=budget_guard,
+        pricing=gateway_pricing_from_settings(settings),
+        chars_per_token=settings.cost_estimate_chars_per_token,
+        run_id=run_id,
+        completion_cache=completion_cache,
+        cache_ttl_s=settings.llm_cache_ttl_s,
+        default_context_window_tokens=context_window_tokens,
+        context_safety_tokens=settings.llm_context_safety_tokens,
+    )

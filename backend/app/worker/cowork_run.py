@@ -11,16 +11,22 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.budget import BudgetedGateway, BudgetMeter
+from app.agent.cowork_automation_tools import register_scheduler_tools
+from app.agent.cowork_browser_tools import register_browser_tools
+from app.agent.cowork_connector_tools import register_connector_tools
 from app.agent.cowork_extensions import register_mcp_tools, register_skill_tools
 from app.agent.cowork_runtime import run_cowork_graph
+from app.agent.cowork_subagent import register_readonly_subagent
 from app.agent.cowork_tools import CoworkToolRegistry, build_default_cowork_registry
 from app.agent.state import BudgetState
 from app.core.config import Settings, get_settings
 from app.core.run_bus import RunBus
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import ModelGateway, build_model_gateway
+from app.llm.gateway import ModelGateway
 from app.mcp.client import McpClientManager
-from app.services.model_budget import build_cost_guard
+from app.mcp.config import load_mcp_configuration
+from app.mcp.credentials import hydrate_mcp_oauth_credentials
+from app.security.secret_store import LocalSecretStore
+from app.services.provider_profiles import build_conversation_gateway
 from app.services.runs import (
     append_events,
     append_message,
@@ -117,13 +123,16 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
     )
     raw_gateway: ModelGateway | None = ctx.get("cowork_gateway")
     owns_gateway = raw_gateway is None
+    run_mcp_manager: McpClientManager | None = None
+    owns_mcp_manager = False
     try:
         async with session_factory() as session:
             if raw_gateway is None:
-                raw_gateway = build_model_gateway(
-                    settings,
-                    audit_sink=SqlLlmCallAudit(session),
-                    budget_guard=build_cost_guard(settings, session_factory),
+                raw_gateway = await build_conversation_gateway(
+                    session,
+                    conversation_id=run.conversation_id,
+                    settings=settings,
+                    session_factory=session_factory,
                     run_id=run_id,
                 )
             budget: BudgetState = {
@@ -141,8 +150,25 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                 registry = build_default_cowork_registry()
                 register_skill_tools(registry, settings)
                 manager = ctx.get("mcp_manager")
-                if isinstance(manager, McpClientManager):
-                    await register_mcp_tools(registry, manager)
+                if not isinstance(manager, McpClientManager):
+                    configuration = await hydrate_mcp_oauth_credentials(
+                        session,
+                        load_mcp_configuration(settings.cowork_mcp_config_path),
+                        LocalSecretStore(settings.secret_store_key_path),
+                    )
+                    manager = McpClientManager(
+                        configuration,
+                        connect_timeout_s=settings.cowork_mcp_connect_timeout_s,
+                        call_timeout_s=settings.cowork_mcp_call_timeout_s,
+                        result_max_chars=settings.cowork_mcp_result_max_chars,
+                    )
+                    run_mcp_manager = manager
+                    owns_mcp_manager = True
+                await register_mcp_tools(registry, manager)
+                register_browser_tools(registry)
+                register_connector_tools(registry)
+                register_scheduler_tools(registry)
+                register_readonly_subagent(registry)
             else:
                 registry = configured_registry
             assert isinstance(registry, CoworkToolRegistry)
@@ -222,6 +248,8 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
             error=str(error),
         )
     finally:
+        if owns_mcp_manager and run_mcp_manager is not None:
+            await run_mcp_manager.aclose()
         if owns_gateway and raw_gateway is not None:
             await raw_gateway.aclose()
         heartbeat.cancel()

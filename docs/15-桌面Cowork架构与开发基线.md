@@ -1,7 +1,7 @@
 # 15 · 桌面 Cowork 架构与开发基线
 
-> 状态：后端 Cowork 工具循环、会话能力授权和 Word/Excel 执行链已实现。本文是从当前
-> Web/RAG 产品演进到 OpenWorker 类本地 Cowork 的开发基线；Tauri 安装包仍未完成。
+> 状态：Cowork 工具循环、会话能力授权、桌面壳、Office、Provider/连接器、MCP/Skill、
+> Scheduler/Inbox 与隔离只读子 Agent 已实现。本文记录 OpenWorker 类本地 Cowork 的开发基线。
 
 ## 1. 目标形态
 
@@ -41,6 +41,15 @@ Tauri desktop
 - Tool registry 已登记通用文件列举/读写/搜索、本地 PDF、公开网页/远程 PDF、
   Artifact 生成、Office 读写、运行中交互与受控 `run_shell`，并为每个工具声明
   capability、risk、effect 和 parallel-safe 属性。
+- 工具目录采用“核心工具 + 目标相关工具 + `search_tool_catalog` 动态激活”，避免 Provider、
+  MCP 和连接器增长后把完整 schema 一次性塞满上下文；被激活工具仍走同一注册表与授权入口。
+- Provider profile 支持 OpenAI、Anthropic、Gemini、DeepSeek、Qwen、Ollama 和兼容端点；
+  API key 由数据库外 0600 主密钥加密，会话可独立选择 Provider 与模型覆盖。
+- GitHub、飞书、企业微信、微信公众号和腾讯文档连接器支持 OAuth/令牌生命周期；模型只能
+  调用固定官方 API 主机且看不到 token，外部写动作逐次审批。个人微信非官方自动化不支持。
+- MCP 管理支持服务 CRUD、OAuth 绑定、目录探测/固定和逐工具策略；Skill 支持人工完整生命周期。
+- `browser_open/click/back/find` 提供无脚本、无登录态的受控只读浏览会话，每次导航重新执行
+  DNS 钉扎与 SSRF 校验；DOCX/XLSX/PDF 原生交付物可在 Artifacts 区预览和下载。
 - `run_shell` 需要独立 `shell.execute` grant。无 shell 操作符且 argv 精确前缀命中部署
   allowlist 的命令可直接执行；其余命令逐次进入 Inbox 审批。执行不使用 shell 字符串拼接
   （审批过的操作符命令除外），只继承最小环境，输出有上限，cancel/timeout 会终止进程组。
@@ -132,10 +141,11 @@ Unattended Inbox 是人工决策的聚合读模型，不是更高权限的执行
 身份过滤，答复仍通过既有 first-responder-wins 的 resume token 原子更新。目录失效、能力过期、
 非 allowlist Shell 或外部副作用不会因为任务来自 Scheduler 而自动放行。
 
-## 5. 多 Agent 进入条件
+## 5. 只读子 Agent 与后续多 Agent 条件
 
-当前架构能承载后续多 Agent，但第一阶段不并发委派。只有下列条件均满足后才增加
-supervisor/explore/office specialist：
+当前已提供 `explore`：独立消息上下文、共享当前 run 预算，最多四轮/八次调用；它只拿到
+`effect=none + risk=read` 且非 `external.action` 的工具，不能执行 Shell、写文件或请求审批。
+可写 supervisor/office specialist 只有下列条件均满足后才增加：
 
 1. 单 Agent 办公任务集的成功率、写入冲突率和权限拒绝率有稳定基线。
 2. 子任务可携带最小化 root/capability，而不是复制主 Agent 全部权限。

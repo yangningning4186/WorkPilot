@@ -550,7 +550,8 @@ async def resume_cowork_after_human(
         raise ValueError("resume token 与当前 Cowork checkpoint 不匹配")
 
     accepted = item.status in {"answered", "approved"}
-    if item.kind == "shell_approval" and accepted:
+    is_action_approval = item.kind in {"shell_approval", "external_approval"}
+    if is_action_approval and accepted:
         # 审批不是 shell 的工具结果；恢复后仍要执行原 pending call。call_id 进入
         # checkpoint 的一次性集合，防止同一条命令再次弹审批。
         state["approved_calls"].append(item.tool_call_id)
@@ -574,14 +575,14 @@ async def resume_cowork_after_human(
                 ),
             }
         )
-    if item.kind == "shell_approval" and not accepted:
+    if is_action_approval and not accepted:
         state["pending_calls"] = []
         state["iteration"] += 1
     state["interrupt"] = None
     state["status"] = "executing"
     step_status = (
         "pending"
-        if item.kind == "shell_approval" and accepted
+        if is_action_approval and accepted
         else "done"
         if accepted
         else "skipped"
@@ -635,8 +636,8 @@ async def resume_cowork_after_human(
                     "tool": interrupt.get("request", {}).get("tool", None),
                     "status": step_status,
                     "summary": (
-                        "命令已批准，等待执行"
-                        if item.kind == "shell_approval" and accepted
+                        "外部动作已批准，等待执行"
+                        if is_action_approval and accepted
                         else "用户已回复"
                         if accepted
                         else "用户未批准"
@@ -662,6 +663,7 @@ class _CoworkExecution:
         bus: RunBus | None,
         cancel_event: asyncio.Event | None,
         session_factory: async_sessionmaker[AsyncSession] | None,
+        initial_query: str,
     ) -> None:
         self.session = session
         self.registry = registry
@@ -673,9 +675,10 @@ class _CoworkExecution:
         self.bus = bus
         self.cancel_event = cancel_event
         self.session_factory = session_factory
+        initial_tools = registry.tool_definitions_for(initial_query)
         self.compactor = CoworkOutboundCompactor(
             gateway,
-            tools=registry.tool_definitions(),
+            tools=initial_tools,
             system_prompt=_system_prompt(registry.system_instructions()),
             enabled=settings.cowork_compaction_enabled,
             trigger_ratio=settings.cowork_compaction_trigger_ratio,
@@ -825,6 +828,16 @@ class _CoworkExecution:
                     )
                 ],
             )
+        tool_query = "\n".join(
+            [working["goal"]]
+            + [
+                str(item.get("content", ""))
+                for item in working["messages"][-6:]
+                if item.get("role") == "user"
+            ]
+        )
+        active_tools = self.registry.tool_definitions_for(tool_query)
+        self.compactor.tools = active_tools
         try:
             prepared = await self.compactor.prepare(
                 cast("list[dict[str, Any]]", working["messages"]),
@@ -842,7 +855,7 @@ class _CoworkExecution:
                     prepared.messages,
                     tools=[
                         definition
-                        for definition in self.registry.tool_definitions()
+                        for definition in active_tools
                         if not (_office_flow_active(working) and definition.name == "run_shell")
                     ],
                     parallel_tool_calls=True,
@@ -1103,6 +1116,67 @@ class _CoworkExecution:
                     decision.command.has_operators,
                 )
 
+        approval_calls = [
+            call
+            for call in completion.tool_calls
+            if self.registry.requires_approval(call.name)
+            and call.id not in updated["approved_calls"]
+        ]
+        if approval_calls:
+            if len(completion.tool_calls) != 1:
+                for call in completion.tool_calls:
+                    updated["messages"].append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": json.dumps(
+                                {
+                                    "ok": False,
+                                    "error": "需要审批的外部动作必须单独调用；本批调用均未执行",
+                                },
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                        }
+                    )
+                updated["iteration"] += len(completion.tool_calls)
+                return await self._checkpoint(
+                    updated,
+                    events=[
+                        (
+                            "tool.error",
+                            {
+                                "tool": approval_calls[0].name,
+                                "error": "需要审批的外部动作必须单独调用",
+                            },
+                        )
+                    ],
+                )
+            call = approval_calls[0]
+            try:
+                raw_arguments = json.loads(call.arguments)
+                if not isinstance(raw_arguments, dict):
+                    raise ValueError("工具 arguments 必须是 JSON object")
+                request = self.registry.parse_arguments(call.name, raw_arguments)
+            except (CoworkToolError, ValueError) as error:
+                updated["messages"].append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": json.dumps(
+                            {"ok": False, "error": str(error)},
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    }
+                )
+                updated["iteration"] += 1
+                return await self._checkpoint(
+                    updated,
+                    events=[("tool.error", {"tool": call.name, "error": str(error)})],
+                )
+            return await self._pause_for_external_approval(updated, call, request)
+
         run_id = UUID(updated["run_id"])
         pending_calls: list[PendingToolCall] = []
         events: list[tuple[str, dict[str, Any]]] = []
@@ -1255,6 +1329,101 @@ class _CoworkExecution:
                     {
                         "inbox_id": str(inbox.id),
                         "kind": "shell_approval",
+                        "resume_token": str(inbox.resume_token),
+                        "payload": approval_request,
+                    },
+                ),
+            ],
+        )
+
+    async def _pause_for_external_approval(
+        self,
+        state: CoworkState,
+        call: ToolCall,
+        arguments: dict[str, Any],
+    ) -> CoworkState:
+        updated = _json_state(state)
+        run_id = UUID(updated["run_id"])
+        step_idx = updated["iteration"]
+        step_id = self._step_id(run_id, call.id)
+        pending: PendingToolCall = {
+            "call_id": call.id,
+            "name": call.name,
+            "arguments": call.arguments,
+            "step_idx": step_idx,
+            "step_id": str(step_id),
+        }
+        await self.session.execute(
+            text(
+                """
+                INSERT INTO agent_plan_steps
+                    (id, run_id, step_idx, description, tool, depends_on, status)
+                VALUES (:id, :run_id, :idx, :description, :tool, '{}', 'running')
+                ON CONFLICT (run_id, step_idx) DO NOTHING
+                """
+            ),
+            {
+                "id": step_id,
+                "run_id": run_id,
+                "idx": step_idx,
+                "description": f"等待用户批准外部动作 {call.name}",
+                "tool": call.name,
+            },
+        )
+        approval_request = {
+            "tool": call.name,
+            "arguments": arguments,
+            "warning": "该工具会修改外部系统；批准仅对本次 tool call 有效。",
+        }
+        inbox = await create_inbox_item(
+            self.session,
+            run_id=run_id,
+            conversation_id=UUID(updated["conversation_id"]),
+            kind="external_approval",
+            tool_call_id=call.id,
+            plan_step_id=step_id,
+            request=approval_request,
+        )
+        updated["pending_calls"] = [pending]
+        updated["status"] = "waiting_human"
+        updated["interrupt"] = {
+            "inbox_id": str(inbox.id),
+            "kind": "external_approval",
+            "resume_token": str(inbox.resume_token),
+            "tool_call_id": call.id,
+            "step_id": str(step_id),
+            "step_idx": step_idx,
+            "request": approval_request,
+        }
+        await self.session.execute(
+            text(
+                """
+                UPDATE agent_runs
+                SET status = 'waiting_human', worker_id = NULL, lease_until = NULL,
+                    heartbeat_at = NULL, updated_at = now()
+                WHERE id = :run_id AND worker_id = :worker_id AND status = 'executing'
+                """
+            ),
+            {"run_id": run_id, "worker_id": self.worker_id},
+        )
+        return await self._checkpoint(
+            updated,
+            events=[
+                (
+                    "step.update",
+                    {
+                        "step_id": str(step_id),
+                        "step_idx": step_idx,
+                        "tool": call.name,
+                        "status": "running",
+                        "summary": "等待外部动作审批",
+                    },
+                ),
+                (
+                    "interrupt",
+                    {
+                        "inbox_id": str(inbox.id),
+                        "kind": "external_approval",
                         "resume_token": str(inbox.resume_token),
                         "payload": approval_request,
                     },
@@ -1767,6 +1936,7 @@ async def run_cowork_graph(
         bus=bus,
         cancel_event=cancel_event,
         session_factory=session_factory,
+        initial_query=state["goal"],
     )
     builder = StateGraph(CoworkState)
     builder.add_node("decide", execution.decide)

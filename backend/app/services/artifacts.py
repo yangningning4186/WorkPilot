@@ -81,6 +81,42 @@ async def list_artifacts(
     return [ArtifactRecord(**row) for row in rows]
 
 
+async def resolve_artifact_file(
+    session: AsyncSession, *, artifact_id: UUID
+) -> tuple[ArtifactRecord, Path] | None:
+    row = (
+        (
+            await session.execute(
+                text(
+                    f"""
+                    SELECT {_COLUMNS}, roots.canonical_path AS root_path
+                    FROM artifacts
+                    JOIN conversations ON conversations.id = artifacts.conversation_id
+                    JOIN session_roots AS roots ON roots.id = artifacts.session_root_id
+                    WHERE artifacts.id = :artifact_id
+                      AND conversations.scope = 'local_owner'
+                      AND conversations.demo_session_id IS NULL
+                      AND roots.enabled = true
+                    """
+                ),
+                {"artifact_id": artifact_id},
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        return None
+    artifact = ArtifactRecord(**{key.strip(): row[key.strip()] for key in _COLUMNS.split(",")})
+    try:
+        path = resolve_target_within_root(Path(row["root_path"]), Path(artifact.uri))
+    except CapabilityDeniedError as error:
+        raise ArtifactRegistrationError("artifact 文件已离开授权目录") from error
+    if path.is_symlink() or not path.is_file():
+        raise ArtifactRegistrationError("artifact 文件不存在或不是普通文件")
+    return artifact, path
+
+
 async def register_artifact(
     session: AsyncSession,
     *,

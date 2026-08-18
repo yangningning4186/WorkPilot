@@ -66,7 +66,13 @@ class UnattendedInboxItemResponse(BaseModel):
     schedule_title: str | None
     run_goal: str
     run_status: str
-    kind: Literal["ask_user", "directory_request", "capability_request", "shell_approval"]
+    kind: Literal[
+        "ask_user",
+        "directory_request",
+        "capability_request",
+        "shell_approval",
+        "external_approval",
+    ]
     status: Literal["pending", "answered", "approved", "rejected", "cancelled"]
     resume_token: UUID
     request: dict[str, Any]

@@ -55,7 +55,9 @@ interface WorkdeskNavigationProps {
 export function WorkdeskNavigation({ newTaskDisabled = false, onNewTask }: WorkdeskNavigationProps) {
   const pathname = usePathname();
   const items: Array<{ href: string; icon: WorkdeskIconName; label: string }> = [
-    { href: "/library", icon: "agent", label: "资料与连接器" },
+    { href: "/library", icon: "file", label: "资料库" },
+    { href: "/connectors", icon: "agent", label: "连接器与 OAuth" },
+    { href: "/providers", icon: "spark", label: "模型与密钥" },
     { href: "/automations", icon: "automation", label: "自动化与收件箱" },
     { href: "/skills", icon: "skill", label: "Skills" },
     { href: "/mcp", icon: "mcp", label: "MCP" },

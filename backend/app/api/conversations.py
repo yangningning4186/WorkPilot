@@ -12,6 +12,7 @@ from app.schemas.conversations import (
     ConversationMessageListResponse,
     ConversationMessageResponse,
     ConversationResponse,
+    ConversationRuntimeUpdate,
 )
 from app.services.conversations import (
     ConversationBusyError,
@@ -19,6 +20,7 @@ from app.services.conversations import (
     get_conversation,
     list_conversation_messages,
     list_conversations,
+    update_conversation_runtime,
 )
 from app.services.request_identity import RequestIdentity
 from app.services.runs import ensure_conversation
@@ -72,6 +74,33 @@ async def post_conversation(
     if created is None:  # pragma: no cover - 同一事务内必然可见
         raise HTTPException(status_code=500, detail="会话创建失败")
     return _conversation_response(created)
+
+
+@router.put("/{conversation_id}/runtime", response_model=ConversationResponse)
+async def put_conversation_runtime(
+    conversation_id: UUID,
+    request: ConversationRuntimeUpdate,
+    session: DbSession,
+    identity: Identity,
+) -> ConversationResponse:
+    try:
+        updated = await update_conversation_runtime(
+            session,
+            conversation_id=conversation_id,
+            scope=identity.scope,
+            demo_session_id=identity.demo_session_id,
+            provider_profile_id=request.provider_profile_id,
+            model_override=request.model_override,
+            unattended=request.unattended,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if updated is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    await session.commit()
+    return _conversation_response(updated)
 
 
 @router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)

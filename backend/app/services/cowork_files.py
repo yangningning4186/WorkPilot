@@ -386,7 +386,7 @@ def _write_text_file_sync(
         if actual_sha256 != baseline_sha256:
             raise CoworkFileError("文件已在读取后发生变化，请重新读取后再写入")
         previous_mode = stat_module.S_IMODE(path.stat().st_mode)
-        backup = _create_backup(path, backup_versions)
+        backup = create_file_backup(path, backup_versions)
     elif baseline_sha256 is not None:
         raise CoworkFileError("目标文件尚不存在，baseline_sha256 必须省略")
 
@@ -428,7 +428,7 @@ def _write_text_file_sync(
     )
 
 
-def _create_backup(path: Path, versions: int) -> Path:
+def create_file_backup(path: Path, versions: int) -> Path:
     backup_root = path.parent / ".workpilot-backups"
     if backup_root.exists() and backup_root.is_symlink():
         raise CoworkFileError("备份目录不能是符号链接")

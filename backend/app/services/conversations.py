@@ -18,6 +18,11 @@ class ConversationRecord:
     message_count: int
     latest_message: str | None
     last_message_at: datetime | None
+    provider_profile_id: UUID | None
+    provider_name: str | None
+    provider: str | None
+    selected_model: str | None
+    unattended: bool
     created_at: datetime
     updated_at: datetime
 
@@ -64,14 +69,18 @@ async def list_conversations(
                 text(
                     f"""
                     SELECT c.id, c.title, c.created_at, c.updated_at,
+                           c.provider_profile_id, p.name AS provider_name,
+                           p.provider, COALESCE(c.model_override, p.default_model) AS selected_model,
+                           c.unattended,
                            COUNT(m.id) FILTER (WHERE m.role IN ('user', 'assistant')) AS message_count,
                            (ARRAY_AGG(NULLIF(left(m.content, 160), '') ORDER BY m.seq DESC)
                                FILTER (WHERE m.content <> ''))[1] AS latest_message,
                            MAX(m.created_at) AS last_message_at
                     FROM conversations c
                     LEFT JOIN messages m ON m.conversation_id = c.id
+                    LEFT JOIN provider_profiles p ON p.id = c.provider_profile_id
                     WHERE {_identity_clause()}
-                    GROUP BY c.id
+                    GROUP BY c.id, p.id
                     ORDER BY COALESCE(MAX(m.created_at), c.updated_at) DESC, c.id DESC
                     LIMIT :limit
                     """
@@ -102,14 +111,18 @@ async def get_conversation(
                 text(
                     f"""
                     SELECT c.id, c.title, c.created_at, c.updated_at,
+                           c.provider_profile_id, p.name AS provider_name,
+                           p.provider, COALESCE(c.model_override, p.default_model) AS selected_model,
+                           c.unattended,
                            COUNT(m.id) FILTER (WHERE m.role IN ('user', 'assistant')) AS message_count,
                            (ARRAY_AGG(NULLIF(left(m.content, 160), '') ORDER BY m.seq DESC)
                                FILTER (WHERE m.content <> ''))[1] AS latest_message,
                            MAX(m.created_at) AS last_message_at
                     FROM conversations c
                     LEFT JOIN messages m ON m.conversation_id = c.id
+                    LEFT JOIN provider_profiles p ON p.id = c.provider_profile_id
                     WHERE c.id = :conversation_id AND {_identity_clause()}
-                    GROUP BY c.id
+                    GROUP BY c.id, p.id
                     """
                 ),
                 {
@@ -123,6 +136,61 @@ async def get_conversation(
         .one_or_none()
     )
     return None if row is None else ConversationRecord(**dict(row))
+
+
+async def update_conversation_runtime(
+    session: AsyncSession,
+    *,
+    conversation_id: UUID,
+    scope: str,
+    demo_session_id: UUID | None,
+    provider_profile_id: UUID | None,
+    model_override: str | None,
+    unattended: bool,
+) -> ConversationRecord | None:
+    """更新会话运行时选择；demo 身份不能启用无人值守。"""
+
+    if scope != "local_owner" and unattended:
+        raise ValueError("演示会话不能启用无人值守")
+    if provider_profile_id is not None:
+        exists = (
+            await session.execute(
+                text("SELECT enabled FROM provider_profiles WHERE id = :id"),
+                {"id": provider_profile_id},
+            )
+        ).scalar_one_or_none()
+        if exists is None:
+            raise LookupError("Provider 不存在")
+        if not exists:
+            raise ValueError("Provider 已停用")
+    result = await session.execute(
+        text(
+            f"""
+            UPDATE conversations c
+            SET provider_profile_id = :provider_profile_id,
+                model_override = :model_override,
+                unattended = :unattended
+            WHERE c.id = :conversation_id AND {_identity_clause()}
+            RETURNING c.id
+            """
+        ),
+        {
+            "conversation_id": conversation_id,
+            "scope": scope,
+            "demo_session_id": demo_session_id,
+            "provider_profile_id": provider_profile_id,
+            "model_override": model_override.strip() if model_override else None,
+            "unattended": unattended,
+        },
+    )
+    if result.scalar_one_or_none() is None:
+        return None
+    return await get_conversation(
+        session,
+        conversation_id=conversation_id,
+        scope=scope,
+        demo_session_id=demo_session_id,
+    )
 
 
 async def delete_conversation(

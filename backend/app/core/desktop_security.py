@@ -7,6 +7,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 DESKTOP_LAUNCH_TOKEN_HEADER = "x-workpilot-launch-token"
+_TOKEN_EXEMPT_PATHS = frozenset({"/api/v1/connectors/oauth/callback"})
 
 
 class DesktopLaunchTokenMiddleware:
@@ -24,6 +25,12 @@ class DesktopLaunchTokenMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if not self.enabled or scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # OAuth 提供方回跳不可能携带 webview 内存中的启动令牌。该唯一公开入口只消费
+        # 十分钟、一次性的高熵 state，且不能读写其他对象；其余 localhost API 仍全封闭。
+        if scope.get("path") in _TOKEN_EXEMPT_PATHS:
             await self.app(scope, receive, send)
             return
 

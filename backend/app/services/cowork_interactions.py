@@ -20,7 +20,7 @@ from app.services.cowork_permissions import (
 )
 
 InteractionKind = Literal[
-    "ask_user", "directory_request", "capability_request", "shell_approval"
+    "ask_user", "directory_request", "capability_request", "shell_approval", "external_approval"
 ]
 InteractionStatus = Literal["pending", "answered", "approved", "rejected", "cancelled"]
 

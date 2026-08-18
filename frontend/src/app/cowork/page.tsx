@@ -15,16 +15,20 @@ import {
   fetchConversationMessages,
   fetchConversations,
   fetchCoworkArtifacts,
+  fetchArtifactPreview,
   fetchCoworkGrants,
   fetchCoworkRoots,
+  fetchProviders,
   revokeCoworkRoot,
   respondToCoworkInteraction,
   steerCoworkRun,
+  updateConversationRuntime,
   type ConversationSummary,
   type ConversationMessage,
   type CoworkArtifact,
   type CoworkGrant,
   type CoworkRoot,
+  type ProviderProfile,
 } from "@/lib/api";
 import { isTauriRuntime, pickCoworkDirectory } from "@/lib/desktop";
 import { useCoworkRun } from "@/lib/use-cowork-run";
@@ -114,6 +118,8 @@ export default function CoworkPage() {
   const [interactionAnswer, setInteractionAnswer] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [workMode, setWorkMode] = useState<"office" | "research">("office");
+  const [providers, setProviders] = useState<ProviderProfile[]>([]);
+  const [artifactPreview, setArtifactPreview] = useState<{ title: string; url: string } | null>(null);
   const run = useCoworkRun(runId);
 
   const loadSession = useCallback(async (id: string) => {
@@ -129,12 +135,34 @@ export default function CoworkPage() {
     setMessages(messageResponse.items);
   }, []);
 
+  useEffect(() => () => {
+    if (artifactPreview !== null) URL.revokeObjectURL(artifactPreview.url);
+  }, [artifactPreview]);
+
+  const previewArtifact = useCallback(async (artifact: CoworkArtifact) => {
+    setBusy(true);
+    try {
+      const blob = await fetchArtifactPreview(artifact.id);
+      setArtifactPreview((current) => {
+        if (current !== null) URL.revokeObjectURL(current.url);
+        return { title: artifact.title, url: URL.createObjectURL(blob) };
+      });
+    } catch (reason) {
+      setNotice(readableError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (authState !== "authenticated") return;
     let cancelled = false;
     const load = async () => {
       try {
-        const response = await fetchConversations();
+        const [response, providerResponse] = await Promise.all([
+          fetchConversations(),
+          fetchProviders(),
+        ]);
         if (cancelled) return;
         let items = response.items;
         const query = new URLSearchParams(window.location.search);
@@ -153,6 +181,7 @@ export default function CoworkPage() {
         }
         if (cancelled) return;
         setConversations(items);
+        setProviders(providerResponse.items.filter((item) => item.enabled));
         setConversationId(selected.id);
       } catch (reason) {
         if (!cancelled) setNotice(readableError(reason));
@@ -350,6 +379,48 @@ export default function CoworkPage() {
   const submitComposer = steering ? sendSteering : execute;
   const prompts = workMode === "office" ? OFFICE_PROMPTS : RESEARCH_PROMPTS;
   const activeConversation = conversations.find((item) => item.id === conversationId);
+
+  const selectProvider = useCallback(async (providerId: string) => {
+    if (conversationId === null || running) return;
+    setBusy(true);
+    try {
+      const selected = providers.find((item) => item.id === providerId);
+      const updated = await updateConversationRuntime(conversationId, {
+        provider_profile_id: providerId || null,
+        model_override: selected?.default_model ?? null,
+        unattended: activeConversation?.unattended ?? false,
+      });
+      setConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (reason) {
+      setNotice(readableError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeConversation, conversationId, providers, running]);
+
+  const saveModelOverride = useCallback(async (modelValue: string) => {
+    if (
+      conversationId === null
+      || activeConversation === undefined
+      || activeConversation.provider_profile_id === null
+      || running
+    ) return;
+    const normalized = modelValue.trim();
+    if (!normalized || normalized === activeConversation.selected_model) return;
+    setBusy(true);
+    try {
+      const updated = await updateConversationRuntime(conversationId, {
+        provider_profile_id: activeConversation.provider_profile_id,
+        model_override: normalized,
+        unattended: activeConversation.unattended,
+      });
+      setConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (reason) {
+      setNotice(readableError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeConversation, conversationId, running]);
   const interactionPayload = run.interrupt?.payload ?? {};
   const interactionQuestion =
     typeof interactionPayload.question === "string" ? interactionPayload.question : "Cowork 需要你的答复";
@@ -575,6 +646,14 @@ export default function CoworkPage() {
                                 {interactionPayload.has_operators === true && <small className="risk">命令包含 shell 操作符，不能进入 allowlist，本次必须单独批准。</small>}
                                 <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">拒绝</button><button className="primary danger" disabled={responding} onClick={() => void respondToInteraction({ approved: true })} type="button">批准并运行一次</button></div>
                               </>
+                            ) : run.interrupt.kind === "external_approval" ? (
+                              <>
+                                <h3>允许执行这次外部动作？</h3>
+                                <p>{typeof interactionPayload.warning === "string" ? interactionPayload.warning : "该工具会修改外部系统。"}</p>
+                                <pre className="workdesk-shell-command"><code>{JSON.stringify(interactionPayload.arguments ?? {}, null, 2)}</code></pre>
+                                <small>工具：{typeof interactionPayload.tool === "string" ? interactionPayload.tool : "外部工具"}</small>
+                                <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">拒绝</button><button className="primary danger" disabled={responding} onClick={() => void respondToInteraction({ approved: true })} type="button">批准一次</button></div>
+                              </>
                             ) : (
                               <>
                                 <h3>授予“{CAPABILITY_LABELS[requestedCapability] ?? requestedCapability}”能力？</h3>
@@ -598,7 +677,7 @@ export default function CoworkPage() {
                             {artifacts.slice(0, 4).map((artifact) => {
                               const excel = artifact.mime_type?.includes("spreadsheet") ?? artifact.title.endsWith(".xlsx");
                               const word = artifact.mime_type?.includes("wordprocessingml") ?? artifact.title.endsWith(".docx");
-                              return <article key={artifact.id}><span className={excel ? "excel" : "word"}>{excel ? "X" : word ? "W" : "A"}</span><div><strong>{artifact.title}</strong><small>{artifactNote(artifact)}</small></div><time>{new Date(artifact.updated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></article>;
+                              return <button className="workdesk-artifact-button" key={artifact.id} onClick={() => void previewArtifact(artifact)} type="button"><span className={excel ? "excel" : "word"}>{excel ? "X" : word ? "W" : artifact.mime_type === "application/pdf" ? "P" : "A"}</span><div><strong>{artifact.title}</strong><small>{artifactNote(artifact)}</small></div><time>{new Date(artifact.updated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></button>;
                             })}
                           </section>
                         )}
@@ -626,7 +705,13 @@ export default function CoworkPage() {
               <div className="workdesk-composer-actions">
                 <button aria-label="添加工作空间" disabled={busy || !desktopReady} onClick={() => void addRoot()} type="button"><WorkdeskIcon name="add" /></button>
                 <span>{run.phase === "waiting_human" ? "请先处理对话中的请求" : steering ? "发送后将在安全边界转向" : roots.length === 0 ? "需要先选择工作空间" : "Agent 已就绪"}</span>
-                <button className="workdesk-speed" type="button"><WorkdeskIcon name="spark" />标准</button>
+                <label className="workdesk-model-select" title="按会话切换 Provider">
+                  <WorkdeskIcon name="spark" />
+                  <select disabled={busy || running} onChange={(event) => void selectProvider(event.target.value)} value={activeConversation?.provider_profile_id ?? ""}>
+                    <option value="">系统默认</option>
+                    {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                  </select>
+                </label>
                 <button aria-label={steering ? "追加运行指令" : "开始执行任务"} className="workdesk-send" disabled={busy || run.phase === "waiting_human" || roots.length === 0 || goal.trim() === ""} onClick={() => void submitComposer()} type="button"><WorkdeskIcon name="send" /></button>
               </div>
               <footer>
@@ -640,9 +725,13 @@ export default function CoworkPage() {
                     ))}
                   </div>
                 </details>
+                {activeConversation?.provider_profile_id !== null && activeConversation?.provider_profile_id !== undefined && (
+                  <label className="workdesk-model-override"><span>模型</span><input defaultValue={activeConversation.selected_model ?? ""} disabled={busy || running} key={`${activeConversation.id}:${activeConversation.selected_model ?? ""}`} onBlur={(event) => void saveModelOverride(event.target.value)} /></label>
+                )}
                 <span>{steering ? "⌘ Enter 追加指令" : "⌘ Enter 发送"}</span>
               </footer>
             </section>
+            {artifactPreview !== null && <div className="workdesk-preview-backdrop"><section className="workdesk-preview-dialog"><header><strong>{artifactPreview.title}</strong><button onClick={() => setArtifactPreview(null)} type="button">关闭</button></header><iframe src={artifactPreview.url} title={`${artifactPreview.title} 预览`} /></section></div>}
           </div>
         )}
       </section>

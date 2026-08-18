@@ -23,6 +23,11 @@ class ConversationResponse(BaseModel):
     message_count: int
     latest_message: str | None
     last_message_at: datetime | None
+    provider_profile_id: UUID | None
+    provider_name: str | None
+    provider: str | None
+    selected_model: str | None
+    unattended: bool
     created_at: datetime
     updated_at: datetime
 
@@ -30,6 +35,20 @@ class ConversationResponse(BaseModel):
 class ConversationListResponse(BaseModel):
     items: list[ConversationResponse]
     total: int
+
+
+class ConversationRuntimeUpdate(BaseModel):
+    provider_profile_id: UUID | None = None
+    model_override: str | None = Field(default=None, max_length=200)
+    unattended: bool = False
+
+    @field_validator("model_override")
+    @classmethod
+    def normalize_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
 
 class ConversationMessageResponse(BaseModel):

@@ -61,6 +61,24 @@ def test_mcp_stdio_requires_explicit_process_trust(tmp_path: Path) -> None:
         load_mcp_configuration(path, {})
 
 
+def test_mcp_config_rejects_persisted_literal_environment_secret(tmp_path: Path) -> None:
+    path = tmp_path / "mcp.yaml"
+    path.write_text(
+        """mcpServers:
+  unsafe:
+    enabled: false
+    trusted: true
+    transport: stdio
+    command: example
+    env:
+      ACCESS_TOKEN: literal-secret
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(McpConfigurationError, match=r"必须使用.*引用"):
+        load_mcp_configuration(path, {})
+
+
 class _FakeManager:
     def __init__(self, configuration: McpConfiguration, tools: list[McpRemoteTool]) -> None:
         self.configuration = configuration
@@ -109,6 +127,7 @@ async def test_mcp_registry_only_exposes_reviewed_read_tools() -> None:
                     "publish": McpToolPolicy(
                         enabled=True,
                         side_effect=True,
+                        data_scope="corpus_allowed",
                         when_to_use="发布内容",
                         when_not_to_use="未得到批准",
                     ),
@@ -128,14 +147,13 @@ async def test_mcp_registry_only_exposes_reviewed_read_tools() -> None:
     statuses = await register_mcp_tools(registry, _FakeManager(configuration, tools))  # type: ignore[arg-type]
 
     assert registry.get("mcp__docs__search").capability == "network.read"
-    assert {"name": "publish", "reason": "side_effect_requires_hitl"} in statuses["docs"][
-        "blocked_tools"
-    ]
+    publish = registry.get("mcp__docs__publish")
+    assert publish.capability == "external.action"
+    assert publish.effect == "external"
+    assert publish.approval_required is True
     assert {"name": "echo", "reason": "data_scope_denied"} in statuses["docs"][
         "blocked_tools"
     ]
-    with pytest.raises(Exception, match="未知工具"):
-        registry.get("mcp__docs__publish")
 
 
 @pytest.mark.asyncio

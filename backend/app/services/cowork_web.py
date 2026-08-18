@@ -9,7 +9,7 @@ import tempfile
 from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qs, quote_plus, urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -31,6 +31,14 @@ class WebSnapshot:
     truncated: bool
     status_code: int
     pdf: PdfSnapshot | None = None
+    links: tuple[dict[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class WebSearchResult:
+    title: str
+    url: str
+    snippet: str
 
 
 class _ReadableHtmlParser(HTMLParser):
@@ -40,14 +48,19 @@ class _ReadableHtmlParser(HTMLParser):
         self._in_title = False
         self.title_parts: list[str] = []
         self.text_parts: list[str] = []
+        self.links: list[dict[str, str]] = []
+        self._link_href: str | None = None
+        self._link_parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        del attrs
         lowered = tag.casefold()
         if lowered in {"script", "style", "noscript", "svg", "canvas"}:
             self._ignored_depth += 1
         elif lowered == "title":
             self._in_title = True
+        elif lowered == "a":
+            self._link_href = next((value for name, value in attrs if name == "href"), None)
+            self._link_parts = []
         elif lowered in {"p", "div", "section", "article", "br", "li", "tr", "h1", "h2", "h3"}:
             self.text_parts.append("\n")
 
@@ -57,6 +70,12 @@ class _ReadableHtmlParser(HTMLParser):
             self._ignored_depth = max(0, self._ignored_depth - 1)
         elif lowered == "title":
             self._in_title = False
+        elif lowered == "a":
+            label = " ".join(" ".join(self._link_parts).split())
+            if self._link_href and label:
+                self.links.append({"title": label, "url": self._link_href})
+            self._link_href = None
+            self._link_parts = []
         elif lowered in {"p", "div", "section", "article", "li", "tr", "h1", "h2", "h3"}:
             self.text_parts.append("\n")
 
@@ -65,13 +84,15 @@ class _ReadableHtmlParser(HTMLParser):
             return
         if self._in_title:
             self.title_parts.append(data)
+        if self._link_href is not None:
+            self._link_parts.append(data)
         self.text_parts.append(data)
 
-    def result(self) -> tuple[str, str]:
+    def result(self) -> tuple[str, str, tuple[dict[str, str], ...]]:
         title = " ".join(" ".join(self.title_parts).split())
         lines = [" ".join(line.split()) for line in "".join(self.text_parts).splitlines()]
         text = "\n".join(line for line in lines if line)
-        return title, text
+        return title, text, tuple(self.links[:500])
 
 
 def _normalized_url(raw_url: str) -> str:
@@ -221,9 +242,10 @@ async def fetch_url(
             if content_type in {"text/html", "application/xhtml+xml"}:
                 parser = _ReadableHtmlParser()
                 parser.feed(decoded)
-                title, content = parser.result()
+                title, content, links = parser.result()
             else:
                 title, content = "", decoded
+                links = ()
             limit = settings.cowork_web_text_max_chars
             return WebSnapshot(
                 url=raw_url,
@@ -233,11 +255,51 @@ async def fetch_url(
                 content=content[:limit],
                 truncated=len(content) > limit,
                 status_code=status_code,
+                links=links,
             )
         raise CoworkWebError("网页重定向次数超过上限")  # pragma: no cover
     finally:
         if owned_client:
             await active_client.aclose()
+
+
+async def search_web(
+    query: str,
+    *,
+    max_results: int,
+    settings: Settings,
+    client: httpx.AsyncClient | None = None,
+) -> list[WebSearchResult]:
+    normalized = " ".join(query.split())
+    if not normalized:
+        raise CoworkWebError("搜索关键词不能为空")
+    if not 1 <= max_results <= 20:
+        raise CoworkWebError("网页搜索结果数必须位于 1 到 20")
+    page = await fetch_url(
+        f"https://html.duckduckgo.com/html/?q={quote_plus(normalized)}",
+        settings=settings,
+        client=client,
+    )
+    results: list[WebSearchResult] = []
+    seen: set[str] = set()
+    for link in page.links:
+        raw_url = urljoin(page.final_url, link["url"])
+        parsed = urlsplit(raw_url)
+        if parsed.hostname and parsed.hostname.endswith("duckduckgo.com"):
+            target = parse_qs(parsed.query).get("uddg", [""])[0]
+            if target:
+                raw_url = target
+        try:
+            result_url = _normalized_url(raw_url)
+        except CoworkWebError:
+            continue
+        if result_url in seen or urlsplit(result_url).hostname == "duckduckgo.com":
+            continue
+        seen.add(result_url)
+        results.append(WebSearchResult(title=link["title"], url=result_url, snippet=""))
+        if len(results) >= max_results:
+            break
+    return results
 
 
 async def _parse_remote_pdf(content: bytes, *, settings: Settings) -> PdfSnapshot:

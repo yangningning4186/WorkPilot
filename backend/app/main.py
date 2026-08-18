@@ -8,6 +8,8 @@ from app.api.annotation import page_router as annotation_page_router
 from app.api.annotation import router as annotation_router
 from app.api.auth import router as auth_router
 from app.api.automations import router as automations_router
+from app.api.connectors import callback_router as connector_callback_router
+from app.api.connectors import router as connectors_router
 from app.api.conversations import router as conversations_router
 from app.api.cost import router as cost_router
 from app.api.cowork import router as cowork_router
@@ -17,6 +19,7 @@ from app.api.health import router as health_router
 from app.api.integrations import router as integrations_router
 from app.api.library import router as library_router
 from app.api.memory import router as memory_router
+from app.api.providers import router as providers_router
 from app.api.retrieval import router as retrieval_router
 from app.api.runs import router as runs_router
 from app.api.sources import router as sources_router
@@ -63,7 +66,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "http://127.0.0.1:3000",
                 "http://localhost:3000",
             ],
-            allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
             allow_headers=["content-type", "x-workpilot-launch-token"],
             expose_headers=["content-type"],
         )
@@ -74,12 +77,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(automations_router, dependencies=rate_limited)
     app.include_router(cost_router, dependencies=rate_limited)
     app.include_router(conversations_router, dependencies=rate_limited)
+    app.include_router(connectors_router, dependencies=rate_limited)
+    app.include_router(connector_callback_router, dependencies=rate_limited)
     app.include_router(cowork_router, dependencies=rate_limited)
     app.include_router(editor_router, dependencies=rate_limited)
     app.include_router(health_router)
     app.include_router(integrations_router, dependencies=rate_limited)
     app.include_router(library_router, dependencies=rate_limited)
     app.include_router(memory_router, dependencies=rate_limited)
+    app.include_router(providers_router, dependencies=rate_limited)
     app.include_router(retrieval_router, dependencies=rate_limited)
     app.include_router(runs_router, dependencies=rate_limited)
     app.include_router(sources_router, dependencies=rate_limited)

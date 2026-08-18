@@ -89,6 +89,7 @@ class OpenAICompatibleProvider:
     def __init__(
         self,
         *,
+        provider_name: str = "openai_compatible",
         base_url: str,
         api_key: str,
         chat_model: str,
@@ -98,6 +99,7 @@ class OpenAICompatibleProvider:
         trust_env: bool = False,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        self.name = provider_name
         self.chat_model = chat_model
         self.embedding_model = embedding_model
         self._enable_thinking = enable_thinking

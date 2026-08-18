@@ -43,8 +43,19 @@ export interface ConversationSummary {
   message_count: number;
   latest_message: string | null;
   last_message_at: string | null;
+  provider_profile_id: string | null;
+  provider_name: string | null;
+  provider: string | null;
+  selected_model: string | null;
+  unattended: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface ConversationRuntimeUpdate {
+  provider_profile_id: string | null;
+  model_override: string | null;
+  unattended: boolean;
 }
 
 export interface ConversationListResponse {
@@ -185,6 +196,16 @@ export function createConversation(title = "新会话"): Promise<ConversationSum
 
 export function deleteConversation(conversationId: string): Promise<void> {
   return requestVoid(`/api/v1/conversations/${conversationId}`, { method: "DELETE" });
+}
+
+export function updateConversationRuntime(
+  conversationId: string,
+  body: ConversationRuntimeUpdate,
+): Promise<ConversationSummary> {
+  return request<ConversationSummary>(`/api/v1/conversations/${conversationId}/runtime`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
 }
 
 export function fetchConversationMessages(
@@ -353,6 +374,12 @@ export function fetchCoworkArtifacts(
   );
 }
 
+export async function fetchArtifactPreview(artifactId: string): Promise<Blob> {
+  const response = await apiFetch(`/api/v1/cowork/artifacts/${artifactId}/preview`);
+  if (!response.ok) throw new ApiError(response.status, await response.text());
+  return response.blob();
+}
+
 export function fetchRunEventLog(
   runId: string,
   afterSeq: bigint,
@@ -401,7 +428,7 @@ export interface UnattendedInboxItem {
   schedule_title: string | null;
   run_goal: string;
   run_status: string;
-  kind: "ask_user" | "directory_request" | "capability_request" | "shell_approval";
+  kind: "ask_user" | "directory_request" | "capability_request" | "shell_approval" | "external_approval";
   status: "pending" | "answered" | "approved" | "rejected" | "cancelled";
   resume_token: string;
   request: Record<string, unknown>;
@@ -465,6 +492,16 @@ export interface SkillsStatusResponse {
   snapshot_sha256: string;
   skills: SkillSummary[];
   errors: string[];
+  installed: ManagedSkill[];
+}
+
+export interface ManagedSkill {
+  name: string;
+  enabled: boolean;
+  description: string | null;
+  sha256: string | null;
+  resources: string[];
+  error: string | null;
 }
 
 export interface McpServerStatus {
@@ -474,9 +511,39 @@ export interface McpServerStatus {
   transport: "stdio" | "streamable_http" | "http";
   configured_tools: number;
   eligible_read_tools: number;
+  eligible_action_tools: number;
   blocked_side_effect_tools: number;
   blocked_data_scope_tools: number;
   catalog_sha256: string | null;
+  oauth_connector_id: string | null;
+  command: string | null;
+  args: string[];
+  cwd: string | null;
+  url: string | null;
+  env_names: string[];
+  header_names: string[];
+  tools: Record<string, McpToolPolicy>;
+}
+
+export interface McpToolPolicy {
+  enabled: boolean;
+  side_effect: boolean;
+  approval: "always" | "never";
+  data_scope: "deny" | "corpus_allowed";
+  when_to_use: string;
+  when_not_to_use: string;
+}
+
+export interface McpServerInput {
+  enabled: boolean;
+  trusted: boolean;
+  transport: "stdio" | "streamable_http" | "http";
+  command?: string;
+  args?: string[];
+  cwd?: string;
+  url?: string;
+  oauth_connector_id?: string;
+  tools?: Record<string, McpToolPolicy>;
 }
 
 export interface McpStatusResponse {
@@ -491,6 +558,7 @@ export interface McpProbeTool {
   configured_policy: {
     enabled: boolean;
     side_effect: boolean;
+    approval: "always" | "never";
     data_scope: "deny" | "corpus_allowed";
     when_to_use: string;
     when_not_to_use: string;
@@ -516,6 +584,199 @@ export function probeMcpServer(serverName: string): Promise<McpProbeResponse> {
     `/api/v1/integrations/mcp/${encodeURIComponent(serverName)}/probe`,
     { method: "POST" },
   );
+}
+
+export function saveMcpServer(name: string, input: McpServerInput): Promise<McpStatusResponse> {
+  return request<McpStatusResponse>(
+    `/api/v1/integrations/mcp/servers/${encodeURIComponent(name)}`,
+    { method: "PUT", body: JSON.stringify(input) },
+  );
+}
+
+export function deleteMcpServer(name: string): Promise<void> {
+  return requestVoid(`/api/v1/integrations/mcp/servers/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+export function saveMcpToolPolicy(
+  serverName: string,
+  toolName: string,
+  policy: McpToolPolicy,
+): Promise<McpStatusResponse> {
+  return request<McpStatusResponse>(
+    `/api/v1/integrations/mcp/servers/${encodeURIComponent(serverName)}/tools/${encodeURIComponent(toolName)}`,
+    { method: "PUT", body: JSON.stringify(policy) },
+  );
+}
+
+export function pinMcpCatalog(serverName: string): Promise<{ catalog_sha256: string }> {
+  return request<{ catalog_sha256: string }>(
+    `/api/v1/integrations/mcp/${encodeURIComponent(serverName)}/pin`,
+    { method: "POST" },
+  );
+}
+
+export function saveSkill(
+  name: string,
+  skillMd: string,
+  replace: boolean,
+): Promise<ManagedSkill> {
+  return request<ManagedSkill>(`/api/v1/integrations/skills/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: JSON.stringify({ skill_md: skillMd, enabled: true, replace }),
+  });
+}
+
+export function setSkillEnabled(name: string, enabled: boolean): Promise<ManagedSkill> {
+  return request<ManagedSkill>(
+    `/api/v1/integrations/skills/${encodeURIComponent(name)}/enabled`,
+    { method: "PATCH", body: JSON.stringify({ enabled }) },
+  );
+}
+
+export function deleteSkill(name: string): Promise<void> {
+  return requestVoid(`/api/v1/integrations/skills/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+export type ProviderKind =
+  | "openai"
+  | "anthropic"
+  | "gemini"
+  | "deepseek"
+  | "qwen"
+  | "ollama"
+  | "openai_compatible";
+
+export interface ProviderProfile {
+  id: string;
+  name: string;
+  provider: ProviderKind;
+  base_url: string;
+  default_model: string;
+  context_window_tokens: number;
+  enabled: boolean;
+  has_api_key: boolean;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderInput {
+  name: string;
+  provider: ProviderKind;
+  base_url: string;
+  default_model: string;
+  api_key?: string;
+  context_window_tokens: number;
+  enabled: boolean;
+  metadata: Record<string, unknown>;
+}
+
+export function fetchProviders(): Promise<{ items: ProviderProfile[] }> {
+  return request<{ items: ProviderProfile[] }>("/api/v1/providers");
+}
+
+export function createProvider(body: ProviderInput): Promise<ProviderProfile> {
+  return request<ProviderProfile>("/api/v1/providers", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateProvider(
+  id: string,
+  body: Partial<Omit<ProviderInput, "provider">>,
+): Promise<ProviderProfile> {
+  return request<ProviderProfile>(`/api/v1/providers/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteProvider(id: string): Promise<void> {
+  return requestVoid(`/api/v1/providers/${id}`, { method: "DELETE" });
+}
+
+export function probeProvider(
+  id: string,
+): Promise<{ ok: boolean; models: string[]; latency_ms: number; message: string }> {
+  return request(`/api/v1/providers/${id}/probe`, { method: "POST" });
+}
+
+export type ConnectorKind =
+  | "github"
+  | "feishu"
+  | "wecom"
+  | "wechat_official"
+  | "tencent_docs";
+
+export interface ConnectorAccount {
+  id: string;
+  kind: ConnectorKind;
+  name: string;
+  auth_type: "oauth2" | "token" | "app_credentials";
+  status: "configured" | "authorizing" | "connected" | "expired" | "error";
+  config: Record<string, unknown>;
+  scopes: string[];
+  external_account_id: string | null;
+  external_account_name: string | null;
+  expires_at: string | null;
+  last_checked_at: string | null;
+  last_error: string | null;
+  enabled: boolean;
+  has_secrets: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConnectorInput {
+  kind: ConnectorKind;
+  name: string;
+  auth_type: "oauth2" | "token" | "app_credentials";
+  client_id?: string;
+  client_secret?: string;
+  access_token?: string;
+  redirect_uri?: string;
+  scopes: string[];
+  config: Record<string, unknown>;
+  enabled: boolean;
+}
+
+export function fetchConnectors(): Promise<{ items: ConnectorAccount[] }> {
+  return request<{ items: ConnectorAccount[] }>("/api/v1/connectors");
+}
+
+export function createConnector(body: ConnectorInput): Promise<ConnectorAccount> {
+  return request<ConnectorAccount>("/api/v1/connectors", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateConnector(
+  id: string,
+  body: Partial<Omit<ConnectorInput, "kind" | "auth_type">> & { clear_secrets?: boolean },
+): Promise<ConnectorAccount> {
+  return request<ConnectorAccount>(`/api/v1/connectors/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteConnector(id: string): Promise<void> {
+  return requestVoid(`/api/v1/connectors/${id}`, { method: "DELETE" });
+}
+
+export function startConnectorOAuth(
+  id: string,
+): Promise<{ authorization_url: string; state: string; expires_at: string }> {
+  return request(`/api/v1/connectors/${id}/oauth/start`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 /** 资料库读模型，字段与后端 app/schemas/library.py 一一对应。 */

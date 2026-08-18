@@ -1,9 +1,9 @@
 # 14 · 技能自进化与 MCP 集成
 
-> **状态：部分实现（2026-08-18）。** MCP 客户端的 stdio / Streamable HTTP
-> 持久连接、工具策展、目录哈希漂移保护和只读 Cowork 注册已经落地；本地
-> `SKILL.md` 发现、渐进加载与运行快照已经落地。MCP 服务端、副作用 MCP 的通用
-> HITL、Skill 自动抽取/晋升/淘汰仍是提案，不把后续设计稿冒充已上线能力。
+> **状态：客户端与人工生命周期已实现（2026-08-19）。** MCP client 的 stdio /
+> Streamable HTTP、OAuth 凭据绑定、工具策展、目录哈希漂移保护、只读与逐次审批
+> 副作用工具均已进入 Cowork；本地 Skill 已支持发现、渐进加载、安装、更新、启停、
+> 删除、ZIP 导入和资源读取。MCP server 与 Skill 自动抽取/自动晋升仍是后续方向。
 
 ---
 
@@ -98,7 +98,8 @@ servers:
    第三方 server 自带的描述是别人写的,质量不受控;每个启用的工具必须补
    `when_to_use / when_not_to_use`(格式同 [05 §3](05-Agent设计.md))。
 2. **未标注 `side_effect: false` 的一律按有副作用处理**:
-   进 `tool_invocations` 幂等协议(约束 9),需要 `write_confirm`。
+   只有 `approval: always` 才允许启用，执行前进入 Unattended Inbox/HITL，随后
+   进 `tool_invocations` 幂等协议(约束 9)。
    支持幂等键的下游透传同一个 key;不支持的只承诺 effectively-once。
 3. **`data_scope` 管住语料外流**(约束 7 的延伸):资料库内容只允许流向
   `corpus_allowed` 的本地 server;默认 deny,远程 server 想拿语料需逐个显式放行。

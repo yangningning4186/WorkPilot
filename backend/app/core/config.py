@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     cowork_skills_path: Path = Path("../skills")
     cowork_skill_max_files: int = Field(default=200, ge=1, le=2_000)
     cowork_skill_max_bytes: int = Field(default=256 * 1024, ge=1_024, le=2 * 1024 * 1024)
+    # Provider API key、连接器凭证和 OAuth token 的数据库密文由此本机主密钥保护。
+    # 主密钥不进入数据库、不进入 checkpoint，也不通过任何状态 API 返回。
+    secret_store_key_path: Path = Path("../data/secrets/master.key")
     # canonical checkpoint 永远保留完整历史；这些参数只控制发给模型的 outbound 视图。
     cowork_compaction_enabled: bool = True
     cowork_compaction_trigger_ratio: float = Field(default=0.85, gt=0.0, le=1.0)

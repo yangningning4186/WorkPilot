@@ -1,7 +1,12 @@
+import html
+from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
+from docx import Document
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import FileResponse, HTMLResponse
+from openpyxl import load_workbook  # type: ignore[import-untyped]
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import require_owner_identity
@@ -17,7 +22,7 @@ from app.schemas.cowork import (
     SessionRootListResponse,
     SessionRootResponse,
 )
-from app.services.artifacts import list_artifacts
+from app.services.artifacts import ArtifactRegistrationError, list_artifacts, resolve_artifact_file
 from app.services.cowork_permissions import (
     CapabilityDeniedError,
     ConversationNotFoundError,
@@ -186,3 +191,76 @@ async def get_artifacts(
     return ArtifactListResponse(
         items=[ArtifactResponse.model_validate(item, from_attributes=True) for item in items]
     )
+
+
+@router.get("/artifacts/{artifact_id}/preview")
+async def get_artifact_preview(
+    artifact_id: UUID,
+    session: DbSession,
+) -> Response:
+    try:
+        resolved = await resolve_artifact_file(session, artifact_id=artifact_id)
+    except ArtifactRegistrationError as error:
+        raise HTTPException(status_code=410, detail=str(error)) from error
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="交付物不存在")
+    artifact, path = resolved
+    suffix = path.suffix.casefold()
+    if suffix == ".pdf" or (artifact.mime_type or "").casefold() == "application/pdf":
+        return FileResponse(
+            path,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{_safe_preview_name(path)}"'},
+        )
+    if suffix == ".docx":
+        body = _docx_preview(path)
+    elif suffix == ".xlsx":
+        body = _xlsx_preview(path)
+    elif suffix in {".md", ".txt", ".csv", ".json", ".html", ".htm"}:
+        if path.stat().st_size > 5 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="交付物过大，无法在线预览")
+        body = f"<pre>{html.escape(path.read_text(encoding='utf-8', errors='replace'))}</pre>"
+    else:
+        return FileResponse(path, media_type=artifact.mime_type or "application/octet-stream")
+    document = (
+        "<!doctype html><meta charset='utf-8'><style>"
+        "body{font:15px/1.65 system-ui;color:#26332f;padding:32px;max-width:960px;margin:auto}"
+        "table{border-collapse:collapse;width:100%}td,th{border:1px solid #d9dedb;padding:6px 8px}"
+        "pre{white-space:pre-wrap;word-break:break-word}</style>"
+        f"<title>{html.escape(artifact.title)}</title><h1>{html.escape(artifact.title)}</h1>{body}"
+    )
+    return HTMLResponse(
+        document,
+        headers={"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox"},
+    )
+
+
+def _docx_preview(path: Path) -> str:
+    document = Document(str(path))
+    blocks: list[str] = []
+    for paragraph in document.paragraphs[:1000]:
+        text = html.escape(paragraph.text)
+        if not text:
+            continue
+        style = paragraph.style.name.casefold() if paragraph.style is not None else ""
+        tag = "h2" if "heading" in style else "p"
+        blocks.append(f"<{tag}>{text}</{tag}>")
+    return "".join(blocks)
+
+
+def _xlsx_preview(path: Path) -> str:
+    workbook = load_workbook(path, read_only=True, data_only=False)
+    try:
+        blocks: list[str] = []
+        for sheet in workbook.worksheets[:5]:
+            blocks.append(f"<h2>{html.escape(sheet.title)}</h2><table>")
+            for row in sheet.iter_rows(min_row=1, max_row=100, max_col=20, values_only=True):
+                blocks.append("<tr>" + "".join(f"<td>{html.escape(str(value if value is not None else ''))}</td>" for value in row) + "</tr>")
+            blocks.append("</table>")
+        return "".join(blocks)
+    finally:
+        workbook.close()
+
+
+def _safe_preview_name(path: Path) -> str:
+    return "".join(character for character in path.name if character.isalnum() or character in "._-") or "artifact"

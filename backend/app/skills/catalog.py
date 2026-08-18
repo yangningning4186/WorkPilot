@@ -136,6 +136,12 @@ def _load_one(path: Path, *, max_bytes: int) -> SkillDefinition:
     )
 
 
+def load_skill_file(path: Path, *, max_bytes: int) -> SkillDefinition:
+    """供生命周期管理在原子替换前校验候选 SKILL.md。"""
+
+    return _load_one(path, max_bytes=max_bytes)
+
+
 def load_skill_catalog(root: Path, *, max_files: int, max_bytes: int) -> SkillCatalog:
     """只扫描 root 的直接子目录，拒绝递归和符号链接扩权。"""
 
@@ -159,6 +165,8 @@ def load_skill_catalog(root: Path, *, max_files: int, max_bytes: int) -> SkillCa
             continue
         path = child / "SKILL.md"
         if not path.is_file():
+            continue
+        if (child / ".disabled").exists():
             continue
         try:
             skills.append(_load_one(path, max_bytes=max_bytes))
