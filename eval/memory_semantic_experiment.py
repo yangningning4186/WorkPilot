@@ -35,7 +35,7 @@ from eval.stats import MetricSamples, RatioPoint, paired_bootstrap
 
 SCHEMA_VERSION = 2
 RUBRIC_ID = "memory-paired-semantic.v1"
-JUDGE_MAX_TOKENS = 1600
+JUDGE_MAX_TOKENS = 4096
 JUDGE_REPAIR_ATTEMPTS = 1
 
 SEMANTIC_RUBRIC = """分别评价匿名答案 A 和 B，只能依据问题、用户上下文和预注册标准。
@@ -171,6 +171,8 @@ class JudgeRecord:
     provider: str
     input_tokens: int
     output_tokens: int
+    rubric_fingerprint: str = ""
+    pair_fingerprint: str = ""
 
 
 def load_suite(path: Path) -> tuple[dict[str, Any], list[SemanticCase]]:
@@ -261,6 +263,8 @@ async def run_semantic_judge(
     generation_identity: tuple[str, str],
     expected_judge_identity: tuple[str, str],
     allow_self_judge: bool = False,
+    existing_records: list[JudgeRecord] | None = None,
+    on_record: Callable[[JudgeRecord], None] | None = None,
 ) -> list[JudgeRecord]:
     if (gateway.chat_provider, gateway.chat_model) != expected_judge_identity:
         raise SemanticExperimentError(
@@ -271,6 +275,11 @@ async def run_semantic_judge(
     if not allow_self_judge and expected_judge_identity == generation_identity:
         raise SemanticExperimentError("正式语义结论禁止生成模型自评；请使用独立 Judge 模型")
     by_id = {case.id: case for case in cases}
+    existing_by_id: dict[str, JudgeRecord] = {}
+    for record in existing_records or []:
+        if record.item_id in existing_by_id:
+            raise SemanticExperimentError(f"Judge checkpoint item 重复: {record.item_id}")
+        existing_by_id[record.item_id] = record
     records: list[JudgeRecord] = []
     for index, pair in enumerate(pairs):
         case = by_id.get(pair.item_id)
@@ -279,6 +288,19 @@ async def run_semantic_judge(
         swap = index % 2 == 1
         arm_a = pair.memory_on if swap else pair.memory_off
         arm_b = pair.memory_off if swap else pair.memory_on
+        pair_fingerprint = _pair_fingerprint(case, arm_a, arm_b)
+        cached = existing_by_id.pop(pair.item_id, None)
+        if cached is not None:
+            _validate_checkpoint_record(
+                cached,
+                pair=pair,
+                arm_a=arm_a,
+                arm_b=arm_b,
+                pair_fingerprint=pair_fingerprint,
+                expected_judge_identity=expected_judge_identity,
+            )
+            records.append(cached)
+            continue
         prompt = _judge_prompt(case, arm_a.answer, arm_b.answer)
         result: CompletionResult | None = None
         failure: Exception | None = None
@@ -307,29 +329,37 @@ async def run_semantic_judge(
                 failure = error
         else:
             raise SemanticExperimentError(
-                f"Judge 响应重试后仍非法: item_id={pair.item_id}; {failure}"
+                f"Judge 响应重试后仍非法: item_id={pair.item_id}; {failure}; "
+                f"raw={str(getattr(result, 'text', None))[:500]!r}"
             ) from failure
         assert result is not None
         # 确定性泄漏轨优先于 Judge，避免语义模型把礼貌来源话术误判为无泄漏。
         score_a = _apply_hard_disclosure(score_a, find_disclosure_hits(arm_a.answer))
         score_b = _apply_hard_disclosure(score_b, find_disclosure_hits(arm_b.answer))
         preferred = _enforce_preference(preferred, score_a, score_b)
-        records.append(
-            JudgeRecord(
-                item_id=pair.item_id,
-                category=pair.category,
-                answer_a_condition=arm_a.condition,
-                answer_b_condition=arm_b.condition,
-                reason=reason,
-                answer_a=score_a,
-                answer_b=score_b,
-                preferred=preferred,
-                raw_output=result.text,
-                model=result.model,
-                provider=result.provider,
-                input_tokens=result.usage.input_tokens,
-                output_tokens=result.usage.output_tokens,
-            )
+        record = JudgeRecord(
+            item_id=pair.item_id,
+            category=pair.category,
+            answer_a_condition=arm_a.condition,
+            answer_b_condition=arm_b.condition,
+            reason=reason,
+            answer_a=score_a,
+            answer_b=score_b,
+            preferred=preferred,
+            raw_output=result.text,
+            model=result.model,
+            provider=result.provider,
+            input_tokens=result.usage.input_tokens,
+            output_tokens=result.usage.output_tokens,
+            rubric_fingerprint=semantic_rubric_fingerprint(),
+            pair_fingerprint=pair_fingerprint,
+        )
+        records.append(record)
+        if on_record is not None:
+            on_record(record)
+    if existing_by_id:
+        raise SemanticExperimentError(
+            f"Judge checkpoint 含 suite 外 item: {sorted(existing_by_id)}"
         )
     if len(records) != len(cases):
         raise SemanticExperimentError("Judge 未完整覆盖全部 A6 样本")
@@ -535,6 +565,44 @@ def _judge_prompt(case: SemanticCase, answer_a: str, answer_b: str) -> str:
     )
 
 
+def _pair_fingerprint(
+    case: SemanticCase, arm_a: GenerationArm, arm_b: GenerationArm
+) -> str:
+    return _sha256_json(
+        {
+            "case": asdict(case),
+            "answer_a_condition": arm_a.condition,
+            "answer_a": arm_a.answer,
+            "answer_b_condition": arm_b.condition,
+            "answer_b": arm_b.answer,
+        }
+    )
+
+
+def _validate_checkpoint_record(
+    record: JudgeRecord,
+    *,
+    pair: GenerationPair,
+    arm_a: GenerationArm,
+    arm_b: GenerationArm,
+    pair_fingerprint: str,
+    expected_judge_identity: tuple[str, str],
+) -> None:
+    if record.category != pair.category:
+        raise SemanticExperimentError(f"Judge checkpoint category 漂移: {record.item_id}")
+    if (record.answer_a_condition, record.answer_b_condition) != (
+        arm_a.condition,
+        arm_b.condition,
+    ):
+        raise SemanticExperimentError(f"Judge checkpoint A/B 映射漂移: {record.item_id}")
+    if (record.provider, record.model) != expected_judge_identity:
+        raise SemanticExperimentError(f"Judge checkpoint 模型身份漂移: {record.item_id}")
+    if record.rubric_fingerprint != semantic_rubric_fingerprint():
+        raise SemanticExperimentError(f"Judge checkpoint rubric 漂移: {record.item_id}")
+    if record.pair_fingerprint != pair_fingerprint:
+        raise SemanticExperimentError(f"Judge checkpoint 配对内容漂移: {record.item_id}")
+
+
 def _text(raw: dict[str, object], field: str) -> str:
     value = raw.get(field)
     if not isinstance(value, str) or not value.strip():
@@ -574,6 +642,11 @@ def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _append_jsonl(path: Path, row: dict[str, object]) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 def _load_pairs(path: Path) -> list[GenerationPair]:
     pairs: list[GenerationPair] = []
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -592,6 +665,37 @@ def _load_pairs(path: Path) -> list[GenerationPair]:
         except (KeyError, TypeError) as error:
             raise SemanticExperimentError(f"{path}:{line_number} 生成记录非法") from error
     return pairs
+
+
+def _load_judge_records(path: Path) -> list[JudgeRecord]:
+    if not path.exists():
+        return []
+    records: list[JudgeRecord] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        raw = json.loads(line)
+        try:
+            records.append(
+                JudgeRecord(
+                    item_id=str(raw["item_id"]),
+                    category=str(raw["category"]),
+                    answer_a_condition=str(raw["answer_a_condition"]),
+                    answer_b_condition=str(raw["answer_b_condition"]),
+                    reason=str(raw["reason"]),
+                    answer_a=ArmScore(**raw["answer_a"]),
+                    answer_b=ArmScore(**raw["answer_b"]),
+                    preferred=raw["preferred"],
+                    raw_output=str(raw["raw_output"]),
+                    model=str(raw["model"]),
+                    provider=str(raw["provider"]),
+                    input_tokens=int(raw["input_tokens"]),
+                    output_tokens=int(raw["output_tokens"]),
+                    rubric_fingerprint=str(raw["rubric_fingerprint"]),
+                    pair_fingerprint=str(raw["pair_fingerprint"]),
+                )
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise SemanticExperimentError(f"{path}:{line_number} Judge checkpoint 非法") from error
+    return records
 
 
 async def _generate_cli(args: argparse.Namespace) -> dict[str, object]:
@@ -679,8 +783,9 @@ async def _judge_cli(args: argparse.Namespace) -> dict[str, object]:
         raise SemanticExperimentError("A6 生成记录未完整覆盖 suite")
     output = args.package / "judge-records.jsonl"
     semantic_report = args.package / "semantic-report.json"
-    if output.exists() or semantic_report.exists():
-        raise SemanticExperimentError("Judge 产物已存在，禁止覆盖或混跑")
+    if semantic_report.exists():
+        raise SemanticExperimentError("完整 semantic report 已存在，禁止覆盖或混跑")
+    existing_records = _load_judge_records(output)
     provider = OpenAICompatibleProvider(
         base_url=args.base_url,
         api_key=os.getenv(args.api_key_env, ""),
@@ -703,10 +808,11 @@ async def _judge_cli(args: argparse.Namespace) -> dict[str, object]:
             generation_identity=generation_identity,
             expected_judge_identity=(args.provider, args.model),
             allow_self_judge=args.allow_self_judge,
+            existing_records=existing_records,
+            on_record=lambda record: _append_jsonl(output, asdict(record)),
         )
     finally:
         await gateway.aclose()
-    _write_jsonl(output, [asdict(record) for record in records])
     summary = summarize_semantic(records)
     gate = evaluate_preregistered_gate(records)
     result: dict[str, object] = {
@@ -719,6 +825,7 @@ async def _judge_cli(args: argparse.Namespace) -> dict[str, object]:
         "records_sha256": hashlib.sha256(records_path.read_bytes()).hexdigest(),
         "rubric_id": RUBRIC_ID,
         "rubric_fingerprint": semantic_rubric_fingerprint(),
+        "judge_max_tokens": JUDGE_MAX_TOKENS,
         "judge_identity": {"provider": args.provider, "model": args.model},
         "judge_git_revision": _git_revision(),
         "memory_rubric_human_calibration": "pending",

@@ -200,6 +200,75 @@ async def test_semantic_judge_rejects_self_judgement() -> None:
         )
 
 
+async def test_semantic_judge_checkpoints_and_resumes_after_invalid_json() -> None:
+    first_response = json.dumps(
+        {
+            "reason": "B 完整使用偏好。",
+            "answer_a": {
+                "task_quality": 1,
+                "memory_use": 0,
+                "source_disclosure": False,
+            },
+            "answer_b": {
+                "task_quality": 2,
+                "memory_use": 2,
+                "source_disclosure": False,
+            },
+            "preferred": "B",
+        },
+        ensure_ascii=False,
+    )
+    provider = DeterministicProvider(
+        completion_texts=[first_response, "截断 {", "仍然截断 {"]
+    )
+    gateway = ModelGateway(provider, embedding_dimensions=1024)
+    checkpoint = []
+    cases = [_case("one"), _case("two")]
+    pairs = [_pair("one"), _pair("two")]
+
+    with pytest.raises(SemanticExperimentError, match="item_id=two"):
+        await run_semantic_judge(
+            cases,
+            pairs,
+            gateway=gateway,
+            generation_identity=("openai_compatible", "generator-model"),
+            expected_judge_identity=("deterministic_test", "fake-chat"),
+            on_record=checkpoint.append,
+        )
+    assert [record.item_id for record in checkpoint] == ["one"]
+
+    second_response = json.dumps(
+        {
+            "reason": "A 是第二题的记忆臂并完整使用偏好。",
+            "answer_a": {
+                "task_quality": 2,
+                "memory_use": 2,
+                "source_disclosure": False,
+            },
+            "answer_b": {
+                "task_quality": 1,
+                "memory_use": 0,
+                "source_disclosure": False,
+            },
+            "preferred": "A",
+        },
+        ensure_ascii=False,
+    )
+    resumed_provider = DeterministicProvider(completion_text=second_response)
+    resumed_gateway = ModelGateway(resumed_provider, embedding_dimensions=1024)
+
+    records = await run_semantic_judge(
+        cases,
+        pairs,
+        gateway=resumed_gateway,
+        generation_identity=("openai_compatible", "generator-model"),
+        expected_judge_identity=("deterministic_test", "fake-chat"),
+        existing_records=checkpoint,
+    )
+
+    assert [record.item_id for record in records] == ["one", "two"]
+
+
 def test_semantic_summary_unblinds_alternating_answers() -> None:
     records = [
         JudgeRecord(
