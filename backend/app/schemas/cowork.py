@@ -10,6 +10,7 @@ Capability = Literal[
     "filesystem.write",
     "office.word.edit",
     "office.excel.edit",
+    "network.read",
     "shell.execute",
     "external.action",
 ]
@@ -46,7 +47,7 @@ class CapabilityGrantCreate(BaseModel):
     def validate_scope(self) -> "CapabilityGrantCreate":
         path_capability = self.capability.startswith(("filesystem.", "office."))
         if path_capability != (self.session_root_id is not None):
-            raise ValueError("文件能力必须绑定目录，Shell/外部能力不能绑定目录")
+            raise ValueError("文件能力必须绑定目录，网络/Shell/外部能力不能绑定目录")
         return self
 
 

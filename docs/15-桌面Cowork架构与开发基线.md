@@ -38,8 +38,8 @@ Tauri desktop
 - Cowork 会在首选模型输入预算的 85% 触发 outbound-only compaction：canonical `messages`
   永不裁剪，checkpoint 只额外保存滚动摘要、完整工具轮次边界和 outbound tool-result 上限。
   Provider 返回实际超窗错误时，会压缩后受次数上限和 token 递减保护重试。
-- Tool registry 已登记 `list_office_files`、`inspect_office_file`、`edit_word`、
-  `edit_excel`、`ask_user`、运行中授权工具与受控 `run_shell`，并为每个工具声明
+- Tool registry 已登记通用文件列举/读写/搜索、本地 PDF、公开网页/远程 PDF、
+  Artifact 生成、Office 读写、运行中交互与受控 `run_shell`，并为每个工具声明
   capability、risk、effect 和 parallel-safe 属性。
 - `run_shell` 需要独立 `shell.execute` grant。无 shell 操作符且 argv 精确前缀命中部署
   allowlist 的命令可直接执行；其余命令逐次进入 Inbox 审批。执行不使用 shell 字符串拼接
@@ -48,6 +48,12 @@ Tauri desktop
   worker 在命令完成后、checkpoint 前崩溃时复用已落库结果而不重放命令。
 - Word/Excel Cowork 入口会在执行器内部再次校验会话 root capability；写工具在副作用前
   抢占 `tool_invocations` 幂等租约，成功后自动登记 Artifact。
+- `read_text_file` 有字节/行数上限并返回 SHA-256；`write_text_file` 与
+  `create_artifact` 覆盖既有文件时强制校验该 SHA，原子替换并保留有界备份。
+- `search_files` 只搜索授权 root 中的文件名与 UTF-8 文本，跳过隐藏、依赖、
+  备份目录、二进制文件和符号链接，扫描数、单文件大小与结果数均有上限。
+- `fetch_url` 要求会话级 `network.read` 授权，仅接受 HTTP(S)，每次重定向
+  都重新解析并拒绝本机、私有、链路本地与保留地址，响应大小和重定向数有上限。
 - Excel 编辑对图表、图片、透视表、图表工作表与切片器 fail closed，公式采用安全函数白名单；
   目录扫描跳过依赖、隐藏目录与备份目录，并受遍历条目上限约束。
 
@@ -86,9 +92,9 @@ Tauri desktop
 恢复通道，但只有 outbound token 数确实下降才允许重试，且最多重试配置的次数。每次边界
 推进记录 `context.compacted` 事件，canonical checkpoint 可继续用于审计、恢复和效果评测。
 
-当前首批工具限定为 Office 目录列举、Word/Excel 结构化预览、Word 受限编辑、Excel 受限
-编辑和 Artifact 登记。写操作串行，多只读工具可在同一模型轮次并行执行。下一批再加入通用
-文本读取/搜索、Markdown 写入和资料库检索。Shell 仅开放受 capability、argv allowlist、
+当前工具集已覆盖通用 UTF-8 文件读写、目录列举、文本搜索、本地 PDF、公开网页/远程
+PDF、Artifact 生成及 Office 专用编辑。写操作串行，多只读工具可在同一模型轮次并行执行。
+Shell 仅开放受 capability、argv allowlist、
 逐命令审批、超时和进程组取消共同约束的 `run_shell`，不提供无边界的 Full Access 模式。
 
 ### C. 现有 Office 工作台迁移（Cowork 路径已完成）

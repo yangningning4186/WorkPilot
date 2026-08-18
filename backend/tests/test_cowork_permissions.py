@@ -16,6 +16,7 @@ from app.services.cowork_permissions import (
     authorize_capability,
     authorize_path,
     create_session_root,
+    grant_capability,
     list_capability_grants,
     revoke_session_root,
 )
@@ -84,6 +85,25 @@ async def test_read_write_root_grants_office_without_shell_and_revokes_together(
             conversation_id=conversation_id,
             capability="shell.execute",
         )
+    with pytest.raises(CapabilityDeniedError, match=r"network\.read"):
+        await authorize_capability(
+            db_session,
+            conversation_id=conversation_id,
+            capability="network.read",
+        )
+    network_grant = await grant_capability(
+        db_session,
+        conversation_id=conversation_id,
+        capability="network.read",
+    )
+    assert network_grant.session_root_id is None
+    assert (
+        await authorize_capability(
+            db_session,
+            conversation_id=conversation_id,
+            capability="network.read",
+        )
+    ).id == network_grant.id
 
     assert await revoke_session_root(
         db_session, conversation_id=conversation_id, root_id=root.id

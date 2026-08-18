@@ -264,6 +264,7 @@ export type CoworkCapability =
   | "filesystem.write"
   | "office.word.edit"
   | "office.excel.edit"
+  | "network.read"
   | "shell.execute"
   | "external.action";
 

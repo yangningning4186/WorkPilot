@@ -564,7 +564,7 @@ async def test_cowork_runner_consumes_cancel_before_pending_tool(
         db_session,
         conversation_id=conversation_id,
         goal="扫描文件，但我可能随时停止",
-        budget_tokens=10_000,
+        budget_tokens=50_000,
         budget_calls=10,
         budget_wall_ms=60_000,
         workflow_type="cowork",
@@ -931,7 +931,15 @@ def test_default_registry_exposes_risk_and_capability_contract() -> None:
     assert catalog["edit_word"]["capability"] == "office.word.edit"
     assert catalog["edit_word"]["risk"] == "write"
     assert catalog["edit_excel"]["effect"] == "filesystem"
+    assert catalog["list_files"]["parallel_safe"] is True
+    assert catalog["read_text_file"]["capability"] == "filesystem.read"
+    assert catalog["search_files"]["effect"] == "none"
+    assert catalog["read_pdf"]["parallel_safe"] is True
+    assert catalog["fetch_url"]["capability"] == "network.read"
+    assert catalog["write_text_file"]["effect"] == "filesystem"
+    assert catalog["create_artifact"]["risk"] == "write"
     assert registry.parallel_safe(["list_office_files", "inspect_office_file"]) is True
+    assert registry.parallel_safe(["list_files", "search_files", "read_pdf"]) is True
     assert registry.parallel_safe(["inspect_office_file", "edit_word"]) is False
     assert catalog["ask_user"]["execution"] == "interaction"
     assert catalog["request_directory"]["execution"] == "interaction"

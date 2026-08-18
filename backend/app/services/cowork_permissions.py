@@ -20,6 +20,7 @@ Capability = Literal[
     "filesystem.write",
     "office.word.edit",
     "office.excel.edit",
+    "network.read",
     "shell.execute",
     "external.action",
 ]
@@ -27,7 +28,7 @@ Capability = Literal[
 PATH_CAPABILITIES = frozenset(
     {"filesystem.read", "filesystem.write", "office.word.edit", "office.excel.edit"}
 )
-GLOBAL_CAPABILITIES = frozenset({"shell.execute", "external.action"})
+GLOBAL_CAPABILITIES = frozenset({"network.read", "shell.execute", "external.action"})
 ALL_CAPABILITIES = PATH_CAPABILITIES | GLOBAL_CAPABILITIES
 _WORD_SUFFIXES = frozenset({".docx"})
 _EXCEL_SUFFIXES = frozenset({".xlsx"})
@@ -312,7 +313,7 @@ async def grant_capability(
     if capability in PATH_CAPABILITIES and session_root_id is None:
         raise ValueError("文件 capability 必须绑定会话目录")
     if capability in GLOBAL_CAPABILITIES and session_root_id is not None:
-        raise ValueError("Shell/外部操作 capability 不能继承目录授权")
+        raise ValueError("网络/Shell/外部操作 capability 不能继承目录授权")
 
     if session_root_id is not None:
         root = (

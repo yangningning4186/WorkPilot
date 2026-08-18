@@ -140,6 +140,10 @@ def _system_prompt() -> str:
 需要用户补充信息时调用 ask_user；需要扩大目录或能力范围时分别调用
 request_directory / request_capability。这三类交互工具每次必须单独调用，运行会暂停等待用户。
 不需要工具时直接给出最终答复，说明实际修改与产物，不得声称执行了未调用的工具。
+通用文件必须优先使用 list_files/read_text_file/search_files/read_pdf，不得为了读取或搜索改用 shell。
+覆盖文本文件前必须先 read_text_file，并把其 baseline_sha256 原样传给
+write_text_file 或 create_artifact。需要交付报告、表格、差异或其他可见产物时使用 create_artifact。
+读取公开网页或远程 PDF 使用 fetch_url；没有 network.read 时先调用 request_capability。
 
 编辑流程必须先 list_office_files，再 inspect_office_file 获取当前 baseline_sha256，最后调用
 对应 edit_word/edit_excel。Word/Excel 的读取、结构分析和修改不得改用 shell 或 python-docx，
@@ -1538,13 +1542,20 @@ class _CoworkExecution:
             if (
                 result.effect_ref is not None
                 and self.registry.get(call["name"]).effect == "filesystem"
+                and result.output.get("artifact_id") is not None
             ):
+                file_output = result.output.get("file")
+                file_name = (
+                    file_output.get("name")
+                    if isinstance(file_output, dict)
+                    else None
+                )
                 events.append(
                     (
                         "artifact",
                         {
                             "kind": "file",
-                            "title": str(result.output.get("file", {}).get("name", "办公文件")),
+                            "title": str(result.output.get("title") or file_name or "交付物"),
                             "artifact_id": result.output.get("artifact_id"),
                             "effect_ref": result.effect_ref,
                         },

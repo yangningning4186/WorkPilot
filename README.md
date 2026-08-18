@@ -51,7 +51,7 @@ badcase 来自我每天的真实使用，不是编出来的测试用例。
 | Agent | LangGraph 固定 `literature_review` 状态机 · PostgreSQL checkpoint · owner-only HITL · 幂等写回 |
 | 记忆 | 两阶段事实抽取 · ADD/UPDATE/DELETE/NOOP · 时序有效性 · pgvector 召回 · owner-only `/memory` |
 | 办公编辑 | owner 会话限时授权 · Markdown / python-docx / openpyxl 格式执行器 · 冲突保护 · 恢复副本 · 原子写入 |
-| Cowork 桌面 | Tauri 2 · 随机 localhost sidecar · 会话 root capability · Word / Excel tool registry · Progress / Artifacts |
+| Cowork 桌面 | Tauri 2 · 随机 localhost sidecar · 会话 root/network capability · 文件/搜索/网页/PDF/Office/Artifact 工具 · Progress / Artifacts |
 | 知识 | MinerU / PyMuPDF · bge-m3 dense 向量 · PostgreSQL + pgvector · PG 词法检索 · bge-reranker-v2-m3 |
 | 模型 | 统一网关 · `light/main/heavy/external` 路由与 fallback · 置信度升档 · Redis 精确缓存 |
 | 评测 | span-level 标注 · 规则轨 + Judge · paired bootstrap · weighted Kappa · 两层 CI 门禁 |
@@ -59,7 +59,7 @@ badcase 来自我每天的真实使用，不是编出来的测试用例。
 
 ### 长期蓝图（尚未实现）
 
-自由规划的通用 Agent、个人知识图谱、每日 digest、语义缓存、
+多 Agent 委派、个人知识图谱、每日 digest、语义缓存、
 sparse 第三路检索、Obsidian/Zotero/web_clip connector、Langfuse/OpenTelemetry、MinIO 和公网部署
 都仍在 [MVP Backlog](docs/11-MVP边界.md#5-backlog按解锁顺序) 或最终交付清单中。
 
@@ -76,7 +76,9 @@ npm run dev:desktop
 
 桌面壳会自动选择随机本机端口，生成当次启动 token，执行 Alembic 迁移，
 并同时启动 FastAPI 与 Arq worker。目录必须经系统选择器授权；授权后该会话
-对目录内 Word / Excel 直接执行，不再逐操作弹确认。
+对目录内的通用文本和 Word / Excel 可直接读写，PDF 可受控读取，并能生成 Artifact；
+这些操作在目录授权后不再逐条弹确认。
+读取公开网页/远程 PDF 需要在当前 Cowork 会话内额外授予 `network.read`。
 
 ---
 
@@ -97,6 +99,7 @@ npm run dev:desktop
 | **[11 MVP 边界](docs/11-MVP边界.md)** | **唯一约束开发范围的文档**，含 Backlog 与解锁顺序 |
 | [12 安全与部署](docs/12-安全与部署.md) | 威胁模型、鉴权限流费用熔断、SSRF、上线检查清单 |
 | [13 办公工作台与本地文档编辑](docs/13-办公工作台与文档编辑.md) | 限时写权限、Markdown/Word/Excel 格式执行器、备份与冲突保护 |
+| [15 桌面 Cowork 架构与开发基线](docs/15-桌面Cowork架构与开发基线.md) | 会话授权、通用工具循环、网页/PDF、Artifact 与桌面安全基线 |
 | [ADR](docs/adr/) | 架构决策记录 |
 | [实验台账](docs/experiments/) | 每次优化的"改了什么 → 指标怎么变" |
 

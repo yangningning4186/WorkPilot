@@ -33,6 +33,13 @@ const TOOL_LABELS: Record<string, string> = {
   request_directory: "申请工作目录",
   request_capability: "申请运行能力",
   run_shell: "执行 Shell 命令",
+  list_files: "列出文件",
+  read_text_file: "读取文本",
+  write_text_file: "写入文本",
+  search_files: "搜索文件",
+  read_pdf: "读取 PDF",
+  fetch_url: "读取网页",
+  create_artifact: "生成交付物",
   list_office_files: "扫描 Word / Excel",
   inspect_office_file: "读取文档结构",
   edit_word: "编辑 Word",
@@ -44,6 +51,7 @@ const CAPABILITY_LABELS: Record<string, string> = {
   "filesystem.write": "写入文件",
   "office.word.edit": "编辑 Word",
   "office.excel.edit": "编辑 Excel",
+  "network.read": "读取公开网页",
   "shell.execute": "执行 Shell 命令",
   "external.action": "执行外部操作",
 };
@@ -599,7 +607,8 @@ export default function CoworkPage() {
                             <header><strong>交付物</strong><span>{artifacts.length}</span></header>
                             {artifacts.slice(0, 4).map((artifact) => {
                               const excel = artifact.mime_type?.includes("spreadsheet") ?? artifact.title.endsWith(".xlsx");
-                              return <article key={artifact.id}><span className={excel ? "excel" : "word"}>{excel ? "X" : "W"}</span><div><strong>{artifact.title}</strong><small>{artifactNote(artifact)}</small></div><time>{new Date(artifact.updated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></article>;
+                              const word = artifact.mime_type?.includes("wordprocessingml") ?? artifact.title.endsWith(".docx");
+                              return <article key={artifact.id}><span className={excel ? "excel" : "word"}>{excel ? "X" : word ? "W" : "A"}</span><div><strong>{artifact.title}</strong><small>{artifactNote(artifact)}</small></div><time>{new Date(artifact.updated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></article>;
                             })}
                           </section>
                         )}

@@ -32,7 +32,8 @@ Cowork 复用 `agent_runs`、`run_events`、checkpoint 与工具幂等表，新�
 - `read_only` 自动获得 `filesystem.read`。
 - `read_write` 自动获得 `filesystem.read`、`filesystem.write`、`office.word.edit`、
   `office.excel.edit`。此后目录内文档操作直接执行，不再逐条确认。
-- `shell.execute` 与 `external.action` 必须独立授权，永远不从目录权限继承。
+- `network.read`、`shell.execute` 与 `external.action` 必须独立授权，
+  永远不从目录权限继承。网页读取不借用语义过宽的“外部写操作”授权。
 - 每次工具执行仍重新解析真实路径、检查符号链接逃逸、root 状态、grant 撤销与过期状态。
 - 多个 root/grant 采用**加法语义**：嵌套的 `read_only` root 不会从父级 `read_write` root
   扣除权限。需要排除子目录时必须拆分父级授权范围或撤销父 root，不能把只读 root 当 deny rule。

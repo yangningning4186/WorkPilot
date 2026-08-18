@@ -72,6 +72,15 @@ class Settings(BaseSettings):
     cowork_max_steps: int = Field(default=12, ge=1, le=50)
     cowork_decision_max_tokens: int = Field(default=2_048, ge=128, le=16_384)
     cowork_tool_result_max_chars: int = Field(default=20_000, ge=1_000, le=100_000)
+    cowork_file_read_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1_024, le=100 * 1024 * 1024)
+    cowork_file_write_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1_024, le=100 * 1024 * 1024)
+    cowork_file_max_lines: int = Field(default=2_000, ge=1, le=50_000)
+    cowork_search_max_results: int = Field(default=200, ge=1, le=2_000)
+    cowork_pdf_text_max_chars: int = Field(default=60_000, ge=1_000, le=500_000)
+    cowork_web_timeout_s: float = Field(default=30.0, gt=0, le=300)
+    cowork_web_max_redirects: int = Field(default=5, ge=0, le=10)
+    cowork_web_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1_024, le=100 * 1024 * 1024)
+    cowork_web_text_max_chars: int = Field(default=60_000, ge=1_000, le=500_000)
     # canonical checkpoint 永远保留完整历史；这些参数只控制发给模型的 outbound 视图。
     cowork_compaction_enabled: bool = True
     cowork_compaction_trigger_ratio: float = Field(default=0.85, gt=0.0, le=1.0)
