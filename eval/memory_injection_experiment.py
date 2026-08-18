@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,6 +55,11 @@ FORBIDDEN_MEMORY_DISCLOSURES = (
     "个人记忆中",
     "《个人记忆》",
 )
+INTERNAL_MEMORY_LABELS = {
+    "[m": re.compile(r"\[m\d+\]", re.IGNORECASE),
+    "(m": re.compile(r"\(m\d+\)", re.IGNORECASE),
+    "（m": re.compile(r"（m\d+）", re.IGNORECASE),
+}
 
 
 class MemoryExperimentError(RuntimeError):
@@ -146,7 +152,15 @@ def find_disclosure_hits(answer: str, *, extra_terms: list[str] | None = None) -
     forbidden_terms = tuple(
         dict.fromkeys((*(extra_terms or []), *FORBIDDEN_MEMORY_DISCLOSURES))
     )
-    return [term for term in forbidden_terms if term.casefold() in folded]
+    hits: list[str] = []
+    for term in forbidden_terms:
+        label_pattern = INTERNAL_MEMORY_LABELS.get(term.casefold())
+        if label_pattern is not None:
+            if label_pattern.search(answer):
+                hits.append(term)
+        elif term.casefold() in folded:
+            hits.append(term)
+    return hits
 
 
 async def run_experiment(

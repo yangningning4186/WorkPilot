@@ -7,6 +7,7 @@ from typing import Literal
 import pytest
 
 from app.llm.gateway import ModelGateway
+from eval.memory_injection_experiment import find_disclosure_hits
 from eval.memory_semantic_experiment import (
     ArmScore,
     GenerationArm,
@@ -131,6 +132,11 @@ def test_semantic_judge_parser_is_strict_and_not_keyword_based() -> None:
     invalid = valid.replace('"task_quality": 2', '"task_quality": true', 1)
     with pytest.raises(ValueError, match="task_quality"):
         parse_judge_response(invalid)
+
+
+def test_internal_memory_label_detector_does_not_flag_normal_m_terms() -> None:
+    assert find_disclosure_hits("记录 MITs、MRR（Mean Reciprocal Rank）和 MVCC。") == []
+    assert find_disclosure_hits("内部标签 [M12] 不应输出") == ["[m"]
 
 
 async def test_semantic_judge_is_blind_and_hard_disclosure_overrides_model() -> None:

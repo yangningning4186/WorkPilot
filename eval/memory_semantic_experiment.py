@@ -311,8 +311,8 @@ async def run_semantic_judge(
             ) from failure
         assert result is not None
         # 确定性泄漏轨优先于 Judge，避免语义模型把礼貌来源话术误判为无泄漏。
-        score_a = _apply_hard_disclosure(score_a, arm_a.disclosure_hits)
-        score_b = _apply_hard_disclosure(score_b, arm_b.disclosure_hits)
+        score_a = _apply_hard_disclosure(score_a, find_disclosure_hits(arm_a.answer))
+        score_b = _apply_hard_disclosure(score_b, find_disclosure_hits(arm_b.answer))
         preferred = _enforce_preference(preferred, score_a, score_b)
         records.append(
             JudgeRecord(
@@ -720,6 +720,7 @@ async def _judge_cli(args: argparse.Namespace) -> dict[str, object]:
         "rubric_id": RUBRIC_ID,
         "rubric_fingerprint": semantic_rubric_fingerprint(),
         "judge_identity": {"provider": args.provider, "model": args.model},
+        "judge_git_revision": _git_revision(),
         "memory_rubric_human_calibration": "pending",
         "authorization_note_sha256": hashlib.sha256(
             args.authorization_note.strip().encode()

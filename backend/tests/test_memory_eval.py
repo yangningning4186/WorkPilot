@@ -31,6 +31,16 @@ def test_memory_eval_rules_and_prompt_boundary() -> None:
     assert evaluate_answer("使用 Django", case) == (False, ["FastAPI"], ["Django"])
     leaked = evaluate_answer("根据记忆 [M1]，使用 FastAPI", case)
     assert leaked == (False, [], ["[m", "根据记忆"])
+    assert evaluate_answer("用 MRR（Mean Reciprocal Rank）评估 FastAPI", case) == (
+        True,
+        [],
+        [],
+    )
+    assert evaluate_answer("检查 MITs、MRR 和 MVCC，再使用 FastAPI", case) == (
+        True,
+        [],
+        [],
+    )
     titled = evaluate_answer("《个人记忆》中写着使用 FastAPI", case)
     assert titled == (False, [], ["《个人记忆》"])
     explicit = evaluate_answer("根据您提供的个人记忆，使用 FastAPI", case)
