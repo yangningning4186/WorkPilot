@@ -34,6 +34,7 @@ from app.services.cowork_permissions import (
     Capability,
     authorize_capability,
     authorize_path,
+    list_session_roots,
 )
 from app.services.cowork_shell import assess_shell_command, execute_shell_command
 from app.services.cowork_web import fetch_url
@@ -63,6 +64,10 @@ class _StrictArgs(BaseModel):
 
 
 class ListOfficeFilesArgs(_StrictArgs):
+    pass
+
+
+class ListWorkspaceRootsArgs(_StrictArgs):
     pass
 
 
@@ -361,6 +366,29 @@ async def _list_office_files(context: CoworkToolContext, _: BaseModel) -> Cowork
                 }
                 for item in items
             ]
+        }
+    )
+
+
+async def _list_workspace_roots(
+    context: CoworkToolContext, _: BaseModel
+) -> CoworkToolResult:
+    roots = await list_session_roots(
+        context.session,
+        conversation_id=context.conversation_id,
+    )
+    return CoworkToolResult(
+        output={
+            "roots": [
+                {
+                    "id": str(root.id),
+                    "label": root.label,
+                    "path": root.canonical_path,
+                    "access_mode": root.access_mode,
+                }
+                for root in roots
+            ],
+            "has_workspace": bool(roots),
         }
     )
 
@@ -725,6 +753,21 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             parallel_safe=False,
             handler=None,
             execution="interaction",
+        )
+    )
+    registry.register(
+        CoworkToolSpec(
+            name="list_workspace_roots",
+            description=(
+                "列出当前会话由用户明确选择并授权的工作目录。"
+                "回答当前目录或开始通用文件任务时先调用；Cowork 没有其他默认 cwd。"
+            ),
+            args_model=ListWorkspaceRootsArgs,
+            capability="filesystem.read",
+            risk="read",
+            effect="none",
+            parallel_safe=True,
+            handler=_list_workspace_roots,
         )
     )
     registry.register(

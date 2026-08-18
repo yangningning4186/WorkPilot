@@ -33,6 +33,7 @@ const TOOL_LABELS: Record<string, string> = {
   request_directory: "申请工作目录",
   request_capability: "申请运行能力",
   run_shell: "执行 Shell 命令",
+  list_workspace_roots: "确认工作目录",
   list_files: "列出文件",
   read_text_file: "读取文本",
   write_text_file: "写入文本",
@@ -469,6 +470,16 @@ export default function CoworkPage() {
       <section className="workdesk-main">
         <header className="workdesk-topline">
           <div><span className={authState === "authenticated" ? "online" : ""} />{authState === "authenticated" ? "本地 Agent 已连接" : "正在连接本地 Agent"}</div>
+          <button
+            aria-label={roots.length === 0 ? "选择工作目录" : "添加工作目录"}
+            disabled={busy || conversationId === null || !desktopReady}
+            onClick={() => void addRoot()}
+            title={roots[0]?.canonical_path ?? "选择本机文件夹作为工作目录"}
+            type="button"
+          >
+            <WorkdeskIcon name="folder" />
+            <span>{roots.length === 0 ? "选择工作目录" : `${roots[0]?.label}${roots.length > 1 ? ` +${roots.length - 1}` : ""}`}</span>
+          </button>
           <p>{activeConversation?.title ?? "新任务"}</p>
         </header>
 

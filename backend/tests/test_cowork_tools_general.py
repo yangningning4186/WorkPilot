@@ -72,6 +72,14 @@ async def test_general_tools_create_index_and_reuse_artifact_exactly_once(
         plan_step_id=step_id,
         tool_call_id="artifact-call",
     )
+    roots_result = await registry.execute("list_workspace_roots", {}, context=context)
+    assert roots_result.output["has_workspace"] is True
+    assert len(roots_result.output["roots"]) == 1
+    root = roots_result.output["roots"][0]
+    assert UUID(root["id"])
+    assert root["label"] == tmp_path.name
+    assert root["path"] == str(tmp_path)
+    assert root["access_mode"] == "read_write"
     arguments = {
         "path": str(tmp_path / "report.md"),
         "content": "# Report\n\nEvidence-backed result.\n",

@@ -931,6 +931,7 @@ def test_default_registry_exposes_risk_and_capability_contract() -> None:
     assert catalog["edit_word"]["capability"] == "office.word.edit"
     assert catalog["edit_word"]["risk"] == "write"
     assert catalog["edit_excel"]["effect"] == "filesystem"
+    assert catalog["list_workspace_roots"]["parallel_safe"] is True
     assert catalog["list_files"]["parallel_safe"] is True
     assert catalog["read_text_file"]["capability"] == "filesystem.read"
     assert catalog["search_files"]["effect"] == "none"
