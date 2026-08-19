@@ -221,12 +221,19 @@ def read_skill_resource(
     relative = PurePosixPath(resource)
     if relative.is_absolute() or ".." in relative.parts or not relative.parts:
         raise SkillCatalogError("Skill resource 路径非法")
-    target = skill_dir.joinpath(*relative.parts)
-    if target.is_symlink() or not target.is_file():
+    if not skill_dir.is_dir() or skill_dir.is_symlink():
+        raise FileNotFoundError(name)
+    resolved_skill_dir = skill_dir.resolve(strict=True)
+    candidate = skill_dir.joinpath(*relative.parts)
+    try:
+        target = candidate.resolve(strict=True)
+    except (FileNotFoundError, OSError) as error:
+        raise FileNotFoundError(resource) from error
+    if not target.is_relative_to(resolved_skill_dir) or not target.is_file():
         raise FileNotFoundError(resource)
     if target.stat().st_size > max_bytes:
         raise SkillCatalogError("Skill resource 超过读取上限")
-    return target.read_text(encoding="utf-8"), target.relative_to(skill_dir).as_posix()
+    return target.read_text(encoding="utf-8"), relative.as_posix()
 
 
 def _managed_one(target: Path, *, max_bytes: int) -> ManagedSkill:

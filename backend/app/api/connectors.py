@@ -150,5 +150,7 @@ async def get_oauth_callback(
         raise HTTPException(status_code=422, detail=str(exchange_error)) from exchange_error
     except httpx.HTTPError as exchange_error:
         await session.commit()
-        raise HTTPException(status_code=502, detail=f"OAuth 服务请求失败：{exchange_error}") from exchange_error
+        raise HTTPException(
+            status_code=502, detail="OAuth 服务请求失败，请检查网络后重试"
+        ) from exchange_error
     return _response(account.public())

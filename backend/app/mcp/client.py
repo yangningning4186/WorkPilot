@@ -187,7 +187,10 @@ class McpClientManager:
 
     async def list_tools(self, server_name: str) -> list[McpRemoteTool]:
         server = self._server(server_name)
-        response = await server.request("list_tools")
+        try:
+            response = await server.request("list_tools")
+        except Exception as error:
+            raise McpClientError(f"MCP 服务 {server_name} 无法读取工具目录") from error
         tools = getattr(response, "tools", None)
         if not isinstance(tools, list):
             raise McpClientError(f"MCP 服务 {server_name} 返回了无效工具目录")
@@ -210,7 +213,10 @@ class McpClientManager:
         self, server_name: str, tool_name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
         server = self._server(server_name)
-        response = await server.request("call_tool", name=tool_name, arguments=arguments)
+        try:
+            response = await server.request("call_tool", name=tool_name, arguments=arguments)
+        except Exception as error:
+            raise McpClientError(f"MCP 服务 {server_name} 调用 {tool_name} 失败") from error
         if hasattr(response, "model_dump"):
             payload = response.model_dump(mode="json", exclude_none=True)
         else:

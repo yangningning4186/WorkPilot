@@ -731,7 +731,7 @@ export default function CoworkPage() {
                 <span>{steering ? "⌘ Enter 追加指令" : "⌘ Enter 发送"}</span>
               </footer>
             </section>
-            {artifactPreview !== null && <div className="workdesk-preview-backdrop"><section className="workdesk-preview-dialog"><header><strong>{artifactPreview.title}</strong><button onClick={() => setArtifactPreview(null)} type="button">关闭</button></header><iframe src={artifactPreview.url} title={`${artifactPreview.title} 预览`} /></section></div>}
+            {artifactPreview !== null && <div className="workdesk-preview-backdrop"><section className="workdesk-preview-dialog"><header><strong>{artifactPreview.title}</strong><button onClick={() => setArtifactPreview(null)} type="button">关闭</button></header><iframe referrerPolicy="no-referrer" sandbox="" src={artifactPreview.url} title={`${artifactPreview.title} 预览`} /></section></div>}
           </div>
         )}
       </section>

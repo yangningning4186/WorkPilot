@@ -122,7 +122,9 @@ async def post_provider_probe(
             trust_env=settings.model_trust_env,
         )
     except (httpx.HTTPError, ValueError, SecretStoreError) as error:
-        raise HTTPException(status_code=502, detail=f"Provider 探测失败：{error}") from error
+        raise HTTPException(
+            status_code=502, detail="Provider 探测失败，请检查地址、密钥和网络"
+        ) from error
     return ProviderProbeResponse(
         ok=True,
         provider=profile.provider,

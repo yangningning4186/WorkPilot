@@ -132,15 +132,23 @@ async def _connector_request(
         query=args.query,
         secret_store=LocalSecretStore(context.settings.secret_store_key_path),
     )
-    async with httpx.AsyncClient(
-        timeout=context.settings.cowork_web_timeout_s,
-        follow_redirects=False,
-        trust_env=False,
-    ) as client:
-        response = await client.request(method, url, params=query, headers=headers, json=body)
+    try:
+        async with httpx.AsyncClient(
+            timeout=context.settings.cowork_web_timeout_s,
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            response = await client.request(
+                method, url, params=query, headers=headers, json=body
+            )
+    except httpx.TimeoutException as error:
+        raise ValueError("连接器 API 请求超时") from error
+    except httpx.HTTPError as error:
+        raise ValueError("连接器 API 连接失败") from error
     if 300 <= response.status_code < 400:
         raise ValueError("连接器 API 返回重定向，已按安全策略拒绝跟随")
-    response.raise_for_status()
+    if response.status_code < 200 or response.status_code >= 300:
+        raise ValueError(f"连接器 API 返回 HTTP {response.status_code}")
     text = response.text[: context.settings.cowork_mcp_result_max_chars]
     try:
         payload: Any = json.loads(text)

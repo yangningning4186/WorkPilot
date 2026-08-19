@@ -5,6 +5,7 @@ import pytest
 
 from app.agent.cowork_extensions import mcp_catalog_sha256, register_mcp_tools
 from app.agent.cowork_tools import build_default_cowork_registry
+from app.core.config import Settings
 from app.mcp.client import McpRemoteTool
 from app.mcp.config import (
     McpConfiguration,
@@ -13,6 +14,7 @@ from app.mcp.config import (
     McpToolPolicy,
     load_mcp_configuration,
 )
+from app.worker.cowork_run import _cached_mcp_manager, _mcp_configuration_sha256
 
 
 def test_mcp_config_expands_exact_environment_references(tmp_path: Path) -> None:
@@ -77,6 +79,33 @@ def test_mcp_config_rejects_persisted_literal_environment_secret(tmp_path: Path)
     )
     with pytest.raises(McpConfigurationError, match=r"必须使用.*引用"):
         load_mcp_configuration(path, {})
+
+
+@pytest.mark.asyncio
+async def test_worker_reuses_mcp_manager_until_configuration_changes() -> None:
+    ctx: dict[str, Any] = {}
+    settings = Settings()
+    first_config = McpConfiguration()
+    second_config = McpConfiguration(
+        servers={
+            "disabled": McpServerConfig(
+                enabled=False,
+                trusted=True,
+                transport="stdio",
+                command="example",
+            )
+        }
+    )
+
+    first = await _cached_mcp_manager(ctx, first_config, settings)
+    replay = await _cached_mcp_manager(ctx, first_config, settings)
+    changed = await _cached_mcp_manager(ctx, second_config, settings)
+
+    assert first is replay
+    assert changed is not first
+    assert _mcp_configuration_sha256(first_config) != _mcp_configuration_sha256(second_config)
+    await first.aclose()
+    await changed.aclose()
 
 
 class _FakeManager:

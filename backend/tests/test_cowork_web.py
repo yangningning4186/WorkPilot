@@ -75,8 +75,10 @@ async def test_web_search_extracts_and_unwraps_results(
 
     monkeypatch.setattr(cowork_web, "_assert_public_target", public_target)
     html = (
-        '<a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Freport">Report</a>'
-        '<a href="https://second.example/docs">Documentation</a>'
+        '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Freport">Report</a>'
+        '<a class="result-link" href="https://second.example/docs">Documentation</a>'
+        '<a class="nav-link" href="https://navigation.example/next">Next</a>'
+        '<a href="/html/?q=example&amp;s=30">More Results</a>'
     )
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(
@@ -96,6 +98,26 @@ async def test_web_search_extracts_and_unwraps_results(
         ("Report", "https://example.com/report"),
         ("Documentation", "https://second.example/docs"),
     ]
+
+
+async def test_fetch_url_localizes_httpx_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def public_target(url: str) -> tuple[str, ...]:
+        del url
+        return ("93.184.216.34",)
+
+    monkeypatch.setattr(cowork_web, "_assert_public_target", public_target)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: (_ for _ in ()).throw(httpx.ConnectError("English detail", request=request))
+        )
+    ) as client:
+        with pytest.raises(CoworkWebError) as captured:
+            await fetch_url("https://example.com", settings=Settings(), client=client)
+
+    assert str(captured.value) == "网页连接失败"
+    assert "English" not in str(captured.value)
 
 
 async def test_fetch_url_rejects_oversized_and_unsupported_content(

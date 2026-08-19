@@ -74,3 +74,27 @@ def test_skill_install_validates_name_matches_directory(tmp_path: Path) -> None:
             max_bytes=64_000,
             replace=False,
         )
+
+
+def test_skill_resource_rejects_symlinked_parent_escape(tmp_path: Path) -> None:
+    root = tmp_path / "skills"
+    install_skill(
+        root,
+        name="summarize",
+        skill_md=SKILL_MD,
+        enabled=True,
+        max_bytes=64_000,
+        replace=False,
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("host secret", encoding="utf-8")
+    (root / "summarize" / "references").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(FileNotFoundError):
+        read_skill_resource(
+            root,
+            name="summarize",
+            resource="references/secret.txt",
+            max_bytes=64_000,
+        )

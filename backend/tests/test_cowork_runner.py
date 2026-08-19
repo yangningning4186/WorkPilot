@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.agent.cowork_runtime import (
     _encode_tool_result,
+    _external_action_sha256,
     _goal_mentions_office,
     initialize_cowork_state,
 )
@@ -26,6 +27,7 @@ from app.agent.cowork_tools import (
     CoworkToolRegistry,
     CoworkToolResult,
     CoworkToolSpec,
+    _trusted_artifact_mime_type,
     build_default_cowork_registry,
 )
 from app.api.dependencies import (
@@ -62,6 +64,20 @@ def test_cowork_failure_message_keeps_actionable_detail_bounded() -> None:
         "Cowork 执行失败：最新 checkpoint 不是 Cowork v2 state"
     )
     assert len(_cowork_failure_message("x" * 1000)) < 380
+
+
+def test_external_approval_action_hash_is_stable_and_non_null() -> None:
+    first = _external_action_sha256("publish", {"b": 2, "a": 1})
+    second = _external_action_sha256("publish", {"a": 1, "b": 2})
+
+    assert first == second
+    assert len(first) == 64
+
+
+def test_artifact_mime_must_match_trusted_extension() -> None:
+    assert _trusted_artifact_mime_type(Path("report.xml"), None) == "application/xml"
+    with pytest.raises(CoworkToolError, match="必须与扩展名一致"):
+        _trusted_artifact_mime_type(Path("payload.xml"), "text/html")
 
 
 def test_cowork_tool_result_structurally_truncates_content_and_keeps_baseline() -> None:

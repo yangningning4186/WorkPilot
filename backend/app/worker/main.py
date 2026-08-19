@@ -1,5 +1,6 @@
 """Arq worker 入口: uv run arq app.worker.main.WorkerSettings"""
 
+import asyncio
 from typing import Any, ClassVar
 
 from arq import cron
@@ -10,6 +11,7 @@ from app.core.logging import configure_logging
 from app.core.queue import redis_settings
 from app.core.redis import close_redis, redis_client
 from app.core.run_bus import RedisRunBus
+from app.mcp.client import McpClientManager
 from app.worker.answer_run import answer_run
 from app.worker.cowork_run import cowork_run
 from app.worker.maintenance import (
@@ -31,6 +33,12 @@ async def startup(ctx: dict[str, Any]) -> None:
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
+    cached = ctx.get("mcp_manager_cache")
+    if isinstance(cached, dict):
+        managers = {
+            manager for manager in cached.values() if isinstance(manager, McpClientManager)
+        }
+        await asyncio.gather(*(manager.aclose() for manager in managers))
     await close_redis()
     await close_database()
 

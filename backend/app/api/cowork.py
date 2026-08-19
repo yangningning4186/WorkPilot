@@ -22,6 +22,7 @@ from app.schemas.cowork import (
     SessionRootListResponse,
     SessionRootResponse,
 )
+from app.services.artifact_formats import TEXT_ARTIFACT_SUFFIXES
 from app.services.artifacts import ArtifactRegistrationError, list_artifacts, resolve_artifact_file
 from app.services.cowork_permissions import (
     CapabilityDeniedError,
@@ -50,6 +51,11 @@ router = APIRouter(
     dependencies=[Depends(require_owner_identity), Depends(require_cowork_enabled)],
 )
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
+_PREVIEW_SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+}
 
 
 def _root_response(value: object) -> SessionRootResponse:
@@ -206,22 +212,26 @@ async def get_artifact_preview(
         raise HTTPException(status_code=404, detail="交付物不存在")
     artifact, path = resolved
     suffix = path.suffix.casefold()
-    if suffix == ".pdf" or (artifact.mime_type or "").casefold() == "application/pdf":
+    # 预览类型只能由经过白名单校验的扩展名决定，不能信任模型登记的 mime_type。
+    if suffix == ".pdf":
         return FileResponse(
             path,
             media_type="application/pdf",
-            headers={"Content-Disposition": f'inline; filename="{_safe_preview_name(path)}"'},
+            headers={
+                **_PREVIEW_SECURITY_HEADERS,
+                "Content-Disposition": f'inline; filename="{_safe_preview_name(path)}"',
+            },
         )
     if suffix == ".docx":
         body = _docx_preview(path)
     elif suffix == ".xlsx":
         body = _xlsx_preview(path)
-    elif suffix in {".md", ".txt", ".csv", ".json", ".html", ".htm"}:
+    elif suffix in TEXT_ARTIFACT_SUFFIXES:
         if path.stat().st_size > 5 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="交付物过大，无法在线预览")
         body = f"<pre>{html.escape(path.read_text(encoding='utf-8', errors='replace'))}</pre>"
     else:
-        return FileResponse(path, media_type=artifact.mime_type or "application/octet-stream")
+        raise HTTPException(status_code=415, detail="该交付物格式不支持在线预览")
     document = (
         "<!doctype html><meta charset='utf-8'><style>"
         "body{font:15px/1.65 system-ui;color:#26332f;padding:32px;max-width:960px;margin:auto}"
@@ -231,7 +241,7 @@ async def get_artifact_preview(
     )
     return HTMLResponse(
         document,
-        headers={"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox"},
+        headers=_PREVIEW_SECURITY_HEADERS,
     )
 
 

@@ -68,3 +68,10 @@ def test_register_skill_tools_adds_catalog_and_runtime_snapshot(tmp_path: Path) 
     assert registry.runtime_snapshot()["skills"]["snapshot_sha256"] == (
         catalog.snapshot_sha256
     )
+    ordinary_goal_tools = {
+        tool.name for tool in registry.tool_definitions_for("整理当前工作目录")
+    }
+    assert {"run_shell", "list_skills", "load_skill", "load_skill_resource"} <= (
+        ordinary_goal_tools
+    )
+    assert registry.requires_approval("model_hallucinated_tool") is False

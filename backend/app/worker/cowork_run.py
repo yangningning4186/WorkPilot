@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import hashlib
+import json
+from typing import Any, cast
 from uuid import UUID
 
 import structlog
@@ -23,7 +25,7 @@ from app.core.config import Settings, get_settings
 from app.core.run_bus import RunBus
 from app.llm.gateway import ModelGateway
 from app.mcp.client import McpClientManager
-from app.mcp.config import load_mcp_configuration
+from app.mcp.config import McpConfiguration, load_mcp_configuration
 from app.mcp.credentials import hydrate_mcp_oauth_credentials
 from app.security.secret_store import LocalSecretStore
 from app.services.provider_profiles import build_conversation_gateway
@@ -39,6 +41,46 @@ from app.services.runs import (
 from app.worker.answer_run import worker_identity
 
 logger = structlog.get_logger(__name__)
+
+
+def _mcp_configuration_sha256(configuration: McpConfiguration) -> str:
+    payload = json.dumps(
+        configuration.model_dump(mode="json", exclude={"source_path"}),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+async def _cached_mcp_manager(
+    ctx: dict[str, Any],
+    configuration: McpConfiguration,
+    settings: Settings,
+) -> McpClientManager:
+    raw_lock = ctx.get("mcp_manager_lock")
+    if raw_lock is None:
+        raw_lock = asyncio.Lock()
+        ctx["mcp_manager_lock"] = raw_lock
+    if not isinstance(raw_lock, asyncio.Lock):
+        raise TypeError("mcp_manager_lock 类型无效")
+    fingerprint = _mcp_configuration_sha256(configuration)
+    async with raw_lock:
+        raw_cache = ctx.setdefault("mcp_manager_cache", {})
+        if not isinstance(raw_cache, dict):
+            raise TypeError("mcp_manager_cache 类型无效")
+        cache = cast("dict[str, McpClientManager]", raw_cache)
+        manager = cache.get(fingerprint)
+        if manager is None:
+            manager = McpClientManager(
+                configuration,
+                connect_timeout_s=settings.cowork_mcp_connect_timeout_s,
+                call_timeout_s=settings.cowork_mcp_call_timeout_s,
+                result_max_chars=settings.cowork_mcp_result_max_chars,
+            )
+            cache[fingerprint] = manager
+        return manager
 
 
 async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
@@ -123,8 +165,6 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
     )
     raw_gateway: ModelGateway | None = ctx.get("cowork_gateway")
     owns_gateway = raw_gateway is None
-    run_mcp_manager: McpClientManager | None = None
-    owns_mcp_manager = False
     try:
         async with session_factory() as session:
             if raw_gateway is None:
@@ -156,14 +196,7 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                         load_mcp_configuration(settings.cowork_mcp_config_path),
                         LocalSecretStore(settings.secret_store_key_path),
                     )
-                    manager = McpClientManager(
-                        configuration,
-                        connect_timeout_s=settings.cowork_mcp_connect_timeout_s,
-                        call_timeout_s=settings.cowork_mcp_call_timeout_s,
-                        result_max_chars=settings.cowork_mcp_result_max_chars,
-                    )
-                    run_mcp_manager = manager
-                    owns_mcp_manager = True
+                    manager = await _cached_mcp_manager(ctx, configuration, settings)
                 await register_mcp_tools(registry, manager)
                 register_browser_tools(registry)
                 register_connector_tools(registry)
@@ -248,8 +281,6 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
             error=str(error),
         )
     finally:
-        if owns_mcp_manager and run_mcp_manager is not None:
-            await run_mcp_manager.aclose()
         if owns_gateway and raw_gateway is not None:
             await raw_gateway.aclose()
         heartbeat.cancel()

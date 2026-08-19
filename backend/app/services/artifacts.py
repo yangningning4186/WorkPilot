@@ -43,6 +43,10 @@ _COLUMNS = """
     id, conversation_id, run_id, session_root_id, kind, title, uri, mime_type, meta,
     created_at, updated_at
 """
+_QUALIFIED_ARTIFACT_COLUMNS = ", ".join(
+    f"artifacts.{column.strip()} AS {column.strip()}"
+    for column in _COLUMNS.split(",")
+)
 
 
 async def list_artifacts(
@@ -89,7 +93,7 @@ async def resolve_artifact_file(
             await session.execute(
                 text(
                     f"""
-                    SELECT {_COLUMNS}, roots.canonical_path AS root_path
+                    SELECT {_QUALIFIED_ARTIFACT_COLUMNS}, roots.canonical_path AS root_path
                     FROM artifacts
                     JOIN conversations ON conversations.id = artifacts.conversation_id
                     JOIN session_roots AS roots ON roots.id = artifacts.session_root_id

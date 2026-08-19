@@ -51,6 +51,7 @@ class _ReadableHtmlParser(HTMLParser):
         self.links: list[dict[str, str]] = []
         self._link_href: str | None = None
         self._link_parts: list[str] = []
+        self._link_class = ""
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         lowered = tag.casefold()
@@ -60,6 +61,9 @@ class _ReadableHtmlParser(HTMLParser):
             self._in_title = True
         elif lowered == "a":
             self._link_href = next((value for name, value in attrs if name == "href"), None)
+            self._link_class = next(
+                (value or "" for name, value in attrs if name == "class"), ""
+            )
             self._link_parts = []
         elif lowered in {"p", "div", "section", "article", "br", "li", "tr", "h1", "h2", "h3"}:
             self.text_parts.append("\n")
@@ -73,8 +77,11 @@ class _ReadableHtmlParser(HTMLParser):
         elif lowered == "a":
             label = " ".join(" ".join(self._link_parts).split())
             if self._link_href and label:
-                self.links.append({"title": label, "url": self._link_href})
+                self.links.append(
+                    {"title": label, "url": self._link_href, "class": self._link_class}
+                )
             self._link_href = None
+            self._link_class = ""
             self._link_parts = []
         elif lowered in {"p", "div", "section", "article", "li", "tr", "h1", "h2", "h3"}:
             self.text_parts.append("\n")
@@ -214,8 +221,10 @@ async def fetch_url(
                     content_type = content_type.strip().casefold()
                     body = await _bounded_response_body(response, settings.cowork_web_max_bytes)
                     status_code = response.status_code
+            except httpx.TimeoutException as error:
+                raise CoworkWebError("网页读取超时") from error
             except httpx.HTTPError as error:
-                raise CoworkWebError(f"网页读取失败: {error}") from error
+                raise CoworkWebError("网页连接失败") from error
             if content_type == "application/pdf" or current_url.casefold().endswith(".pdf"):
                 pdf = await _parse_remote_pdf(body, settings=settings)
                 return WebSnapshot(
@@ -283,6 +292,9 @@ async def search_web(
     results: list[WebSearchResult] = []
     seen: set[str] = set()
     for link in page.links:
+        classes = frozenset(link.get("class", "").split())
+        if not classes.intersection({"result__a", "result-link"}):
+            continue
         raw_url = urljoin(page.final_url, link["url"])
         parsed = urlsplit(raw_url)
         if parsed.hostname and parsed.hostname.endswith("duckduckgo.com"):

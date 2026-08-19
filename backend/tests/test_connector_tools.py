@@ -124,6 +124,7 @@ def test_read_only_subagent_catalog_is_bounded_and_excludes_external_actions() -
 
     assert len(tools) <= 12
     assert {"browser_open", "web_search"} <= names
+    assert "search_tool_catalog" not in names
     assert "act_connector_api" not in names
     assert "read_connector_api" not in names
 

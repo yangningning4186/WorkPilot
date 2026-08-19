@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import mimetypes
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -26,6 +25,10 @@ from app.agent.write_note import (
 )
 from app.core.config import Settings
 from app.llm.types import ToolDefinition
+from app.services.artifact_formats import (
+    TEXT_ARTIFACT_MIME_BY_SUFFIX,
+    TEXT_ARTIFACT_SUFFIXES,
+)
 from app.services.artifacts import register_artifact
 from app.services.cowork_files import (
     list_files,
@@ -53,16 +56,19 @@ from app.services.office_workspace import (
 ToolRisk = Literal["read", "write", "external"]
 ToolEffect = Literal["none", "filesystem", "external"]
 ToolExecution = Literal["local", "interaction"]
-_ARTIFACT_TEXT_SUFFIXES = frozenset(
-    {".csv", ".htm", ".html", ".json", ".jsonl", ".markdown", ".md", ".rst", ".toml", ".tsv", ".txt", ".xml", ".yaml", ".yml"}
-)
-_ARTIFACT_MIME_TYPES = frozenset(
-    {"application/json", "application/xml", "application/yaml"}
-)
 
 
 class CoworkToolError(RuntimeError):
     pass
+
+
+def _trusted_artifact_mime_type(path: Path, requested: str | None) -> str:
+    expected = TEXT_ARTIFACT_MIME_BY_SUFFIX.get(path.suffix.casefold())
+    if expected is None:
+        raise CoworkToolError("交付物必须使用受支持的文本扩展名")
+    if requested is not None and requested.casefold().strip() != expected:
+        raise CoworkToolError(f"交付物 mime_type 必须与扩展名一致：{expected}")
+    return expected
 
 
 class _StrictArgs(BaseModel):
@@ -339,6 +345,10 @@ class CoworkToolRegistry:
             "search_files",
             "write_text_file",
             "create_artifact",
+            "run_shell",
+            "list_skills",
+            "load_skill",
+            "load_skill_resource",
             "search_tool_catalog",
         )
         categories: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
@@ -387,6 +397,7 @@ class CoworkToolRegistry:
             spec = self._tools[definition.name]
             if (
                 definition.name in exclude
+                or definition.name == "search_tool_catalog"
                 or spec.execution != "local"
                 or spec.effect != "none"
                 or spec.risk != "read"
@@ -414,7 +425,10 @@ class CoworkToolRegistry:
             return False
 
     def requires_approval(self, name: str) -> bool:
-        return self.get(name).approval_required
+        try:
+            return self.get(name).approval_required
+        except CoworkToolError:
+            return False
 
     def parse_arguments(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         spec = self.get(name)
@@ -745,14 +759,9 @@ async def _web_search(context: CoworkToolContext, raw: BaseModel) -> CoworkToolR
 async def _create_artifact(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
     args = CreateArtifactArgs.model_validate(raw.model_dump())
     target_path = Path(args.path)
-    if target_path.suffix.casefold() not in _ARTIFACT_TEXT_SUFFIXES:
+    if target_path.suffix.casefold() not in TEXT_ARTIFACT_SUFFIXES:
         raise CoworkToolError("交付物必须使用受支持的文本扩展名")
-    if (
-        args.mime_type is not None
-        and not args.mime_type.casefold().startswith("text/")
-        and args.mime_type.casefold() not in _ARTIFACT_MIME_TYPES
-    ):
-        raise CoworkToolError("交付物 mime_type 必须是文本、JSON、XML 或 YAML")
+    mime_type = _trusted_artifact_mime_type(target_path, args.mime_type)
     result = await write_text_file(
         target_path,
         content=args.content,
@@ -765,7 +774,6 @@ async def _create_artifact(context: CoworkToolContext, raw: BaseModel) -> Cowork
         target_path=result.path,
         capability="filesystem.write",
     )
-    mime_type = args.mime_type or mimetypes.guess_type(result.path.name)[0] or "text/plain"
     artifact = await register_artifact(
         context.session,
         conversation_id=context.conversation_id,

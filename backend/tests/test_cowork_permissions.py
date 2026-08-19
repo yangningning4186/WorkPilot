@@ -240,6 +240,53 @@ async def test_cowork_api_grants_root_once_and_lists_artifacts(
     )
 
 
+async def test_artifact_preview_ignores_model_mime_and_sandboxes_text(
+    db_session: AsyncSession, tmp_path: Path
+) -> None:
+    conversation_id = await _owner_conversation(db_session)
+    root = await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    payload = tmp_path / "payload.xml"
+    payload.write_text("<script>window.top.document.body.textContent='owned'</script>", encoding="utf-8")
+    artifact = await register_artifact(
+        db_session,
+        conversation_id=conversation_id,
+        session_root_id=root.id,
+        kind="file",
+        title="payload.xml",
+        uri=str(payload),
+        mime_type="text/html",
+    )
+    await db_session.commit()
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    app = create_app()
+    app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        app_env="test", cowork_enabled=True
+    )
+    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(
+        scope="local_owner"
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/v1/cowork/artifacts/{artifact.id}/preview")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "sandbox" in response.headers["content-security-policy"]
+    assert "<script>" not in response.text
+    assert "&lt;script&gt;" in response.text
+
+
 async def test_cowork_workflow_uses_existing_run_model(db_session: AsyncSession) -> None:
     conversation_id = await _owner_conversation(db_session)
     run = await create_run(

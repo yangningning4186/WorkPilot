@@ -58,6 +58,17 @@ _OFFICE_TOOL_NAMES = frozenset(
 )
 
 
+def _external_action_sha256(tool: str, arguments: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        {"tool": tool, "arguments": arguments},
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 class CanonicalToolFunction(TypedDict):
     name: str
     arguments: str
@@ -1374,6 +1385,7 @@ class _CoworkExecution:
             "tool": call.name,
             "arguments": arguments,
             "warning": "该工具会修改外部系统；批准仅对本次 tool call 有效。",
+            "command_sha256": _external_action_sha256(call.name, arguments),
         }
         inbox = await create_inbox_item(
             self.session,

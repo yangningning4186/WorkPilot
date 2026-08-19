@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,7 +59,10 @@ def create_native_artifact(
         payload = temporary.read_bytes()
         # 生成可能耗时；替换前再次核对 baseline，防止覆盖期间的并发修改。
         _check_baseline(path, baseline_sha256)
+        previous_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else None
         backup_path = create_file_backup(path, backup_versions) if path.exists() else None
+        if previous_mode is not None:
+            os.chmod(temporary, previous_mode)
         os.replace(temporary, path)
         directory_fd = os.open(path.parent, os.O_RDONLY)
         try:
@@ -78,6 +82,8 @@ def create_native_artifact(
 
 def _check_baseline(path: Path, baseline: str | None) -> None:
     if not path.exists():
+        if baseline is not None:
+            raise ValueError("原生交付物尚不存在，baseline_sha256 必须省略")
         return
     if path.is_symlink() or not path.is_file():
         raise ValueError("原生交付物目标必须是普通文件")
@@ -136,6 +142,7 @@ def _write_pdf(path: Path, *, title: str, content: str) -> None:
     document = fitz.open()
     try:
         page = document.new_page(width=595, height=842)
+        font = fitz.Font(fontname="china-s")
         y = 52.0
         for index, paragraph in enumerate([title, *content.splitlines()]):
             text = paragraph.strip()
@@ -143,19 +150,43 @@ def _write_pdf(path: Path, *, title: str, content: str) -> None:
                 y += 8
                 continue
             size = 18 if index == 0 else 10.5
-            height = max(24.0, (len(text) // 45 + 1) * (size + 5))
-            if y + height > 800:
-                page = document.new_page(width=595, height=842)
-                y = 48
-            page.insert_textbox(
-                fitz.Rect(48, y, 547, y + height),
-                text,
-                fontname="china-s",
-                fontsize=size,
-                lineheight=1.35,
-            )
-            y += height + 5
+            line_height = size * 1.35
+            for line in _wrap_pdf_lines(text, font=font, fontsize=size, max_width=499):
+                if y + line_height > 800:
+                    page = document.new_page(width=595, height=842)
+                    y = 48
+                page.insert_text(
+                    (48, y),
+                    line,
+                    fontname="china-s",
+                    fontsize=size,
+                )
+                y += line_height
+            y += 5
         document.set_metadata({"title": title})
         document.save(path)
     finally:
         document.close()
+
+
+def _wrap_pdf_lines(
+    text: str,
+    *,
+    font: Any,
+    fontsize: float,
+    max_width: float,
+) -> list[str]:
+    """按字体真实宽度折行，避免 insert_textbox 负返回值导致内容静默消失。"""
+
+    lines: list[str] = []
+    current = ""
+    for character in text:
+        candidate = f"{current}{character}"
+        if current and font.text_length(candidate, fontsize=fontsize) > max_width:
+            lines.append(current.rstrip())
+            current = character.lstrip()
+        else:
+            current = candidate
+    if current or not lines:
+        lines.append(current.rstrip())
+    return [line for line in lines if line]
