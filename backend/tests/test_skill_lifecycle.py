@@ -1,9 +1,14 @@
+import base64
+import io
+import zipfile
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
-from app.cowork.skills.catalog import load_skill_catalog
+from app.cowork.skills.catalog import SkillCatalogError, load_skill_catalog
 from app.cowork.skills.lifecycle import (
+    import_skill_zip,
     install_skill,
     list_managed_skills,
     read_skill_resource,
@@ -98,3 +103,60 @@ def test_skill_resource_rejects_symlinked_parent_escape(tmp_path: Path) -> None:
             resource="references/secret.txt",
             max_bytes=64_000,
         )
+
+
+def test_skill_zip_enforces_actual_streamed_member_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr("summarize/SKILL.md", SKILL_MD)
+        bundle.writestr("summarize/references/bomb.bin", b"x")
+    original_open = zipfile.ZipFile.open
+
+    def oversized_open(
+        bundle: zipfile.ZipFile,
+        member: str | zipfile.ZipInfo,
+        mode: str = "r",
+        pwd: bytes | None = None,
+        *,
+        force_zip64: bool = False,
+    ) -> BinaryIO:
+        name = member.filename if isinstance(member, zipfile.ZipInfo) else member
+        if name == "summarize/references/bomb.bin":
+            return io.BytesIO(b"x" * 1_025)
+        return original_open(bundle, member, mode, pwd, force_zip64=force_zip64)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", oversized_open)
+
+    with pytest.raises(SkillCatalogError, match="实际解压超过大小上限"):
+        import_skill_zip(
+            tmp_path / "skills",
+            archive_base64=base64.b64encode(archive_buffer.getvalue()).decode("ascii"),
+            enabled=True,
+            max_bytes=1_024,
+        )
+
+    assert not (tmp_path / "skills" / "summarize").exists()
+
+
+def test_skill_zip_imports_bounded_resource_streams(tmp_path: Path) -> None:
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr("summarize/SKILL.md", SKILL_MD)
+        bundle.writestr("summarize/references/style.md", "Keep it short.")
+
+    imported = import_skill_zip(
+        tmp_path / "skills",
+        archive_base64=base64.b64encode(archive_buffer.getvalue()).decode("ascii"),
+        enabled=True,
+        max_bytes=1_024,
+    )
+
+    assert imported.name == "summarize"
+    assert read_skill_resource(
+        tmp_path / "skills",
+        name="summarize",
+        resource="references/style.md",
+        max_bytes=1_024,
+    ) == ("Keep it short.", "references/style.md")

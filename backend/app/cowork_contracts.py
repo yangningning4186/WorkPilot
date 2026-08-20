@@ -21,6 +21,7 @@ Capability = Literal[
     "office.word.edit",
     "office.excel.edit",
     "network.read",
+    "browser.control",
     "shell.execute",
     "external.action",
 ]

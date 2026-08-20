@@ -1,3 +1,4 @@
+import zipfile
 from pathlib import Path
 from uuid import UUID
 
@@ -56,6 +57,27 @@ def test_excel_with_chart_is_rejected_before_openpyxl_roundtrip(tmp_path: Path) 
     workbook.save(path)
 
     with pytest.raises(DocumentNotEditableError, match="图表"):
+        _ensure_excel_roundtrip_safe(path)
+
+
+@pytest.mark.parametrize(
+    ("part", "label"),
+    [
+        ("xl/externalLinks/externalLink1.xml", "外部链接"),
+        ("xl/tables/table1.xml", "Excel 表"),
+        ("xl/threadedComments/threadedComment1.xml", "线程批注"),
+    ],
+)
+def test_excel_with_unpreserved_parts_is_rejected(
+    tmp_path: Path,
+    part: str,
+    label: str,
+) -> None:
+    path = tmp_path / "unsafe.xlsx"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(part, "<xml />")
+
+    with pytest.raises(DocumentNotEditableError, match=label):
         _ensure_excel_roundtrip_safe(path)
 
 
@@ -207,6 +229,77 @@ async def test_backups_keep_only_recent_versions_per_file(
 
     backups = list((library / ".workpilot-backups").glob("*/brief.docx"))
     assert len(backups) == 2
+
+
+@pytest.mark.parametrize(
+    ("kind", "valid_plan", "invalid_plan"),
+    [
+        (
+            "word",
+            '{"summary":"有效修改","operations":['
+            '{"op":"replace_paragraph","paragraph":0,"text":"已修改"}]}',
+            '{"summary":"无效修改","operations":['
+            '{"op":"replace_paragraph","paragraph":999,"text":"越界"}]}',
+        ),
+        (
+            "excel",
+            '{"summary":"有效修改","operations":['
+            '{"op":"set_cell","sheet":"预算","cell":"B2","value":20}]}',
+            '{"summary":"无效修改","operations":['
+            '{"op":"set_cell","sheet":"不存在","cell":"B2","value":30}]}',
+        ),
+    ],
+)
+async def test_invalid_office_plan_does_not_consume_backup_slot(
+    kind: str,
+    valid_plan: str,
+    invalid_plan: str,
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    library, base_settings, file_ids = await _office_fixture(db_session, tmp_path)
+    settings = base_settings.model_copy(update={"workspace_backup_versions_per_file": 1})
+    current = await get_workspace_file(db_session, file_id=file_ids[kind], settings=settings)
+    await execute_workspace_instruction(
+        db_session,
+        ModelGateway(DeterministicProvider(completion_text=valid_plan), embedding_dimensions=1024),
+        file_id=file_ids[kind],
+        baseline_sha256=current.baseline_sha256,
+        instruction="先执行一次有效修改",
+        content=None,
+        selection_start=0,
+        selection_end=0,
+        settings=settings,
+    )
+    source = library / ("brief.docx" if kind == "word" else "budget.xlsx")
+    backups_before = {
+        path: path.read_bytes()
+        for path in (library / ".workpilot-backups").glob(f"*/{source.name}")
+    }
+    assert len(backups_before) == 1
+    source_before = source.read_bytes()
+    latest = await get_workspace_file(db_session, file_id=file_ids[kind], settings=settings)
+
+    with pytest.raises(OfficePlanError):
+        await execute_workspace_instruction(
+            db_session,
+            ModelGateway(
+                DeterministicProvider(completion_text=invalid_plan), embedding_dimensions=1024
+            ),
+            file_id=file_ids[kind],
+            baseline_sha256=latest.baseline_sha256,
+            instruction="执行无效修改",
+            content=None,
+            selection_start=0,
+            selection_end=0,
+            settings=settings,
+        )
+
+    assert source.read_bytes() == source_before
+    assert {
+        path: path.read_bytes()
+        for path in (library / ".workpilot-backups").glob(f"*/{source.name}")
+    } == backups_before
 
 
 async def test_excel_instruction_updates_values_and_formulas_without_touching_style(

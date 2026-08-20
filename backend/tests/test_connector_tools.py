@@ -104,10 +104,90 @@ def test_dynamic_tool_catalog_keeps_initial_schema_bounded_and_activates_matches
     browser = {item.name for item in registry.tool_definitions_for("浏览网页并搜索资料")}
     assert {"browser_open", "browser_click", "web_search"} <= browser
 
+    # 只是被下发过不构成保留理由。否则每轮目录都是上一轮的超集，几轮后等于
+    # 无条件注入整个 registry，动态目录就白做了。
+    after_topic_switch = {item.name for item in registry.tool_definitions_for("继续整理本地文件")}
+    assert not {"browser_open", "browser_click", "web_search"} & after_topic_switch
+
+    # 历史真的调用过才保留：模型上下文里已经有这些 tool_call，schema 不能消失。
+    with_history = {
+        item.name
+        for item in registry.tool_definitions_for(
+            "继续整理本地文件", retained_tools={"browser_click"}
+        )
+    }
+    assert "browser_click" in with_history
+    assert "browser_open" not in with_history
+
     matches = registry.search_tools("连接器写入官方 API", max_results=8)
     assert any(item["name"] == "act_connector_api" for item in matches)
     activated = {item.name for item in registry.tool_definitions_for("继续任务")}
     assert "act_connector_api" in activated
+
+    # search_tool_catalog 的显式激活才进快照；单纯下发过的不进。
+    snapshot = registry.runtime_snapshot()
+    assert "act_connector_api" in snapshot["tool_registry"]["activated_tools"]
+    assert "browser_open" not in snapshot["tool_registry"]["activated_tools"]
+
+    resumed = build_default_cowork_registry()
+    register_browser_tools(resumed)
+    register_connector_tools(resumed)
+    resumed.restore_runtime_snapshot(snapshot)
+    resumed_tools = {item.name for item in resumed.tool_definitions_for("恢复后继续")}
+    assert "act_connector_api" in resumed_tools
+
+
+def test_dynamic_tool_catalog_does_not_grow_monotonically() -> None:
+    """连续换话题不能把目录推向完整 registry。"""
+
+    registry = build_default_cowork_registry()
+    register_browser_tools(registry)
+    register_connector_tools(registry)
+    turns = (
+        "把这个 word 文档整理一下",
+        "搜一下最新新闻并打开链接",
+        "同步到 github 连接器",
+        "写个 shell 脚本",
+        "用 mcp 试试",
+    )
+    sizes = [len(registry.tool_definitions_for(turn)) for turn in turns]
+
+    assert max(sizes) <= 24
+    assert len(registry.tool_definitions()) > max(sizes)
+    # 单调增长的旧行为下，最后一轮必然 >= 之前每一轮。
+    assert sizes[-1] < max(sizes)
+
+
+def test_retained_tools_survive_even_beyond_max_tools() -> None:
+    """保留集宁可超出 max_tools 也不能丢：缺一个 schema 就可能让 provider 拒绝整个请求。"""
+
+    registry = build_default_cowork_registry()
+    register_browser_tools(registry)
+    register_connector_tools(registry)
+    registered = {item["name"] for item in registry.catalog()}
+    retained = {"browser_click", "browser_type", "act_connector_api", "edit_excel"}
+    assert retained <= registered
+
+    names = {
+        item.name
+        for item in registry.tool_definitions_for(
+            "继续任务", max_tools=4, retained_tools=retained
+        )
+    }
+
+    assert retained <= names
+
+
+def test_runtime_snapshot_ignores_activated_tools_missing_from_new_registry() -> None:
+    registry = build_default_cowork_registry()
+    registry.restore_runtime_snapshot(
+        {"tool_registry": {"activated_tools": ["read_text_file", "removed_extension"]}}
+    )
+
+    snapshot = registry.runtime_snapshot()
+
+    assert "read_text_file" in snapshot["tool_registry"]["activated_tools"]
+    assert "removed_extension" not in snapshot["tool_registry"]["activated_tools"]
 
 
 @pytest.mark.parametrize(

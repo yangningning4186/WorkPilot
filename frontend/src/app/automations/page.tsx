@@ -170,9 +170,16 @@ export default function AutomationsPage() {
     setBusy(`inbox:${item.id}`);
     try {
       if (item.kind === "ask_user") {
-        const answer = answers[item.id]?.trim();
-        if (!answer) return;
-        await respondToCoworkInteraction(item.run_id, item.resume_token, { answer });
+        if (approved) {
+          const answer = answers[item.id]?.trim();
+          if (!answer) return;
+          await respondToCoworkInteraction(item.run_id, item.resume_token, {
+            approved: true,
+            answer,
+          });
+        } else {
+          await respondToCoworkInteraction(item.run_id, item.resume_token, { approved: false });
+        }
       } else if (item.kind === "directory_request" && approved) {
         const path = await pickCoworkDirectory();
         if (path === null) return;
@@ -237,7 +244,7 @@ export default function AutomationsPage() {
 
         <aside className="automation-inbox-column">
           <header className="automation-section-title"><div><span>UNATTENDED INBOX</span><h2>等待你的决定</h2></div><small className={pendingCount > 0 ? "badge" : ""}>{pendingCount}</small></header>
-          {inbox.length === 0 ? <div className="automation-inbox-empty"><span>✓</span><strong>收件箱已清空</strong><p>无人值守任务需要你时，会安全暂停并出现在这里。</p></div> : <div className="automation-inbox-list">{inbox.map((item) => <article className="automation-inbox-item" key={item.id}><header><span>{kindLabel(item.kind)}</span><time>{formatDate(item.created_at)}</time></header><h3>{item.schedule_title ?? "无人值守任务"}</h3><p>{requestText(item)}</p>{item.kind === "shell_approval" && typeof item.request.command === "string" && <code>{item.request.command}</code>}{item.kind === "external_approval" && <code>{JSON.stringify(item.request.arguments ?? {})}</code>}{item.kind === "ask_user" && <textarea onChange={(event) => setAnswers((value) => ({ ...value, [item.id]: event.target.value }))} placeholder="输入答复后继续运行…" value={answers[item.id] ?? ""} />}<footer>{item.kind !== "ask_user" && <button disabled={busy !== null} onClick={() => void resolveInbox(item, false)} type="button">拒绝</button>}<button className={item.kind === "shell_approval" || item.kind === "external_approval" ? "approve danger" : "approve"} disabled={busy !== null || (item.kind === "ask_user" && !(answers[item.id] ?? "").trim())} onClick={() => void resolveInbox(item, true)} type="button">{item.kind === "ask_user" ? "回复并继续" : item.kind === "directory_request" ? "选择目录并允许" : "允许一次"}</button></footer></article>)}</div>}
+          {inbox.length === 0 ? <div className="automation-inbox-empty"><span>✓</span><strong>收件箱已清空</strong><p>无人值守任务需要你时，会安全暂停并出现在这里。</p></div> : <div className="automation-inbox-list">{inbox.map((item) => <article className="automation-inbox-item" key={item.id}><header><span>{kindLabel(item.kind)}</span><time>{formatDate(item.created_at)}</time></header><h3>{item.schedule_title ?? "无人值守任务"}</h3><p>{requestText(item)}</p>{item.kind === "shell_approval" && typeof item.request.command === "string" && <code>{item.request.command}</code>}{item.kind === "external_approval" && <code>{JSON.stringify(item.request.arguments ?? {})}</code>}{item.kind === "ask_user" && <textarea onChange={(event) => setAnswers((value) => ({ ...value, [item.id]: event.target.value }))} placeholder="输入答复后继续运行…" value={answers[item.id] ?? ""} />}<footer><button disabled={busy !== null} onClick={() => void resolveInbox(item, false)} type="button">{item.kind === "ask_user" ? "跳过，由 Cowork 判断" : "拒绝"}</button><button className={item.kind === "shell_approval" || item.kind === "external_approval" ? "approve danger" : "approve"} disabled={busy !== null || (item.kind === "ask_user" && !(answers[item.id] ?? "").trim())} onClick={() => void resolveInbox(item, true)} type="button">{item.kind === "ask_user" ? "回复并继续" : item.kind === "directory_request" ? "选择目录并允许" : "允许一次"}</button></footer></article>)}</div>}
           <Link className="automation-open-cowork" href="/cowork">打开 Cowork 运行记录 →</Link>
         </aside>
       </section>

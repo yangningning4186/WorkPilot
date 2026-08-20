@@ -280,13 +280,17 @@ async def resolve_inbox_item(
     response: dict[str, Any] = {"approved": approved}
     status: InteractionStatus
     if item.kind == "ask_user":
-        normalized = (answer or "").strip()
-        if not normalized:
-            raise ValueError("请填写对 Cowork 的答复")
-        if len(normalized) > 4000:
-            raise ValueError("答复不能超过 4000 个字符")
-        response["answer"] = normalized
-        status = "answered"
+        if approved:
+            normalized = (answer or "").strip()
+            if not normalized:
+                raise ValueError("请填写对 Cowork 的答复")
+            if len(normalized) > 4000:
+                raise ValueError("答复不能超过 4000 个字符")
+            response["answer"] = normalized
+            status = "answered"
+        else:
+            response["reason"] = "用户选择不回答；请基于现有信息自行判断，不要重复询问同一问题"
+            status = "rejected"
     elif item.kind == "directory_request":
         if approved:
             normalized_path = (path or "").strip()

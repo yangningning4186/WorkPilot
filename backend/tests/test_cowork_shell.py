@@ -98,3 +98,44 @@ async def test_shell_cancel_terminates_operator_process_group_promptly(tmp_path:
     with pytest.raises(CoworkShellCancelledError, match="用户停止"):
         await task
     assert time.monotonic() - started < 2
+
+
+@pytest.mark.skipif(os.name != "posix", reason="setsid process-group behavior is POSIX-only")
+async def test_shell_does_not_hang_when_detached_child_keeps_output_pipe(tmp_path: Path) -> None:
+    pid_path = tmp_path / "detached.pid"
+    child_script = "import time; time.sleep(30)"
+    parent_script = (
+        "import subprocess,sys; from pathlib import Path; "
+        f"p=subprocess.Popen([sys.executable,'-c',{child_script!r}], start_new_session=True); "
+        f"Path({str(pid_path)!r}).write_text(str(p.pid))"
+    )
+    cancel_event = asyncio.Event()
+    started = time.monotonic()
+    try:
+        task = asyncio.create_task(
+            execute_shell_command(
+                parse_shell_command(
+                    f"{shlex.quote(sys.executable)} -c {shlex.quote(parent_script)}"
+                ),
+                cwd=tmp_path,
+                cancel_event=cancel_event,
+                timeout_s=60,
+                terminate_grace_s=0.05,
+                max_output_bytes=1024,
+            )
+        )
+        for _ in range(20):
+            if pid_path.exists():
+                break
+            await asyncio.sleep(0.01)
+        cancel_event.set()
+        with pytest.raises(CoworkShellCancelledError, match="用户停止"):
+            await task
+    finally:
+        if pid_path.exists():
+            try:
+                os.kill(int(pid_path.read_text()), 9)
+            except ProcessLookupError:
+                pass
+
+    assert time.monotonic() - started < 2

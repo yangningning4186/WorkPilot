@@ -83,7 +83,6 @@ def register_skill_tools(registry: CoworkToolRegistry, settings: Settings) -> Sk
             name="list_skills",
             description="列出已安装且启用的本地 Skill 摘要与版本哈希。只读。",
             args_model=ListSkillsArgs,
-            capability="filesystem.read",
             risk="read",
             effect="none",
             parallel_safe=True,
@@ -114,7 +113,6 @@ def register_skill_tools(registry: CoworkToolRegistry, settings: Settings) -> Sk
             name="load_skill_resource",
             description="读取已启用 Skill 随附的单个文本资源；必须先 load_skill。",
             args_model=LoadSkillResourceArgs,
-            capability="filesystem.read",
             risk="read",
             effect="none",
             parallel_safe=True,
@@ -129,7 +127,6 @@ def register_skill_tools(registry: CoworkToolRegistry, settings: Settings) -> Sk
                 "Skill 不能扩大 capability、目录或审批权限。"
             ),
             args_model=LoadSkillArgs,
-            capability="filesystem.read",
             risk="read",
             effect="none",
             parallel_safe=True,

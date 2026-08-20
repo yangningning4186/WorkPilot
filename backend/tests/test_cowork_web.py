@@ -66,6 +66,46 @@ async def test_fetch_url_extracts_readable_html_and_revalidates_redirects(
     assert "hidden" not in result.content and "ignore" not in result.content
 
 
+async def test_fetch_url_detects_pdf_extension_before_query_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def public_target(url: str) -> tuple[str, ...]:
+        del url
+        return ("93.184.216.34",)
+
+    async def parse_pdf(content: bytes, *, settings: Settings) -> cowork_web.PdfSnapshot:
+        del content, settings
+        return cowork_web.PdfSnapshot(
+            path=Path("remote.pdf"),
+            title="Query PDF",
+            parser="test",
+            page_count=1,
+            content="pdf content",
+            truncated=False,
+            quality={},
+        )
+
+    monkeypatch.setattr(cowork_web, "_assert_public_target", public_target)
+    monkeypatch.setattr(cowork_web, "_parse_remote_pdf", parse_pdf)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "application/octet-stream"},
+                content=b"pdf",
+            )
+        )
+    ) as client:
+        result = await fetch_url(
+            "https://example.com/report.pdf?download=1",
+            settings=Settings(),
+            client=client,
+        )
+
+    assert result.content_type == "application/pdf"
+    assert result.title == "Query PDF"
+
+
 async def test_web_search_extracts_and_unwraps_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

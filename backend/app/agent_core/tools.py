@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from typing import Any, Protocol, cast
 
 from jsonschema import Draft202012Validator
@@ -48,6 +49,9 @@ class RegistryToolSpec(Protocol):
 
     @property
     def approval_required(self) -> bool: ...
+
+    @property
+    def exclusive(self) -> bool: ...
 
     @property
     def search_aliases(self) -> tuple[str, ...]: ...
@@ -111,12 +115,39 @@ class ToolRegistry[SpecT: RegistryToolSpec]:
             json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
         )
 
+    def activate_tools(self, names: Iterable[str]) -> None:
+        """记录本 run 已向模型暴露的工具；集合在 registry 生命周期内只增不减。"""
+
+        self._activated_tools.update(name for name in names if name in self._tools)
+
+    def activated_tools_from_snapshot(self, snapshot: dict[str, Any]) -> frozenset[str]:
+        """读取 checkpoint 中仍由当前 registry 提供的工具，不修改 registry。"""
+
+        registry_state = snapshot.get("tool_registry")
+        if not isinstance(registry_state, dict):
+            return frozenset()
+        activated = registry_state.get("activated_tools")
+        if not isinstance(activated, list):
+            return frozenset()
+        return frozenset(
+            name for name in activated if isinstance(name, str) and name in self._tools
+        )
+
+    def restore_runtime_snapshot(self, snapshot: dict[str, Any]) -> None:
+        """从 checkpoint 恢复可继续使用、且当前 registry 仍实际注册的工具。"""
+
+        self._activated_tools = set(self.activated_tools_from_snapshot(snapshot))
+
     def runtime_snapshot(self) -> dict[str, Any]:
+        snapshot = {
+            **self._runtime_snapshot,
+            "tool_registry": {"activated_tools": sorted(self._activated_tools)},
+        }
         return cast(
             "dict[str, Any]",
             json.loads(
                 json.dumps(
-                    self._runtime_snapshot,
+                    snapshot,
                     ensure_ascii=False,
                     allow_nan=False,
                     separators=(",", ":"),
@@ -157,7 +188,7 @@ class ToolRegistry[SpecT: RegistryToolSpec]:
                 scored.append((score, name, spec))
         scored.sort(key=lambda item: (-item[0], item[1]))
         selected = scored[:max_results]
-        self._activated_tools.update(name for _, name, _ in selected)
+        self.activate_tools({name for _, name, _ in selected})
         return [spec.catalog_entry() for _, _, spec in selected]
 
     def parallel_safe(self, names: list[str]) -> bool:
@@ -178,6 +209,18 @@ class ToolRegistry[SpecT: RegistryToolSpec]:
     def requires_approval(self, name: str) -> bool:
         try:
             return self.get(name).approval_required
+        except ToolRegistryError:
+            return False
+
+    def is_exclusive(self, name: str) -> bool:
+        """该工具是否必须独占一批调用。
+
+        独占不等于需要审批：浏览器动作已经由会话级授权放行，但它们共享一份随页面
+        变化而重建的控件编号表，同一批里的第二个动作会拿到失效的 control_index。
+        """
+
+        try:
+            return self.get(name).exclusive
         except ToolRegistryError:
             return False
 

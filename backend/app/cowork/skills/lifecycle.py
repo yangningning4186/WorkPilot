@@ -10,7 +10,7 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import IO, Any
 
 from app.cowork.skills.catalog import SkillCatalogError, load_skill_file
 
@@ -215,7 +215,12 @@ def import_skill_zip(
                 target = extracted.joinpath(*archive_relative.parts)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with bundle.open(member) as archive_source, target.open("wb") as archive_target:
-                    shutil.copyfileobj(archive_source, archive_target)
+                    _copy_zip_member_bounded(
+                        archive_source,
+                        archive_target,
+                        member_name=member.filename,
+                        max_bytes=max_bytes,
+                    )
         candidates = list(extracted.rglob("SKILL.md"))
         if len(candidates) != 1:
             raise SkillCatalogError("Skill ZIP 必须且只能包含一个 SKILL.md")
@@ -242,6 +247,24 @@ def import_skill_zip(
         raise SkillCatalogError("Skill ZIP 损坏") from error
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+def _copy_zip_member_bounded(
+    source: IO[bytes],
+    target: IO[bytes],
+    *,
+    member_name: str,
+    max_bytes: int,
+) -> int:
+    """按实际解压字节计数；ZIP 中央目录的 file_size 只用于快速拒绝。"""
+
+    copied = 0
+    while chunk := source.read(min(64 * 1024, max_bytes - copied + 1)):
+        copied += len(chunk)
+        if copied > max_bytes:
+            raise SkillCatalogError(f"Skill ZIP 文件实际解压超过大小上限: {member_name}")
+        target.write(chunk)
+    return copied
 
 
 def read_skill_resource(root: Path, *, name: str, resource: str, max_bytes: int) -> tuple[str, str]:

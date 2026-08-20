@@ -57,11 +57,14 @@ _UNSAFE_EXCEL_PARTS: tuple[tuple[str, str], ...] = (
     ("xl/charts/", "图表"),
     ("xl/chartsheets/", "图表工作表"),
     ("xl/drawings/", "图片或绘图"),
+    ("xl/externalLinks/", "外部链接"),
     ("xl/media/", "图片"),
     ("xl/pivotTables/", "数据透视表"),
     ("xl/pivotCache/", "数据透视缓存"),
     ("xl/slicers/", "切片器"),
     ("xl/slicerCaches/", "切片器缓存"),
+    ("xl/tables/", "Excel 表"),
+    ("xl/threadedComments/", "线程批注"),
 )
 _SAFE_EXCEL_FUNCTIONS = frozenset(
     {
@@ -639,13 +642,7 @@ def _apply_word_plan(
         )
     _require_unchanged(record.path, baseline_sha256, settings.workspace_max_file_bytes)
     original_mode = record.path.stat().st_mode & 0o777
-    backup_path, backup_uri = _create_backup(
-        record,
-        baseline_sha256,
-        max_file_bytes=settings.workspace_max_file_bytes,
-        max_versions=settings.workspace_backup_versions_per_file,
-    )
-    document = Document(str(backup_path))
+    document = Document(str(record.path))
     for operation in operations:
         name = operation.get("op")
         if name == "replace_paragraph":
@@ -678,8 +675,12 @@ def _apply_word_plan(
         document.save(str(temp_path))
         _sync_temp_file(temp_path, mode=original_mode)
         Document(str(temp_path))  # 写回前重新打开，阻止损坏的 zip/XML 覆盖原文件。
-        _require_unchanged(record.path, baseline_sha256, settings.workspace_max_file_bytes)
-        os.replace(temp_path, record.path)
+        backup_uri = _replace_office_temp_with_backup(
+            record,
+            temp_path,
+            baseline_sha256=baseline_sha256,
+            settings=settings,
+        )
     finally:
         temp_path.unlink(missing_ok=True)
     return _AppliedFile(
@@ -702,13 +703,7 @@ def _apply_excel_plan(
     _require_unchanged(record.path, baseline_sha256, settings.workspace_max_file_bytes)
     _ensure_excel_roundtrip_safe(record.path)
     original_mode = record.path.stat().st_mode & 0o777
-    backup_path, backup_uri = _create_backup(
-        record,
-        baseline_sha256,
-        max_file_bytes=settings.workspace_max_file_bytes,
-        max_versions=settings.workspace_backup_versions_per_file,
-    )
-    workbook = load_workbook(backup_path, data_only=False, keep_links=True)
+    workbook = load_workbook(record.path, data_only=False, keep_links=True)
     try:
         for operation in operations:
             name = operation.get("op")
@@ -735,8 +730,12 @@ def _apply_excel_plan(
             _sync_temp_file(temp_path, mode=original_mode)
             verified = load_workbook(temp_path, read_only=True, data_only=False, keep_links=True)
             verified.close()
-            _require_unchanged(record.path, baseline_sha256, settings.workspace_max_file_bytes)
-            os.replace(temp_path, record.path)
+            backup_uri = _replace_office_temp_with_backup(
+                record,
+                temp_path,
+                baseline_sha256=baseline_sha256,
+                settings=settings,
+            )
         finally:
             temp_path.unlink(missing_ok=True)
     finally:
@@ -1092,6 +1091,7 @@ def _create_backup(
     *,
     max_file_bytes: int,
     max_versions: int,
+    prune: bool = True,
 ) -> tuple[Path, str]:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     backup_root = record.root / ".workpilot-backups"
@@ -1116,8 +1116,57 @@ def _create_backup(
         backup_path.unlink(missing_ok=True)
         current = _read_raw_snapshot(record.path, max_file_bytes)
         raise DocumentConflictError(current.sha256)
-    _prune_backups(record, keep=backup_path, max_versions=max_versions)
+    if prune:
+        _prune_backups(record, keep=backup_path, max_versions=max_versions)
     return backup_path, backup_relative.as_posix()
+
+
+def _replace_office_temp_with_backup(
+    record: _WorkspaceRecord,
+    temp_path: Path,
+    *,
+    baseline_sha256: str,
+    settings: Settings,
+) -> str:
+    """所有计划应用与临时文件校验成功后，才创建备份并原子替换。"""
+
+    _require_unchanged(record.path, baseline_sha256, settings.workspace_max_file_bytes)
+    backup_path, backup_uri = _create_backup(
+        record,
+        baseline_sha256,
+        max_file_bytes=settings.workspace_max_file_bytes,
+        max_versions=settings.workspace_backup_versions_per_file,
+        prune=False,
+    )
+    replaced = False
+    try:
+        # 备份复制期间源文件仍可能被外部程序改动；替换前再做最后一次乐观锁检查。
+        _require_unchanged(record.path, baseline_sha256, settings.workspace_max_file_bytes)
+        os.replace(temp_path, record.path)
+        replaced = True
+    finally:
+        if not replaced:
+            _discard_backup(record, backup_path)
+    _prune_backups(
+        record,
+        keep=backup_path,
+        max_versions=settings.workspace_backup_versions_per_file,
+    )
+    return backup_uri
+
+
+def _discard_backup(record: _WorkspaceRecord, backup_path: Path) -> None:
+    """写回失败时移除尚未计入版本环的恢复副本及其空目录。"""
+
+    backup_root = record.root / ".workpilot-backups"
+    backup_path.unlink(missing_ok=True)
+    parent = backup_path.parent
+    while parent != backup_root:
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+        parent = parent.parent
 
 
 def _prune_backups(record: _WorkspaceRecord, *, keep: Path, max_versions: int) -> None:

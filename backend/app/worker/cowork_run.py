@@ -234,7 +234,10 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                 await register_mcp_tools(registry, manager)
                 browser_manager = ctx.get("browser_manager")
                 if not isinstance(browser_manager, PlaywrightBrowserManager):
-                    browser_manager = PlaywrightBrowserManager()
+                    browser_manager = PlaywrightBrowserManager(
+                        idle_ttl_s=settings.cowork_browser_session_idle_ttl_s,
+                        max_ttl_s=settings.cowork_browser_session_max_ttl_s,
+                    )
                     ctx["browser_manager"] = browser_manager
                 register_browser_tools(registry, browser_manager)
                 register_connector_tools(registry)

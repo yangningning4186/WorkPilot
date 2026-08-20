@@ -167,11 +167,32 @@ async def execute_shell_command(
         if process.returncode is None:
             await _terminate_process_group(process, terminate_grace_s)
 
-    stdout_bytes, stdout_truncated = await stdout_task
-    stderr_bytes, stderr_truncated = await stderr_task
+    reader_timed_out = False
+    try:
+        (stdout_bytes, stdout_truncated), (stderr_bytes, stderr_truncated) = (
+            await asyncio.wait_for(
+                asyncio.gather(stdout_task, stderr_task),
+                timeout=max(terminate_grace_s, 0.5),
+            )
+        )
+    except TimeoutError:
+        # 已脱离进程组的后代仍可能继承 stdout/stderr 管道。主进程即使退出，EOF
+        # 也不会到达；reader 必须有独立上限，不能让取消/超时路径永久挂起。
+        reader_timed_out = True
+        stdout_task.cancel()
+        stderr_task.cancel()
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        stdout_bytes, stdout_truncated = b"", True
+        stderr_bytes, stderr_truncated = b"", True
+    if not process_task.done():
+        # asyncio 的 subprocess wait transport 在 returncode 已产生后仍可能等待继承的
+        # stdout/stderr 管道 EOF；reader 已超时就不能再在这里无界等待。
+        process_task.cancel()
     await asyncio.gather(process_task, return_exceptions=True)
     if pending_error is not None:
         raise pending_error
+    if reader_timed_out:
+        raise CoworkShellError("shell 主进程退出后输出管道未关闭，已停止读取")
     return ShellExecutionResult(
         command_sha256=hashlib.sha256(command.raw.encode("utf-8")).hexdigest(),
         exit_code=exit_code,

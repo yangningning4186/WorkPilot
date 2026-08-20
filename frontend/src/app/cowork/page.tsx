@@ -75,6 +75,7 @@ const CAPABILITY_LABELS: Record<string, string> = {
   "office.word.edit": "编辑 Word",
   "office.excel.edit": "编辑 Excel",
   "network.read": "读取公开网页",
+  "browser.control": "控制浏览器",
   "shell.execute": "执行 Shell 命令",
   "external.action": "执行外部操作",
 };
@@ -872,7 +873,7 @@ export default function CoworkPage() {
                                   </div>
                                 )}
                                 <textarea aria-label="回复 Cowork" disabled={responding} maxLength={4000} onChange={(event) => setInteractionAnswer(event.target.value)} placeholder="直接在这里回复" rows={3} value={interactionAnswer} />
-                                <div className="workdesk-inbox-actions"><button className="primary" disabled={responding || interactionAnswer.trim() === ""} onClick={() => void respondToInteraction({ answer: interactionAnswer.trim() })} type="button">回复并继续</button></div>
+                                <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">跳过，由 Cowork 判断</button><button className="primary" disabled={responding || interactionAnswer.trim() === ""} onClick={() => void respondToInteraction({ approved: true, answer: interactionAnswer.trim() })} type="button">回复并继续</button></div>
                               </>
                             ) : run.interrupt.kind === "directory_request" ? (
                               <>

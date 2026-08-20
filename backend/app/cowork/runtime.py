@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, TypedDict, cast
 from uuid import UUID, uuid5
@@ -59,7 +60,17 @@ from workpilot_ai.errors import ModelContextOverflowError, ProviderContextOverfl
 from workpilot_ai.types import CompletionResult, Message, MessageAttachment, ToolCall
 
 _OFFICE_GOAL_SUFFIXES = (".docx", ".xlsx")
-_OFFICE_GOAL_WORDS = re.compile(r"(?<![a-z0-9_])(?:word|excel)(?![a-z0-9_])")
+_OFFICE_GOAL_WORDS = re.compile(
+    r"(?:"
+    r"\bmicrosoft\s+(?:word|excel)\b|"
+    r"(?<![a-z0-9_-])word(?![a-z0-9_-])"
+    r"(?=\s*(?:文档|文件|中|里|document\b|doc\b|file\b))|"
+    r"(?<![a-z0-9_-])excel(?![a-z0-9_-])"
+    r"(?=\s*(?:表格|工作簿|文件|中|里|spreadsheet\b|workbook\b|sheet\b|file\b))|"
+    r"(?:用|使用|打开|编辑|修改|创建|生成|整理)\s*(?:word|excel)(?![a-z0-9_-])|"
+    r"\b(?:use|open|edit|update|create)\s+(?:microsoft\s+)?(?:word|excel)\b"
+    r")"
+)
 _OFFICE_TOOL_NAMES = frozenset(
     {"list_office_files", "inspect_office_file", "edit_word", "edit_excel"}
 )
@@ -173,7 +184,8 @@ list_workspace_roots 返回的第一个目录就是默认输出目录。生成�
 不得为了读取或搜索改用 shell。
 覆盖文本文件前必须先 read_text_file，并把其 baseline_sha256 原样传给
 write_text_file 或 create_artifact。需要交付 Markdown、文本、JSON、CSV、HTML 时使用
-create_artifact；需要 PPTX、DOCX、XLSX、PDF 时使用 create_native_artifact。
+create_artifact；新文件路径包含尚不存在的父目录时设置 create_parents=true。
+需要 PPTX、DOCX、XLSX、PDF 时使用 create_native_artifact。
 PPTX 是演示文稿，不得申请 office.word.edit。
 读取公开网页或远程 PDF 使用 fetch_url；没有 network.read 时先调用 request_capability。
 搜索个人资料库使用 search_knowledge；没有 knowledge.read 时先调用 request_capability。
@@ -183,7 +195,7 @@ PPTX 是演示文稿，不得申请 office.word.edit。
 编辑流程必须先 list_office_files，再 inspect_office_file 获取当前 baseline_sha256，最后调用
 对应 edit_word/edit_excel。Word/Excel 的读取、结构分析和修改不得改用 shell 或 python-docx，
 Office 工具会负责格式保真、备份和冲突保护。Shell 仅在非 Office 任务确有需要时使用
-run_shell，必须提供已授权 cwd；
+run_shell，必须提供具有 filesystem.write 授权的 cwd；
 inspect_office_file 返回的预览可能截断，但 edit_word/edit_excel 会在执行器中重新读取完整结构；
 不得为了补全 Office 预览申请 Shell 能力；
 不要拆分或改写待审批命令，也不得绕过 capability、allowlist 或用户审批。"""
@@ -205,6 +217,32 @@ def _office_flow_active(state: CoworkState) -> bool:
             if call["function"]["name"] in _OFFICE_TOOL_NAMES:
                 return True
     return False
+
+
+def _tools_referenced_in_history(messages: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+    """历史里真正发生过的 tool_call 名称。
+
+    这些工具的 schema 必须一直留在下发目录里：模型上下文中已经带着对它们的调用和
+    结果，话题切换后若 schema 消失，部分 provider 会直接拒绝整个请求。判据是"被调用
+    过"而不是"被展示过"——后者会让目录每轮成为上一轮的超集。
+
+    入参也可能是直接从 checkpoint JSON 读出的裸 dict（只读上下文估算就是这条路），
+    所以逐层判型，遇到不合规的条目跳过而不是抛错。
+    """
+
+    names: set[str] = set()
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        calls = message.get("tool_calls")
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            function = call.get("function") if isinstance(call, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            if isinstance(name, str) and name:
+                names.add(name)
+    return frozenset(names)
 
 
 def _is_sha256(value: object) -> bool:
@@ -397,6 +435,8 @@ async def initialize_cowork_state(
             }
             for item in attachments
         ]
+    # registry 可能由测试/嵌入方复用；新 run 不能继承上一个 run 的动态激活集合。
+    registry.restore_runtime_snapshot({})
     state: CoworkState = {
         "schema_version": "cowork.v2",
         "run_id": str(run.id),
@@ -942,6 +982,7 @@ class _CoworkExecution:
         run_id = UUID(state["run_id"])
         self.meter.settle_wall()
         state["budget"] = cast("BudgetState", dict(self.meter.budget))
+        state["runtime_snapshot"] = self.registry.runtime_snapshot()
         tokens = self.meter.budget["used_tokens"] - self._flushed_tokens
         calls = self.meter.budget["used_calls"] - self._flushed_calls
         await add_run_usage(self.session, run_id=run_id, used_tokens=tokens, used_calls=calls)
@@ -1130,7 +1171,10 @@ class _CoworkExecution:
                 if item.get("role") == "user"
             ]
         )
-        active_tools = self.registry.tool_definitions_for(tool_query)
+        active_tools = self.registry.tool_definitions_for(
+            tool_query,
+            retained_tools=_tools_referenced_in_history(working["messages"]),
+        )
         self.compactor.tools = active_tools
         try:
             prepared = await self.compactor.prepare(
@@ -1474,6 +1518,39 @@ class _CoworkExecution:
                     events=[("tool.error", {"tool": call.name, "error": str(error)})],
                 )
             return await self._pause_for_external_approval(updated, call, request)
+
+        exclusive_calls = [
+            call for call in completion.tool_calls if self.registry.is_exclusive(call.name)
+        ]
+        if exclusive_calls and len(completion.tool_calls) != 1:
+            for call in completion.tool_calls:
+                updated["messages"].append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": json.dumps(
+                            {
+                                "ok": False,
+                                "error": "独占工具必须单独调用；本批调用均未执行",
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    }
+                )
+            updated["iteration"] += len(completion.tool_calls)
+            return await self._checkpoint(
+                updated,
+                events=[
+                    (
+                        "tool.error",
+                        {
+                            "tool": exclusive_calls[0].name,
+                            "error": "独占工具必须单独调用",
+                        },
+                    )
+                ],
+            )
 
         run_id = UUID(updated["run_id"])
         pending_calls: list[PendingToolCall] = []
@@ -2139,6 +2216,7 @@ async def run_cowork_graph(
     if checkpoint is None:
         raise LookupError("Cowork run 尚未初始化 checkpoint")
     state = _json_state(checkpoint.state)
+    registry.restore_runtime_snapshot(state["runtime_snapshot"])
     state["runtime_snapshot"] = registry.runtime_snapshot()
     if state["status"] != "executing":
         return state

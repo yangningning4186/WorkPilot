@@ -339,6 +339,7 @@ async def write_text_file(
     *,
     content: str,
     baseline_sha256: str | None,
+    create_parents: bool = False,
     settings: Settings,
 ) -> TextFileWriteResult:
     return await asyncio.to_thread(
@@ -346,6 +347,7 @@ async def write_text_file(
         path,
         content=content,
         baseline_sha256=baseline_sha256,
+        create_parents=create_parents,
         max_bytes=settings.cowork_file_write_max_bytes,
         backup_versions=settings.workspace_backup_versions_per_file,
     )
@@ -356,6 +358,7 @@ def _write_text_file_sync(
     *,
     content: str,
     baseline_sha256: str | None,
+    create_parents: bool,
     max_bytes: int,
     backup_versions: int,
 ) -> TextFileWriteResult:
@@ -364,10 +367,19 @@ def _write_text_file_sync(
     encoded = content.encode("utf-8")
     if len(encoded) > max_bytes:
         raise CoworkFileError(f"写入内容 {len(encoded)} bytes 超过上限 {max_bytes} bytes")
+    created = not path.exists()
+    if created and baseline_sha256 is not None:
+        raise CoworkFileError("目标文件尚不存在，baseline_sha256 必须省略")
     parent = path.parent
     if not parent.is_dir():
-        raise CoworkFileError("目标文件的父目录不存在")
-    created = not path.exists()
+        if not create_parents:
+            raise CoworkFileError("目标文件的父目录不存在；需要创建时请设置 create_parents=true")
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise CoworkFileError(f"无法创建目标文件的父目录：{error}") from error
+        if not parent.is_dir():  # pragma: no cover - 并发文件系统变化
+            raise CoworkFileError("目标文件的父路径不是目录")
     backup: Path | None = None
     previous_mode: int | None = None
     if not created:
@@ -381,9 +393,6 @@ def _write_text_file_sync(
             raise CoworkFileError("文件已在读取后发生变化，请重新读取后再写入")
         previous_mode = stat_module.S_IMODE(path.stat().st_mode)
         backup = create_file_backup(path, backup_versions)
-    elif baseline_sha256 is not None:
-        raise CoworkFileError("目标文件尚不存在，baseline_sha256 必须省略")
-
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=parent
     )

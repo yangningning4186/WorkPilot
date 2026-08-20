@@ -229,7 +229,9 @@ async def fetch_url(
                 raise CoworkWebError("网页读取超时") from error
             except httpx.HTTPError as error:
                 raise CoworkWebError("网页连接失败") from error
-            if content_type == "application/pdf" or current_url.casefold().endswith(".pdf"):
+            if content_type == "application/pdf" or urlsplit(
+                current_url
+            ).path.casefold().endswith(".pdf"):
                 pdf = await _parse_remote_pdf(body, settings=settings)
                 return WebSnapshot(
                     url=raw_url,

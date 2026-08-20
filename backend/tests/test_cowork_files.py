@@ -58,6 +58,31 @@ async def test_text_read_write_requires_baseline_and_keeps_bounded_backups(
     assert len(list((tmp_path / ".workpilot-backups").glob("notes.md.*.bak"))) == 2
 
 
+async def test_text_write_can_explicitly_create_parent_directories(tmp_path: Path) -> None:
+    target = tmp_path / "reports" / "2026-08" / "summary.md"
+    settings = Settings(cowork_file_write_max_bytes=1024)
+
+    with pytest.raises(CoworkFileError, match="create_parents=true"):
+        await write_text_file(
+            target,
+            content="# Summary\n",
+            baseline_sha256=None,
+            settings=settings,
+        )
+    assert target.parent.exists() is False
+
+    result = await write_text_file(
+        target,
+        content="# Summary\n",
+        baseline_sha256=None,
+        create_parents=True,
+        settings=settings,
+    )
+
+    assert result.created is True
+    assert target.read_text(encoding="utf-8") == "# Summary\n"
+
+
 async def test_list_and_search_are_bounded_and_skip_hidden_binary_and_dependencies(
     tmp_path: Path,
 ) -> None:

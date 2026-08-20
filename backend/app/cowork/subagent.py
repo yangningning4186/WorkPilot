@@ -31,6 +31,7 @@ def register_readonly_subagent(registry: CoworkToolRegistry) -> None:
             exclude=frozenset({"explore"}),
             query=args.question,
         )
+        allowed_tools = frozenset(tool.name for tool in tools)
         messages = [
             Message(
                 role="system",
@@ -98,6 +99,7 @@ def register_readonly_subagent(registry: CoworkToolRegistry) -> None:
                             tool_call_id=f"{context.tool_call_id}:{call.id}",
                             cancel_event=context.cancel_event,
                         ),
+                        allowed=allowed_tools,
                     )
                     content = json.dumps(
                         {"ok": True, "result": result.output},
@@ -138,7 +140,6 @@ def register_readonly_subagent(registry: CoworkToolRegistry) -> None:
                 "代码定位或网页证据收集。它只能看到只读工具，不能写文件或执行外部动作。"
             ),
             args_model=ExploreArgs,
-            capability="filesystem.read",
             risk="read",
             effect="none",
             parallel_safe=False,

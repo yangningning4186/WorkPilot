@@ -138,7 +138,6 @@ def register_scheduler_tools(registry: CoworkToolRegistry) -> None:
             name="list_schedules",
             description="列出本机 Scheduler 计划、最近运行状态和待处理收件箱数量。只读。",
             args_model=ListSchedulesArgs,
-            capability="filesystem.read",
             risk="read",
             effect="none",
             parallel_safe=True,

@@ -1,4 +1,4 @@
-"""受控 Playwright 浏览器：真实 DOM、表单、文件和逐动作审批。"""
+"""受控 Playwright 浏览器：真实 DOM、会话级控制授权与 consequential action 闸门。"""
 
 from __future__ import annotations
 
@@ -6,9 +6,11 @@ import asyncio
 import os
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from playwright.async_api import (
     Browser,
@@ -112,17 +114,41 @@ class BrowserCloseArgs(BrowserSessionArgs):
 class _BrowserSession:
     context: BrowserContext
     page: Page
+    conversation_id: UUID
+    # 每次使用后顺延；空闲超过 idle_ttl_s 就回收。
+    idle_expires_at: float
+    # 从页面可用那一刻起固定，永不顺延；持续活跃也逃不掉这个硬上限。
+    hard_expires_at: float
     controls: list[Any] = field(default_factory=list)
     action_no: int = 0
-    last_used: float = field(default_factory=time.monotonic)
+    last_used: float = 0.0
     blocked_url: str | None = None
+
+    def expired(self, now: float) -> bool:
+        return self.idle_expires_at <= now or self.hard_expires_at <= now
 
 
 class PlaywrightBrowserManager:
     """Worker 级浏览器池；页面按 Cowork browser session 隔离。"""
 
-    def __init__(self, *, max_sessions: int = 8) -> None:
+    def __init__(
+        self,
+        *,
+        max_sessions: int = 8,
+        idle_ttl_s: float = 30 * 60,
+        max_ttl_s: float = 4 * 60 * 60,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        if max_sessions < 1:
+            raise ValueError("max_sessions 必须大于 0")
+        if idle_ttl_s <= 0 or max_ttl_s <= 0:
+            raise ValueError("browser session TTL 必须大于 0")
+        if idle_ttl_s > max_ttl_s:
+            raise ValueError("空闲 TTL 不能超过绝对 TTL，否则绝对上限形同虚设")
         self.max_sessions = max_sessions
+        self.idle_ttl_s = idle_ttl_s
+        self.max_ttl_s = max_ttl_s
+        self._clock = clock or time.monotonic
         self._lock = asyncio.Lock()
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
@@ -158,7 +184,13 @@ class PlaywrightBrowserManager:
                 ) from error
             return self._browser
 
-    async def open(self, url: str, *, timeout_s: float) -> tuple[str, _BrowserSession]:
+    async def open(
+        self,
+        url: str,
+        *,
+        conversation_id: UUID,
+        timeout_s: float,
+    ) -> tuple[str, _BrowserSession]:
         normalized = normalize_public_url(url)
         await assert_public_target(normalized)
         browser = await self._ensure_browser()
@@ -167,7 +199,15 @@ class PlaywrightBrowserManager:
             service_workers="block",
             java_script_enabled=True,
         )
-        session = _BrowserSession(context=context, page=await context.new_page())
+        now = self._clock()
+        session = _BrowserSession(
+            context=context,
+            page=await context.new_page(),
+            conversation_id=conversation_id,
+            idle_expires_at=now + self.idle_ttl_s,
+            hard_expires_at=now + self.max_ttl_s,
+            last_used=now,
+        )
 
         async def guard(route: Route) -> None:
             request_url = route.request.url
@@ -200,33 +240,61 @@ class PlaywrightBrowserManager:
                 ) from error
             raise CoworkToolError(f"浏览器打开网页失败：{error}") from error
 
+        # 页面真正可用后才开始计时，慢导航不应提前消耗会话寿命。
+        now = self._clock()
+        session.last_used = now
+        session.idle_expires_at = now + self.idle_ttl_s
+        session.hard_expires_at = now + self.max_ttl_s
         session_id = secrets.token_urlsafe(18)
+        discarded: list[_BrowserSession] = []
         async with self._lock:
+            now = self._clock()
+            for expired_id, expired in tuple(self._sessions.items()):
+                if expired.expired(now):
+                    discarded.append(self._sessions.pop(expired_id))
             if len(self._sessions) >= self.max_sessions:
                 oldest_id = min(
                     self._sessions,
                     key=lambda item: self._sessions[item].last_used,
                 )
-                oldest = self._sessions.pop(oldest_id)
-                await oldest.context.close()
+                discarded.append(self._sessions.pop(oldest_id))
             self._sessions[session_id] = session
+        if discarded:
+            await asyncio.gather(
+                *(item.context.close() for item in discarded),
+                return_exceptions=True,
+            )
         return session_id, session
 
-    def get(self, session_id: str) -> _BrowserSession:
-        try:
-            session = self._sessions[session_id]
-        except KeyError as error:
-            raise CoworkToolError(
-                "浏览器会话不存在或 worker 已重启，请重新调用 browser_open"
-            ) from error
-        session.last_used = time.monotonic()
-        return session
-
-    async def close_session(self, session_id: str) -> None:
+    async def get(self, session_id: str, *, conversation_id: UUID) -> _BrowserSession:
+        expired: _BrowserSession | None = None
         async with self._lock:
-            session = self._sessions.pop(session_id, None)
-        if session is not None:
-            await session.context.close()
+            session = self._sessions.get(session_id)
+            if session is None or session.conversation_id != conversation_id:
+                # 不存在与已过期给不同措辞：模型需要知道"重开一个"是可行的下一步，
+                # 而不是把两种情况都当成能力被拒。
+                raise CoworkToolError("浏览器会话不存在，请调用 browser_open 重新打开页面")
+            now = self._clock()
+            if session.expired(now):
+                expired = self._sessions.pop(session_id)
+            else:
+                # 空闲窗口按使用顺延，但绝不越过 hard_expires_at。
+                session.last_used = now
+                session.idle_expires_at = min(
+                    now + self.idle_ttl_s, session.hard_expires_at
+                )
+                return session
+        assert expired is not None  # pragma: no cover - 锁内分支保证
+        await expired.context.close()
+        raise CoworkToolError("浏览器会话已过期，请调用 browser_open 重新打开页面")
+
+    async def close_session(self, session_id: str, *, conversation_id: UUID) -> None:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None or session.conversation_id != conversation_id:
+                raise CoworkToolError("浏览器会话不存在，请调用 browser_open 重新打开页面")
+            self._sessions.pop(session_id)
+        await session.context.close()
 
     async def aclose(self) -> None:
         async with self._lock:
@@ -274,7 +342,6 @@ async def _snapshot(session_id: str, session: _BrowserSession, *, max_chars: int
         controls.append(locator)
         output_controls.append({"index": index, **info})
     session.controls = controls
-    session.last_used = time.monotonic()
     content = body[:max_chars]
     return {
         "session_id": session_id,
@@ -309,6 +376,7 @@ def register_browser_tools(
         args = BrowserOpenArgs.model_validate(raw.model_dump())
         session_id, session = await active.open(
             args.url,
+            conversation_id=context.conversation_id,
             timeout_s=context.settings.cowork_web_timeout_s,
         )
         output = await _snapshot(
@@ -323,14 +391,20 @@ def register_browser_tools(
         return CoworkToolResult(
             output=await _snapshot(
                 args.session_id,
-                active.get(args.session_id),
+                await active.get(
+                    args.session_id,
+                    conversation_id=context.conversation_id,
+                ),
                 max_chars=context.settings.cowork_web_text_max_chars,
             )
         )
 
     async def click_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = BrowserControlArgs.model_validate(raw.model_dump())
-        session = active.get(args.session_id)
+        session = await active.get(
+            args.session_id,
+            conversation_id=context.conversation_id,
+        )
         try:
             await _control(session, args.control_index).click(timeout=15_000)
             await session.page.wait_for_load_state("domcontentloaded", timeout=10_000)
@@ -345,7 +419,10 @@ def register_browser_tools(
 
     async def back_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = BrowserSessionArgs.model_validate(raw.model_dump())
-        session = active.get(args.session_id)
+        session = await active.get(
+            args.session_id,
+            conversation_id=context.conversation_id,
+        )
         try:
             await session.page.go_back(wait_until="domcontentloaded", timeout=15_000)
         except PlaywrightError as error:
@@ -357,7 +434,10 @@ def register_browser_tools(
 
     async def type_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = BrowserTypeArgs.model_validate(raw.model_dump())
-        session = active.get(args.session_id)
+        session = await active.get(
+            args.session_id,
+            conversation_id=context.conversation_id,
+        )
         try:
             locator = _control(session, args.control_index)
             if args.clear:
@@ -375,9 +455,12 @@ def register_browser_tools(
             effect_ref=_effect(args.session_id, session, "type"),
         )
 
-    async def select_handler(_: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+    async def select_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = BrowserSelectArgs.model_validate(raw.model_dump())
-        session = active.get(args.session_id)
+        session = await active.get(
+            args.session_id,
+            conversation_id=context.conversation_id,
+        )
         try:
             selected = await _control(session, args.control_index).select_option(value=args.value)
         except PlaywrightError as error:
@@ -395,7 +478,10 @@ def register_browser_tools(
             target_path=Path(args.path),
             capability="filesystem.read",
         )
-        session = active.get(args.session_id)
+        session = await active.get(
+            args.session_id,
+            conversation_id=context.conversation_id,
+        )
         try:
             await _control(session, args.control_index).set_input_files(
                 str(authorization.target_path), timeout=15_000
@@ -415,7 +501,10 @@ def register_browser_tools(
             target_path=Path(args.path),
             capability="filesystem.write",
         )
-        session = active.get(args.session_id)
+        session = await active.get(
+            args.session_id,
+            conversation_id=context.conversation_id,
+        )
         try:
             async with session.page.expect_download(timeout=args.timeout_s * 1_000) as pending:
                 await _control(session, args.control_index).click(timeout=15_000)
@@ -434,7 +523,10 @@ def register_browser_tools(
 
     async def screenshot_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = BrowserScreenshotArgs.model_validate(raw.model_dump())
-        session = active.get(args.session_id)
+        session = await active.get(
+            args.session_id,
+            conversation_id=context.conversation_id,
+        )
         try:
             await session.page.screenshot(path=args.path, full_page=args.full_page)
         except PlaywrightError as error:
@@ -444,9 +536,12 @@ def register_browser_tools(
             effect_ref=args.path,
         )
 
-    async def find_handler(_: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+    async def find_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = BrowserFindArgs.model_validate(raw.model_dump())
-        session = active.get(args.session_id)
+        session = await active.get(
+            args.session_id,
+            conversation_id=context.conversation_id,
+        )
         body = await session.page.locator("body").inner_text(timeout=5_000)
         needle = args.query.casefold()
         matches = [
@@ -463,22 +558,30 @@ def register_browser_tools(
             }
         )
 
-    async def close_handler(_: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+    async def close_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = BrowserCloseArgs.model_validate(raw.model_dump())
-        await active.close_session(args.session_id)
+        await active.close_session(
+            args.session_id,
+            conversation_id=context.conversation_id,
+        )
         return CoworkToolResult(output={"session_id": args.session_id, "closed": True})
 
     specs = (
         CoworkToolSpec(
             name="browser_open",
-            description="在隔离 Chromium 中打开公网网页并返回可见 DOM 控件。此导航动作每次需要批准。",
+            description=(
+                "在隔离 Chromium 中打开公网网页并返回可见 DOM 控件。"
+                "需要 network.read 与会话级 browser.control 两项授权，"
+                "必须单独调用，但不逐次审批。"
+            ),
             args_model=BrowserOpenArgs,
-            capability="network.read",
+            capability="browser.control",
+            extra_capabilities=("network.read",),
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=open_handler,
-            approval_required=True,
+            exclusive=True,
             search_aliases=("浏览网页", "playwright", "navigate"),
         ),
         CoworkToolSpec(
@@ -494,49 +597,55 @@ def register_browser_tools(
         ),
         CoworkToolSpec(
             name="browser_click",
-            description="点击一个已枚举的可见 DOM 控件；每次点击需要单独批准。",
+            description=(
+                "点击一个已枚举的可见 DOM 控件。需要 browser.control，必须单独调用；"
+                "页面变化后使用返回的新控件编号。"
+            ),
             args_model=BrowserControlArgs,
-            capability="external.action",
+            capability="browser.control",
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=click_handler,
-            approval_required=True,
+            exclusive=True,
             search_aliases=("点击", "click"),
         ),
         CoworkToolSpec(
             name="browser_back",
-            description="让真实浏览器返回上一页；每次需要单独批准。",
+            description="让真实浏览器返回上一页。需要 browser.control，必须单独调用。",
             args_model=BrowserSessionArgs,
-            capability="external.action",
+            capability="browser.control",
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=back_handler,
-            approval_required=True,
+            exclusive=True,
         ),
         CoworkToolSpec(
             name="browser_type",
-            description="向已枚举的输入控件填写文字；每次输入需要单独批准。",
+            description=(
+                "向已枚举的输入控件填写文字。需要 browser.control，必须单独调用；"
+                "填写不等于提交。"
+            ),
             args_model=BrowserTypeArgs,
-            capability="external.action",
+            capability="browser.control",
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=type_handler,
-            approval_required=True,
+            exclusive=True,
             search_aliases=("输入", "fill", "type"),
         ),
         CoworkToolSpec(
             name="browser_select",
-            description="选择下拉控件的值；每次选择需要单独批准。",
+            description="选择下拉控件的值。需要 browser.control，必须单独调用。",
             args_model=BrowserSelectArgs,
-            capability="external.action",
+            capability="browser.control",
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=select_handler,
-            approval_required=True,
+            exclusive=True,
         ),
         CoworkToolSpec(
             name="browser_upload",
@@ -548,24 +657,29 @@ def register_browser_tools(
             parallel_safe=False,
             handler=upload_handler,
             approval_required=True,
+            exclusive=True,
             search_aliases=("上传", "upload"),
         ),
         CoworkToolSpec(
             name="browser_download",
-            description="点击控件并把下载保存到已授权工作目录；每次下载需要单独批准。",
+            description=(
+                "点击控件并把下载保存到已授权工作目录；需要 network.read 与目标目录写授权，"
+                "不逐次审批，但必须单独调用。"
+            ),
             args_model=BrowserDownloadArgs,
             capability="filesystem.write",
+            extra_capabilities=("network.read",),
             risk="external",
             effect="filesystem",
             parallel_safe=False,
             handler=download_handler,
             path_argument="path",
-            approval_required=True,
+            exclusive=True,
             search_aliases=("下载", "download"),
         ),
         CoworkToolSpec(
             name="browser_screenshot",
-            description="把当前网页截图保存到已授权工作目录；每次写入需要单独批准。",
+            description="把当前网页截图保存到已授权工作目录；依赖目录写授权，不逐次审批。",
             args_model=BrowserScreenshotArgs,
             capability="filesystem.write",
             risk="write",
@@ -573,7 +687,6 @@ def register_browser_tools(
             parallel_safe=False,
             handler=screenshot_handler,
             path_argument="path",
-            approval_required=True,
             search_aliases=("截图", "screenshot"),
         ),
         CoworkToolSpec(
@@ -601,7 +714,12 @@ def register_browser_tools(
         registry.register(spec)
     registry.add_system_instructions(
         "需要真实网页交互时使用 browser_open/browser_snapshot 和编号控件工具。"
-        "禁止猜测 control_index；页面变化后先重新 snapshot。导航、点击、输入、选择、上传、"
-        "下载和截图均逐动作审批。只读资料抓取仍优先 fetch_url。"
+        "浏览器同时需要 network.read 与 browser.control；缺哪个就先调用 request_capability，"
+        "两者都在当前会话内复用。"
+        "browser_open/click/back/type/select/upload/download 必须逐个调用，禁止放在同一批；"
+        "禁止猜测 "
+        "control_index，页面变化后使用动作返回的新快照或重新 snapshot。"
+        "只有把本地文件发往网页的 browser_upload 需要逐次审批；下载和截图只受目标目录写授权"
+        "约束。只读资料抓取仍优先 fetch_url。"
     )
     return active

@@ -129,6 +129,23 @@ def test_native_pdf_paginates_cjk_and_overwrite_preserves_mode(tmp_path: Path) -
         )
 
 
+def test_native_artifact_rejects_oversized_existing_baseline(tmp_path: Path) -> None:
+    path = tmp_path / "large.docx"
+    with path.open("wb") as stream:
+        stream.truncate(2 * 1024 * 1024)
+
+    with pytest.raises(ValueError, match="超过读取上限"):
+        create_native_artifact(
+            path,
+            format="docx",
+            title="Large",
+            content="replacement",
+            sheets=[],
+            baseline_sha256="0" * 64,
+            max_existing_bytes=1024,
+        )
+
+
 def test_native_pdf_renders_markdown_as_document_layout(tmp_path: Path) -> None:
     pdf_path = tmp_path / "markdown.pdf"
     create_native_artifact(

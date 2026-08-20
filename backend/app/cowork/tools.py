@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -35,6 +35,7 @@ from app.cowork.office_workspace import (
 )
 from app.cowork.permissions import (
     GLOBAL_CAPABILITIES,
+    PATH_CAPABILITIES,
     Capability,
     authorize_capability,
     authorize_path,
@@ -129,6 +130,10 @@ class WriteTextFileArgs(_StrictArgs):
     path: str = Field(min_length=1, max_length=4096)
     content: str = Field(max_length=5_000_000)
     baseline_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    create_parents: bool = Field(
+        default=False,
+        description="父目录不存在时是否在已授权工作目录内递归创建",
+    )
 
 
 class SearchFilesArgs(_StrictArgs):
@@ -159,6 +164,10 @@ class CreateArtifactArgs(_StrictArgs):
     title: str | None = Field(default=None, min_length=1, max_length=500)
     mime_type: str | None = Field(default=None, min_length=1, max_length=200)
     baseline_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    create_parents: bool = Field(
+        default=False,
+        description="父目录不存在时是否在已授权工作目录内递归创建",
+    )
 
 
 class CreateNativeArtifactArgs(_StrictArgs):
@@ -209,15 +218,20 @@ class CoworkToolSpec:
     name: str
     description: str
     args_model: type[BaseModel]
-    capability: Capability
     risk: ToolRisk
     effect: ToolEffect
     parallel_safe: bool
     handler: ToolHandler | None
+    capability: Capability | None = None
+    # 主 capability 之外还必须同时持有的全局能力。浏览器既要"能操作页面"
+    # (browser.control) 又要"能读公网" (network.read)，单个字段表达不了。
+    extra_capabilities: tuple[Capability, ...] = ()
     path_argument: str | None = None
     execution: ToolExecution = "local"
     input_schema: dict[str, Any] | None = None
     approval_required: bool = False
+    # 必须独占一批模型调用：不需要逐次审批，但同批的后续调用会拿到失效的控件编号。
+    exclusive: bool = False
     search_aliases: tuple[str, ...] = ()
 
     def resolved_input_schema(self) -> dict[str, Any]:
@@ -236,6 +250,8 @@ class CoworkToolSpec:
             "parallel_safe": self.parallel_safe,
             "execution": self.execution,
             "approval_required": self.approval_required,
+            "exclusive": self.exclusive,
+            "extra_capabilities": list(self.extra_capabilities),
             "search_aliases": list(self.search_aliases),
         }
 
@@ -245,7 +261,45 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
 
     error_type = CoworkToolError
 
-    def tool_definitions_for(self, query: str, *, max_tools: int = 24) -> list[ToolDefinition]:
+    def register(self, spec: CoworkToolSpec) -> None:
+        if spec.capability in PATH_CAPABILITIES and spec.path_argument is None:
+            raise ValueError(
+                f"PATH capability 工具 {spec.name!r} 必须声明 path_argument"
+            )
+        if spec.path_argument is not None and spec.capability not in PATH_CAPABILITIES:
+            raise ValueError(
+                f"带 path_argument 的工具 {spec.name!r} 必须声明 PATH capability"
+            )
+        # 附加能力只能是全局能力：PATH capability 要绑定具体目标路径，而附加检查
+        # 拿不到第二个路径参数，放进来只会变成一次无目标的空校验。
+        invalid = [
+            capability
+            for capability in spec.extra_capabilities
+            if capability not in GLOBAL_CAPABILITIES
+        ]
+        if invalid:
+            raise ValueError(
+                f"工具 {spec.name!r} 的 extra_capabilities 只能是全局能力: {sorted(invalid)}"
+            )
+        if spec.capability in spec.extra_capabilities:
+            raise ValueError(f"工具 {spec.name!r} 的 extra_capabilities 重复声明主 capability")
+        super().register(spec)
+
+    def tool_definitions_for(
+        self,
+        query: str,
+        *,
+        max_tools: int = 24,
+        retained_tools: Iterable[str] = (),
+    ) -> list[ToolDefinition]:
+        """按当前话题派生一个有界目录，同时保证历史所需 schema 不消失。
+
+        目录**不会**因为某个工具曾被下发过就永久保留它——那样每轮都是上一轮的
+        超集，几轮后等于注入完整 registry。只有两类工具是单调的：调用方通过
+        ``retained_tools`` 指出的、历史 tool_call 真正引用过的工具，以及模型用
+        ``search_tool_catalog`` 显式激活的工具。
+        """
+
         # 测试/嵌入方可以提供一个很小的专用 registry，且不注册目录搜索工具；
         # 这种 registry 本身已经是策展结果，不应再被通用启发式过滤成空集。
         if "search_tool_catalog" not in self._tools and len(self._tools) <= max_tools:
@@ -312,26 +366,46 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
             (("mcp",), ("mcp",)),
             (("子 agent", "子agent", "调查", "explore"), ("explore",)),
         )
-        ordered = [*core, *sorted(self._activated_tools)]
+        derived: list[str] = []
         for markers, name_markers in categories:
             if any(marker in normalized for marker in markers):
                 # 浏览器扩展工具较多，按字母排序后会在 max_tools 截断前挤掉
                 # 通用入口。能力策略显式保证“打开/点击/搜索”三件套优先可见。
                 if name_markers == ("web", "url", "browser"):
-                    ordered.extend(("browser_open", "browser_click", "web_search", "fetch_url"))
-                ordered.extend(
+                    derived.extend(("browser_open", "browser_click", "web_search", "fetch_url"))
+                derived.extend(
                     name
                     for name in sorted(self._tools)
                     if any(marker in name.casefold() for marker in name_markers)
                 )
-        ranked = list(dict.fromkeys(name for name in ordered if name in self._tools))[:max_tools]
+
+        # head 永远在场：没有它们模型连提问、申请授权和读写文件都做不到，
+        # 不能被历史保留集挤出目录。
+        head = [name for name in core if name in self._tools]
+        seen = set(head)
+
+        def take(candidates: Iterable[str]) -> list[str]:
+            picked: list[str] = []
+            for name in candidates:
+                if name in seen or name not in self._tools:
+                    continue
+                seen.add(name)
+                picked.append(name)
+            return picked
+
+        # 保留集可能超出 max_tools。宁可超也不能丢：这些 schema 对应的 tool_call
+        # 已经在模型上下文里，缺一个就可能让 provider 拒绝整个请求。它的规模由
+        # 本 run 实际用过多少种工具决定，不会自增长到整个 registry。
+        pinned = take((*retained_tools, *sorted(self._activated_tools)))
+        budget = max(0, max_tools - len(head) - len(pinned))
+        discretionary = take(derived)[:budget]
         return [
             ToolDefinition(
                 name=self._tools[name].name,
                 description=self._tools[name].description,
                 parameters=self._tools[name].resolved_input_schema(),
             )
-            for name in ranked
+            for name in (*head, *pinned, *discretionary)
         ]
 
     def read_only_tool_definitions(
@@ -375,13 +449,21 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
         arguments: dict[str, Any],
         *,
         context: CoworkToolContext,
+        allowed: frozenset[str] | None = None,
     ) -> CoworkToolResult:
+        # 工具目录只是给模型的提示，不是安全边界。调用方若使用了裁剪目录（例如
+        # 只读子 Agent），必须把同一组名称带到执行边界；模型伪造一个未声明的
+        # tool name 时，在查注册表、做授权或触发 handler 之前直接拒绝。
+        if allowed is not None and name not in allowed:
+            raise CoworkToolError(f"工具 {name!r} 不在本次允许执行的工具集合中")
         spec = self.get(name)
         if spec.execution != "local" or spec.handler is None:
             raise CoworkToolError(f"交互工具 {name} 必须由 Cowork runtime 处理")
         parsed = spec.args_model.model_validate(self.parse_arguments(name, arguments))
 
         if spec.path_argument is not None:
+            if spec.capability not in PATH_CAPABILITIES:  # pragma: no cover - 注册时已拒绝
+                raise CoworkToolError(f"工具 {name} 的路径 capability 注册无效")
             raw_path = getattr(parsed, spec.path_argument, None)
             if not isinstance(raw_path, str):  # pragma: no cover - schema 定义漂移
                 raise CoworkToolError(f"工具 {name} 缺少路径参数 {spec.path_argument}")
@@ -414,6 +496,15 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
                 context.session,
                 conversation_id=context.conversation_id,
                 capability=spec.capability,
+            )
+        elif spec.capability is not None:  # pragma: no cover - 注册时已拒绝
+            raise CoworkToolError(f"工具 {name} 的 capability 注册无效")
+
+        for capability in spec.extra_capabilities:
+            await authorize_capability(
+                context.session,
+                conversation_id=context.conversation_id,
+                capability=capability,
             )
 
         canonical_arguments = parsed.model_dump(mode="json")
@@ -575,6 +666,7 @@ async def _write_text_file(context: CoworkToolContext, raw: BaseModel) -> Cowork
         Path(args.path),
         content=args.content,
         baseline_sha256=args.baseline_sha256,
+        create_parents=args.create_parents,
         settings=context.settings,
     )
     return CoworkToolResult(
@@ -684,6 +776,7 @@ async def _create_artifact(context: CoworkToolContext, raw: BaseModel) -> Cowork
         target_path,
         content=args.content,
         baseline_sha256=args.baseline_sha256,
+        create_parents=args.create_parents,
         settings=context.settings,
     )
     authorization = await authorize_path(
@@ -739,6 +832,7 @@ async def _create_native_artifact(context: CoworkToolContext, raw: BaseModel) ->
         slides=args.slides,
         baseline_sha256=args.baseline_sha256,
         backup_versions=context.settings.workspace_backup_versions_per_file,
+        max_existing_bytes=context.settings.workspace_max_file_bytes,
     )
     authorization = await authorize_path(
         context.session,
@@ -850,7 +944,7 @@ async def _run_shell(context: CoworkToolContext, raw: BaseModel) -> CoworkToolRe
         context.session,
         conversation_id=context.conversation_id,
         target_path=Path(args.cwd),
-        capability="filesystem.read",
+        capability="filesystem.write",
     )
     if not authorization.target_path.is_dir():
         raise CoworkToolError("shell cwd 必须是已授权的现有目录")
@@ -905,7 +999,6 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
                 "当当前目录没有所需能力时先调用它。"
             ),
             args_model=SearchToolCatalogArgs,
-            capability="filesystem.read",
             risk="read",
             effect="none",
             parallel_safe=False,
@@ -916,7 +1009,8 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
         CoworkToolSpec(
             name="run_shell",
             description=(
-                "在已授权 cwd 中运行 shell 命令。需要独立 shell.execute capability；"
+                "在具有 filesystem.write 授权的 cwd 中运行 shell 命令。"
+                "同时需要独立 shell.execute capability；"
                 "未命中管理员 argv allowlist 的原命令会暂停并逐命令请求用户批准。"
                 "必须单独调用；运行中的进程可被停止。"
             ),
@@ -936,7 +1030,6 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
                 "只在无法从现有上下文安全推断时使用，必须单独调用。"
             ),
             args_model=AskUserArgs,
-            capability="filesystem.read",
             risk="external",
             effect="none",
             parallel_safe=False,
@@ -952,7 +1045,6 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
                 "不得猜测或自行扩大目录范围，必须单独调用。"
             ),
             args_model=RequestDirectoryArgs,
-            capability="filesystem.read",
             risk="external",
             effect="none",
             parallel_safe=False,
@@ -968,7 +1060,6 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
                 "说明用途；路径能力必须提供 session_root_id；必须单独调用。"
             ),
             args_model=RequestCapabilityArgs,
-            capability="filesystem.read",
             risk="external",
             effect="none",
             parallel_safe=False,
@@ -985,7 +1076,6 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
                 "回答当前目录或开始通用文件任务时先调用；Cowork 没有其他默认 cwd。"
             ),
             args_model=ListWorkspaceRootsArgs,
-            capability="filesystem.read",
             risk="read",
             effect="none",
             parallel_safe=True,
@@ -1030,6 +1120,7 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             description=(
                 "原子创建或覆盖已授权目录中的 UTF-8 文本文件。"
                 "覆盖前必须先 read_text_file 并传入 baseline_sha256；会保留有界备份。"
+                "写入新层级时显式设置 create_parents=true。"
             ),
             args_model=WriteTextFileArgs,
             capability="filesystem.write",
@@ -1130,7 +1221,8 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
                 "在已授权目录原子生成 UTF-8 文本交付物，并登记到 Artifacts 区。"
                 "只提供文件名或相对路径时会写入当前工作目录。"
                 "可生成 Markdown、文本、JSON、CSV、HTML 等文本格式；"
-                "覆盖现有文件前必须提供 baseline_sha256。"
+                "覆盖现有文件前必须提供 baseline_sha256；"
+                "写入新层级时显式设置 create_parents=true。"
             ),
             args_model=CreateArtifactArgs,
             capability="filesystem.write",
@@ -1174,7 +1266,6 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             name="list_office_files",
             description="列出当前 Cowork 会话已授权目录中的 .docx 与 .xlsx 文件。",
             args_model=ListOfficeFilesArgs,
-            capability="filesystem.read",
             risk="read",
             effect="none",
             parallel_safe=True,

@@ -43,12 +43,15 @@ def create_native_artifact(
     baseline_sha256: str | None,
     slides: list[dict[str, Any]] | None = None,
     backup_versions: int = 5,
+    max_existing_bytes: int = 20 * 1024 * 1024,
 ) -> NativeArtifactResult:
+    if max_existing_bytes < 1:
+        raise ValueError("原生交付物读取上限必须大于 0")
     expected_suffix = f".{format}"
     if path.suffix.casefold() != expected_suffix:
         raise ValueError(f"{format} 交付物路径必须以 {expected_suffix} 结尾")
     path.parent.mkdir(parents=True, exist_ok=True)
-    _check_baseline(path, baseline_sha256)
+    _check_baseline(path, baseline_sha256, max_bytes=max_existing_bytes)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
@@ -69,7 +72,7 @@ def create_native_artifact(
             mime_type = "application/pdf"
         payload = temporary.read_bytes()
         # 生成可能耗时；替换前再次核对 baseline，防止覆盖期间的并发修改。
-        _check_baseline(path, baseline_sha256)
+        _check_baseline(path, baseline_sha256, max_bytes=max_existing_bytes)
         previous_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else None
         backup_path = create_file_backup(path, backup_versions) if path.exists() else None
         if previous_mode is not None:
@@ -91,7 +94,32 @@ def create_native_artifact(
         temporary.unlink(missing_ok=True)
 
 
-def _check_baseline(path: Path, baseline: str | None) -> None:
+def _bounded_file_sha256(path: Path, *, max_bytes: int) -> str:
+    try:
+        size_bytes = path.stat().st_size
+    except OSError as error:
+        raise ValueError(f"无法读取原生交付物信息：{error}") from error
+    if size_bytes > max_bytes:
+        raise ValueError(
+            f"原生交付物大小 {size_bytes} bytes 超过读取上限 {max_bytes} bytes"
+        )
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError(
+                        f"原生交付物读取超过上限 {max_bytes} bytes"
+                    )
+                digest.update(chunk)
+    except OSError as error:
+        raise ValueError(f"无法读取原生交付物：{error}") from error
+    return digest.hexdigest()
+
+
+def _check_baseline(path: Path, baseline: str | None, *, max_bytes: int) -> None:
     if not path.exists():
         if baseline is not None:
             raise ValueError("原生交付物尚不存在，baseline_sha256 必须省略")
@@ -100,7 +128,7 @@ def _check_baseline(path: Path, baseline: str | None) -> None:
         raise ValueError("原生交付物目标必须是普通文件")
     if baseline is None:
         raise ValueError("覆盖已有原生交付物必须提供 baseline_sha256")
-    current = hashlib.sha256(path.read_bytes()).hexdigest()
+    current = _bounded_file_sha256(path, max_bytes=max_bytes)
     if current != baseline:
         raise ValueError("原生交付物已被修改；baseline_sha256 不匹配")
 

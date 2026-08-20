@@ -18,7 +18,11 @@ from app.cowork.automation_tools import register_scheduler_tools
 from app.cowork.browser_tools import register_browser_tools
 from app.cowork.connector_tools import register_connector_tools
 from app.cowork.extensions import register_skill_tools
-from app.cowork.runtime import COWORK_COMPACTION_PROMPTS, _system_prompt
+from app.cowork.runtime import (
+    COWORK_COMPACTION_PROMPTS,
+    _system_prompt,
+    _tools_referenced_in_history,
+)
 from app.cowork.subagent import register_readonly_subagent
 from app.cowork.tools import CoworkToolRegistry, build_default_cowork_registry
 from app.cowork_store.routing import configured_cowork_store
@@ -180,6 +184,7 @@ async def get_cowork_context_usage(
     compaction = normalize_compaction_state(None, message_count=0)
     goal = ""
     run_status: str | None = None
+    runtime_snapshot: dict[str, Any] = {}
     if latest is not None:
         goal = str(latest["goal"])
         run_status = str(latest["status"])
@@ -193,6 +198,8 @@ async def get_cowork_context_usage(
                 state.get("compaction"),
                 message_count=len(canonical),
             )
+            if isinstance(state.get("runtime_snapshot"), dict):
+                runtime_snapshot = cast("dict[str, Any]", state["runtime_snapshot"])
     if not canonical:
         if local_metadata:
             from app.cowork_store.factory import local_cowork_stores
@@ -231,7 +238,13 @@ async def get_cowork_context_usage(
             goal = str(rows[-1]["content"])
 
     registry = _context_registry(settings)
-    tools = registry.tool_definitions_for(goal)
+    tools = registry.tool_definitions_for(
+        goal,
+        retained_tools=(
+            registry.activated_tools_from_snapshot(runtime_snapshot)
+            | _tools_referenced_in_history(canonical)
+        ),
+    )
     system_prompt = _system_prompt(registry.system_instructions())
     outbound = build_outbound_messages(
         canonical,

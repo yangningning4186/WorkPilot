@@ -23,8 +23,10 @@ from app.api.dependencies import (
 from app.core.config import get_settings
 from app.core.db import get_db_session
 from app.core.run_bus import InMemoryRunBus
+from app.cowork.browser_tools import register_browser_tools
 from app.cowork.context_usage import get_cowork_context_usage
 from app.cowork.permissions import (
+    CapabilityDeniedError,
     create_session_root,
     grant_capability,
     list_session_roots,
@@ -253,6 +255,105 @@ def test_office_goal_detection_uses_word_boundaries() -> None:
     assert _goal_mentions_office("更新 report.xlsx")
     assert not _goal_mentions_office("extract keyword statistics")
     assert not _goal_mentions_office("audit password policy on wordpress")
+    assert not _goal_mentions_office("calculate word count for this text")
+    assert not _goal_mentions_office("build an Excel-like grid")
+
+
+async def test_shell_rejects_read_only_cwd(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await ensure_conversation(
+        db_session, scope="local_owner", title="Read-only shell cwd"
+    )
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_only",
+    )
+    await grant_capability(
+        db_session,
+        conversation_id=conversation_id,
+        capability="shell.execute",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="查看当前目录",
+        budget_tokens=10_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    context = CoworkToolContext(
+        session=db_session,
+        gateway=ModelGateway(DeterministicProvider(), embedding_dimensions=1024),
+        settings=get_settings().model_copy(update={"cowork_shell_allowlist": ["pwd"]}),
+        conversation_id=conversation_id,
+        run_id=run.id,
+        worker_id="readonly-shell-worker",
+        plan_step_id=UUID(int=43),
+        tool_call_id="readonly-shell-call",
+    )
+
+    with pytest.raises(CapabilityDeniedError, match=r"filesystem\.write"):
+        await build_default_cowork_registry().execute(
+            "run_shell",
+            {"command": "pwd", "cwd": str(tmp_path), "reason": "查看目录"},
+            context=context,
+        )
+
+
+async def test_browser_open_requires_network_read_on_top_of_browser_control(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    """browser_open 的返回值就是完整页面快照，不能成为 network.read 的绕过路径。"""
+
+    conversation_id = await ensure_conversation(
+        db_session, scope="local_owner", title="Browser capability split"
+    )
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    await grant_capability(
+        db_session,
+        conversation_id=conversation_id,
+        capability="browser.control",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="打开网页",
+        budget_tokens=10_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    registry = build_default_cowork_registry()
+    register_browser_tools(registry)
+    context = CoworkToolContext(
+        session=db_session,
+        gateway=ModelGateway(DeterministicProvider(), embedding_dimensions=1024),
+        settings=get_settings(),
+        conversation_id=conversation_id,
+        run_id=run.id,
+        worker_id="browser-capability-worker",
+        plan_step_id=UUID(int=71),
+        tool_call_id="browser-capability-call",
+    )
+
+    # 校验发生在 handler 之前，所以这里不会真的去启动 Chromium。
+    with pytest.raises(CapabilityDeniedError, match=r"network\.read"):
+        await registry.execute(
+            "browser_open",
+            {"url": "https://example.com/"},
+            context=context,
+        )
 
 
 async def test_shell_requires_executor_approval_and_reuses_completed_invocation(
@@ -453,6 +554,215 @@ class OverflowRecoveringCoworkProvider(NativeToolProvider):
 
 class EmptyToolArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class _FakeBrowserControl:
+    def __init__(self) -> None:
+        self.clicked = False
+
+    async def click(self, **options: int) -> None:
+        assert options["timeout"] > 0
+        self.clicked = True
+
+
+class _FakeBrowserBody:
+    async def inner_text(self, **options: int) -> str:
+        assert options["timeout"] > 0
+        return "测试页面"
+
+
+class _FakeBrowserControls:
+    async def count(self) -> int:
+        return 0
+
+
+class _FakeBrowserPage:
+    url = "https://example.com/after-click"
+
+    def locator(self, selector: str) -> object:
+        return _FakeBrowserBody() if selector == "body" else _FakeBrowserControls()
+
+    async def wait_for_load_state(self, state: str, **options: int) -> None:
+        assert state == "domcontentloaded"
+        assert options["timeout"] > 0
+
+    async def title(self) -> str:
+        return "测试页面"
+
+
+class _FakeBrowserSession:
+    def __init__(self, control: _FakeBrowserControl) -> None:
+        self.page = _FakeBrowserPage()
+        self.controls: list[object] = [control]
+        self.action_no = 0
+        self.last_used = 0.0
+
+
+class _FakeBrowserManager:
+    def __init__(self, session_id: str, session: _FakeBrowserSession) -> None:
+        self.session_id = session_id
+        self.session = session
+
+    async def get(
+        self,
+        session_id: str,
+        *,
+        conversation_id: UUID,
+    ) -> _FakeBrowserSession:
+        assert session_id == self.session_id
+        assert isinstance(conversation_id, UUID)
+        return self.session
+
+
+async def test_granted_browser_control_clicks_without_inbox_round_trip(
+    db_engine: AsyncEngine, db_session: AsyncSession
+) -> None:
+    conversation_id = await ensure_conversation(
+        db_session, scope="local_owner", title="Cowork browser control"
+    )
+    await grant_capability(
+        db_session,
+        conversation_id=conversation_id,
+        capability="browser.control",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="点击浏览器控件",
+        budget_tokens=50_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    session_id = "test-browser-session-01"
+    control = _FakeBrowserControl()
+    registry = build_default_cowork_registry()
+    register_browser_tools(
+        registry,
+        _FakeBrowserManager(session_id, _FakeBrowserSession(control)),  # type: ignore[arg-type]
+    )
+    bus = InMemoryRunBus()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    provider = NativeToolProvider(
+        [
+            _tool_completion(
+                ToolCall(
+                    id="browser-click",
+                    name="browser_click",
+                    arguments=json.dumps({"session_id": session_id, "control_index": 0}),
+                )
+            ),
+            _final_completion("点击完成。"),
+        ]
+    )
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(
+                update={"cowork_max_steps": 4, "run_heartbeat_s": 60.0}
+            ),
+            "session_factory": async_sessionmaker(db_engine, expire_on_commit=False),
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    refreshed = await get_run(db_session, run.id)
+    assert refreshed is not None and refreshed.status == "done"
+    assert control.clicked is True
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    assert "interrupt" not in {event.type for event in events}
+
+
+async def test_batched_exclusive_browser_actions_are_rejected_without_execution(
+    db_engine: AsyncEngine, db_session: AsyncSession
+) -> None:
+    conversation_id = await ensure_conversation(
+        db_session, scope="local_owner", title="Cowork exclusive browser control"
+    )
+    await grant_capability(
+        db_session,
+        conversation_id=conversation_id,
+        capability="browser.control",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="连续点击两个浏览器控件",
+        budget_tokens=50_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    session_id = "test-browser-session-02"
+    control = _FakeBrowserControl()
+    registry = build_default_cowork_registry()
+    register_browser_tools(
+        registry,
+        _FakeBrowserManager(session_id, _FakeBrowserSession(control)),  # type: ignore[arg-type]
+    )
+    bus = InMemoryRunBus()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    provider = NativeToolProvider(
+        [
+            _tool_completion(
+                ToolCall(
+                    id="browser-click-1",
+                    name="browser_click",
+                    arguments=json.dumps({"session_id": session_id, "control_index": 0}),
+                ),
+                ToolCall(
+                    id="browser-click-2",
+                    name="browser_click",
+                    arguments=json.dumps({"session_id": session_id, "control_index": 0}),
+                ),
+            ),
+            _final_completion("已改为逐个操作。"),
+        ]
+    )
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(
+                update={"cowork_max_steps": 4, "run_heartbeat_s": 60.0}
+            ),
+            "session_factory": async_sessionmaker(db_engine, expire_on_commit=False),
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    assert control.clicked is False
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
+    assert checkpoint is not None
+    tool_errors = [
+        json.loads(message["content"])
+        for message in checkpoint.state["messages"]
+        if message["role"] == "tool"
+    ]
+    assert len(tool_errors) == 2
+    assert all("独占工具必须单独调用" in item["error"] for item in tool_errors)
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    assert "interrupt" not in {event.type for event in events}
+    assert "tool.start" not in {event.type for event in events}
 
 
 async def test_cowork_runner_lists_inspects_edits_word_and_registers_artifact(
@@ -829,7 +1139,6 @@ async def test_cowork_runner_executes_parallel_safe_read_batch_concurrently(
                 name=name,
                 description=f"并行读取 {name}",
                 args_model=EmptyToolArgs,
-                capability="filesystem.read",
                 risk="read",
                 effect="none",
                 parallel_safe=True,
@@ -1118,8 +1427,20 @@ def test_default_registry_exposes_risk_and_capability_contract() -> None:
     assert catalog["request_capability"]["execution"] == "interaction"
 
 
+@pytest.mark.parametrize(
+    ("interaction_body", "expected_tool_fragment"),
+    [
+        ({"approved": True, "answer": "按部门"}, "按部门"),
+        ({"approved": False}, "基于现有信息自行判断"),
+    ],
+    ids=("answered", "declined"),
+)
 async def test_cowork_steering_and_ask_user_pause_resume_with_canonical_tool_history(
-    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
+    interaction_body: dict[str, object],
+    expected_tool_fragment: str,
+    db_engine: AsyncEngine,
+    db_session: AsyncSession,
+    tmp_path: Path,
 ) -> None:
     conversation_id = await ensure_conversation(
         db_session, scope="local_owner", title="Cowork interaction"
@@ -1207,31 +1528,32 @@ async def test_cowork_steering_and_ask_user_pause_resume_with_canonical_tool_his
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             f"/api/v1/runs/{run.id}/interactions/{interrupt.payload['resume_token']}/respond",
-            json={"answer": "按部门"},
+            json=interaction_body,
         )
     assert response.status_code == 202
     assert response.json()["status"] == "queued"
     assert queue.run_ids == [run.id]
     assert queue.attempts[0] > 0
-    leaked_interaction_messages = (
-        await db_session.execute(
-            text(
-                """
-                SELECT COUNT(*) FROM messages
-                WHERE conversation_id = :conversation_id
-                  AND run_id = :run_id
-                  AND role = 'user'
-                  AND content = :answer
-                """
-            ),
-            {
-                "conversation_id": conversation_id,
-                "run_id": run.id,
-                "answer": "按部门",
-            },
-        )
-    ).scalar_one()
-    assert leaked_interaction_messages == 0
+    if isinstance(interaction_body.get("answer"), str):
+        leaked_interaction_messages = (
+            await db_session.execute(
+                text(
+                    """
+                    SELECT COUNT(*) FROM messages
+                    WHERE conversation_id = :conversation_id
+                      AND run_id = :run_id
+                      AND role = 'user'
+                      AND content = :answer
+                    """
+                ),
+                {
+                    "conversation_id": conversation_id,
+                    "run_id": run.id,
+                    "answer": interaction_body["answer"],
+                },
+            )
+        ).scalar_one()
+        assert leaked_interaction_messages == 0
 
     await cowork_run(context, str(run.id))
     completed = await get_run(db_session, run.id)
@@ -1243,7 +1565,9 @@ async def test_cowork_steering_and_ask_user_pause_resume_with_canonical_tool_his
         message for message in resumed_history if message.role == "tool" and message.tool_call_id
     )
     assert tool_result.tool_call_id == "ask-scope"
-    assert "按部门" in tool_result.content
+    assert expected_tool_fragment in tool_result.content
+    if interaction_body["approved"] is False:
+        assert '"status":"rejected"' in tool_result.content
 
 
 @pytest.mark.parametrize("tool_name", ["request_directory", "request_capability"])

@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     cowork_web_max_redirects: int = Field(default=5, ge=0, le=10)
     cowork_web_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1_024, le=100 * 1024 * 1024)
     cowork_web_text_max_chars: int = Field(default=60_000, ge=1_000, le=500_000)
+    # Browser session 持有页面与登录态，不能随 worker 生命周期常驻。空闲 TTL 每次
+    # 使用后顺延，让长时间的连续浏览不被中途掐断；绝对 TTL 永不顺延，是硬上限。
+    cowork_browser_session_idle_ttl_s: int = Field(default=30 * 60, ge=60, le=24 * 60 * 60)
+    cowork_browser_session_max_ttl_s: int = Field(default=4 * 60 * 60, ge=60, le=24 * 60 * 60)
     # 输入附件属于 WorkPilot 私有运行数据，不得写入用户授权工作区。单文件与单消息
     # 数量都在入口硬限制，防止上传或 checkpoint 被大文件撑爆。
     cowork_attachment_path: Path = Path("../data/cowork-attachments")

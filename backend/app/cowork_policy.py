@@ -8,7 +8,13 @@ PATH_CAPABILITIES = frozenset(
     {"filesystem.read", "filesystem.write", "office.word.edit", "office.excel.edit"}
 )
 GLOBAL_CAPABILITIES = frozenset(
-    {"knowledge.read", "network.read", "shell.execute", "external.action"}
+    {
+        "knowledge.read",
+        "network.read",
+        "browser.control",
+        "shell.execute",
+        "external.action",
+    }
 )
 ALL_CAPABILITIES = PATH_CAPABILITIES | GLOBAL_CAPABILITIES
 
