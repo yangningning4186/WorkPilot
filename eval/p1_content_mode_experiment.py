@@ -18,11 +18,11 @@ import httpx
 
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.llm.gateway import ModelGateway, build_model_gateway
-from app.retrieval.dense import DenseSearchHit, _dense_search_by_vector
-from app.retrieval.fusion import reciprocal_rank_fusion
-from app.retrieval.lexical import lexical_search
-from app.services.grounded_answer import evaluate_refusal
+from app.llm_bootstrap import build_model_gateway
+from app.rag.grounded_answer import evaluate_refusal
+from app.rag.retrieval.dense import DenseSearchHit, _dense_search_by_vector
+from app.rag.retrieval.fusion import reciprocal_rank_fusion
+from app.rag.retrieval.lexical import lexical_search
 from eval.dense_baseline import EvalItem, _candidate_chunks, _load_items, _retrieved_chunk
 from eval.mapping import RetrievedChunk
 from eval.metrics.diagnostics import percentile
@@ -31,6 +31,7 @@ from eval.metrics.retrieval import evaluate_retrieval
 from eval.p1_retrieval_diagnostics import _rerank_raw
 from eval.stats import MetricSamples, RatioPoint, paired_bootstrap
 from eval.suites import load_suite, validate_suite
+from workpilot_ai.gateway import ModelGateway
 
 MODES = ("title_heading_content", "content")
 METRIC_NAMES = (

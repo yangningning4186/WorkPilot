@@ -11,7 +11,7 @@ import pymupdf
 
 from app.core.config import Settings
 from app.ingest.pdf import ParsedPdf, PdfParserConfig, parse_pdf
-from app.services.pdf_ingestion import pdf_parser_config_from_settings
+from app.rag.pdf_ingestion import pdf_parser_config_from_settings
 
 
 @dataclass(frozen=True)

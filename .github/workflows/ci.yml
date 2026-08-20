@@ -80,10 +80,15 @@ jobs:
         run: uv sync --locked
 
       - name: Ruff
-        run: uv run ruff check app tests migrations ../eval --config pyproject.toml
+        run: uv run ruff check app tests migrations ../eval packages --config pyproject.toml
 
       - name: mypy
-        run: uv run mypy app
+        run: uv run mypy app packages/workpilot-ai/src/workpilot_ai packages/workpilot-telemetry/src/workpilot_telemetry
+
+      # 层次契约（docs/adr/0011）。放在 mypy 之后、pytest 之前：它比 pytest 快两个量级,
+      # 层次违规没必要等跑完 670 个用例才被告知。
+      - name: import-linter
+        run: uv run lint-imports
 
       # conftest 会先跑 alembic upgrade head，再对 workpilot_test 建表。
       - name: pytest

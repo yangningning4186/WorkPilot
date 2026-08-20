@@ -35,6 +35,10 @@ dependencies = [
   "structlog>=25.4,<26",
   "uuid6>=2025.0.1,<2026",
   "uvicorn[standard]>=0.35,<1",
+  # 三层架构最底层, 见 packages/workpilot-ai（docs/adr/0011）。
+  "workpilot-ai",
+  # 旁挂的横切包：测量 schema、成本口径与费用闸门契约。
+  "workpilot-telemetry",
 ]
 
 [dependency-groups]
@@ -42,6 +46,8 @@ dev = [
   "mypy>=1.17,<2",
   "pytest>=8.4,<9",
   "pytest-asyncio>=1.1,<2",
+  # 层次约束的门禁：契约写在 [tool.importlinter]，CI 里 `uv run lint-imports` 跑。
+  "import-linter>=2.3,<3",
   "ruff>=0.12,<1",
   "types-croniter>=6.0,<7",
   "types-pyyaml>=6.0.12,<7",
@@ -50,6 +56,14 @@ dev = [
 
 [tool.uv]
 package = false
+
+# 三层架构：底层包各自独立 pyproject, 依赖表本身就是层次约束（docs/adr/0011）。
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+workpilot-ai = { workspace = true }
+workpilot-telemetry = { workspace = true }
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
@@ -71,7 +85,7 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.isort]
 # 显式固定一方代码边界，避免从仓库根目录与 backend/ 运行时 import 分组漂移。
-known-first-party = ["app", "eval", "tests"]
+known-first-party = ["app", "eval", "tests", "workpilot_ai", "workpilot_telemetry"]
 
 [tool.ruff.lint.per-file-ignores]
 # eval 是离线 CLI；少量 Path.read_text/write_text 不阻塞在线请求或 worker 事件循环。
@@ -87,3 +101,84 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = ["uuid6"]
 ignore_missing_imports = true
+
+# ── 层次契约（Step 0）─────────────────────────────────────────────
+# 这里记录的是**当前真实**的依赖方向, 不是理想态。理想态见 docs/adr/0011,
+# 分步收紧：每完成一步就把对应的 ignore 删掉, 而不是一次性写满然后长期挂红。
+[tool.importlinter]
+root_packages = ["app", "workpilot_ai", "workpilot_telemetry"]
+include_external_packages = true
+
+# 契约 1：两个下层包都不许知道 app 的存在。
+# 这条从 Step 1 起就是干净的, 永远不加 ignore。
+[[tool.importlinter.contracts]]
+name = "下层包不依赖 app"
+type = "forbidden"
+source_modules = ["workpilot_ai", "workpilot_telemetry"]
+forbidden_modules = ["app"]
+
+# 契约 2：下层包不碰持久化、Web 框架与部署配置。
+# 依赖表里没有这几个包, 这条是双保险: 挡住 TYPE_CHECKING 下的偷渡。
+[[tool.importlinter.contracts]]
+name = "下层包不碰 DB/Web/配置"
+type = "forbidden"
+source_modules = ["workpilot_ai", "workpilot_telemetry"]
+forbidden_modules = ["sqlalchemy", "fastapi", "pydantic_settings", "alembic", "arq"]
+
+# 契约 2b：telemetry 是旁挂的最底层, 连 workpilot_ai 都不认识。
+# 方向是 workpilot_ai → workpilot_telemetry：网关产出度量, 度量不知道谁在产出。
+[[tool.importlinter.contracts]]
+name = "telemetry 不依赖 workpilot_ai"
+type = "forbidden"
+source_modules = ["workpilot_telemetry"]
+forbidden_modules = ["workpilot_ai"]
+
+# 契约 3：agent_core 是「只懂框架」层, 不许反向依赖业务。
+# 现在 app.agent 与 app.services 互相依赖（Step 2/3 要拆的就是它）,
+# 但 agent_core 本身已经干净, 先把它钉死。
+[[tool.importlinter.contracts]]
+name = "agent_core 不依赖业务层"
+type = "forbidden"
+source_modules = ["app.agent_core"]
+forbidden_modules = ["app.rag", "app.cowork", "app.api", "app.worker", "app.retrieval", "app.memory"]
+
+# 契约 3b：runstore 是存储适配层, 夹在产品与框架之间, 不许回头 import 产品。
+# Step 2 把 services/runs.py 与 agent/persistence.py 搬进来就是为了这条能成立。
+[[tool.importlinter.contracts]]
+name = "runstore 不依赖产品层"
+type = "forbidden"
+source_modules = ["app.runstore"]
+forbidden_modules = ["app.rag", "app.cowork", "app.api", "app.worker"]
+
+# 契约 6：两个产品包互不依赖（ADR-0011 Step 3 的核心约束）。
+# 共享的东西只能走三个下游：app.agent_core / app.runstore / app.knowledge_contracts
+# （外加 app.docedit、app.ingest 两个共用能力）。
+[[tool.importlinter.contracts]]
+name = "rag 与 cowork 互不依赖"
+type = "independence"
+modules = ["app.rag", "app.cowork"]
+ignore_imports = [
+  # 唯一的例外：Cowork 的 Office 工作区在授权目录里改完 Markdown 后，要把它回灌
+  # 资料库索引。这是真实的产品间动作, 不是层次错误——Cowork 编辑的正是 RAG 的语料。
+  # 收口方式是把它翻成事件（Cowork 只发"文件已改"，RAG 自己订阅），Step 4 处理。
+  "app.cowork.office_workspace -> app.rag.markdown_ingestion",
+]
+
+# 契约 4：cowork_store 是存储适配器, 不许回头 import 业务实现。
+# 等价于原 test_architecture_boundaries.py 里那条手写 AST 检查。
+[[tool.importlinter.contracts]]
+name = "cowork_store 不依赖产品层"
+type = "forbidden"
+source_modules = ["app.cowork_store"]
+forbidden_modules = ["app.rag", "app.cowork"]
+
+# 契约 5：模型 Provider 只能由网关与组装根构造（CLAUDE.md 约束 1）。
+# `app.llm_bootstrap` 刻意不在 source_modules 里——组装根构造 Provider 正是它的职责。
+# 会话级 Provider 覆盖走 `workpilot_ai.provider_factory`, 所以 provider_profiles 也是干净的。
+[[tool.importlinter.contracts]]
+name = "业务层不直接 import Provider 实现"
+type = "forbidden"
+source_modules = ["app.rag", "app.cowork", "app.agent_core", "app.api", "app.worker"]
+forbidden_modules = ["workpilot_ai.providers"]
+# 只查直接 import：网关内部当然要 import Provider, 顺着它传递下去人人都"违规"。
+allow_indirect_imports = "true"

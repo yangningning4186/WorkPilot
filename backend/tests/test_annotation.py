@@ -5,16 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingest.markdown import parse_markdown
-from app.llm.gateway import ModelGateway
-from app.schemas.annotation import (
-    AnnotationDatasetCreate,
-    AnnotationItemUpsert,
-    GoldEvidenceGroupInput,
-    GoldSpanInput,
-    GoldToolInput,
-    ResolveSpanRequest,
-)
-from app.services.annotation import (
+from app.rag.annotation import (
     AnnotationConflictError,
     create_dataset,
     create_item,
@@ -23,8 +14,17 @@ from app.services.annotation import (
     resolve_span,
     utf16_offset_to_codepoint,
 )
-from app.services.document_ingestion import persist_parsed_document
+from app.rag.document_ingestion import persist_parsed_document
+from app.schemas.annotation import (
+    AnnotationDatasetCreate,
+    AnnotationItemUpsert,
+    GoldEvidenceGroupInput,
+    GoldSpanInput,
+    GoldToolInput,
+    ResolveSpanRequest,
+)
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 
 def test_utf16_offset_conversion_handles_non_bmp_characters() -> None:

@@ -12,18 +12,18 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import ModelGateway
-from app.retrieval.citations import REFUSAL_TEXT
-from app.services.answer_stream import (
+from app.rag.answer_stream import (
     AnswerDelta,
     AnswerFinished,
     AnswerStreamEvent,
     produce_answer,
     produce_general_answer,
 )
-from app.services.markdown_ingestion import ingest_markdown_file
+from app.rag.markdown_ingestion import ingest_markdown_file
+from app.rag.retrieval.citations import REFUSAL_TEXT
+from app.telemetry.llm_calls import SqlLlmCallAudit
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 pytestmark = pytest.mark.integration
 

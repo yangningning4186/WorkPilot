@@ -38,10 +38,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.agent.review_tools import CARD_SYSTEM_PROMPT
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.llm.gateway import build_model_gateway
+from app.llm_bootstrap import build_model_gateway
+from app.rag.review.tools import CARD_SYSTEM_PROMPT
 from eval.agent_error_message_experiment import (
     CardRecord,
     ExperimentError,

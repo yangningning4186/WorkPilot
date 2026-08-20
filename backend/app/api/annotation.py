@@ -10,18 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import require_admin_session
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
-from app.schemas.annotation import (
-    AnnotationBlockPageResponse,
-    AnnotationDatasetCreate,
-    AnnotationDatasetResponse,
-    AnnotationDocumentResponse,
-    AnnotationItemListResponse,
-    AnnotationItemResponse,
-    AnnotationItemUpsert,
-    GoldSpanResponse,
-    ResolveSpanRequest,
-)
-from app.services.annotation import (
+from app.rag.annotation import (
     AnnotationConflictError,
     AnnotationNotFoundError,
     create_dataset,
@@ -35,6 +24,17 @@ from app.services.annotation import (
     resolve_source_file,
     resolve_span,
     update_item,
+)
+from app.schemas.annotation import (
+    AnnotationBlockPageResponse,
+    AnnotationDatasetCreate,
+    AnnotationDatasetResponse,
+    AnnotationDocumentResponse,
+    AnnotationItemListResponse,
+    AnnotationItemResponse,
+    AnnotationItemUpsert,
+    GoldSpanResponse,
+    ResolveSpanRequest,
 )
 
 router = APIRouter(

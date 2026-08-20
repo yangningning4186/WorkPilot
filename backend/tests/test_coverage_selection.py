@@ -2,8 +2,8 @@ from uuid import UUID
 
 from uuid6 import uuid7
 
-from app.retrieval.coverage import coverage_aware_top_k
-from app.retrieval.dense import DenseSearchHit
+from app.rag.retrieval.coverage import coverage_aware_top_k
+from app.rag.retrieval.dense import DenseSearchHit
 
 
 def _hit(name: str, *, chunk_id: UUID | None = None) -> DenseSearchHit:

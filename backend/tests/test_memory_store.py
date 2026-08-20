@@ -5,7 +5,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
-from app.memory.store import (
+from app.platform.demo_sessions import resolve_demo_session
+from app.rag.memory.store import (
     PinnedMemoryError,
     apply_memory_operation,
     claim_memory_job,
@@ -17,8 +18,7 @@ from app.memory.store import (
     schedule_memory_extraction,
     search_active_memories,
 )
-from app.services.demo_sessions import resolve_demo_session
-from app.services.runs import append_message, create_run, ensure_conversation, finish_run
+from app.runstore.runs import append_message, create_run, ensure_conversation, finish_run
 
 
 def _embedding(slot: int) -> list[float]:

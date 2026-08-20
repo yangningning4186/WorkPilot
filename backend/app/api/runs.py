@@ -7,14 +7,6 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.agent.cowork_extensions import register_skill_tools
-from app.agent.cowork_runtime import initialize_cowork_state, resume_cowork_after_human
-from app.agent.cowork_tools import build_default_cowork_registry
-from app.agent.review_graph import initialize_review_state
-from app.agent.write_note import (
-    resolve_note_path,
-    resume_review_after_human,
-)
 from app.agent_core.idempotency import InvocationInFlightError
 from app.api.dependencies import (
     get_request_identity,
@@ -27,33 +19,30 @@ from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
 from app.core.queue import RunQueue
 from app.core.run_bus import RunBus
-from app.cowork_store.routing import local_run_guard
-from app.schemas.runs import (
-    CoworkInteractionResponseRequest,
-    CoworkSteeringRequest,
-    CreateCoworkRunRequest,
-    CreateReviewRunRequest,
-    CreateRunRequest,
-    CreateRunResponse,
-    ResumeRunRequest,
-    RunEventListResponse,
-    RunStatusResponse,
-)
-from app.services.cowork_attachments import CoworkAttachmentError, bind_attachments
-from app.services.cowork_interactions import (
+from app.cowork.attachments import CoworkAttachmentError, bind_attachments
+from app.cowork.extensions import register_skill_tools
+from app.cowork.interactions import (
     cancel_pending_interaction,
     enqueue_steering,
     get_pending_inbox_item,
     resolve_inbox_item,
 )
-from app.services.cowork_permissions import (
+from app.cowork.permissions import (
     CoworkPermissionError,
     ensure_default_session_root,
 )
-from app.services.demo_sessions import consume_question_quota
-from app.services.request_identity import RequestIdentity
-from app.services.run_stream import parse_last_event_id, stream_run_events
-from app.services.runs import (
+from app.cowork.runtime import initialize_cowork_state, resume_cowork_after_human
+from app.cowork.tools import build_default_cowork_registry
+from app.cowork_store.routing import local_run_guard
+from app.platform.demo_sessions import consume_question_quota
+from app.platform.request_identity import RequestIdentity
+from app.rag.review.graph import initialize_review_state
+from app.rag.review.write_note import (
+    resolve_note_path,
+    resume_review_after_human,
+)
+from app.runstore.run_stream import parse_last_event_id, stream_run_events
+from app.runstore.runs import (
     RunNotFoundError,
     RunRecord,
     append_events,
@@ -64,6 +53,17 @@ from app.services.runs import (
     get_run_for_identity,
     list_events,
     request_cancel,
+)
+from app.schemas.runs import (
+    CoworkInteractionResponseRequest,
+    CoworkSteeringRequest,
+    CreateCoworkRunRequest,
+    CreateReviewRunRequest,
+    CreateRunRequest,
+    CreateRunResponse,
+    ResumeRunRequest,
+    RunEventListResponse,
+    RunStatusResponse,
 )
 
 logger = structlog.get_logger(__name__)

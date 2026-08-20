@@ -4,10 +4,10 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.llm.gateway import ModelGateway
-from app.services.chunk_building import build_chunk_strategies
-from app.services.markdown_ingestion import ingest_markdown_file
+from app.rag.chunk_building import build_chunk_strategies
+from app.rag.markdown_ingestion import ingest_markdown_file
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 
 @pytest.mark.integration

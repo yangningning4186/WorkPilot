@@ -5,11 +5,11 @@ import pytest
 from uuid6 import uuid7
 
 from app.core.config import Settings
-from app.retrieval import pipeline as search_pipeline
-from app.retrieval.coverage import CoverageSelectionResult
-from app.retrieval.dense import DenseSearchHit
-from app.retrieval.query_decomposition import QueryPlan
-from app.services import grounded_answer
+from app.rag import grounded_answer
+from app.rag.retrieval import pipeline as search_pipeline
+from app.rag.retrieval.coverage import CoverageSelectionResult
+from app.rag.retrieval.dense import DenseSearchHit
+from app.rag.retrieval.query_decomposition import QueryPlan
 
 
 @pytest.mark.asyncio

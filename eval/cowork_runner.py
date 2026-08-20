@@ -23,15 +23,30 @@ from typing import Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pymupdf
-from app.agent.cowork_browser_tools import BrowserOpenArgs, BrowserSessionArgs
-from app.agent.cowork_rag_tools import register_rag_tools
-from app.agent.cowork_runtime import (
+from docx import Document
+from openpyxl import Workbook, load_workbook
+from pptx import Presentation
+from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.core.config import Settings
+from app.core.db import close_database, session_factory
+from app.core.run_bus import InMemoryRunBus
+from app.cowork.browser_tools import BrowserOpenArgs, BrowserSessionArgs
+from app.cowork.interactions import (
+    get_pending_inbox_item,
+    resolve_inbox_item,
+)
+from app.cowork.permissions import create_session_root, grant_capability
+from app.cowork.rag_tools import register_rag_tools
+from app.cowork.runtime import (
     CoworkState,
     initialize_cowork_state,
     load_cowork_checkpoint,
     resume_cowork_after_human,
 )
-from app.agent.cowork_tools import (
+from app.cowork.tools import (
     CoworkToolContext,
     CoworkToolError,
     CoworkToolRegistry,
@@ -41,27 +56,13 @@ from app.agent.cowork_tools import (
     WebSearchArgs,
     build_default_cowork_registry,
 )
-from app.core.config import Settings
-from app.core.db import close_database, session_factory
-from app.core.run_bus import InMemoryRunBus
-from app.llm.gateway import ModelGateway, build_model_gateway
-from app.retrieval.citations import EvidenceSegment
-from app.services.cowork_interactions import (
-    get_pending_inbox_item,
-    resolve_inbox_item,
-)
-from app.services.cowork_permissions import create_session_root, grant_capability
-from app.services.rag_service import EvidenceBundle, RagSearchRequest
-from app.services.runs import append_message, create_run, ensure_conversation, get_run
+from app.llm_bootstrap import build_model_gateway
+from app.rag.retrieval.citations import EvidenceSegment
+from app.rag.service import EvidenceBundle, RagSearchRequest
+from app.runstore.runs import append_message, create_run, ensure_conversation, get_run
 from app.worker.cowork_run import cowork_run
-from docx import Document
-from openpyxl import Workbook, load_workbook
-from pptx import Presentation
-from pydantic import BaseModel
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
 from eval.cowork_task_suite import DEFAULT_SUITE, load_suite
+from workpilot_ai.gateway import ModelGateway
 
 REPORT_SCHEMA_VERSION = "cowork-eval-report.v1"
 OBSERVATION_SCHEMA_VERSION = "cowork-observation.v1"
@@ -896,7 +897,7 @@ def evaluate_assertion(
             detail = "无目录时不得构造 path"
         else:
             detail = f"runner 尚不支持 assertion type={kind}"
-    except Exception as error:  # noqa: BLE001 - 单条断言失败不能中断整套报告
+    except Exception as error:
         passed = False
         detail = f"assertion_error:{type(error).__name__}:{error}"
     return AssertionResult(type=kind, passed=passed, detail=detail)
@@ -1458,7 +1459,7 @@ async def run_suite(
                     settings=effective_settings,
                     db_sessions=db_sessions,
                 )
-            except Exception as error:  # noqa: BLE001 - 跑批必须保留其他题结果
+            except Exception as error:
                 record = _runner_error_record(item, error)
             records.append(record)
             print(

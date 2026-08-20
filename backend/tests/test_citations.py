@@ -1,13 +1,13 @@
 import pytest
 from uuid6 import uuid7
 
-from app.retrieval.citations import (
+from app.rag.retrieval.citations import (
     REFUSAL_TEXT,
     CitationValidationError,
     build_evidence_segments,
     parse_citations,
 )
-from app.retrieval.dense import DenseSearchHit
+from app.rag.retrieval.dense import DenseSearchHit
 
 
 def _hit() -> DenseSearchHit:

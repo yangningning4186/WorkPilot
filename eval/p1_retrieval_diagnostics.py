@@ -21,17 +21,17 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from app.core.config import Settings
-from app.core.db import close_database, session_factory
-from app.llm.gateway import ModelGateway, build_model_gateway
-from app.retrieval.dense import DenseSearchHit, _dense_search_by_vector
-from app.retrieval.fusion import reciprocal_rank_fusion, rerank_candidate_union
-from app.retrieval.lexical import lexical_search
-from app.retrieval.reranker import build_candidate_text, parse_cross_encoder_response
-from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings
+from app.core.db import close_database, session_factory
+from app.llm_bootstrap import build_model_gateway
+from app.rag.retrieval.dense import DenseSearchHit, _dense_search_by_vector
+from app.rag.retrieval.fusion import reciprocal_rank_fusion, rerank_candidate_union
+from app.rag.retrieval.lexical import lexical_search
+from app.rag.retrieval.reranker import build_candidate_text, parse_cross_encoder_response
+from app.rag.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
 from eval.dense_baseline import (
     EvalItem,
     _candidate_chunks,
@@ -42,6 +42,7 @@ from eval.mapping import GoldSpan, RetrievedChunk, hits
 from eval.metrics.retrieval import evaluate_retrieval
 from eval.stats import MetricSamples, RatioPoint, paired_bootstrap
 from eval.suites import load_suite, validate_suite
+from workpilot_ai.gateway import ModelGateway
 
 METRIC_NAMES = (
     "span_recall_at_k",

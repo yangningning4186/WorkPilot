@@ -21,15 +21,15 @@ from time import monotonic
 from typing import Any, Literal
 
 from app.core.config import Settings
-from app.llm.gateway import build_model_gateway
-from app.llm.types import Message
-from app.memory.prompt import (
+from app.llm_bootstrap import build_model_gateway
+from app.rag.memory.prompt import (
     MEMORY_CONTEXT_PREFIX,
     MEMORY_CONTEXT_SUFFIX,
     MEMORY_USAGE_POLICY,
     escape_memory_fact,
 )
 from eval.stats import MetricSamples, RatioPoint, paired_bootstrap
+from workpilot_ai.types import Message
 
 SYSTEM_PROMPT = f"""你是个人工作助手。准确完成用户请求；不知道用户信息时直接说明不知道。
 {MEMORY_USAGE_POLICY}

@@ -3,8 +3,8 @@ import math
 import re
 from collections.abc import AsyncIterator
 
-from app.agent.state import BudgetState
-from app.llm.types import CompletionResult, EmbeddingResult, Message, Usage
+from app.agent_core.contracts import BudgetState
+from workpilot_ai.types import CompletionResult, EmbeddingResult, Message, Usage
 
 
 class DeterministicProvider:

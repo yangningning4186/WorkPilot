@@ -7,21 +7,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_model_gateway, require_admin_session
 from app.core.config import get_settings
 from app.core.db import get_db_session
-from app.llm.gateway import ModelGateway
-from app.schemas.sources import (
-    LocalDirCreateRequest,
-    LocalDirSourceResponse,
-    LocalDirSyncRequest,
-    LocalDirSyncResponse,
-)
-from app.services.local_dir import (
+from app.rag.local_dir import (
     SourceBusyError,
     SourceNotFoundError,
     get_local_dir_source,
     register_local_dir,
     sync_local_dir,
 )
-from app.services.markdown_ingestion import LibraryPathError
+from app.rag.markdown_ingestion import LibraryPathError
+from app.schemas.sources import (
+    LocalDirCreateRequest,
+    LocalDirSourceResponse,
+    LocalDirSyncRequest,
+    LocalDirSyncResponse,
+)
+from workpilot_ai.gateway import ModelGateway
 
 router = APIRouter(
     prefix="/api/v1/sources",

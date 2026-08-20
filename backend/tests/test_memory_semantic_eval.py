@@ -6,7 +6,6 @@ from typing import Literal
 
 import pytest
 
-from app.llm.gateway import ModelGateway
 from eval.memory_injection_experiment import find_disclosure_hits
 from eval.memory_semantic_experiment import (
     ArmScore,
@@ -24,6 +23,7 @@ from eval.memory_semantic_experiment import (
     summarize_semantic,
 )
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 
 def _case(item_id: str = "semantic-one") -> SemanticCase:

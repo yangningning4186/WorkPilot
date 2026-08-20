@@ -27,17 +27,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.llm.gateway import ModelGateway, build_model_gateway
-from app.retrieval.citations import build_evidence_segments
-from app.retrieval.coverage import coverage_aware_top_k
-from app.retrieval.dense import DenseSearchHit, _dense_search_by_vector
-from app.retrieval.fusion import reciprocal_rank_fusion
-from app.retrieval.lexical import lexical_search
-from app.services.evidence_sufficiency import (
+from app.llm_bootstrap import build_model_gateway
+from app.rag.evidence_sufficiency import (
     EvidenceAssessmentError,
     assess_evidence_sufficiency,
 )
-from app.services.grounded_answer import evaluate_refusal, retrieval_score_source
+from app.rag.grounded_answer import evaluate_refusal, retrieval_score_source
+from app.rag.retrieval.citations import build_evidence_segments
+from app.rag.retrieval.coverage import coverage_aware_top_k
+from app.rag.retrieval.dense import DenseSearchHit, _dense_search_by_vector
+from app.rag.retrieval.fusion import reciprocal_rank_fusion
+from app.rag.retrieval.lexical import lexical_search
 from eval.agentic_retrieval import (
     AgenticPlan,
     AgenticPlanError,
@@ -57,6 +57,7 @@ from eval.p1_document_two_hop_experiment import _grid_candidates, _rank_document
 from eval.p1_retrieval_diagnostics import _oracle_doc_hits, _rerank_raw, _span_rank
 from eval.stats import INELIGIBLE, MetricSamples, RatioPoint, paired_bootstrap
 from eval.suites import EvalSuite, load_suite, validate_suite
+from workpilot_ai.gateway import ModelGateway
 
 VARIANTS = ("rrf_top5", "p1k_coverage", "doc_m3_local_n10", "agentic_navigation")
 FINAL_TOP_K = 5

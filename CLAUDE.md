@@ -21,16 +21,23 @@
 ```
 workpilot/
 ├── backend/            FastAPI 服务
+│   ├── packages/       三层架构的下层包（独立 pyproject，见 ADR-0011）
+│   │   ├── workpilot-ai/        ★「只懂模型」：网关、路由、缓存、Provider 适配
+│   │   └── workpilot-telemetry/ ★「只懂度量」：调用 schema、成本口径、费用闸门契约
 │   ├── app/
-│   │   ├── api/        路由层（HTTP / SSE）
-│   │   ├── core/       配置、日志、异常、依赖注入
-│   │   ├── llm/        模型网关：路由、缓存、预算、追踪
-│   │   ├── ingest/     文档解析 → 分块 → 向量化 → 入库
-│   │   ├── retrieval/  混合检索、RRF 融合、rerank、查询改写
-│   │   ├── agent/      LangGraph 图、节点、工具、记忆
-│   │   ├── models/     SQLAlchemy ORM
+│   │   ├── rag/        RAG 产品：问答 / 综述 / 资料库 / 检索 / 记忆 / 编辑器
+│   │   ├── cowork/     Cowork 产品：工作台 / 文件 / Office / 连接器 / Skill / MCP
+│   │   ├── agent_core/ 框架层：循环、状态、事件契约、压缩、预算、幂等身份
+│   │   ├── runstore/   存储层：run / 事件 / checkpoint / 幂等租约 / 会话
+│   │   ├── telemetry/  上面那个包的 PostgreSQL 适配器
+│   │   ├── platform/   鉴权会话、请求身份、限流
+│   │   ├── ingest/     文档解析（两个产品共用）
+│   │   ├── knowledge_contracts.py  RAG ↔ Cowork 的证据与检索契约
+│   │   ├── docedit.py  两个产品共用的文档编辑原语
+│   │   ├── llm_bootstrap.py  Settings → ModelGateway 的组装根
+│   │   ├── core/       配置、日志、DB / Redis / 队列、trace
 │   │   ├── schemas/    Pydantic 契约
-│   │   └── services/   业务编排
+│   │   └── api/ worker/ cli/   入口适配层
 │   └── tests/
 ├── frontend/           Next.js 应用
 ├── config/             routing.yaml 等运行时配置（改配置不改代码）
@@ -63,8 +70,9 @@ uv run python -m eval.compare baseline exp-hybrid-rrf    # 快照 diff + bootstr
 uv run python -m eval.gate --against main --dataset core-dev  # 夜间门禁，跑在本机
 
 # 质量（= PR 门禁的全部内容，见 .github/workflows/ci.yml）
-uv run ruff check app tests migrations ../eval --config pyproject.toml
-uv run mypy app
+uv run ruff check app tests migrations ../eval packages --config pyproject.toml
+uv run mypy app packages/*/src/workpilot_*
+uv run lint-imports          # 层次契约（ADR-0011），比 pytest 快两个量级
 uv run pytest
 cd ../frontend && npm run lint && npm run typecheck
 ```
@@ -78,10 +86,16 @@ cd ../frontend && npm run lint && npm run typecheck
 
 ## 十条不可违背的约束
 
-违反这些会导致后期返工，改不动：
+违反这些会导致后期返工，改不动。
+**0. 依赖方向单向**：`api/worker/cli → {rag, cowork} → runstore → agent_core → workpilot_ai`，
+且 `rag` 与 `cowork` 互不 import。共享只能下沉到 `agent_core` / `runstore` /
+`knowledge_contracts.py` / `docedit.py` / `ingest/`。由 `uv run lint-imports` 强制
+（[ADR-0011](docs/adr/0011-三层架构与依赖方向.md)）。
 
-1. **所有 LLM 调用必须经过 `app/llm/gateway`**，禁止在业务代码里直接 import 模型 SDK。
+1. **所有 LLM 调用必须经过 `workpilot_ai.gateway`**，禁止在业务代码里直接 import
+   Provider 实现。构造网关走 `app/llm_bootstrap.py`（唯一允许读 `Settings` 的地方）。
    → 否则路由、缓存、预算、成本统计、trace 全部失效。
+   → 这条现在由包边界 + `[tool.importlinter]` 契约 5 强制，不再只靠 code review。
 
 2. **Agent 状态必须是可 JSON 序列化的 TypedDict**，节点是 `state → state` 的纯函数。
    → 这是断点续跑、时间旅行调试、人工中断的地基。禁止把连接、客户端、闭包塞进 state。
@@ -108,7 +122,7 @@ cd ../frontend && npm run lint && npm run typecheck
    → chunk 随分块策略与重新分块而变，标注绑上去就废了（[ADR-0006](docs/adr/0006-分块与标注分层.md)）。
 
 9. **有副作用的工具必须走 `tool_invocations` 幂等协议**，
-   不得依赖 `AgentState.cursor` 或任何步骤序号做去重。
+   不得依赖 Agent 状态里的 `cursor` 或任何步骤序号做去重。
    → LangGraph 从 interrupt 恢复会从节点开头重跑，
    状态恢复 ≠ 副作用不重放（[ADR-0007](docs/adr/0007-agent幂等与事件溯源.md)）。
    重试必须区分有效租约与过期租约；跨系统副作用只承诺 effectively-once，

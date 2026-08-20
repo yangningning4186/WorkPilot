@@ -37,16 +37,16 @@ from typing import Any, get_args
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.review_tools import (
+from app.core.config import Settings
+from app.core.db import close_database, session_factory
+from app.llm_bootstrap import build_model_gateway
+from app.rag.review.state import ReviewDocument
+from app.rag.review.tools import (
     CARD_SYSTEM_PROMPT,
     CardErrorStyle,
     DatabaseModelReviewTools,
     ReviewToolResponseError,
 )
-from app.agent.state import ReviewDocument
-from app.core.config import Settings
-from app.core.db import close_database, session_factory
-from app.llm.gateway import build_model_gateway
 
 CONDITIONS: tuple[CardErrorStyle, ...] = get_args(CardErrorStyle)
 

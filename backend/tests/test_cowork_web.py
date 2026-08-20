@@ -4,8 +4,8 @@ import httpx
 import pytest
 
 from app.core.config import Settings
-from app.services import cowork_web
-from app.services.cowork_web import (
+from app.cowork import web as cowork_web
+from app.cowork.web import (
     CoworkWebError,
     _normalized_url,
     _pinned_request,

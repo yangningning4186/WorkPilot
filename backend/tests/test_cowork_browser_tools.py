@@ -1,5 +1,5 @@
-from app.agent.cowork_browser_tools import register_browser_tools
-from app.agent.cowork_tools import build_default_cowork_registry
+from app.cowork.browser_tools import register_browser_tools
+from app.cowork.tools import build_default_cowork_registry
 
 
 def test_browser_mutations_are_individually_approved_and_leased() -> None:

@@ -5,20 +5,20 @@
 
 import pytest
 
-from app.agent.budget import (
+from app.agent_core.budget import (
     BudgetedGateway,
     BudgetMeter,
     RunBudgetExceededError,
 )
-from app.llm.gateway import ModelContextOverflowError
-from app.llm.types import (
+from tests.fakes import FrozenClock, review_budget
+from workpilot_ai.gateway import ModelContextOverflowError
+from workpilot_ai.types import (
     CompletionResult,
     EmbeddingResult,
     Message,
     ProviderNotDispatchedError,
     Usage,
 )
-from tests.fakes import FrozenClock, review_budget
 
 _DEFAULT_USAGE = Usage(input_tokens=100, output_tokens=50)
 

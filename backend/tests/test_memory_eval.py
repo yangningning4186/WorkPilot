@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from app.memory.prompt import MEMORY_USAGE_POLICY
+from app.rag.memory.prompt import MEMORY_USAGE_POLICY
 from eval.memory_blind_review import MemoryReviewError, load_review_scores, summarize_review
 from eval.memory_injection_experiment import (
     FORBIDDEN_MEMORY_DISCLOSURES,

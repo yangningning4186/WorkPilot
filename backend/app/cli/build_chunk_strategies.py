@@ -6,14 +6,14 @@ from uuid import UUID
 
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import build_model_gateway
-from app.services.chunk_building import (
+from app.llm_bootstrap import build_model_gateway
+from app.rag.chunk_building import (
     CHUNK_STRATEGIES,
     ChunkStrategy,
     build_chunk_strategies,
     list_active_version_ids,
 )
+from app.telemetry.llm_calls import SqlLlmCallAudit
 
 
 async def build_offline_chunks(

@@ -3,7 +3,7 @@
 import sys
 from getpass import getpass
 
-from app.services.admin_sessions import hash_admin_password
+from app.platform.admin_sessions import hash_admin_password
 
 # 没有 TTY 就没法关回显。与其让 getpass 退化成明文输入、或者抛一段
 # termios + EOFError 的 traceback，不如直接说清楚该换到哪里去跑。

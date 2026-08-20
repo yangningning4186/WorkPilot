@@ -33,11 +33,11 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.review_graph import initialize_review_state
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.core.queue import get_run_queue
-from app.services.runs import create_run, ensure_conversation
+from app.rag.review.graph import initialize_review_state
+from app.runstore.runs import create_run, ensure_conversation
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
 # 租约必须远短于默认的 60s, 否则等 watchdog 发现失联要等一分钟, 演示没法看。

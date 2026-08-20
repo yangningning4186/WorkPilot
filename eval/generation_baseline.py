@@ -21,16 +21,15 @@ from uuid6 import uuid7
 
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import ModelGateway, build_model_gateway
-from app.llm.providers.openai_compatible import ProviderResponseError
-from app.retrieval.citations import CitationValidationError
-from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
-from app.services.grounded_answer import (
+from app.llm_bootstrap import build_model_gateway
+from app.rag.grounded_answer import (
     SYSTEM_PROMPT,
     GroundedAnswerResult,
     answer_with_settings,
 )
+from app.rag.retrieval.citations import CitationValidationError
+from app.rag.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
+from app.telemetry.llm_calls import SqlLlmCallAudit
 from eval.mapping import (
     GoldEvidenceGroup,
     GoldSpan,
@@ -45,6 +44,8 @@ from eval.metrics.generation import (
     evaluate_citation_validity,
     evaluate_constraints,
 )
+from workpilot_ai.gateway import ModelGateway
+from workpilot_ai.providers.openai_compatible import ProviderResponseError
 
 # 生成轨支持的检索链路。名字与 `eval.dense_baseline.RETRIEVAL_STRATEGIES` 对齐,
 # 这样"检索轨用哪条链路，生成轨就用哪条"可以在报告里直接对账。

@@ -10,9 +10,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_model_gateway, get_request_identity, require_admin_session
 from app.core.config import get_settings
 from app.core.db import get_db_session
-from app.llm.gateway import ModelGateway
-from app.retrieval.citations import CitationValidationError
-from app.retrieval.dense import dense_search
+from app.knowledge_contracts import LibraryPathError
+from app.platform.request_identity import RequestIdentity
+from app.rag.annotation import (
+    AnnotationConflictError,
+    AnnotationNotFoundError,
+    render_pdf_page,
+    resolve_source_file,
+)
+from app.rag.grounded_answer import answer_with_settings
+from app.rag.markdown_ingestion import ingest_markdown_file
+from app.rag.pdf_ingestion import ingest_pdf_file, pdf_parser_config_from_settings
+from app.rag.retrieval.citations import CitationValidationError
+from app.rag.retrieval.dense import dense_search
+from app.runstore.runs import identity_can_access_version
 from app.schemas.retrieval import (
     CitationResponse,
     DenseSearchHitResponse,
@@ -24,17 +35,7 @@ from app.schemas.retrieval import (
     MarkdownIngestResponse,
     PdfIngestRequest,
 )
-from app.services.annotation import (
-    AnnotationConflictError,
-    AnnotationNotFoundError,
-    render_pdf_page,
-    resolve_source_file,
-)
-from app.services.grounded_answer import answer_with_settings
-from app.services.markdown_ingestion import LibraryPathError, ingest_markdown_file
-from app.services.pdf_ingestion import ingest_pdf_file, pdf_parser_config_from_settings
-from app.services.request_identity import RequestIdentity
-from app.services.runs import identity_can_access_version
+from workpilot_ai.gateway import ModelGateway
 
 router = APIRouter(prefix="/api/v1", tags=["retrieval"])
 AdminRequired = Annotated[None, Depends(require_admin_session)]

@@ -7,7 +7,7 @@ import asyncio
 import sys
 
 from app.core.db import session_factory
-from app.services.cost_report import format_batch_costs, load_batch_costs
+from app.telemetry.cost_report import format_batch_costs, load_batch_costs
 
 
 async def main() -> None:

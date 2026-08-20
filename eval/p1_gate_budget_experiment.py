@@ -17,10 +17,10 @@ from sqlalchemy import text
 
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import build_model_gateway
-from app.retrieval.citations import build_evidence_segments
-from app.services.evidence_sufficiency import assess_evidence_sufficiency
+from app.llm_bootstrap import build_model_gateway
+from app.rag.evidence_sufficiency import assess_evidence_sufficiency
+from app.rag.retrieval.citations import build_evidence_segments
+from app.telemetry.llm_calls import SqlLlmCallAudit
 from eval.evidence_gate_analysis import _load_hits, _span_coverage
 
 

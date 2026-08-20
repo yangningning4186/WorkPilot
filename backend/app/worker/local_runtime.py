@@ -9,13 +9,13 @@ from typing import Any
 import structlog
 from sqlalchemy import text
 
-from app.agent.cowork_browser_tools import PlaywrightBrowserManager
 from app.core.config import Settings
 from app.core.db import session_factory
 from app.core.queue import InProcessRunQueue, QueuedTask, get_in_process_run_queue
 from app.core.run_bus import in_memory_run_bus
+from app.cowork.browser_tools import PlaywrightBrowserManager
+from app.cowork.mcp.client import McpClientManager
 from app.cowork_store.factory import local_cowork_stores
-from app.mcp.client import McpClientManager
 from app.worker.answer_run import answer_run
 from app.worker.cowork_run import cowork_run
 from app.worker.maintenance import (

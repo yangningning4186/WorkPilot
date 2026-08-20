@@ -6,14 +6,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.llm.gateway import ModelGateway
-from app.services.local_dir import (
+from app.rag.local_dir import (
     SyncProgress,
     _scan_files,
     register_local_dir,
     sync_local_dir,
 )
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 
 @pytest.mark.integration

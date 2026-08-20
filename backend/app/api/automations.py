@@ -17,24 +17,15 @@ from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
 from app.core.queue import RunQueue
 from app.core.run_bus import RunBus
-from app.schemas.automations import (
-    ScheduleCreate,
-    ScheduleListResponse,
-    ScheduleResponse,
-    ScheduleUpdate,
-    UnattendedInboxItemResponse,
-    UnattendedInboxListResponse,
-)
-from app.schemas.runs import RunStatusResponse
-from app.services.cowork_interactions import list_unattended_inbox
-from app.services.cowork_permissions import (
+from app.cowork.interactions import list_unattended_inbox
+from app.cowork.permissions import (
     CoworkPermissionError,
     SessionRootRecord,
     create_session_root,
     ensure_default_session_root,
     list_session_roots,
 )
-from app.services.cowork_schedules import (
+from app.cowork.schedules import (
     ScheduleError,
     ScheduleNotFoundError,
     ScheduleOverlapError,
@@ -46,8 +37,17 @@ from app.services.cowork_schedules import (
     run_schedule_now,
     update_schedule,
 )
-from app.services.request_identity import RequestIdentity
-from app.services.runs import ensure_conversation, get_run
+from app.platform.request_identity import RequestIdentity
+from app.runstore.runs import ensure_conversation, get_run
+from app.schemas.automations import (
+    ScheduleCreate,
+    ScheduleListResponse,
+    ScheduleResponse,
+    ScheduleUpdate,
+    UnattendedInboxItemResponse,
+    UnattendedInboxListResponse,
+)
+from app.schemas.runs import RunStatusResponse
 
 router = APIRouter(
     prefix="/api/v1/automations",

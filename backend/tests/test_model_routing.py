@@ -15,17 +15,23 @@ from re import findall
 import pytest
 import yaml
 
-from app.llm.gateway import ModelContextOverflowError, ModelGateway, TierProviderPool
-from app.llm.pricing import GatewayPricing, ModelPricing
-from app.llm.routing import (
+from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelContextOverflowError, ModelGateway, TierProviderPool
+from workpilot_ai.pricing import GatewayPricing, ModelPricing
+from workpilot_ai.routing import (
     EndpointSpec,
     RoutingConfigError,
     TierUnavailableError,
     load_routing_table,
     parse_routing_table,
 )
-from app.llm.types import AuditRecord, CompletionResult, Message, ProviderNotDispatchedError, Usage
-from tests.fakes import DeterministicProvider
+from workpilot_ai.types import (
+    AuditRecord,
+    CompletionResult,
+    Message,
+    ProviderNotDispatchedError,
+    Usage,
+)
 
 REPO_ROUTING = Path(__file__).resolve().parents[2] / "config" / "routing.yaml"
 

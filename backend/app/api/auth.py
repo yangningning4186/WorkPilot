@@ -5,8 +5,8 @@ from redis.exceptions import RedisError
 
 from app.api.dependencies import get_admin_session_store, require_admin_session
 from app.core.config import Settings, get_settings
+from app.platform.admin_sessions import AdminSessionStore, verify_admin_password
 from app.schemas.auth import AdminLoginRequest, AdminSessionResponse
-from app.services.admin_sessions import AdminSessionStore, verify_admin_password
 
 router = APIRouter(prefix="/api/v1/auth/admin", tags=["auth"])
 

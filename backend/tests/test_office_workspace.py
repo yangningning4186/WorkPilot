@@ -9,10 +9,7 @@ from openpyxl.styles import Font  # type: ignore[import-untyped]
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.llm.gateway import ModelGateway
-from app.services.cowork_permissions import CapabilityDeniedError, create_session_root
-from app.services.local_dir import register_local_dir
-from app.services.office_workspace import (
+from app.cowork.office_workspace import (
     DocumentNotEditableError,
     OfficePlanError,
     WorkspaceFileTooLargeError,
@@ -26,8 +23,11 @@ from app.services.office_workspace import (
     get_workspace_file,
     list_workspace_files,
 )
-from app.services.runs import ensure_conversation
+from app.cowork.permissions import CapabilityDeniedError, create_session_root
+from app.rag.local_dir import register_local_dir
+from app.runstore.runs import ensure_conversation
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 pytestmark = pytest.mark.integration
 

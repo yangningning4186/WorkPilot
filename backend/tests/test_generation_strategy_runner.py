@@ -16,18 +16,18 @@ import eval.dense_baseline as dense_baseline
 import eval.generation_baseline as generation_baseline
 import eval.generation_strategy_runner as generation_runner
 from app.core.config import Settings
-from app.llm.gateway import ModelGateway
-from app.llm.types import CompletionResult, Message, Usage
-from app.retrieval.strategy import CHUNK_STRATEGIES
-from app.services.chunk_building import build_chunk_strategies
-from app.services.grounded_answer import answer_with_citations
-from app.services.markdown_ingestion import ingest_markdown_file
+from app.rag.chunk_building import build_chunk_strategies
+from app.rag.grounded_answer import answer_with_citations
+from app.rag.markdown_ingestion import ingest_markdown_file
+from app.rag.retrieval.strategy import CHUNK_STRATEGIES
 from eval.generation_strategy_runner import (
     GenerationTrackNotReadyError,
     _assert_single_variable,
     load_retrieval_manifest,
 )
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
+from workpilot_ai.types import CompletionResult, Message, Usage
 
 SUFFICIENT = (
     '{"sufficient":true,"reason":"S1 明确回答了问题","support_ids":["S1"],"missing_aspects":[]}'

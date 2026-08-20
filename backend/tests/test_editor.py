@@ -6,16 +6,16 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.llm.gateway import ModelGateway
-from app.services.editor import (
+from app.rag.editor import (
     DocumentConflictError,
     apply_document_content,
     get_editable_document,
     propose_document_edit,
 )
-from app.services.local_dir import register_local_dir
-from app.services.markdown_ingestion import ingest_markdown_file
+from app.rag.local_dir import register_local_dir
+from app.rag.markdown_ingestion import ingest_markdown_file
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 pytestmark = pytest.mark.integration
 

@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from app.llm.gateway import ModelGateway
 from eval.judge_calibration import (
     DEFAULT_JUDGE_CASES,
     INTERIM_JUDGE_CATEGORIES,
@@ -32,6 +31,7 @@ from eval.judge_calibration import (
     run_judge,
 )
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 
 def _generation_report(path: Path, *, run_id: str, items: list[dict[str, object]]) -> Path:

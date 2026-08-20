@@ -6,10 +6,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingest.pdf import parse_pdf_in_subprocess
-from app.llm.gateway import ModelGateway
-from app.retrieval.dense import dense_search
-from app.services.pdf_ingestion import ingest_pdf_file
+from app.rag.pdf_ingestion import ingest_pdf_file
+from app.rag.retrieval.dense import dense_search
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 
 def _write_two_column_pdf(path: Path) -> None:

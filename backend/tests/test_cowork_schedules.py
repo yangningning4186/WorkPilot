@@ -17,10 +17,9 @@ from app.api.dependencies import (
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
 from app.core.run_bus import InMemoryRunBus
-from app.main import create_app
-from app.services.cowork_interactions import create_inbox_item, list_unattended_inbox
-from app.services.cowork_permissions import create_session_root
-from app.services.cowork_schedules import (
+from app.cowork.interactions import create_inbox_item, list_unattended_inbox
+from app.cowork.permissions import create_session_root
+from app.cowork.schedules import (
     ScheduleError,
     compute_next_run,
     create_schedule,
@@ -29,8 +28,9 @@ from app.services.cowork_schedules import (
     list_dispatchable_scheduled_runs,
     update_schedule,
 )
-from app.services.request_identity import RequestIdentity
-from app.services.runs import create_run, ensure_conversation, get_run
+from app.main import create_app
+from app.platform.request_identity import RequestIdentity
+from app.runstore.runs import create_run, ensure_conversation, get_run
 
 pytestmark = pytest.mark.integration
 

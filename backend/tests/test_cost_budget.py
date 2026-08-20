@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
-from app.services.cost_budget import (
+from app.telemetry.cost_budget import (
     BudgetExceededError,
     IdempotencyConflictError,
     reserve_cost,

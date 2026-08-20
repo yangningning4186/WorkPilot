@@ -2,7 +2,7 @@ from uuid import UUID
 
 import pytest
 
-from app.retrieval.dense import DenseSearchHit
+from app.rag.retrieval.dense import DenseSearchHit
 from eval.agentic_retrieval import (
     AgenticPlanError,
     RetrievalRequirement,

@@ -18,21 +18,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from app.core.config import Settings
-from app.core.db import close_database, session_factory
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import ModelGateway, build_model_gateway
-from app.retrieval.dense import DenseSearchHit, dense_search
-from app.retrieval.fusion import reciprocal_rank_fusion
-from app.retrieval.lexical import lexical_search
-from app.retrieval.reranker import rerank_candidates
-from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings
+from app.core.db import close_database, session_factory
+from app.llm_bootstrap import build_model_gateway
+from app.rag.retrieval.dense import DenseSearchHit, dense_search
+from app.rag.retrieval.fusion import reciprocal_rank_fusion
+from app.rag.retrieval.lexical import lexical_search
+from app.rag.retrieval.reranker import rerank_candidates
+from app.rag.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
+from app.telemetry.llm_calls import SqlLlmCallAudit
 from eval.dense_baseline import EvalItem, _load_items
 from eval.mapping import GoldSpan
 from eval.suites import load_suite, validate_suite
+from workpilot_ai.gateway import ModelGateway
 
 ATTRIBUTION_STATUSES = (
     "survives_top_k",

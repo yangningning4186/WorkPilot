@@ -10,8 +10,7 @@ from uuid6 import uuid7
 
 import eval.build_m1_candidate_suite as builder
 import eval.import_handwritten_suite as importer
-from app.llm.gateway import ModelGateway
-from app.services.markdown_ingestion import ingest_markdown_file
+from app.rag.markdown_ingestion import ingest_markdown_file
 from eval.build_m1_candidate_suite import CandidateSuiteError
 from eval.import_handwritten_suite import (
     TARGET_DATASETS,
@@ -20,6 +19,7 @@ from eval.import_handwritten_suite import (
     run,
 )
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 V1 = "00000000-0000-0000-0000-000000000001"
 V2 = "00000000-0000-0000-0000-000000000002"

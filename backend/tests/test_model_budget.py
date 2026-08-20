@@ -5,12 +5,12 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.llm.gateway import ModelGateway
-from app.llm.pricing import GatewayPricing, ModelPricing, estimate_tokens
-from app.llm.types import Message, ProviderNotDispatchedError, Usage
-from app.services.cost_budget import sweep_expired_reservations
-from app.services.model_budget import SqlDailyCostGuard
+from app.telemetry.cost_budget import sweep_expired_reservations
+from app.telemetry.model_budget import SqlDailyCostGuard
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
+from workpilot_ai.pricing import GatewayPricing, ModelPricing, estimate_tokens
+from workpilot_ai.types import Message, ProviderNotDispatchedError, Usage
 
 PRICING = GatewayPricing(
     chat=ModelPricing(input_usd_per_mtok=Decimal("1000"), output_usd_per_mtok=Decimal("2000")),
@@ -108,7 +108,7 @@ async def test_exhausted_budget_blocks_the_call_before_it_is_dispatched(
 ) -> None:
     """调用前预留而不是调用后统计, 否则并发请求会一起穿透上限。"""
 
-    from app.services.cost_budget import BudgetExceededError
+    from app.telemetry.cost_budget import BudgetExceededError
 
     provider = DeterministicProvider(4)
     gateway = _gateway(provider, _guard(db_engine, "0.000001"))

@@ -2,7 +2,7 @@ from uuid import UUID
 
 import pytest
 
-from app.retrieval.dense import DenseSearchHit
+from app.rag.retrieval.dense import DenseSearchHit
 from eval.p1_retrieval_diagnostics import (
     DeepRow,
     _document_rank,

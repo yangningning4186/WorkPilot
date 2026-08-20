@@ -13,7 +13,7 @@ from typing import Any
 
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.retrieval.strategy import ChunkStrategy
+from app.rag.retrieval.strategy import ChunkStrategy
 from eval.generation_baseline import GenerationRunResult, run_generation_baseline
 from eval.report_metrics import KIND_GENERATION, METRICS
 from eval.suites import EvalSuite, load_suite, validate_suite

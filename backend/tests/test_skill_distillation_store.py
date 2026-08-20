@@ -5,12 +5,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
-from app.services.runs import create_run, ensure_conversation, finish_run
-from app.skills.distillation_store import (
+from app.cowork.skills.distillation_store import (
     claim_skill_job,
     schedule_skill_distillation,
     upsert_skill_candidate,
 )
+from app.runstore.runs import create_run, ensure_conversation, finish_run
 
 pytestmark = pytest.mark.integration
 

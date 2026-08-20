@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services.cowork_shell import (
+from app.cowork.shell import (
     CoworkShellCancelledError,
     CoworkShellError,
     assess_shell_command,

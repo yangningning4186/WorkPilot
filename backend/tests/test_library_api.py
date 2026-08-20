@@ -15,12 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
 from app.core.db import get_db_session
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import ModelGateway
 from app.main import create_app
-from app.services.library import get_library_overview
-from app.services.markdown_ingestion import ingest_markdown_file
+from app.rag.library import get_library_overview
+from app.rag.markdown_ingestion import ingest_markdown_file
+from app.telemetry.llm_calls import SqlLlmCallAudit
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 pytestmark = pytest.mark.integration
 

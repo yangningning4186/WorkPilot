@@ -9,9 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import require_owner_identity
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
-from app.main import create_app
-from app.services.artifacts import register_artifact
-from app.services.cowork_permissions import (
+from app.cowork.artifacts import register_artifact
+from app.cowork.permissions import (
     CapabilityDeniedError,
     authorize_capability,
     authorize_path,
@@ -23,8 +22,9 @@ from app.services.cowork_permissions import (
     revoke_capability_grant,
     revoke_session_root,
 )
-from app.services.request_identity import RequestIdentity
-from app.services.runs import create_run, ensure_conversation
+from app.main import create_app
+from app.platform.request_identity import RequestIdentity
+from app.runstore.runs import create_run, ensure_conversation
 
 pytestmark = pytest.mark.integration
 

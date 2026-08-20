@@ -2,18 +2,18 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.llm.gateway import ModelGateway
-from app.memory.prompt import MEMORY_USAGE_POLICY
-from app.memory.recall import recall_memory_context
-from app.memory.store import apply_memory_operation, get_memory
-from app.services.general_answer import SYSTEM_PROMPT, stream_general_answer
-from app.services.grounded_answer import (
+from app.rag.general_answer import SYSTEM_PROMPT, stream_general_answer
+from app.rag.grounded_answer import (
     SYSTEM_PROMPT as GROUNDED_SYSTEM_PROMPT,
 )
-from app.services.grounded_answer import (
+from app.rag.grounded_answer import (
     _build_user_prompt,
 )
+from app.rag.memory.prompt import MEMORY_USAGE_POLICY
+from app.rag.memory.recall import recall_memory_context
+from app.rag.memory.store import apply_memory_operation, get_memory
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 
 async def _add_manual_memory(

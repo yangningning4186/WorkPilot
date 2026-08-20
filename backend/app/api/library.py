@@ -5,9 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_request_identity
 from app.core.db import get_db_session
+from app.platform.request_identity import RequestIdentity
+from app.rag.library import get_library_overview
 from app.schemas.library import LibraryResponse
-from app.services.library import get_library_overview
-from app.services.request_identity import RequestIdentity
 
 # 只读一个聚合视图, 因此挂 demo session 而不是 admin: 资料库页是产品的一部分,
 # 看得到"库里有什么、解析成不成功"是理解答案可信度的前提。

@@ -22,7 +22,10 @@ from typing import Any
 
 from sqlalchemy import text
 
-from app.agent.review_tools import (
+from app.core.config import Settings
+from app.core.db import close_database, session_factory
+from app.llm_bootstrap import build_model_gateway
+from app.rag.review.tools import (
     CARD_SYSTEM_PROMPT,
     ReviewToolResponseError,
     _bounded_document,
@@ -31,10 +34,7 @@ from app.agent.review_tools import (
     repair_instruction,
     resolve_card_evidence,
 )
-from app.core.config import Settings
-from app.core.db import close_database, session_factory
-from app.llm.gateway import build_model_gateway
-from app.llm.types import Message
+from workpilot_ai.types import Message
 
 
 class ExperimentError(RuntimeError):

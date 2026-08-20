@@ -13,18 +13,18 @@ from uuid import UUID
 
 from sqlalchemy import text
 
-from app.agent.budget import BudgetedGateway, BudgetMeter
-from app.agent.persistence import load_latest_checkpoint
-from app.agent.review_graph import initialize_review_state, run_readonly_review
-from app.agent.review_tools import DatabaseModelReviewTools
-from app.agent.state import BudgetState
-from app.agent.write_note import resume_review_after_human, review_resume_token
+from app.agent_core.budget import BudgetedGateway, BudgetMeter
+from app.agent_core.contracts import BudgetState
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import build_model_gateway
-from app.services.model_budget import build_cost_guard
-from app.services.runs import create_run, ensure_conversation, get_run
+from app.llm_bootstrap import build_model_gateway
+from app.rag.review.graph import initialize_review_state, run_readonly_review
+from app.rag.review.tools import DatabaseModelReviewTools
+from app.rag.review.write_note import resume_review_after_human, review_resume_token
+from app.runstore.checkpoints import load_latest_checkpoint
+from app.runstore.runs import create_run, ensure_conversation, get_run
+from app.telemetry.llm_calls import SqlLlmCallAudit
+from app.telemetry.model_budget import build_cost_guard
 
 DOCUMENTS = [
     (UUID("019fffcc-61b3-7434-9429-97be812f3f39"), "AGENTBENCH: EVALUATING LLMS AS AGENTS"),

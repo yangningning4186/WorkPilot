@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from app.retrieval.dense import DenseSearchHit
+from app.rag.retrieval.dense import DenseSearchHit
 from eval.p1_document_two_hop_experiment import _grid_candidates, _rank_documents
 
 

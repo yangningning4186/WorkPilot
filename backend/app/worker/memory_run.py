@@ -7,15 +7,15 @@ from uuid import UUID
 
 import structlog
 
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import build_model_gateway
-from app.memory.extraction import process_memory_job_source
-from app.memory.store import (
+from app.llm_bootstrap import build_model_gateway
+from app.rag.memory.extraction import process_memory_job_source
+from app.rag.memory.store import (
     claim_memory_job,
     complete_memory_job,
     retry_or_fail_memory_job,
 )
-from app.services.model_budget import build_cost_guard
+from app.telemetry.llm_calls import SqlLlmCallAudit
+from app.telemetry.model_budget import build_cost_guard
 
 logger = structlog.get_logger(__name__)
 

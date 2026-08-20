@@ -5,22 +5,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
 from app.core.config import get_settings
-from app.llm.gateway import ModelGateway
-from app.memory.extraction import (
+from app.rag.memory.extraction import (
     MemoryExtractionError,
     parse_memory_candidates,
     parse_memory_decision,
     process_memory_job_source,
 )
-from app.memory.store import (
+from app.rag.memory.store import (
     MemoryJobSource,
     claim_memory_job,
     list_memories,
     schedule_memory_extraction,
 )
-from app.services.runs import append_message, create_run, ensure_conversation, finish_run
+from app.runstore.runs import append_message, create_run, ensure_conversation, finish_run
 from app.worker.memory_run import memory_extraction_job
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 
 async def _owner_job(db_session: AsyncSession, content: str) -> MemoryJobSource:

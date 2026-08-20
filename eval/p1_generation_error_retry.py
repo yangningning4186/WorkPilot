@@ -13,10 +13,10 @@ import httpx
 
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.llm.gateway import build_model_gateway
-from app.llm.providers.openai_compatible import ProviderResponseError
-from app.retrieval.citations import CitationValidationError
-from app.services.grounded_answer import answer_with_settings
+from app.llm_bootstrap import build_model_gateway
+from app.rag.grounded_answer import answer_with_settings
+from app.rag.retrieval.citations import CitationValidationError
+from workpilot_ai.providers.openai_compatible import ProviderResponseError
 
 
 async def retry_errors(

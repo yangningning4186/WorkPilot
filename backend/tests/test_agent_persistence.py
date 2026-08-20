@@ -5,9 +5,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
-from app.agent.persistence import ensure_plan, load_latest_checkpoint, save_checkpoint
-from app.agent.state import AgentState, PlanStepState, json_state
-from app.services.runs import create_run, ensure_conversation, get_run
+from app.agent_core.state import PlanStepState, json_state
+from app.rag.review.state import ReviewState
+from app.runstore.checkpoints import ensure_plan, load_latest_checkpoint, save_checkpoint
+from app.runstore.runs import create_run, ensure_conversation, get_run
 
 pytestmark = pytest.mark.integration
 
@@ -33,7 +34,7 @@ def _plan() -> list[PlanStepState]:
     ]
 
 
-def _state(run_id: UUID, conversation_id: UUID, plan: list[PlanStepState]) -> AgentState:
+def _state(run_id: UUID, conversation_id: UUID, plan: list[PlanStepState]) -> ReviewState:
     return {
         "schema_version": "literature-review.v1",
         "run_id": str(run_id),

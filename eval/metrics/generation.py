@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
-from app.retrieval.citations import CITATION_RE, REFUSAL_TEXT
+from app.rag.retrieval.citations import CITATION_RE, REFUSAL_TEXT
 
 _CITATION_LIKE_RE = re.compile(r"\[(S[^\]]*)\]")
 

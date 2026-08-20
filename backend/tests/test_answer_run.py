@@ -10,11 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
 from app.core.run_bus import InMemoryRunBus
-from app.memory.recall import RecalledMemoryContext
-from app.retrieval.citations import Citation
-from app.services.answer_stream import AnswerDelta, AnswerFinished, split_deltas
-from app.services.demo_sessions import resolve_demo_session
-from app.services.runs import (
+from app.platform.demo_sessions import resolve_demo_session
+from app.rag.answer_stream import AnswerDelta, AnswerFinished, split_deltas
+from app.rag.memory.recall import RecalledMemoryContext
+from app.rag.retrieval.citations import Citation
+from app.runstore.runs import (
     append_message,
     create_run,
     ensure_conversation,

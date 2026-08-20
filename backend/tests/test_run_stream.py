@@ -5,8 +5,8 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.run_bus import InMemoryRunBus
-from app.services.run_stream import parse_last_event_id, stream_run_events
-from app.services.runs import append_events, create_run, ensure_conversation, finish_run
+from app.runstore.run_stream import parse_last_event_id, stream_run_events
+from app.runstore.runs import append_events, create_run, ensure_conversation, finish_run
 
 
 def test_last_event_id_parsing_tolerates_garbage() -> None:

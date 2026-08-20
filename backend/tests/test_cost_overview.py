@@ -13,12 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
 from app.core.db import get_db_session
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.batch import BatchSpec, gpu_batch
-from app.llm.types import AuditRecord
 from app.main import create_app
-from app.services.cost_overview import _batch_summary, _totals, get_cost_overview
-from app.services.cost_report import BatchCost
+from app.telemetry.cost_overview import _batch_summary, _totals, get_cost_overview
+from app.telemetry.cost_report import BatchCost
+from app.telemetry.gpu_batches import gpu_batch
+from app.telemetry.llm_calls import SqlLlmCallAudit
+from workpilot_ai.batch import BatchSpec
+from workpilot_ai.types import AuditRecord
 
 
 class _Settings:

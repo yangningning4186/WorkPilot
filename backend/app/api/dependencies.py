@@ -10,14 +10,15 @@ from app.core.db import get_db_session, session_factory
 from app.core.queue import RunQueue, get_run_queue
 from app.core.redis import redis_client
 from app.core.run_bus import RedisRunBus, RunBus, in_memory_run_bus
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import ModelGateway, build_model_gateway
-from app.services.admin_sessions import AdminSessionStore, RedisAdminSessionStore
-from app.services.demo_sessions import DemoSession, resolve_demo_session
-from app.services.editor_permissions import EditorPermissionStore, RedisEditorPermissionStore
-from app.services.model_budget import build_cost_guard
-from app.services.rate_limit import IpRateLimiter, RedisIpRateLimiter
-from app.services.request_identity import RequestIdentity
+from app.llm_bootstrap import build_model_gateway
+from app.platform.admin_sessions import AdminSessionStore, RedisAdminSessionStore
+from app.platform.demo_sessions import DemoSession, resolve_demo_session
+from app.platform.rate_limit import IpRateLimiter, RedisIpRateLimiter
+from app.platform.request_identity import RequestIdentity
+from app.rag.editor_permissions import EditorPermissionStore, RedisEditorPermissionStore
+from app.telemetry.llm_calls import SqlLlmCallAudit
+from app.telemetry.model_budget import build_cost_guard
+from workpilot_ai.gateway import ModelGateway
 
 
 def get_run_bus() -> RunBus:

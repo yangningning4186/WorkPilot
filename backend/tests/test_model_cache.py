@@ -11,13 +11,13 @@ from decimal import Decimal
 
 import pytest
 
-from app.llm.cache import CompletionCache, completion_cache_key, is_cacheable
-from app.llm.gateway import ModelGateway
-from app.llm.routing import parse_routing_table
-from app.llm.types import CompletionResult, Message, Usage
-from app.services.evidence_sufficiency import SYSTEM_PROMPT as GATE_PROMPT
+from app.rag.evidence_sufficiency import SYSTEM_PROMPT as GATE_PROMPT
 from tests.fakes import DeterministicProvider
 from tests.test_model_routing import ENV, RecordingSink, _minimal, _pool
+from workpilot_ai.cache import CompletionCache, completion_cache_key, is_cacheable
+from workpilot_ai.gateway import ModelGateway
+from workpilot_ai.routing import parse_routing_table
+from workpilot_ai.types import CompletionResult, Message, Usage
 
 
 class MemoryCache(CompletionCache):
@@ -248,7 +248,7 @@ async def test_a_broken_cache_never_blocks_the_call() -> None:
     # 这里验的是 Redis 实现的降级：RedisError 被吞成"未命中"。
     from redis.exceptions import RedisError
 
-    from app.llm.cache import RedisCompletionCache
+    from workpilot_ai.cache import RedisCompletionCache
 
     class ExplodingRedis:
         async def get(self, key: str) -> str:
@@ -268,7 +268,7 @@ async def test_a_broken_cache_never_blocks_the_call() -> None:
 
 
 async def test_corrupt_cache_entry_is_treated_as_a_miss() -> None:
-    from app.llm.cache import RedisCompletionCache
+    from workpilot_ai.cache import RedisCompletionCache
 
     class GarbageRedis:
         async def get(self, key: str) -> str:
@@ -287,7 +287,7 @@ async def test_corrupt_cache_entry_is_treated_as_a_miss() -> None:
 
 
 async def test_round_trip_preserves_usage_for_cost_reporting() -> None:
-    from app.llm.cache import RedisCompletionCache
+    from workpilot_ai.cache import RedisCompletionCache
 
     class DictRedis:
         def __init__(self) -> None:
@@ -334,8 +334,8 @@ async def test_dynamic_content_stays_out_of_the_message_prefix() -> None:
 
     from uuid6 import uuid7
 
-    from app.retrieval.citations import EvidenceSegment
-    from app.services.evidence_sufficiency import assess_evidence_sufficiency
+    from app.rag.evidence_sufficiency import assess_evidence_sufficiency
+    from app.rag.retrieval.citations import EvidenceSegment
 
     good = '{"sufficient":true,"reason":"够","support_ids":["S1"],"missing_aspects":[]}'
 

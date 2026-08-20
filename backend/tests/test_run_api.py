@@ -5,9 +5,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.agent.budget import BudgetMeter
-from app.agent.review_graph import run_readonly_review
-from app.agent.write_note import review_resume_token
+from app.agent_core.budget import BudgetMeter
 from app.api.dependencies import (
     get_request_identity,
     get_run_bus,
@@ -20,9 +18,11 @@ from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
 from app.core.run_bus import InMemoryRunBus
 from app.main import create_app
-from app.services.demo_sessions import hash_session_token
-from app.services.request_identity import RequestIdentity
-from app.services.runs import append_events, claim_run, finish_run, get_run
+from app.platform.demo_sessions import hash_session_token
+from app.platform.request_identity import RequestIdentity
+from app.rag.review.graph import run_readonly_review
+from app.rag.review.write_note import review_resume_token
+from app.runstore.runs import append_events, claim_run, finish_run, get_run
 from tests.fakes import review_budget
 from tests.test_write_note import ReadyReviewTools
 

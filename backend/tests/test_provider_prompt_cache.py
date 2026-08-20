@@ -5,17 +5,11 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from app.llm.gateway import ModelGateway
-from app.llm.prompt_cache import prompt_cache_key
-from app.llm.providers.anthropic import AnthropicProvider
-from app.llm.providers.openai_compatible import OpenAICompatibleProvider
-from app.llm.types import (
-    CompletionResult,
-    EmbeddingResult,
-    Message,
-    ToolDefinition,
-    Usage,
-)
+from workpilot_ai.gateway import ModelGateway
+from workpilot_ai.prompt_cache import prompt_cache_key
+from workpilot_ai.providers.anthropic import AnthropicProvider
+from workpilot_ai.providers.openai_compatible import OpenAICompatibleProvider
+from workpilot_ai.types import CompletionResult, EmbeddingResult, Message, ToolDefinition, Usage
 
 
 def _tool(description: str = "读取文件") -> ToolDefinition:

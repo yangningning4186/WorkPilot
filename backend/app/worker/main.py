@@ -5,14 +5,14 @@ from typing import Any, ClassVar
 
 from arq import cron
 
-from app.agent.cowork_browser_tools import PlaywrightBrowserManager
 from app.core.config import get_settings
 from app.core.db import close_database, session_factory
 from app.core.logging import configure_logging
 from app.core.queue import redis_settings
 from app.core.redis import close_redis, redis_client
 from app.core.run_bus import RedisRunBus
-from app.mcp.client import McpClientManager
+from app.cowork.browser_tools import PlaywrightBrowserManager
+from app.cowork.mcp.client import McpClientManager
 from app.worker.answer_run import answer_run
 from app.worker.cowork_run import cowork_run
 from app.worker.maintenance import (

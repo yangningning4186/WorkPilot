@@ -46,10 +46,12 @@ import yaml
 
 from app.core.config import Settings
 from app.core.db import session_factory
-from app.llm.batch import BatchSpec, gpu_batch
-from app.llm.routing import Tier, load_routing_table, routing_env
-from app.services.cost_report import load_batch_costs
+from app.llm_bootstrap import routing_env
+from app.telemetry.cost_report import load_batch_costs
+from app.telemetry.gpu_batches import gpu_batch
 from eval.generation_baseline import run_generation_baseline
+from workpilot_ai.batch import BatchSpec
+from workpilot_ai.routing import Tier, load_routing_table
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ROUTING_PATH = REPO_ROOT / "config" / "routing.yaml"

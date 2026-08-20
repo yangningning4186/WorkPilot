@@ -5,7 +5,7 @@ import fitz
 import pytest
 
 from app.core.config import Settings
-from app.services.cowork_files import (
+from app.cowork.files import (
     CoworkFileError,
     list_files,
     read_pdf_file,

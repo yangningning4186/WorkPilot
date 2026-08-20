@@ -11,6 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import require_owner_identity
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
+from app.cowork.provider_probe import probe_provider_profile
+from app.cowork.provider_profiles import (
+    create_provider_profile,
+    delete_provider_profile,
+    get_provider_profile,
+    list_provider_profiles,
+    provider_api_key,
+    update_provider_profile,
+)
 from app.schemas.providers import (
     ProviderProbeResponse,
     ProviderProfileCreate,
@@ -19,15 +28,6 @@ from app.schemas.providers import (
     ProviderProfileUpdate,
 )
 from app.security.secret_store import LocalSecretStore, SecretStoreError
-from app.services.provider_probe import probe_provider_profile
-from app.services.provider_profiles import (
-    create_provider_profile,
-    delete_provider_profile,
-    get_provider_profile,
-    list_provider_profiles,
-    provider_api_key,
-    update_provider_profile,
-)
 
 router = APIRouter(
     prefix="/api/v1/providers",

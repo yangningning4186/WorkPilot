@@ -10,18 +10,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 from statistics import fmean
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.llm.gateway import ModelGateway, build_model_gateway
-from app.retrieval.citations import build_evidence_segments
-from app.retrieval.pipeline import SearchPipeline, SearchPipelineRequest
-from app.services.evidence_sufficiency import (
+from app.llm_bootstrap import build_model_gateway
+from app.rag.evidence_sufficiency import (
     EvidenceAssessmentError,
     assess_evidence_sufficiency,
 )
-from app.services.grounded_answer import evaluate_refusal, retrieval_score_source
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.rag.grounded_answer import evaluate_refusal, retrieval_score_source
+from app.rag.retrieval.citations import build_evidence_segments
+from app.rag.retrieval.pipeline import SearchPipeline, SearchPipelineRequest
+from workpilot_ai.gateway import ModelGateway
 
 
 @dataclass(frozen=True)

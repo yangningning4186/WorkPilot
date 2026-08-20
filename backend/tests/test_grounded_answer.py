@@ -10,34 +10,38 @@ from uuid6 import uuid7
 
 from app.api.dependencies import get_model_gateway, require_admin_session
 from app.core.db import get_db_session
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import ModelGateway
 from app.main import create_app
-from app.retrieval.citations import EvidenceSegment
-from app.retrieval.dense import DenseSearchHit, _merge_query_rankings
-from app.retrieval.fusion import apply_document_cap, reciprocal_rank_fusion, rerank_candidate_union
-from app.retrieval.lexical import lexical_search, lexical_terms
-from app.services.evidence_sufficiency import (
+from app.rag.evidence_sufficiency import (
     EvidenceAssessmentError,
     assess_evidence_sufficiency,
     parse_evidence_assessment,
 )
-from app.services.grounded_answer import (
+from app.rag.grounded_answer import (
     RetrievalRefusalSignals,
     answer_with_citations,
     build_gate_evidence,
     evaluate_refusal,
 )
-from app.services.markdown_ingestion import ingest_markdown_file
-from app.services.query_decomposition import QueryDecompositionError, parse_query_plan
-from app.services.reranker import (
+from app.rag.markdown_ingestion import ingest_markdown_file
+from app.rag.query_decomposition import QueryDecompositionError, parse_query_plan
+from app.rag.reranker import (
     CANDIDATE_TEXT_MODES,
     RerankResponseError,
     _candidate_text,
     parse_cross_encoder_response,
     rerank_candidates,
 )
+from app.rag.retrieval.citations import EvidenceSegment
+from app.rag.retrieval.dense import DenseSearchHit, _merge_query_rankings
+from app.rag.retrieval.fusion import (
+    apply_document_cap,
+    reciprocal_rank_fusion,
+    rerank_candidate_union,
+)
+from app.rag.retrieval.lexical import lexical_search, lexical_terms
+from app.telemetry.llm_calls import SqlLlmCallAudit
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 
 def test_refusal_threshold_is_strict_and_handles_empty_results() -> None:

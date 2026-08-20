@@ -7,7 +7,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.run_bus import RunBus
-from app.services.runs import RunEvent, append_events
+from app.runstore.runs import RunEvent, append_events
 
 logger = structlog.get_logger(__name__)
 

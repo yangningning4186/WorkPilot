@@ -5,22 +5,22 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.llm.gateway import ModelGateway
-from app.services.conversation_context import (
+from app.rag.conversation_context import (
     ContextMessage,
     ConversationContext,
     compact_conversation_context,
     load_conversation_context,
     resolve_contextual_query,
 )
-from app.services.prompt_assembly import SystemPromptSection, assemble_system_prompt
-from app.services.runs import (
+from app.rag.prompt_assembly import SystemPromptSection, assemble_system_prompt
+from app.runstore.runs import (
     append_message,
     create_run,
     ensure_conversation,
     finish_run,
 )
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 
 async def _completed_turn(

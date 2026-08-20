@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from app.retrieval.dense import DenseSearchHit
+from app.rag.retrieval.dense import DenseSearchHit
 from eval.mapping import GoldSpan
 from eval.rerank_truncation_experiment import _map_gold_candidates, _span_result
 

@@ -14,22 +14,21 @@ from typing import Any
 
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.llm.gateway import build_model_gateway
-from app.retrieval.coverage import (
+from app.llm_bootstrap import build_model_gateway
+from app.rag.retrieval.coverage import (
     CoverageSelectionResult,
     coverage_aware_top_k,
     hybrid_rankings_for_queries,
 )
-from app.retrieval.dense import DenseSearchHit, dense_search
-from app.retrieval.fusion import reciprocal_rank_fusion
-from app.retrieval.lexical import lexical_search
-from app.retrieval.query_decomposition import (
+from app.rag.retrieval.dense import DenseSearchHit, dense_search
+from app.rag.retrieval.fusion import reciprocal_rank_fusion
+from app.rag.retrieval.lexical import lexical_search
+from app.rag.retrieval.query_decomposition import (
     QueryDecompositionError,
     QueryPlan,
     fallback_query_plan,
     plan_retrieval_queries,
 )
-
 from eval.dense_baseline import EvalItem, _load_items
 from eval.p1_retrieval_diagnostics import _span_rank
 from eval.suites import load_suite, validate_suite

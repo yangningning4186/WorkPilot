@@ -7,10 +7,10 @@ import httpx
 import pytest
 
 from app.core.config import Settings
-from app.llm.provider_factory import ChatProviderConfig, build_chat_provider
+from app.cowork.provider_probe import probe_provider_profile
+from app.cowork.provider_profiles import ProviderProfileRecord, build_conversation_gateway
 from app.security.secret_store import LocalSecretStore, SecretStoreError
-from app.services.provider_probe import probe_provider_profile
-from app.services.provider_profiles import ProviderProfileRecord, build_conversation_gateway
+from workpilot_ai.provider_factory import ChatProviderConfig, build_chat_provider
 
 
 def test_secret_store_encrypts_and_reuses_master_key(tmp_path: Path) -> None:
@@ -65,7 +65,7 @@ async def test_sqlite_cowork_gateway_does_not_reference_postgres_run(
         "app.cowork_store.routing.configured_cowork_store", lambda: LocalStore()
     )
     monkeypatch.setattr(
-        "app.services.provider_profiles.build_model_gateway", fake_build_model_gateway
+        "app.cowork.provider_profiles.build_model_gateway", fake_build_model_gateway
     )
     await build_conversation_gateway(
         AsyncMock(),

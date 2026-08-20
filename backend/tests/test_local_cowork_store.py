@@ -9,24 +9,24 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.cowork_runtime import initialize_cowork_state
-from app.agent.cowork_tools import build_default_cowork_registry
-from app.agent.write_note import InvocationInFlightError
+from app.agent_core.idempotency import InvocationInFlightError
 from app.core.config import Settings
 from app.core.queue import InProcessRunQueue
+from app.cowork.permissions import (
+    DEFAULT_WORKSPACE_LABEL,
+    CoworkPermissionError,
+    ensure_default_session_root,
+)
+from app.cowork.runtime import initialize_cowork_state
+from app.cowork.tools import build_default_cowork_registry
 from app.cowork_store.factory import (
     close_local_cowork_stores,
     initialize_local_cowork_stores,
 )
 from app.cowork_store.jsonl import JsonlConversationStore, JsonlMessage
 from app.cowork_store.sqlite import SqliteCoworkStore
-from app.services.conversations import ConversationBusyError, get_conversation
-from app.services.cowork_permissions import (
-    DEFAULT_WORKSPACE_LABEL,
-    CoworkPermissionError,
-    ensure_default_session_root,
-)
-from app.services.runs import (
+from app.runstore.conversations import ConversationBusyError, get_conversation
+from app.runstore.runs import (
     append_message,
     create_run,
     ensure_conversation,

@@ -3,15 +3,15 @@ import json
 import httpx
 import pytest
 
-from app.llm.gateway import EmbeddingDimensionError, EmbeddingIdentityError, ModelGateway
-from app.llm.providers.openai_compatible import (
+from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import EmbeddingDimensionError, EmbeddingIdentityError, ModelGateway
+from workpilot_ai.providers.openai_compatible import (
     OpenAICompatibleProvider,
     ProviderContextOverflowError,
     ProviderResponseError,
     ProviderTimeoutError,
 )
-from app.llm.types import Message, ToolCall, ToolDefinition
-from tests.fakes import DeterministicProvider
+from workpilot_ai.types import Message, ToolCall, ToolDefinition
 
 
 async def test_gateway_exposes_complete_stream_and_embed() -> None:

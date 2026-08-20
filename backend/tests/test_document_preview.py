@@ -11,8 +11,8 @@ from uuid6 import uuid7
 
 from app.core.db import get_db_session
 from app.main import create_app
-from app.services.demo_sessions import resolve_demo_session
-from app.services.runs import append_events, create_run, ensure_conversation
+from app.platform.demo_sessions import resolve_demo_session
+from app.runstore.runs import append_events, create_run, ensure_conversation
 
 pytestmark = pytest.mark.integration
 

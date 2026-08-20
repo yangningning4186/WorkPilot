@@ -13,7 +13,26 @@ from app.api.dependencies import (
 )
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
-from app.llm.gateway import ModelGateway
+from app.cowork.office_workspace import (
+    OfficePlanError,
+    WorkspaceFileNotFoundError,
+    WorkspaceFileTooLargeError,
+    execute_workspace_instruction,
+    get_workspace_file,
+    list_workspace_files,
+)
+from app.platform.request_identity import RequestIdentity
+from app.rag.editor import (
+    DocumentConflictError,
+    DocumentNotEditableError,
+    EditableDocumentNotFoundError,
+    EditProposalError,
+    apply_document_content,
+    get_editable_document,
+    propose_document_edit,
+)
+from app.rag.editor_permissions import EditorPermissionStore
+from app.rag.markdown_ingestion import LibraryPathError
 from app.schemas.editor import (
     ApplyDocumentRequest,
     ApplyDocumentResponse,
@@ -26,26 +45,7 @@ from app.schemas.editor import (
     WorkspaceInstructionRequest,
     WorkspaceInstructionResponse,
 )
-from app.services.editor import (
-    DocumentConflictError,
-    DocumentNotEditableError,
-    EditableDocumentNotFoundError,
-    EditProposalError,
-    apply_document_content,
-    get_editable_document,
-    propose_document_edit,
-)
-from app.services.editor_permissions import EditorPermissionStore
-from app.services.markdown_ingestion import LibraryPathError
-from app.services.office_workspace import (
-    OfficePlanError,
-    WorkspaceFileNotFoundError,
-    WorkspaceFileTooLargeError,
-    execute_workspace_instruction,
-    get_workspace_file,
-    list_workspace_files,
-)
-from app.services.request_identity import RequestIdentity
+from workpilot_ai.gateway import ModelGateway
 
 router = APIRouter(
     prefix="/api/v1/editor",

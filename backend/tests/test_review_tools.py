@@ -1,6 +1,7 @@
 import pytest
 
-from app.agent.review_tools import (
+from app.rag.review.state import ReviewCard
+from app.rag.review.tools import (
     DatabaseModelReviewTools,
     ReviewToolResponseError,
     _bounded_document,
@@ -10,8 +11,7 @@ from app.agent.review_tools import (
     resolve_card_evidence,
     resolve_evidence_quotes,
 )
-from app.agent.state import ReviewCard
-from app.llm.types import CompletionResult, Message, Usage
+from workpilot_ai.types import CompletionResult, Message, Usage
 
 
 def test_card_parser_is_schema_strict() -> None:

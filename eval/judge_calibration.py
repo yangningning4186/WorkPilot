@@ -25,12 +25,9 @@ from typing import Any, Literal, Protocol
 from sqlalchemy import text
 
 from app.core.db import close_database, session_factory
-from app.llm.gateway import ModelGateway
-from app.llm.providers.openai_compatible import (
-    OpenAICompatibleProvider,
-    ProviderResponseError,
-)
-from app.llm.types import Message
+from workpilot_ai.gateway import ModelGateway
+from workpilot_ai.providers.openai_compatible import OpenAICompatibleProvider, ProviderResponseError
+from workpilot_ai.types import Message
 
 SCHEMA_VERSION = "judge-calibration.v1"
 # v2 相对 v1 只增加两条边界澄清，是在 calibration 51 条上标注时撞出来的歧义；

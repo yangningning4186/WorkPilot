@@ -11,8 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.api.dependencies import get_ip_rate_limiter
 from app.core.config import Settings, get_settings
 from app.main import create_app
-from app.services.demo_sessions import consume_question_quota, resolve_demo_session
-from app.services.rate_limit import RateLimitDecision, RedisIpRateLimiter
+from app.platform.demo_sessions import consume_question_quota, resolve_demo_session
+from app.platform.rate_limit import RateLimitDecision, RedisIpRateLimiter
 
 
 class RejectingLimiter:

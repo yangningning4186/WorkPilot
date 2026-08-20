@@ -12,14 +12,9 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
-from app.llm.batch import (
-    BatchPricingNotConfiguredError,
-    BatchSpec,
-    batch_spec_from_settings,
-    current_batch_id,
-    gpu_batch,
-)
-from app.services.cost_report import BatchCost, format_batch_costs, load_batch_costs
+from app.telemetry.cost_report import BatchCost, format_batch_costs, load_batch_costs
+from app.telemetry.gpu_batches import batch_spec_from_settings, gpu_batch
+from workpilot_ai.batch import BatchPricingNotConfiguredError, BatchSpec, current_batch_id
 
 
 def _cost(

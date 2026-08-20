@@ -10,29 +10,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import require_owner_identity
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
-from app.mcp.client import McpClientManager, McpRemoteTool
-from app.mcp.config import (
+from app.cowork.mcp.client import McpClientManager, McpRemoteTool
+from app.cowork.mcp.config import (
     McpConfigurationError,
     McpServerConfig,
     McpToolPolicy,
     load_mcp_configuration,
     save_mcp_configuration,
 )
-from app.mcp.credentials import hydrate_mcp_oauth_credentials
-from app.schemas.skills import (
-    SkillEnableRequest,
-    SkillInstallRequest,
-    SkillResourceResponse,
-    SkillZipImportRequest,
-)
-from app.security.secret_store import LocalSecretStore
-from app.skills.catalog import SkillCatalogError, load_skill_catalog
-from app.skills.distillation_store import (
+from app.cowork.mcp.credentials import hydrate_mcp_oauth_credentials
+from app.cowork.skills.catalog import SkillCatalogError, load_skill_catalog
+from app.cowork.skills.distillation_store import (
     get_skill_candidate,
     list_skill_candidates,
     set_candidate_status,
 )
-from app.skills.lifecycle import (
+from app.cowork.skills.lifecycle import (
     import_skill_zip,
     install_auto_distilled_skill,
     install_skill,
@@ -41,6 +34,13 @@ from app.skills.lifecycle import (
     remove_skill,
     set_skill_enabled,
 )
+from app.schemas.skills import (
+    SkillEnableRequest,
+    SkillInstallRequest,
+    SkillResourceResponse,
+    SkillZipImportRequest,
+)
+from app.security.secret_store import LocalSecretStore
 
 router = APIRouter(
     prefix="/api/v1/integrations",
@@ -97,7 +97,7 @@ async def probe_mcp_server(
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"MCP 探测失败: {error}") from error
     # 延迟 import 避免 API 配置查询路径反向依赖整个 Cowork runtime。
-    from app.agent.cowork_extensions import mcp_catalog_sha256
+    from app.cowork.extensions import mcp_catalog_sha256
 
     return {
         "server": server_name,

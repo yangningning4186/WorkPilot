@@ -7,7 +7,7 @@ from app.api.dependencies import require_admin_session
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
 from app.schemas.cost import CostOverviewResponse
-from app.services.cost_overview import get_cost_overview
+from app.telemetry.cost_overview import get_cost_overview
 
 # 强制 admin：这个页面暴露的是运营信息——档位分布、GPU 单价与来源、跑批标签。
 # 资料库页挂 demo session 是因为它是产品的一部分；成本不是, 演示时也不该被看到。

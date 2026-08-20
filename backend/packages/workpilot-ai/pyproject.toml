@@ -1,0 +1,35 @@
+# workpilot-ai —— 三层架构的最底层（对齐 earendil-works/pi 的 pi-ai：「只懂模型」）。
+#
+# 这份依赖表本身就是层次约束：没有 sqlalchemy、没有 fastapi、没有 pydantic-settings，
+# 所以本包在物理上不可能拿到 AsyncSession 或 Settings。要加这三者中的任何一个之前，
+# 先确认该逻辑是不是本来就属于上层（docs/adr/0011）。
+[project]
+name = "workpilot-ai"
+version = "0.1.0"
+description = "统一模型网关：任务→档位路由、缓存、预算钩子、成本口径、多 Provider 适配"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "httpx>=0.28,<1",
+  # RedisCompletionCache 只接受注入的客户端, 不自己读连接串。
+  "redis>=5.0.1,<6",
+  "structlog>=25.4,<26",
+  "uuid6>=2025.0.1,<2026",
+  # config/routing.yaml 的解析。
+  "pyyaml>=6.0.3,<7",
+  # AuditRecord / AuditSink / BudgetGuard：网关产出度量, 度量 schema 自成一包。
+  "workpilot-telemetry",
+]
+
+[tool.uv.sources]
+workpilot-telemetry = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/workpilot_ai"]
+
+# py.typed：本包全量类型标注, 让 app 侧的 mypy strict 能穿透包边界。
+[tool.hatch.build.targets.wheel.force-include]
+"src/workpilot_ai/py.typed" = "workpilot_ai/py.typed"

@@ -17,10 +17,10 @@ import httpx
 
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.llm.gateway import ModelGateway, build_model_gateway
-from app.retrieval.dense import DenseSearchHit, _dense_search_by_vector
-from app.retrieval.fusion import reciprocal_rank_fusion
-from app.retrieval.lexical import lexical_search
+from app.llm_bootstrap import build_model_gateway
+from app.rag.retrieval.dense import DenseSearchHit, _dense_search_by_vector
+from app.rag.retrieval.fusion import reciprocal_rank_fusion
+from app.rag.retrieval.lexical import lexical_search
 from eval.dense_baseline import EvalItem, _load_items, _retrieved_chunk
 from eval.mapping import GoldSpan, hits
 from eval.p1_document_two_hop_experiment import _rank_documents
@@ -31,6 +31,7 @@ from eval.p1_retrieval_diagnostics import (
     _span_rank,
 )
 from eval.suites import load_suite, validate_suite
+from workpilot_ai.gateway import ModelGateway
 
 
 @dataclass(frozen=True)

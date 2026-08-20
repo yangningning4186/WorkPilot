@@ -7,12 +7,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
-from app.agent.budget import CompletionClient
-from app.agent.cowork_tools import CoworkToolContext, build_default_cowork_registry
+from app.agent_core.budget import CompletionClient
 from app.core.config import Settings
-from app.services.artifacts import list_artifacts
-from app.services.cowork_permissions import create_session_root
-from app.services.runs import create_run, ensure_conversation
+from app.cowork.artifacts import list_artifacts
+from app.cowork.permissions import create_session_root
+from app.cowork.tools import CoworkToolContext, build_default_cowork_registry
+from app.runstore.runs import create_run, ensure_conversation
 
 pytestmark = pytest.mark.integration
 

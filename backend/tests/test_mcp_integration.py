@@ -3,17 +3,17 @@ from typing import Any
 
 import pytest
 
-from app.agent.cowork_extensions import mcp_catalog_sha256, register_mcp_tools
-from app.agent.cowork_tools import build_default_cowork_registry
 from app.core.config import Settings
-from app.mcp.client import McpRemoteTool
-from app.mcp.config import (
+from app.cowork.extensions import mcp_catalog_sha256, register_mcp_tools
+from app.cowork.mcp.client import McpRemoteTool
+from app.cowork.mcp.config import (
     McpConfiguration,
     McpConfigurationError,
     McpServerConfig,
     McpToolPolicy,
     load_mcp_configuration,
 )
+from app.cowork.tools import build_default_cowork_registry
 from app.worker.cowork_run import _cached_mcp_manager, _mcp_configuration_sha256
 
 

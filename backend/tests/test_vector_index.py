@@ -11,8 +11,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
-from app.retrieval.dense import apply_hnsw_scan_settings
-from app.retrieval.strategy import CHUNK_STRATEGIES, ChunkStrategy
+from app.rag.retrieval.dense import apply_hnsw_scan_settings
+from app.rag.retrieval.strategy import CHUNK_STRATEGIES, ChunkStrategy
 
 pytestmark = pytest.mark.integration
 

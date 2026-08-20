@@ -1,6 +1,6 @@
 """Agent run 的 token / 调用数 / 墙钟三维预算与熔断（约束 5）。
 
-与 `app.services.cost_budget` 的每日金额上限是两件不同的事：那一条护的是钱包总量，
+与 `app.telemetry.cost_budget` 的每日金额上限是两件不同的事：那一条护的是钱包总量，
 这一条护的是**单个 run 不许失控**——固定综述的抽卡节点按文档数循环调用模型，
 将来接反思循环后更是天然会自我放大。两者都触发时先撞到哪条就报哪条。
 
@@ -17,20 +17,14 @@ from collections.abc import Callable
 from typing import Literal, Protocol, cast
 
 from app.agent_core.contracts import BudgetState
-from app.llm.errors import (
+from workpilot_ai.errors import (
     ModelContextOverflowError,
     ProviderContextOverflowError,
     ProviderNotDispatchedError,
 )
-from app.llm.gateway import PromptBudget, request_character_count
-from app.llm.pricing import estimate_tokens
-from app.llm.types import (
-    CompletionResult,
-    EmbeddingResult,
-    Message,
-    ToolDefinition,
-    Usage,
-)
+from workpilot_ai.gateway import PromptBudget, request_character_count
+from workpilot_ai.pricing import estimate_tokens
+from workpilot_ai.types import CompletionResult, EmbeddingResult, Message, ToolDefinition, Usage
 
 BudgetDimension = Literal["tokens", "calls", "wall_ms"]
 
@@ -107,7 +101,7 @@ class PromptBudgetClient(Protocol):
 
 
 class BudgetMeter:
-    """三维计量器；直接读写 `AgentState` 的 budget 子结构，随 checkpoint 一起落盘。"""
+    """三维计量器；直接读写 Agent 状态的 budget 子结构，随 checkpoint 一起落盘。"""
 
     def __init__(
         self,

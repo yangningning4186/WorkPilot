@@ -14,9 +14,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import close_database, session_factory
-from app.retrieval.citations import EvidenceSegment, build_evidence_segments
-from app.retrieval.dense import DenseSearchHit
-from app.retrieval.strategy import validate_chunk_strategy
+from app.rag.retrieval.citations import EvidenceSegment, build_evidence_segments
+from app.rag.retrieval.dense import DenseSearchHit
+from app.rag.retrieval.strategy import validate_chunk_strategy
 
 
 async def analyze_false_refusals(

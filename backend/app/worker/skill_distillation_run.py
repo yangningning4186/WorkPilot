@@ -10,18 +10,18 @@ from uuid import UUID
 import structlog
 
 from app.core.config import Settings
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import build_model_gateway
-from app.services.model_budget import build_cost_guard
-from app.skills.distillation import distill_skill_candidate
-from app.skills.distillation_store import (
+from app.cowork.skills.distillation import distill_skill_candidate
+from app.cowork.skills.distillation_store import (
     claim_skill_job,
     complete_skill_job,
     retry_or_fail_skill_job,
     set_candidate_status,
     upsert_skill_candidate,
 )
-from app.skills.lifecycle import install_auto_distilled_skill
+from app.cowork.skills.lifecycle import install_auto_distilled_skill
+from app.llm_bootstrap import build_model_gateway
+from app.telemetry.llm_calls import SqlLlmCallAudit
+from app.telemetry.model_budget import build_cost_guard
 
 logger = structlog.get_logger(__name__)
 

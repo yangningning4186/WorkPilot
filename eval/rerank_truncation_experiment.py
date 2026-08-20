@@ -28,21 +28,21 @@ from statistics import fmean
 from typing import Any
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import ModelGateway, build_model_gateway
-from app.retrieval.dense import DenseSearchHit, dense_search
-from app.retrieval.fusion import rerank_candidate_union
-from app.retrieval.lexical import lexical_search
-from app.retrieval.reranker import (
+from app.llm_bootstrap import build_model_gateway
+from app.rag.retrieval.dense import DenseSearchHit, dense_search
+from app.rag.retrieval.fusion import rerank_candidate_union
+from app.rag.retrieval.lexical import lexical_search
+from app.rag.retrieval.reranker import (
     build_candidate_text,
     candidate_content_offset,
     parse_cross_encoder_response,
 )
-from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
-from sqlalchemy.ext.asyncio import AsyncSession
-
+from app.rag.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
+from app.telemetry.llm_calls import SqlLlmCallAudit
 from eval.dense_baseline import (
     EvalItem,
     _candidate_chunks,
@@ -54,6 +54,7 @@ from eval.metrics.diagnostics import percentile
 from eval.metrics.retrieval import evaluate_retrieval
 from eval.stats import MetricSamples, RatioPoint, paired_bootstrap
 from eval.suites import load_suite, validate_suite
+from workpilot_ai.gateway import ModelGateway
 
 CELLS = (
     ("A-1200c-512t", 1200, 512),

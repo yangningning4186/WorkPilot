@@ -1,6 +1,6 @@
 """Agent 运行时跨层共享的纯数据契约。
 
-本模块禁止依赖 ``app.agent``、``app.services``、数据库或具体 Provider，Store、API、
+本模块禁止依赖 ``app.rag``、``app.cowork``、数据库或具体 Provider，Store、API、
 worker 与运行时都只能从这里引用共享 DTO。
 """
 

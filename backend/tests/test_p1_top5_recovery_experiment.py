@@ -2,7 +2,7 @@ from uuid import UUID
 
 from uuid6 import uuid7
 
-from app.retrieval.dense import DenseSearchHit
+from app.rag.retrieval.dense import DenseSearchHit
 from eval.mapping import GoldSpan
 from eval.p1_top5_recovery_experiment import _gold_coverage_top_k
 

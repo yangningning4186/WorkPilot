@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from app.skills.catalog import load_skill_catalog
-from app.skills.lifecycle import (
+from app.cowork.skills.catalog import load_skill_catalog
+from app.cowork.skills.lifecycle import (
     install_skill,
     list_managed_skills,
     read_skill_resource,

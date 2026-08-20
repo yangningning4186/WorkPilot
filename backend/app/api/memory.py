@@ -7,8 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_model_gateway, require_owner_identity
 from app.core.db import get_db_session
-from app.llm.gateway import ModelGateway
-from app.memory.store import (
+from app.rag.memory.store import (
     MEMORY_CATEGORIES,
     MemoryNotFoundError,
     MemoryRecord,
@@ -19,6 +18,7 @@ from app.memory.store import (
     set_memory_pinned,
 )
 from app.schemas.memory import MemoryCreate, MemoryListResponse, MemoryResponse, MemoryUpdate
+from workpilot_ai.gateway import ModelGateway
 
 router = APIRouter(
     prefix="/api/v1/memories",

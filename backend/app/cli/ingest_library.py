@@ -15,14 +15,14 @@ from sqlalchemy import text
 
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import build_model_gateway
-from app.services.local_dir import (
+from app.llm_bootstrap import build_model_gateway
+from app.rag.local_dir import (
     LocalDirSyncResult,
     SyncProgress,
     register_local_dir,
     sync_local_dir,
 )
+from app.telemetry.llm_calls import SqlLlmCallAudit
 
 
 async def ingest_library(

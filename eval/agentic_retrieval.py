@@ -10,9 +10,9 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from app.llm.gateway import ModelGateway
-from app.llm.types import Message
-from app.retrieval.dense import DenseSearchHit
+from app.rag.retrieval.dense import DenseSearchHit
+from workpilot_ai.gateway import ModelGateway
+from workpilot_ai.types import Message
 
 PLAN_SYSTEM_PROMPT = """你是知识库多跳检索规划器。
 判断问题是否需要多个独立事实才能回答。需要时拆成 2 到 4 个可独立验证的子事实；

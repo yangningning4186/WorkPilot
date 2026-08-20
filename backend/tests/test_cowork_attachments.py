@@ -3,15 +3,15 @@ from pathlib import Path
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.cowork_runtime import initialize_cowork_state, load_cowork_checkpoint
-from app.agent.cowork_tools import build_default_cowork_registry
 from app.core.config import Settings
-from app.services.cowork_attachments import (
+from app.cowork.attachments import (
     CoworkAttachmentError,
     bind_attachments,
     store_attachment,
 )
-from app.services.runs import append_message, create_run, ensure_conversation
+from app.cowork.runtime import initialize_cowork_state, load_cowork_checkpoint
+from app.cowork.tools import build_default_cowork_registry
+from app.runstore.runs import append_message, create_run, ensure_conversation
 
 pytestmark = pytest.mark.integration
 

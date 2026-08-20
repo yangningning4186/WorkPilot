@@ -11,7 +11,7 @@ from jsonschema.exceptions import SchemaError
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import BaseModel, ValidationError
 
-from app.llm.types import ToolDefinition
+from workpilot_ai.types import ToolDefinition
 
 
 class ToolRegistryError(RuntimeError):

@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
-from app.retrieval.citations import REFUSAL_TEXT
+from app.rag.retrieval.citations import REFUSAL_TEXT
 from eval.citation_review import cited_claims
 from eval.import_citation_review import _item_payload, load_reviews
 from eval.m0_report import _human_review

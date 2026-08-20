@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from app.skills.distillation import SkillDistillationError, parse_distilled_skill
-from app.skills.lifecycle import install_auto_distilled_skill, install_skill
+from app.cowork.skills.distillation import SkillDistillationError, parse_distilled_skill
+from app.cowork.skills.lifecycle import install_auto_distilled_skill, install_skill
 
 
 def _candidate(**updates: object) -> str:

@@ -6,17 +6,17 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from app.agent.cowork_browser_tools import register_browser_tools
-from app.agent.cowork_connector_tools import (
+from app.cowork.browser_tools import register_browser_tools
+from app.cowork.connector_tools import (
     ConnectorRequestArgs,
     _runtime_request,
     register_connector_tools,
 )
-from app.agent.cowork_tools import build_default_cowork_registry
+from app.cowork.connectors import ConnectorAccountRecord
+from app.cowork.oauth_connectors import _exchange_code
+from app.cowork.tools import build_default_cowork_registry
 from app.schemas.connectors import ConnectorKind
 from app.security.secret_store import LocalSecretStore
-from app.services.connectors import ConnectorAccountRecord
-from app.services.oauth_connectors import _exchange_code
 
 
 def _account(

@@ -5,7 +5,7 @@ import httpx
 from app.api.dependencies import get_admin_session_store
 from app.core.config import Settings, get_settings
 from app.main import create_app
-from app.services.admin_sessions import hash_admin_password
+from app.platform.admin_sessions import hash_admin_password
 
 
 class MemoryAdminSessionStore:

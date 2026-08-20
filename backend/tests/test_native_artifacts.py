@@ -8,7 +8,7 @@ from docx import Document
 from openpyxl import load_workbook  # type: ignore[import-untyped]
 from pptx import Presentation  # type: ignore[import-untyped]
 
-from app.services.native_artifacts import create_native_artifact
+from app.cowork.native_artifacts import create_native_artifact
 
 
 def test_native_artifact_generation_docx_xlsx_pdf(tmp_path: Path) -> None:

@@ -3,10 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from app.llm.providers.anthropic import _anthropic_messages
-from app.llm.providers.gemini import _gemini_contents
-from app.llm.providers.openai_compatible import OpenAICompatibleProvider
-from app.llm.types import Message, MessageAttachment
+from workpilot_ai.providers.anthropic import _anthropic_messages
+from workpilot_ai.providers.gemini import _gemini_contents
+from workpilot_ai.providers.openai_compatible import OpenAICompatibleProvider
+from workpilot_ai.types import Message, MessageAttachment
 
 
 def _attachments(tmp_path: Path) -> tuple[MessageAttachment, ...]:

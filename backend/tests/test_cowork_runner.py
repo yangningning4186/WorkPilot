@@ -15,22 +15,6 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.agent.cowork_runtime import (
-    _encode_tool_result,
-    _external_action_sha256,
-    _goal_mentions_office,
-    initialize_cowork_state,
-    load_cowork_checkpoint,
-)
-from app.agent.cowork_tools import (
-    CoworkToolContext,
-    CoworkToolError,
-    CoworkToolRegistry,
-    CoworkToolResult,
-    CoworkToolSpec,
-    _trusted_artifact_mime_type,
-    build_default_cowork_registry,
-)
 from app.api.dependencies import (
     get_run_bus,
     get_run_queue_dependency,
@@ -39,18 +23,31 @@ from app.api.dependencies import (
 from app.core.config import get_settings
 from app.core.db import get_db_session
 from app.core.run_bus import InMemoryRunBus
-from app.llm.gateway import ModelGateway
-from app.llm.providers.openai_compatible import ProviderContextOverflowError
-from app.llm.types import CompletionResult, Message, ToolCall, ToolDefinition, Usage
-from app.main import create_app
-from app.services.cowork_context_usage import get_cowork_context_usage
-from app.services.cowork_permissions import (
+from app.cowork.context_usage import get_cowork_context_usage
+from app.cowork.permissions import (
     create_session_root,
     grant_capability,
     list_session_roots,
 )
-from app.services.request_identity import RequestIdentity
-from app.services.runs import (
+from app.cowork.runtime import (
+    _encode_tool_result,
+    _external_action_sha256,
+    _goal_mentions_office,
+    initialize_cowork_state,
+    load_cowork_checkpoint,
+)
+from app.cowork.tools import (
+    CoworkToolContext,
+    CoworkToolError,
+    CoworkToolRegistry,
+    CoworkToolResult,
+    CoworkToolSpec,
+    _trusted_artifact_mime_type,
+    build_default_cowork_registry,
+)
+from app.main import create_app
+from app.platform.request_identity import RequestIdentity
+from app.runstore.runs import (
     append_message,
     create_run,
     ensure_conversation,
@@ -61,6 +58,9 @@ from app.services.runs import (
 )
 from app.worker.cowork_run import _cowork_error_detail, _cowork_failure_message, cowork_run
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
+from workpilot_ai.providers.openai_compatible import ProviderContextOverflowError
+from workpilot_ai.types import CompletionResult, Message, ToolCall, ToolDefinition, Usage
 
 pytestmark = pytest.mark.integration
 

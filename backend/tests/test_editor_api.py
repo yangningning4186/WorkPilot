@@ -13,12 +13,12 @@ from app.api.dependencies import (
 )
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
-from app.llm.gateway import ModelGateway
 from app.main import create_app
-from app.services.editor_permissions import EditorPermissionStore
-from app.services.local_dir import register_local_dir
-from app.services.request_identity import RequestIdentity
+from app.platform.request_identity import RequestIdentity
+from app.rag.editor_permissions import EditorPermissionStore
+from app.rag.local_dir import register_local_dir
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 pytestmark = pytest.mark.integration
 

@@ -11,6 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import require_owner_identity
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
+from app.cowork.connectors import (
+    create_connector_account,
+    delete_connector_account,
+    get_connector_account,
+    list_connector_accounts,
+    update_connector_account,
+)
+from app.cowork.oauth_connectors import begin_oauth, complete_oauth
 from app.schemas.connectors import (
     ConnectorAccountCreate,
     ConnectorAccountListResponse,
@@ -20,14 +28,6 @@ from app.schemas.connectors import (
     OAuthStartResponse,
 )
 from app.security.secret_store import LocalSecretStore, SecretStoreError
-from app.services.connectors import (
-    create_connector_account,
-    delete_connector_account,
-    get_connector_account,
-    list_connector_accounts,
-    update_connector_account,
-)
-from app.services.oauth_connectors import begin_oauth, complete_oauth
 
 router = APIRouter(
     prefix="/api/v1/connectors",

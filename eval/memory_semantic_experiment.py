@@ -21,17 +21,15 @@ from time import monotonic
 from typing import Any, Literal, Protocol
 
 from app.core.config import Settings
-from app.llm.gateway import ModelGateway, build_model_gateway
-from app.llm.providers.openai_compatible import (
-    OpenAICompatibleProvider,
-    ProviderResponseError,
-)
-from app.llm.types import CompletionResult, Message
+from app.llm_bootstrap import build_model_gateway
 from eval.memory_injection_experiment import (
     SYSTEM_PROMPT as GENERATION_SYSTEM_PROMPT,
 )
 from eval.memory_injection_experiment import find_disclosure_hits, render_memory_context
 from eval.stats import MetricSamples, RatioPoint, paired_bootstrap
+from workpilot_ai.gateway import ModelGateway
+from workpilot_ai.providers.openai_compatible import OpenAICompatibleProvider, ProviderResponseError
+from workpilot_ai.types import CompletionResult, Message
 
 SCHEMA_VERSION = 2
 RUBRIC_ID = "memory-paired-semantic.v1"

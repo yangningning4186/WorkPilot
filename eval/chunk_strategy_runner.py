@@ -20,9 +20,9 @@ from app.ingest.chunk_strategies import (
     DEFAULT_SEMANTIC_MIN_TOKENS,
     HARD_MAX_TOKENS,
 )
-from app.llm.gateway import build_model_gateway
-from app.retrieval.lexical import LEXICAL_MODES
-from app.retrieval.strategy import CHUNK_STRATEGIES, ChunkStrategy
+from app.llm_bootstrap import build_model_gateway
+from app.rag.retrieval.lexical import LEXICAL_MODES
+from app.rag.retrieval.strategy import CHUNK_STRATEGIES, ChunkStrategy
 from eval.dense_baseline import (
     RETRIEVAL_STRATEGIES,
     _load_items,

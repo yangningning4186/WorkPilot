@@ -15,21 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import require_owner_identity
 from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
-from app.schemas.cowork import (
-    ArtifactListResponse,
-    ArtifactResponse,
-    AttachmentResponse,
-    CapabilityGrantCreate,
-    CapabilityGrantListResponse,
-    CapabilityGrantResponse,
-    SessionRootCreate,
-    SessionRootListResponse,
-    SessionRootResponse,
-)
-from app.services.artifact_formats import TEXT_ARTIFACT_SUFFIXES
-from app.services.artifacts import ArtifactRegistrationError, list_artifacts, resolve_artifact_file
-from app.services.cowork_attachments import CoworkAttachmentError, store_attachment
-from app.services.cowork_permissions import (
+from app.cowork.artifact_formats import TEXT_ARTIFACT_SUFFIXES
+from app.cowork.artifacts import ArtifactRegistrationError, list_artifacts, resolve_artifact_file
+from app.cowork.attachments import CoworkAttachmentError, store_attachment
+from app.cowork.office_preview import OfficePreviewError, render_office_preview
+from app.cowork.permissions import (
     CapabilityDeniedError,
     ConversationNotFoundError,
     CoworkPermissionError,
@@ -41,7 +31,17 @@ from app.services.cowork_permissions import (
     revoke_capability_grant,
     revoke_session_root,
 )
-from app.services.office_preview import OfficePreviewError, render_office_preview
+from app.schemas.cowork import (
+    ArtifactListResponse,
+    ArtifactResponse,
+    AttachmentResponse,
+    CapabilityGrantCreate,
+    CapabilityGrantListResponse,
+    CapabilityGrantResponse,
+    SessionRootCreate,
+    SessionRootListResponse,
+    SessionRootResponse,
+)
 
 
 async def require_cowork_enabled(

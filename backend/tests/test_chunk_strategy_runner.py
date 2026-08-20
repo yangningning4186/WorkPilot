@@ -11,16 +11,16 @@ import eval.chunk_strategy_runner as chunk_runner
 import eval.dense_baseline as dense_baseline
 from app.core.config import Settings
 from app.ingest.chunk_strategies import count_tokens
-from app.llm.gateway import ModelGateway
-from app.retrieval.dense import DenseSearchHit, dense_search
-from app.retrieval.fusion import reciprocal_rank_fusion
-from app.retrieval.lexical import lexical_search
-from app.retrieval.strategy import CHUNK_STRATEGIES, ChunkStrategy
-from app.services.chunk_building import build_chunk_strategies
-from app.services.markdown_ingestion import ingest_markdown_file
-from app.services.reranker import rerank_candidates
+from app.rag.chunk_building import build_chunk_strategies
+from app.rag.markdown_ingestion import ingest_markdown_file
+from app.rag.reranker import rerank_candidates
+from app.rag.retrieval.dense import DenseSearchHit, dense_search
+from app.rag.retrieval.fusion import reciprocal_rank_fusion
+from app.rag.retrieval.lexical import lexical_search
+from app.rag.retrieval.strategy import CHUNK_STRATEGIES, ChunkStrategy
 from eval.chunk_strategy_runner import ChunkCorpusNotReadyError, preflight_chunk_corpus
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 
 async def _seed_corpus_and_dataset(

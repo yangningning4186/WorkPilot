@@ -19,29 +19,26 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import Settings, get_settings
 from app.core.queue import get_run_queue
 from app.core.run_bus import RunBus
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import build_model_gateway
-from app.memory.recall import recall_memory_context
-from app.memory.store import (
-    MemoryExtractionJob,
-    run_uses_owner_memory,
-    schedule_memory_extraction,
-)
-from app.services.answer_stream import (
+from app.llm_bootstrap import build_model_gateway
+from app.rag.answer_stream import (
     AnswerDelta,
     AnswerFinished,
     AnswerProducer,
     produce_answer,
     produce_general_answer,
 )
-from app.services.conversation_context import (
+from app.rag.conversation_context import (
     compact_conversation_context,
     load_conversation_context,
     resolve_contextual_query,
 )
-from app.services.cost_budget import BudgetExceededError
-from app.services.model_budget import build_cost_guard
-from app.services.runs import (
+from app.rag.memory.recall import recall_memory_context
+from app.rag.memory.store import (
+    MemoryExtractionJob,
+    run_uses_owner_memory,
+    schedule_memory_extraction,
+)
+from app.runstore.runs import (
     append_message,
     claim_run,
     finalize_message,
@@ -49,6 +46,9 @@ from app.services.runs import (
     get_run,
     renew_lease,
 )
+from app.telemetry.cost_budget import BudgetExceededError
+from app.telemetry.llm_calls import SqlLlmCallAudit
+from app.telemetry.model_budget import build_cost_guard
 from app.worker.emitter import RunEventEmitter
 
 logger = structlog.get_logger(__name__)

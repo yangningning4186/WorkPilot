@@ -5,17 +5,17 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.budget import BudgetMeter
-from app.agent.review_graph import ReviewTools, initialize_review_state, run_readonly_review
-from app.agent.state import ReviewCard, ReviewDocument, ReviewGroup
-from app.agent.write_note import (
-    acquire_invocation,
+from app.agent_core.budget import BudgetMeter
+from app.rag.review.graph import ReviewTools, initialize_review_state, run_readonly_review
+from app.rag.review.state import ReviewCard, ReviewDocument, ReviewGroup
+from app.rag.review.write_note import (
     resolve_note_path,
     resume_review_after_human,
     review_resume_token,
     write_note,
 )
-from app.services.runs import create_run, ensure_conversation, get_run, list_events
+from app.runstore.invocations import acquire_invocation
+from app.runstore.runs import create_run, ensure_conversation, get_run, list_events
 from tests.fakes import review_budget
 
 pytestmark = pytest.mark.integration

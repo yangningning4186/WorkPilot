@@ -6,11 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingest.chunking import chunk_by_heading
 from app.ingest.markdown import parse_markdown
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import ModelGateway
-from app.retrieval.dense import dense_search
-from app.services.markdown_ingestion import LibraryPathError, ingest_markdown_file
+from app.knowledge_contracts import LibraryPathError
+from app.rag.markdown_ingestion import ingest_markdown_file
+from app.rag.retrieval.dense import dense_search
+from app.telemetry.llm_calls import SqlLlmCallAudit
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 
 def test_markdown_blocks_keep_exact_offsets_and_heading_paths() -> None:

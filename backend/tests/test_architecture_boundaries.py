@@ -7,14 +7,19 @@ from typing import Any, TypedDict, cast
 import pytest
 from uuid6 import uuid7
 
-from app.agent.cowork_rag_tools import register_rag_tools
-from app.agent.cowork_tools import CoworkToolContext, CoworkToolRegistry
+from app.agent_core.compaction import (
+    CompactionPrompts,
+    build_outbound_messages,
+    default_compaction_state,
+)
 from app.agent_core.loop import run_tool_loop
 from app.core.config import Settings
-from app.llm.gateway import ModelGateway
-from app.retrieval.citations import EvidenceSegment
-from app.services import rag_service
-from app.services.rag_service import EvidenceBundle, PostgresRagService, RagSearchRequest
+from app.cowork.rag_tools import register_rag_tools
+from app.cowork.tools import CoworkToolContext, CoworkToolRegistry
+from app.rag import service as rag_service
+from app.rag.retrieval.citations import EvidenceSegment
+from app.rag.service import EvidenceBundle, PostgresRagService, RagSearchRequest
+from workpilot_ai.gateway import ModelGateway
 
 
 class _FakeRag:
@@ -53,7 +58,7 @@ async def test_search_knowledge_returns_only_evidence_bundle_fields(
     async def authorize(_session: object, **kwargs: Any) -> None:
         authorized.append(str(kwargs["capability"]))
 
-    monkeypatch.setattr("app.agent.cowork_tools.authorize_capability", authorize)
+    monkeypatch.setattr("app.cowork.tools.authorize_capability", authorize)
     run_id = uuid7()
     result = await registry.execute(
         "search_knowledge",
@@ -171,17 +176,28 @@ async def test_agent_core_loop_is_product_neutral() -> None:
     assert result == {"active": False, "pending": False, "count": 2}
 
 
-def test_agent_does_not_import_concrete_provider_modules() -> None:
-    app_root = Path(__file__).parents[1] / "app"
-    violations: list[str] = []
-    for package in (app_root / "agent", app_root / "agent_core"):
-        for path in package.rglob("*.py"):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-                    "app.llm.providers"
-                ):
-                    violations.append(str(path.relative_to(app_root)))
+def test_workpilot_ai_package_carries_no_application_imports() -> None:
+    """最底层「只懂模型」：包里不许出现 app.* 与持久化/Web 依赖。
+
+    这条与 pyproject 的 importlinter 契约 1/2 重复是**故意**的：import-linter 跑在
+    单独的 CI 步骤上，而 pytest 是每个 PR 都会跑的那一层，两边都挡一次。
+    真正的全量层次契约见 `[tool.importlinter]`，本用例只守最底层这一条红线。
+    """
+
+    package_root = Path(__file__).parents[1] / "packages" / "workpilot-ai" / "src" / "workpilot_ai"
+    forbidden = ("app", "sqlalchemy", "fastapi", "pydantic_settings", "alembic", "arq")
+    violations: list[tuple[str, str]] = []
+    for path in package_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+            elif isinstance(node, ast.Import):
+                module = node.names[0].name
+            else:
+                continue
+            if module.split(".")[0] in forbidden:
+                violations.append((str(path.relative_to(package_root)), module))
     assert violations == []
 
 
@@ -194,8 +210,108 @@ def test_store_adapter_does_not_import_agent_or_service_implementations() -> Non
             if not isinstance(node, ast.ImportFrom):
                 continue
             module = node.module or ""
-            if module == "app.agent" or module.startswith("app.agent.") or module.startswith(
-                "app.services"
-            ):
+            if module.startswith(("app.rag", "app.cowork.")):
                 violations.append((str(path.relative_to(app_root)), module))
+    assert violations == []
+
+
+def test_compaction_is_product_neutral() -> None:
+    """压缩属于框架层：换一套产品措辞就能用，不含任何 Cowork 语义。
+
+    这条是 ADR-0011 Step 2 的回归网——`app/agent_core/compaction.py` 里
+    一旦重新硬编码 Cowork 的 prompt 或 task_type，这里就会挂。
+    """
+
+    prompts = CompactionPrompts(
+        system_prompt="把历史压成 {\"summary\": \"...\"}",
+        outbound_prefix="<digest_history>",
+        outbound_suffix="</digest_history>",
+        summary_task_type="digest_compaction",
+        decision_task_type="digest_decision",
+    )
+    compaction = default_compaction_state()
+    compaction["summary"] = "早先做了三件事"
+    compaction["summary_upto"] = 1
+
+    messages = build_outbound_messages(
+        [
+            {"role": "user", "content": "旧目标"},
+            {"role": "user", "content": "当前目标"},
+        ],
+        compaction,
+        system_prompt="你是 digest agent",
+        prompts=prompts,
+    )
+
+    rendered = "\n".join(item.content for item in messages)
+    assert "<digest_history>" in rendered
+    assert "早先做了三件事" in rendered
+    assert "当前目标" in rendered
+    assert "cowork" not in rendered.lower()
+
+
+def _docstring_nodes(tree: ast.AST) -> set[int]:
+    """收集所有 docstring 表达式的 id，扫描时跳过——注释里指路产品层是允许的。"""
+
+    marked: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        body = getattr(node, "body", [])
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+            marked.add(id(body[0].value))
+    return marked
+
+
+def test_agent_core_carries_no_product_vocabulary() -> None:
+    """框架层不认识"综述"和"Cowork"：不出现产品命名的标识符或字符串字面量。
+
+    ADR-0011 Step 2 的回归网。压缩的 prompt、综述的 card/group 都曾经住在这里，
+    搬走之后要挡住它们回来。docstring 里指路产品层不算违规。
+
+    唯一豁免 `WorkflowType`（连同它的 Literal 成员）：它是 `agent_runs.workflow_type`
+    这一列的取值域，对应数据库 CHECK 约束。它现在放在框架层是因为 `runstore` 与
+    `cowork_store` 都要用，而 `runstore → cowork_store` 已经存在——挪到任何一边都会成环。
+    Step 3 拆产品包时再决定它下沉到哪里，或者放宽成 str。
+    """
+
+    core_root = Path(__file__).parents[1] / "app" / "agent_core"
+    markers = ("cowork", "review")
+    allowed = {"WorkflowType"}
+    violations: list[tuple[str, str]] = []
+
+    for path in sorted(core_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        skip = _docstring_nodes(tree)
+        # 豁免类型自身的 Literal 成员，否则等于只豁免了名字、没豁免取值。
+        for node in ast.walk(tree):
+            targets: list[ast.expr] = []
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            if any(isinstance(t, ast.Name) and t.id in allowed for t in targets):
+                skip.update(
+                    id(child)
+                    for child in ast.walk(node)
+                    if isinstance(child, ast.Constant)
+                )
+        for node in ast.walk(tree):
+            name: str | None = None
+            if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+                name = node.name
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                name = node.id
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if id(node) in skip:
+                    continue
+                name = node.value
+            if isinstance(node, ast.Name) and node.id in allowed:
+                continue
+            if name is None or name in allowed:
+                continue
+            lowered = name.lower()
+            if any(marker in lowered for marker in markers):
+                violations.append((str(path.relative_to(core_root)), name))
+
     assert violations == []

@@ -12,23 +12,23 @@ from statistics import fmean
 from typing import Literal
 from uuid import UUID
 
-from app.core.config import Settings
-from app.core.db import close_database, session_factory
-from app.ingest.chunk_strategies import count_tokens
-from app.llm.audit import SqlLlmCallAudit
-from app.llm.gateway import ModelGateway, build_model_gateway
-from app.retrieval.dense import DenseSearchHit
-from app.retrieval.lexical import LEXICAL_MODES
-from app.retrieval.pipeline import RetrievalMode, SearchPipeline, SearchPipelineRequest
-from app.retrieval.strategy import (
-    CHUNK_STRATEGIES,
-    ChunkStrategy,
-    validate_chunk_strategy,
-)
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
+from app.core.config import Settings
+from app.core.db import close_database, session_factory
+from app.ingest.chunk_strategies import count_tokens
+from app.llm_bootstrap import build_model_gateway
+from app.rag.retrieval.dense import DenseSearchHit
+from app.rag.retrieval.lexical import LEXICAL_MODES
+from app.rag.retrieval.pipeline import RetrievalMode, SearchPipeline, SearchPipelineRequest
+from app.rag.retrieval.strategy import (
+    CHUNK_STRATEGIES,
+    ChunkStrategy,
+    validate_chunk_strategy,
+)
+from app.telemetry.llm_calls import SqlLlmCallAudit
 from eval.mapping import (
     GoldEvidenceGroup,
     GoldSpan,
@@ -40,6 +40,7 @@ from eval.mapping import (
 from eval.metrics.diagnostics import diagnose_spans, percentile, summarize_scores
 from eval.metrics.refusal import RefusalAnalysis, analyze_refusal
 from eval.metrics.retrieval import RetrievalMetrics, evaluate_retrieval
+from workpilot_ai.gateway import ModelGateway
 
 RETRIEVAL_STRATEGIES = (
     "dense-only",

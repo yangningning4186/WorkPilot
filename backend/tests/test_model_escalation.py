@@ -10,14 +10,14 @@ from pathlib import Path
 import pytest
 from uuid6 import uuid7
 
-from app.llm.escalation import EscalationRejected, run_with_escalation
-from app.llm.gateway import ModelGateway
-from app.llm.routing import RoutingConfigError, Tier, load_routing_table, parse_routing_table
-from app.llm.types import AuditRecord, Message
-from app.retrieval.citations import EvidenceSegment
-from app.services.evidence_sufficiency import EvidenceAssessmentError, assess_evidence_sufficiency
+from app.rag.evidence_sufficiency import EvidenceAssessmentError, assess_evidence_sufficiency
+from app.rag.retrieval.citations import EvidenceSegment
 from tests.fakes import DeterministicProvider
 from tests.test_model_routing import ENV, RecordingSink, _minimal, _pool
+from workpilot_ai.escalation import EscalationRejected, run_with_escalation
+from workpilot_ai.gateway import ModelGateway
+from workpilot_ai.routing import RoutingConfigError, Tier, load_routing_table, parse_routing_table
+from workpilot_ai.types import AuditRecord, Message
 
 REPO_ROUTING = Path(__file__).resolve().parents[2] / "config" / "routing.yaml"
 

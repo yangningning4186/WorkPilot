@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from app.agent.cowork_extensions import register_skill_tools
-from app.agent.cowork_tools import build_default_cowork_registry
 from app.core.config import Settings
-from app.skills.catalog import SkillCatalogError, load_skill_catalog
+from app.cowork.extensions import register_skill_tools
+from app.cowork.skills.catalog import SkillCatalogError, load_skill_catalog
+from app.cowork.tools import build_default_cowork_registry
 
 
 def _write_skill(root: Path, name: str = "contract-review") -> Path:

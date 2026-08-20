@@ -8,16 +8,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from app.core.config import get_settings
-from app.llm.gateway import ModelGateway
-from app.llm.types import (
-    CompletionResult,
-    EmbeddingResult,
-    Message,
-    ToolCall,
-    ToolDefinition,
-    Usage,
-)
-from app.services.rag_service import RagSearchRequest
+from app.rag.service import RagSearchRequest
 from eval.cowork_runner import (
     FixtureRagService,
     _metric_slice,
@@ -28,6 +19,15 @@ from eval.cowork_runner import (
     score_observation,
 )
 from eval.cowork_task_suite import DEFAULT_SUITE, load_suite
+from workpilot_ai.gateway import ModelGateway
+from workpilot_ai.types import (
+    CompletionResult,
+    EmbeddingResult,
+    Message,
+    ToolCall,
+    ToolDefinition,
+    Usage,
+)
 
 
 class ScriptedCoworkProvider:

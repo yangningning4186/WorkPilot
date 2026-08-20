@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.services.office_preview import _sanitize_quicklook_html
+from app.cowork.office_preview import _sanitize_quicklook_html
 
 
 def test_quicklook_preview_removes_active_content_and_embeds_local_images(

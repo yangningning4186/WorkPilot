@@ -4,17 +4,17 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.budget import BudgetedGateway, BudgetMeter, CompletionClient
-from app.agent.persistence import load_latest_checkpoint
-from app.agent.review_graph import (
+from app.agent_core.budget import BudgetedGateway, BudgetMeter, CompletionClient
+from app.rag.review.graph import (
     ReviewTools,
     initialize_review_state,
     run_readonly_review,
 )
-from app.agent.state import ReviewCard, ReviewDocument, ReviewGroup
-from app.llm.types import CompletionResult, Message, Usage
-from app.services.runs import create_run, ensure_conversation, get_run, list_events
+from app.rag.review.state import ReviewCard, ReviewDocument, ReviewGroup
+from app.runstore.checkpoints import load_latest_checkpoint
+from app.runstore.runs import create_run, ensure_conversation, get_run, list_events
 from tests.fakes import review_budget
+from workpilot_ai.types import CompletionResult, Message, Usage
 
 pytestmark = pytest.mark.integration
 

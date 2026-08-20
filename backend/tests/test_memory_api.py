@@ -5,10 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_model_gateway, require_owner_identity
 from app.core.db import get_db_session
-from app.llm.gateway import ModelGateway
 from app.main import create_app
-from app.services.request_identity import RequestIdentity
+from app.platform.request_identity import RequestIdentity
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 
 def _test_app(db_session: AsyncSession, *, owner: bool):

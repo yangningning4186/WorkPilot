@@ -1,13 +1,14 @@
 import copy
 
-from app.agent.budget import BudgetedGateway, BudgetMeter
-from app.agent.cowork_compaction import (
-    CoworkOutboundCompactor,
+from app.agent_core.budget import BudgetedGateway, BudgetMeter
+from app.agent_core.compaction import (
+    OutboundCompactor,
     default_compaction_state,
 )
-from app.llm.gateway import ModelGateway
-from app.llm.types import ToolDefinition
+from app.cowork.runtime import COWORK_COMPACTION_PROMPTS
 from tests.fakes import DeterministicProvider, review_budget
+from workpilot_ai.gateway import ModelGateway
+from workpilot_ai.types import ToolDefinition
 
 
 def _round(call_id: str, content: str) -> list[dict[str, object]]:
@@ -32,7 +33,7 @@ def _compactor(
     *,
     keep_recent: int,
     trigger_ratio: float = 0.4,
-) -> tuple[CoworkOutboundCompactor, BudgetMeter]:
+) -> tuple[OutboundCompactor, BudgetMeter]:
     gateway = ModelGateway(
         provider,
         embedding_dimensions=4,
@@ -41,7 +42,7 @@ def _compactor(
     )
     meter = BudgetMeter(review_budget(max_tokens=50_000, max_calls=20))
     budgeted = BudgetedGateway(gateway, meter)
-    compactor = CoworkOutboundCompactor(
+    compactor = OutboundCompactor(
         budgeted,
         tools=[
             ToolDefinition(
@@ -51,6 +52,7 @@ def _compactor(
             )
         ],
         system_prompt="system",
+        prompts=COWORK_COMPACTION_PROMPTS,
         enabled=True,
         trigger_ratio=trigger_ratio,
         keep_recent_tool_rounds=keep_recent,

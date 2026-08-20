@@ -5,15 +5,15 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
-from app.llm.gateway import ModelGateway
-from app.retrieval.dense import dense_search
-from app.retrieval.lexical import lexical_search
-from app.services.document_versions import (
+from app.rag.document_versions import (
     VersionNotReadyError,
     activate_document_version,
     create_candidate_version,
 )
+from app.rag.retrieval.dense import dense_search
+from app.rag.retrieval.lexical import lexical_search
 from tests.fakes import DeterministicProvider
+from workpilot_ai.gateway import ModelGateway
 
 pytestmark = pytest.mark.integration
 

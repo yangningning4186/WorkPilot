@@ -1,6 +1,6 @@
 from uuid6 import uuid7
 
-from app.retrieval.dense import DenseSearchHit
+from app.rag.retrieval.dense import DenseSearchHit
 from eval.evidence_gate_analysis import _classify, _minimum_full_visibility_chars
 
 

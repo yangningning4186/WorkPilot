@@ -13,7 +13,7 @@ from uuid import UUID
 
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.retrieval.strategy import CHUNK_STRATEGIES, ChunkStrategy
+from app.rag.retrieval.strategy import CHUNK_STRATEGIES, ChunkStrategy
 from eval.dense_baseline import (
     RETRIEVAL_STRATEGIES,
     BaselineRunResult,

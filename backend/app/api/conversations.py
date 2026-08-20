@@ -7,6 +7,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_request_identity
 from app.core.config import get_settings
 from app.core.db import get_db_session
+from app.cowork.context_usage import get_cowork_context_usage
+from app.platform.request_identity import RequestIdentity
+from app.runstore.conversations import (
+    ConversationBusyError,
+    delete_conversation,
+    get_conversation,
+    list_conversation_messages,
+    list_conversations,
+    set_conversation_archived,
+    update_conversation_runtime,
+)
+from app.runstore.runs import ensure_conversation
 from app.schemas.conversations import (
     ConversationArchiveUpdate,
     ConversationContextUsageResponse,
@@ -17,18 +29,6 @@ from app.schemas.conversations import (
     ConversationResponse,
     ConversationRuntimeUpdate,
 )
-from app.services.conversations import (
-    ConversationBusyError,
-    delete_conversation,
-    get_conversation,
-    list_conversation_messages,
-    list_conversations,
-    set_conversation_archived,
-    update_conversation_runtime,
-)
-from app.services.cowork_context_usage import get_cowork_context_usage
-from app.services.request_identity import RequestIdentity
-from app.services.runs import ensure_conversation
 
 router = APIRouter(prefix="/api/v1/conversations", tags=["conversations"])
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]

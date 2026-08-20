@@ -26,8 +26,8 @@ from sqlalchemy import text
 
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
-from app.llm.gateway import build_model_gateway
-from app.retrieval.strategy import CHUNK_STRATEGIES, ChunkStrategy
+from app.llm_bootstrap import build_model_gateway
+from app.rag.retrieval.strategy import CHUNK_STRATEGIES, ChunkStrategy
 from eval.chunk_strategy_runner import ChunkCorpusNotReadyError, preflight_chunk_corpus
 from eval.generation_baseline import (
     GENERATION_RETRIEVAL_STRATEGIES,
