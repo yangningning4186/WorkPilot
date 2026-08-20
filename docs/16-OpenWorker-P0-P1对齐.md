@@ -11,6 +11,7 @@
 | Web 与浏览器 | 公网搜索、网页/远程 PDF 读取；`network.read` + 会话级 `browser.control` 双授权下的受控浏览器导航、编号控件点击/输入/选择、后退、页内查找、下载与截图 | 浏览器无持久 Cookie/登录态；每跳重新做 SSRF/DNS 钉扎；session 绑定会话，空闲 TTL 顺延但绝对 TTL 不顺延；动作必须逐个调用，本地文件上传仍逐次审批，下载/截图另需目录写授权 |
 | 原生交付物 | 原子生成 DOCX/XLSX/PDF，覆盖需 baseline，保留有界备份；Artifacts 内联 PDF、语义预览 DOCX/XLSX | 语义预览不承诺替代 Office 的像素级排版渲染 |
 | Scheduler / Inbox | 单次/五段 cron、离线最多补跑一次、重叠保护、Redis 入队补偿、立即运行、暂停/恢复/删除；跨会话 Inbox | Unattended 不自动续权；提问、目录/能力、Shell 与外部动作都会安全暂停 |
+| 任务清单 | `todo_write` 整份替换的 pending/in_progress/done 清单，存进 checkpoint、钉进每轮 system prompt、前端独立渲染 | 与 `agent_plan_steps` 并存不互相替代：前者是模型主动声明的计划，后者是 runtime 从 tool call 派生的事后日志 |
 | 只读子 Agent | `explore` 独立上下文、共享预算、轮次/调用上限、证据工具记录 | 过滤所有副作用、Shell 与 `external.action`，当前不开放可写子 Agent |
 | 工具规模治理 | 核心目录、按目标相关选择、`search_tool_catalog` 动态激活；历史 tool_call 引用过的 schema 跨话题保留 | 目录按轮重算且有上限，不因某个工具曾被下发过就永久驻留；只有历史调用过的和显式激活的是单调的 |
 

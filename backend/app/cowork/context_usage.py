@@ -24,6 +24,7 @@ from app.cowork.runtime import (
     _tools_referenced_in_history,
 )
 from app.cowork.subagent import register_readonly_subagent
+from app.cowork.todos import TodoItem, normalize_todos
 from app.cowork.tools import CoworkToolRegistry, build_default_cowork_registry
 from app.cowork_store.routing import configured_cowork_store
 from workpilot_ai.gateway import PromptBudget, request_character_count
@@ -185,6 +186,7 @@ async def get_cowork_context_usage(
     goal = ""
     run_status: str | None = None
     runtime_snapshot: dict[str, Any] = {}
+    todos: list[TodoItem] = []
     if latest is not None:
         goal = str(latest["goal"])
         run_status = str(latest["status"])
@@ -200,6 +202,7 @@ async def get_cowork_context_usage(
             )
             if isinstance(state.get("runtime_snapshot"), dict):
                 runtime_snapshot = cast("dict[str, Any]", state["runtime_snapshot"])
+            todos = normalize_todos(state.get("todos"))
     if not canonical:
         if local_metadata:
             from app.cowork_store.factory import local_cowork_stores
@@ -245,7 +248,7 @@ async def get_cowork_context_usage(
             | _tools_referenced_in_history(canonical)
         ),
     )
-    system_prompt = _system_prompt(registry.system_instructions())
+    system_prompt = _system_prompt(registry.system_instructions(), todos=todos)
     outbound = build_outbound_messages(
         canonical,
         compaction,

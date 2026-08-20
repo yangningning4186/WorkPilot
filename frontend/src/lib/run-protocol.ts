@@ -15,6 +15,7 @@ export type RunEventType =
   | "tool.result"
   | "tool.error"
   | "context.compacted"
+  | "todo.update"
   | "steering.queued"
   | "steering.applied"
   | "interrupt"
@@ -154,6 +155,22 @@ export interface InteractionResolvedPayload {
   status: "answered" | "approved" | "rejected";
 }
 
+export type TodoStatus = "pending" | "in_progress" | "done";
+
+export interface TodoItem {
+  content: string;
+  status: TodoStatus;
+}
+
+/** 模型通过 todo_write 主动声明的任务清单；整份替换，不是增量。 */
+export interface TodoUpdatePayload {
+  todos: TodoItem[];
+  total: number;
+  done: number;
+  in_progress: number;
+  pending: number;
+}
+
 export interface ArtifactPayload {
   kind: "review_preview" | "written_note" | "file";
   artifact_id?: string;
@@ -183,6 +200,7 @@ export type RunEventData =
   | InterruptPayload
   | InteractionResolvedPayload
   | ArtifactPayload
+  | TodoUpdatePayload
   | RunDonePayload
   | ErrorPayload;
 

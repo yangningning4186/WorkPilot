@@ -6074,6 +6074,40 @@ textarea:focus-visible,
 .workdesk-tool-trace li > div { display: grid; min-width: 0; gap: 2px; }
 .workdesk-tool-trace li strong { font-size: 9px; }
 .workdesk-tool-trace li small { overflow: hidden; color: var(--workdesk-muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+/* 模型自己维护的任务清单。排在执行过程之上：计划比工具日志更值得先看到。 */
+.workdesk-todos { padding: 11px 12px 3px; }
+.workdesk-todos > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+  color: #68706c;
+  font-size: 9px;
+  font-weight: 680;
+}
+.workdesk-todos > header > small { color: var(--workdesk-faint); font: 8px var(--font-mono); font-weight: 500; }
+.workdesk-todos ol { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.workdesk-todos li {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 4px;
+  border-radius: 7px;
+}
+.workdesk-todos li > span {
+  justify-self: center;
+  color: var(--workdesk-faint);
+  font: 8px var(--font-mono);
+}
+.workdesk-todos li > p { margin: 0; color: var(--workdesk-muted); font-size: 9px; line-height: 1.55; }
+.workdesk-todos li.done > span { color: var(--workdesk-accent); }
+.workdesk-todos li.done > p { color: var(--workdesk-faint); text-decoration: line-through; }
+.workdesk-todos li.in_progress { background: var(--workdesk-accent-soft); }
+.workdesk-todos li.in_progress > span { color: var(--workdesk-accent); }
+.workdesk-todos li.in_progress > p { color: var(--workdesk-ink); font-weight: 620; }
+
 .workdesk-thinking { display: flex; align-items: center; gap: 8px; margin: 4px 3px; color: var(--workdesk-muted); font-size: 9px; }
 .workdesk-thinking i { width: 7px; height: 7px; border-radius: 50%; background: #29ae7d; animation: cowork-pulse 1.3s ease-in-out infinite; }
 

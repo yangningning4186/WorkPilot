@@ -15,6 +15,7 @@ RunEventType = Literal[
     "tool.result",
     "tool.error",
     "context.compacted",
+    "todo.update",
     "steering.queued",
     "steering.applied",
     "interrupt",

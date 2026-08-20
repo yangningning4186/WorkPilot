@@ -841,6 +841,23 @@ export default function CoworkPage() {
                           </div>
                         </header>
 
+                        {run.todos.length > 0 && (
+                          <section className="workdesk-todos" aria-label="任务清单">
+                            <header>
+                              <span>任务清单</span>
+                              <small>{run.todos.filter((todo) => todo.status === "done").length}/{run.todos.length}</small>
+                            </header>
+                            <ol>
+                              {run.todos.map((todo, index) => (
+                                <li className={todo.status} key={`${index}-${todo.content}`}>
+                                  <span aria-hidden>{todo.status === "done" ? "✓" : todo.status === "in_progress" ? "▶" : ""}</span>
+                                  <p>{todo.content}</p>
+                                </li>
+                              ))}
+                            </ol>
+                          </section>
+                        )}
+
                         <details className="workdesk-tool-trace" open={running || run.steps.length > 0}>
                           {run.steps.length === 0 ? (
                             <p className="workdesk-thinking"><i />正在理解任务并建立执行计划…</p>

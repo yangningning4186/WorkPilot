@@ -14,6 +14,8 @@ import {
   type RunDonePayload,
   type StepUpdatePayload,
   type StreamEnvelope,
+  type TodoItem,
+  type TodoUpdatePayload,
   type ToolEventPayload,
   envelopeSeq,
 } from "./run-protocol";
@@ -47,6 +49,11 @@ export interface CoworkRunView {
   /** step.update / interaction.resolved 提供的运行进度说明。 */
   progressSummary: string;
   artifactEvents: ArtifactPayload[];
+  /**
+   * 模型自己维护的任务清单。和 `steps` 不同：steps 是每次 tool call 的事后日志，
+   * todos 是模型对"这件事分几步"的主动声明，两者互相替代不了。
+   */
+  todos: TodoItem[];
   interrupt: InterruptPayload | null;
   error: string | null;
 }
@@ -59,6 +66,7 @@ const EMPTY: CoworkRunView = {
   answer: "",
   progressSummary: "",
   artifactEvents: [],
+  todos: [],
   interrupt: null,
   error: null,
 };
@@ -158,6 +166,11 @@ function applyEvent(state: CoworkRunView, envelope: StreamEnvelope): CoworkRunVi
             ? "用户未批准这项请求，Cowork 正在调整方案。"
             : state.progressSummary ?? "",
       };
+    }
+    case "todo.update": {
+      const data = envelope.data as TodoUpdatePayload;
+      // 整份替换：后端每次都发完整清单，前端不做合并。
+      return { ...next, phase: "executing", todos: data.todos ?? [] };
     }
     case "artifact": {
       const data = envelope.data as ArtifactPayload;

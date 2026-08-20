@@ -42,6 +42,7 @@ from app.cowork.permissions import (
     list_session_roots,
 )
 from app.cowork.shell import assess_shell_command, execute_shell_command
+from app.cowork.todos import TodoWriteArgs, todo_items, todo_summary
 from app.cowork.web import fetch_url, search_web
 from app.runstore.invocations import (
     acquire_invocation,
@@ -317,6 +318,7 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
             "create_artifact",
             "create_native_artifact",
             "run_shell",
+            "todo_write",
             "list_skills",
             "load_skill",
             "load_skill_resource",
@@ -938,6 +940,13 @@ async def _edit_excel(context: CoworkToolContext, raw: BaseModel) -> CoworkToolR
     return await _edit_office_file(context, raw, kind="excel")
 
 
+async def _todo_write(_: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+    args = TodoWriteArgs.model_validate(raw.model_dump())
+    todos = todo_items(args)
+    # handler 不写 state：runtime 从 output["todos"] 取回并落进 checkpoint。
+    return CoworkToolResult(output={"todos": todos, **todo_summary(todos)})
+
+
 async def _run_shell(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
     args = RunShellArgs.model_validate(raw.model_dump())
     authorization = await authorize_path(
@@ -1003,6 +1012,23 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             effect="none",
             parallel_safe=False,
             handler=search_tool_catalog,
+        )
+    )
+    registry.register(
+        CoworkToolSpec(
+            name="todo_write",
+            description=(
+                "写入或更新当前任务清单，整份替换：每次都要提交完整的 todos 数组。"
+                "目标需要三步以上、或用户一次提出多件事时先用它写下计划，"
+                "之后每完成一步立即重发清单更新状态。status 取 pending/in_progress/done，"
+                "同一时刻只把正在做的那一项标为 in_progress。单步任务不要使用。"
+            ),
+            args_model=TodoWriteArgs,
+            risk="read",
+            effect="none",
+            parallel_safe=False,
+            handler=_todo_write,
+            search_aliases=("todo", "task list", "任务清单", "计划", "进度"),
         )
     )
     registry.register(

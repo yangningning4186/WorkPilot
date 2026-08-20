@@ -1232,6 +1232,118 @@ async def test_cowork_runner_executes_parallel_safe_read_batch_concurrently(
     assert canonical[3] == {"role": "assistant", "content": "两个来源均已读取。"}
 
 
+async def test_cowork_todo_list_lands_in_state_and_is_pinned_for_the_next_turn(
+    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
+) -> None:
+    """清单要进 checkpoint 并钉进下一轮 system prompt，而不是只留在历史里。"""
+
+    conversation_id = await ensure_conversation(
+        db_session, scope="local_owner", title="Cowork todo list"
+    )
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="分三步整理资料",
+        budget_tokens=20_000,
+        budget_calls=20,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    bus = InMemoryRunBus()
+    registry = build_default_cowork_registry()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+
+    def _todo_call(call_id: str, first_status: str) -> ToolCall:
+        return ToolCall(
+            id=call_id,
+            name="todo_write",
+            arguments=json.dumps(
+                {
+                    "todos": [
+                        {"content": "读取源文件", "status": first_status},
+                        {"content": "生成报告", "status": "pending"},
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    provider = NativeToolProvider(
+        [
+            _tool_completion(_todo_call("todo-1", "in_progress")),
+            _tool_completion(_todo_call("todo-2", "completed")),
+            _final_completion("两步都已完成。"),
+        ]
+    )
+    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(
+                update={
+                    "cowork_max_steps": 6,
+                    "cowork_decision_max_tokens": 2048,
+                    "run_heartbeat_s": 60.0,
+                }
+            ),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    refreshed = await get_run(db_session, run.id)
+    assert refreshed is not None
+    assert refreshed.status == "done"
+
+    latest_state = (
+        await db_session.execute(
+            text(
+                """
+                SELECT state FROM agent_checkpoints
+                WHERE run_id = :run_id
+                ORDER BY created_at DESC, checkpoint_id DESC LIMIT 1
+                """
+            ),
+            {"run_id": run.id},
+        )
+    ).scalar_one()
+    # 整份替换而不是追加，且 completed 在入口就被归一成 done。
+    assert latest_state["todos"] == [
+        {"content": "读取源文件", "status": "done"},
+        {"content": "生成报告", "status": "pending"},
+    ]
+
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    updates = [event for event in events if event.type == "todo.update"]
+    assert [item.payload["done"] for item in updates] == [0, 1]
+    assert updates[-1].payload["todos"] == latest_state["todos"]
+
+    # 第一轮还没有清单；第二轮起 system prompt 必须带上它，压缩也不会把它冲掉。
+    first_system, second_system = (
+        provider.tool_histories[0][0].content,
+        provider.tool_histories[1][0].content,
+    )
+    assert "<current_todos>" not in first_system
+    assert "[>] 读取源文件" in second_system
+    assert "[ ] 生成报告" in second_system
+    assert "[x] 读取源文件" in provider.tool_histories[2][0].content
+
+
 async def test_cowork_recovers_provider_context_overflow_without_mutating_canonical_history(
     db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
 ) -> None:
@@ -1281,9 +1393,13 @@ async def test_cowork_recovers_provider_context_overflow_without_mutating_canoni
             "settings": get_settings().model_copy(
                 update={
                         "cowork_max_steps": 4,
-                        # 本用例只验证 provider overflow 恢复；固定较小输出预算，避免
-                        # 全局原生交付物 token 上限变化把测试转成 run token 熔断用例。
-                        "cowork_decision_max_tokens": 2048,
+                        # 本用例只验证 provider overflow 恢复。输出预算固定得较小有两个
+                        # 作用：一是避免全局原生交付物 token 上限变化把测试转成 run token
+                        # 熔断用例；二是把 max_input_tokens 抬高，让首次决策稳稳落在
+                        # trigger_ratio=1.0 的阈值之下——否则阈值压缩会先于 provider 400
+                        # 发生，强制恢复路径就没有可压缩的历史了，本用例也就测不到东西。
+                        # 往 core 工具目录里加工具会抬高这个下限，改动后要重新确认。
+                        "cowork_decision_max_tokens": 1024,
                         "cowork_compaction_trigger_ratio": 1.0,
                     "run_heartbeat_s": 60.0,
                 }
@@ -1375,7 +1491,8 @@ async def test_cowork_context_overflow_progress_guard_stops_recovery_loop(
             "settings": get_settings().model_copy(
                 update={
                         "cowork_max_steps": 4,
-                        "cowork_decision_max_tokens": 2048,
+                        # 同上：首次决策必须不触发阈值压缩，强制恢复才有历史可归档。
+                        "cowork_decision_max_tokens": 1024,
                         "cowork_compaction_trigger_ratio": 1.0,
                     "cowork_context_overflow_max_recoveries": 2,
                     "run_heartbeat_s": 60.0,
