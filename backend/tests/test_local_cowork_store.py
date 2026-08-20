@@ -270,6 +270,80 @@ async def test_sqlite_store_covers_permissions_artifacts_inbox_and_scheduler(
     assert (await store.get_schedule(schedule_id=schedule.id)).title == "日报"
 
 
+async def test_sqlite_store_matches_postgres_memory_semantics(tmp_path: Path) -> None:
+    """SQLite 后端必须和 PostgreSQL 同语义：同 key 更新、软删除、按作用域可见。"""
+
+    store = SqliteCoworkStore(tmp_path / "state" / "cowork.db")
+    await store.initialize()
+    mine = await store.create_conversation(title="记忆本会话")
+    theirs = await store.create_conversation(title="记忆别的会话")
+    workspace = tmp_path / "workspace"
+    other_workspace = tmp_path / "other"
+    workspace.mkdir()
+    other_workspace.mkdir()
+
+    first, replaced = await store.remember_cowork_memory(
+        scope="global",
+        conversation_id=None,
+        workspace_path=None,
+        key="report-format",
+        content="用户偏好 PDF",
+        source="agent",
+    )
+    assert replaced is None
+    second, previous = await store.remember_cowork_memory(
+        scope="global",
+        conversation_id=None,
+        workspace_path=None,
+        key="report-format",
+        content="用户偏好 Markdown",
+        source="agent",
+    )
+    assert second.id == first.id
+    assert previous is not None and previous.content == "用户偏好 PDF"
+
+    for scope, conversation, path, content in (
+        ("conversation", mine, None, "本会话笔记"),
+        ("conversation", theirs, None, "别的会话笔记"),
+        ("workspace", None, str(workspace), "本目录约定"),
+        ("workspace", None, str(other_workspace), "别的目录约定"),
+    ):
+        await store.remember_cowork_memory(
+            scope=scope,
+            conversation_id=conversation,
+            workspace_path=path,
+            key=None,
+            content=content,
+            source="agent",
+        )
+
+    visible = await store.list_cowork_memories(
+        conversation_id=mine,
+        workspace_paths=[str(workspace)],
+        include_forgotten=False,
+        limit=100,
+    )
+    assert {item.content for item in visible} == {
+        "用户偏好 Markdown",
+        "本会话笔记",
+        "本目录约定",
+    }
+
+    assert (await store.forget_cowork_memory(memory_id=second.id)) is not None
+    # 重复 forget 是幂等的，不是错误。
+    assert (await store.forget_cowork_memory(memory_id=second.id)) is None
+    active = await store.list_cowork_memories(
+        conversation_id=mine, workspace_paths=[], include_forgotten=False, limit=100
+    )
+    assert second.id not in {item.id for item in active}
+
+    restored, _ = await store.update_cowork_memory(
+        memory_id=second.id, content=None, restore=True
+    )
+    assert restored.forgotten_at is None
+    assert (await store.get_cowork_memory(memory_id=second.id)).content == "用户偏好 Markdown"
+
+
 async def test_sqlite_backend_routes_new_cowork_run_without_postgres_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

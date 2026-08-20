@@ -40,7 +40,9 @@ from app.cowork_contracts import (
     ConversationNotFoundError,
     CoworkAttachmentError,
     CoworkAttachmentRecord,
+    CoworkMemoryRecord,
     InboxRecord,
+    MemoryNotFoundError,
     PathAuthorization,
     ScheduleRecord,
     ScheduleView,
@@ -302,7 +304,30 @@ CREATE TABLE IF NOT EXISTS cowork_steering_messages (
     consumed_at TEXT
 );
 
-PRAGMA user_version = 4;
+CREATE TABLE IF NOT EXISTS cowork_memories (
+    id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL CHECK (scope IN ('global','workspace','conversation')),
+    conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+    workspace_path TEXT,
+    key TEXT,
+    content TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'agent' CHECK (source IN ('agent','user')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    forgotten_at TEXT,
+    CHECK (
+        (scope = 'global' AND conversation_id IS NULL AND workspace_path IS NULL)
+        OR (scope = 'workspace' AND conversation_id IS NULL AND workspace_path IS NOT NULL)
+        OR (scope = 'conversation' AND conversation_id IS NOT NULL AND workspace_path IS NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS ix_local_cowork_memories_active
+ON cowork_memories(scope, updated_at) WHERE forgotten_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_local_cowork_memories_key
+ON cowork_memories(scope, IFNULL(conversation_id, ''), IFNULL(workspace_path, ''), key)
+WHERE key IS NOT NULL AND forgotten_at IS NULL;
+
+PRAGMA user_version = 5;
 """
 
 
@@ -352,7 +377,7 @@ class SqliteCoworkStore:
                 connection.execute(
                     "ALTER TABLE agent_runs ADD COLUMN retrieval_top_k INTEGER NOT NULL DEFAULT 5"
                 )
-            connection.execute("PRAGMA user_version = 4")
+            connection.execute("PRAGMA user_version = 5")
         finally:
             connection.close()
         try:
@@ -389,6 +414,7 @@ class SqliteCoworkStore:
             "cowork_schedules",
             "cowork_inbox_items",
             "cowork_steering_messages",
+            "cowork_memories",
         }
         if table not in allowed:
             raise ValueError(f"不允许导入表: {table}")
@@ -450,6 +476,7 @@ class SqliteCoworkStore:
             "cowork_schedules",
             "cowork_inbox_items",
             "cowork_steering_messages",
+            "cowork_memories",
         }
         if table not in allowed or not columns:
             raise ValueError("不允许导出该 Cowork 表")
@@ -2359,6 +2386,181 @@ class SqliteCoworkStore:
             size_bytes=int(row["size_bytes"]),
             sha256=str(row["sha256"]),
             extracted_text=str(row["extracted_text"]),
+        )
+
+    # ---- 长期记忆 --------------------------------------------------------------
+
+    async def remember_cowork_memory(
+        self,
+        *,
+        scope: str,
+        conversation_id: UUID | None,
+        workspace_path: str | None,
+        key: str | None,
+        content: str,
+        source: str,
+    ) -> tuple[Any, Any]:
+        memory_id = uuid7()
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> tuple[Any, Any]:
+            previous: Any = None
+            if key is not None:
+                row = connection.execute(
+                    """SELECT * FROM cowork_memories
+                       WHERE scope = ?
+                         AND IFNULL(conversation_id, '') = IFNULL(?, '')
+                         AND IFNULL(workspace_path, '') = IFNULL(?, '')
+                         AND key = ? AND forgotten_at IS NULL""",
+                    (
+                        scope,
+                        None if conversation_id is None else str(conversation_id),
+                        workspace_path,
+                        key,
+                    ),
+                ).fetchone()
+                if row is not None:
+                    previous = self._memory_record(row)
+                    connection.execute(
+                        """UPDATE cowork_memories
+                           SET content = ?, source = ?, updated_at = ? WHERE id = ?""",
+                        (content, source, timestamp, str(previous.id)),
+                    )
+                    updated = connection.execute(
+                        "SELECT * FROM cowork_memories WHERE id = ?", (str(previous.id),)
+                    ).fetchone()
+                    return self._memory_record(updated), previous
+            connection.execute(
+                """INSERT INTO cowork_memories(
+                       id, scope, conversation_id, workspace_path, key, content, source,
+                       created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(memory_id),
+                    scope,
+                    None if conversation_id is None else str(conversation_id),
+                    workspace_path,
+                    key,
+                    content,
+                    source,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM cowork_memories WHERE id = ?", (str(memory_id),)
+            ).fetchone()
+            return self._memory_record(row), None
+
+        return await self._write(operation)
+
+    async def update_cowork_memory(
+        self, *, memory_id: UUID, content: str | None, restore: bool
+    ) -> tuple[Any, Any]:
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> tuple[Any, Any]:
+            row = connection.execute(
+                "SELECT * FROM cowork_memories WHERE id = ?", (str(memory_id),)
+            ).fetchone()
+            if row is None:
+                raise MemoryNotFoundError(str(memory_id))
+            previous = self._memory_record(row)
+            connection.execute(
+                """UPDATE cowork_memories
+                   SET content = COALESCE(?, content),
+                       forgotten_at = CASE WHEN ? THEN NULL ELSE forgotten_at END,
+                       updated_at = ?
+                   WHERE id = ?""",
+                (content, int(restore), timestamp, str(memory_id)),
+            )
+            updated = connection.execute(
+                "SELECT * FROM cowork_memories WHERE id = ?", (str(memory_id),)
+            ).fetchone()
+            return self._memory_record(updated), previous
+
+        return await self._write(operation)
+
+    async def forget_cowork_memory(self, *, memory_id: UUID) -> Any | None:
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> Any | None:
+            changed = connection.execute(
+                """UPDATE cowork_memories
+                   SET forgotten_at = ?, updated_at = ?
+                   WHERE id = ? AND forgotten_at IS NULL""",
+                (timestamp, timestamp, str(memory_id)),
+            ).rowcount
+            if not changed:
+                return None
+            row = connection.execute(
+                "SELECT * FROM cowork_memories WHERE id = ?", (str(memory_id),)
+            ).fetchone()
+            return self._memory_record(row)
+
+        return await self._write(operation)
+
+    async def get_cowork_memory(self, *, memory_id: UUID) -> Any | None:
+        return await self._read(
+            lambda connection: (
+                None
+                if (
+                    row := connection.execute(
+                        "SELECT * FROM cowork_memories WHERE id = ?", (str(memory_id),)
+                    ).fetchone()
+                )
+                is None
+                else self._memory_record(row)
+            )
+        )
+
+    async def list_cowork_memories(
+        self,
+        *,
+        conversation_id: UUID,
+        workspace_paths: list[str],
+        include_forgotten: bool,
+        limit: int,
+    ) -> list[Any]:
+        placeholders = ",".join("?" for _ in workspace_paths) or "NULL"
+
+        def operation(connection: sqlite3.Connection) -> list[Any]:
+            rows = connection.execute(
+                f"""SELECT * FROM cowork_memories
+                    WHERE (? OR forgotten_at IS NULL)
+                      AND (
+                        scope = 'global'
+                        OR (scope = 'conversation' AND conversation_id = ?)
+                        OR (scope = 'workspace' AND workspace_path IN ({placeholders}))
+                      )
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ?""",
+                (
+                    int(include_forgotten),
+                    str(conversation_id),
+                    *workspace_paths,
+                    limit,
+                ),
+            ).fetchall()
+            return [self._memory_record(row) for row in rows]
+
+        return await self._read(operation)
+
+    @staticmethod
+    def _memory_record(row: sqlite3.Row) -> Any:
+        return CoworkMemoryRecord(
+            id=UUID(row["id"]),
+            scope=row["scope"],
+            conversation_id=(
+                None if row["conversation_id"] is None else UUID(row["conversation_id"])
+            ),
+            workspace_path=row["workspace_path"],
+            key=row["key"],
+            content=str(row["content"]),
+            source=row["source"],
+            created_at=cast(datetime, _datetime(row["created_at"])),
+            updated_at=cast(datetime, _datetime(row["updated_at"])),
+            forgotten_at=_datetime(row["forgotten_at"]),
         )
 
     @staticmethod

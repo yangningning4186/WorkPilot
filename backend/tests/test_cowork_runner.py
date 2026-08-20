@@ -25,6 +25,8 @@ from app.core.db import get_db_session
 from app.core.run_bus import InMemoryRunBus
 from app.cowork.browser_tools import register_browser_tools
 from app.cowork.context_usage import get_cowork_context_usage
+from app.cowork.memory import load_visible_memories, remember
+from app.cowork.memory_tools import register_memory_tools
 from app.cowork.permissions import (
     CapabilityDeniedError,
     create_session_root,
@@ -1342,6 +1344,109 @@ async def test_cowork_todo_list_lands_in_state_and_is_pinned_for_the_next_turn(
     assert "[>] 读取源文件" in second_system
     assert "[ ] 生成报告" in second_system
     assert "[x] 读取源文件" in provider.tool_histories[2][0].content
+
+
+async def test_cowork_memory_is_injected_next_turn_and_emits_an_undoable_event(
+    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
+) -> None:
+    """记住的事实要在下一轮就出现在 system prompt 里，并留下可撤销的事件。"""
+
+    conversation_id = await ensure_conversation(
+        db_session, scope="local_owner", title="Cowork memory"
+    )
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    await remember(
+        db_session,
+        conversation_id=conversation_id,
+        scope="global",
+        content="用户偏好 PDF 报告",
+        key="report-format",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="记住我的偏好",
+        budget_tokens=20_000,
+        budget_calls=20,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    await db_session.commit()
+    bus = InMemoryRunBus()
+    registry = build_default_cowork_registry()
+    register_memory_tools(registry)
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+
+    provider = NativeToolProvider(
+        [
+            _tool_completion(
+                ToolCall(
+                    id="remember-1",
+                    name="remember",
+                    arguments=json.dumps(
+                        {
+                            "content": "用户偏好 Markdown 报告",
+                            "scope": "global",
+                            "key": "report-format",
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ),
+            _final_completion("已经记住你偏好 Markdown 报告。"),
+        ]
+    )
+    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(
+                update={
+                    "cowork_max_steps": 6,
+                    "cowork_decision_max_tokens": 2048,
+                    "run_heartbeat_s": 60.0,
+                }
+            ),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    refreshed = await get_run(db_session, run.id)
+    assert refreshed is not None
+    assert refreshed.status == "done"
+
+    # 第一轮就带上了已有记忆；第二轮换成被覆盖后的新文本，不是两条并存。
+    first_system = provider.tool_histories[0][0].content
+    second_system = provider.tool_histories[1][0].content
+    assert "用户偏好 PDF 报告" in first_system
+    assert "用户偏好 Markdown 报告" in second_system
+    assert "用户偏好 PDF 报告" not in second_system
+
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    saved = [event for event in events if event.type == "memory.saved"]
+    assert len(saved) == 1
+    # 覆盖同 key 记忆算 updated，并带上旧文本供客户端撤销。
+    assert saved[0].payload["action"] == "updated"
+    assert saved[0].payload["previous_content"] == "用户偏好 PDF 报告"
+    assert saved[0].payload["memory"]["content"] == "用户偏好 Markdown 报告"
+
+    visible = await load_visible_memories(db_session, conversation_id=conversation_id)
+    assert [item.content for item in visible] == ["用户偏好 Markdown 报告"]
 
 
 async def test_cowork_recovers_provider_context_overflow_without_mutating_canonical_history(

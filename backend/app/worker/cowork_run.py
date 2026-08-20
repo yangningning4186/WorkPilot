@@ -25,6 +25,7 @@ from app.cowork.extensions import register_mcp_tools, register_skill_tools
 from app.cowork.mcp.client import McpClientManager
 from app.cowork.mcp.config import McpConfiguration, load_mcp_configuration
 from app.cowork.mcp.credentials import hydrate_mcp_oauth_credentials
+from app.cowork.memory_tools import register_memory_tools
 from app.cowork.provider_profiles import build_conversation_gateway
 from app.cowork.rag_tools import register_rag_tools
 from app.cowork.runtime import run_cowork_graph
@@ -242,6 +243,7 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                 register_browser_tools(registry, browser_manager)
                 register_connector_tools(registry)
                 register_scheduler_tools(registry)
+                register_memory_tools(registry)
                 register_readonly_subagent(registry)
                 register_rag_tools(
                     registry,

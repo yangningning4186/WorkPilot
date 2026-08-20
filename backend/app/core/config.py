@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     cowork_mcp_call_timeout_s: float = Field(default=60.0, gt=0, le=600)
     cowork_mcp_result_max_chars: int = Field(default=20_000, ge=1_000, le=100_000)
     cowork_skills_path: Path = Path("../skills")
+    # 长期记忆：注入块整体有上限，单条超过 preview 就截断并让模型按需 memory_read，
+    # 避免一条几千字的记忆吃掉整个上下文预算。
+    cowork_memory_max_items: int = Field(default=200, ge=1, le=500)
+    cowork_memory_block_max_chars: int = Field(default=4_000, ge=0, le=40_000)
+    cowork_memory_preview_chars: int = Field(default=240, ge=40, le=4_000)
     cowork_skill_max_files: int = Field(default=200, ge=1, le=2_000)
     cowork_skill_max_bytes: int = Field(default=256 * 1024, ge=1_024, le=2 * 1024 * 1024)
     # 自动蒸馏先积累独立成功运行证据，再安装 learned-* Skill。高风险工具不会进入

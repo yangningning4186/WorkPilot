@@ -70,6 +70,44 @@ class CapabilityGrantListResponse(BaseModel):
     items: list[CapabilityGrantResponse]
 
 
+MemoryScope = Literal["global", "workspace", "conversation"]
+
+
+class MemoryCreate(BaseModel):
+    content: str = Field(min_length=1, max_length=4000)
+    scope: MemoryScope = "global"
+    key: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class MemoryPatch(BaseModel):
+    content: str | None = Field(default=None, min_length=1, max_length=4000)
+    # 撤销一次 forget。和 content 可以同时给：撤销一次"改写"就是还原旧文本。
+    restore: bool = False
+
+    @model_validator(mode="after")
+    def _requires_a_change(self) -> "MemoryPatch":
+        if self.content is None and not self.restore:
+            raise ValueError("请提供要写入的内容，或设置 restore=true 恢复已 retire 的记忆")
+        return self
+
+
+class MemoryResponse(BaseModel):
+    id: UUID
+    scope: MemoryScope
+    conversation_id: UUID | None
+    workspace_path: str | None
+    key: str | None
+    content: str
+    source: Literal["agent", "user"]
+    created_at: datetime
+    updated_at: datetime
+    forgotten_at: datetime | None
+
+
+class MemoryListResponse(BaseModel):
+    items: list[MemoryResponse]
+
+
 class ArtifactResponse(BaseModel):
     id: UUID
     conversation_id: UUID

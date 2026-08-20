@@ -9,6 +9,7 @@ import {
   type ErrorPayload,
   type InteractionResolvedPayload,
   type InterruptPayload,
+  type MemorySavedPayload,
   type MessageDeltaPayload,
   type PlanPayload,
   type RunDonePayload,
@@ -54,6 +55,11 @@ export interface CoworkRunView {
    * todos 是模型对"这件事分几步"的主动声明，两者互相替代不了。
    */
   todos: TodoItem[];
+  /**
+   * 本次运行写过的记忆，供 UI 内联渲染「已记住 …［撤销］」。按写入顺序累积，
+   * 同一条记忆被反复改写时只保留最后一次——撤销要还原到运行开始前的状态。
+   */
+  memoryWrites: MemorySavedPayload[];
   interrupt: InterruptPayload | null;
   error: string | null;
 }
@@ -67,6 +73,7 @@ const EMPTY: CoworkRunView = {
   progressSummary: "",
   artifactEvents: [],
   todos: [],
+  memoryWrites: [],
   interrupt: null,
   error: null,
 };
@@ -165,6 +172,19 @@ function applyEvent(state: CoworkRunView, envelope: StreamEnvelope): CoworkRunVi
           data.status === "rejected"
             ? "用户未批准这项请求，Cowork 正在调整方案。"
             : state.progressSummary ?? "",
+      };
+    }
+    case "memory.saved": {
+      const data = envelope.data as MemorySavedPayload;
+      const seen = state.memoryWrites.find((item) => item.memory.id === data.memory.id);
+      if (seen === undefined) return { ...next, memoryWrites: [...state.memoryWrites, data] };
+      // 同一条被改了第二次：保留最早那次的 previous_content，撤销才回得到原点。
+      const merged = { ...data, previous_content: seen.previous_content };
+      return {
+        ...next,
+        memoryWrites: state.memoryWrites.map((item) =>
+          item.memory.id === data.memory.id ? merged : item,
+        ),
       };
     }
     case "todo.update": {

@@ -17,8 +17,10 @@ from app.cowork_contracts import (
     Capability,
     CapabilityGrantRecord,
     CoworkAttachmentRecord,
+    CoworkMemoryRecord,
     InboxRecord,
     InteractionKind,
+    MemoryScope,
     PathAuthorization,
     ScheduleKind,
     ScheduleRecord,
@@ -272,6 +274,35 @@ class CoworkStore(Protocol):
     ) -> InboxRecord | None: ...
 
     async def cancel_pending_interaction(self, *, run_id: UUID) -> None: ...
+
+    # 长期记忆
+    async def remember_cowork_memory(
+        self,
+        *,
+        scope: MemoryScope,
+        conversation_id: UUID | None,
+        workspace_path: str | None,
+        key: str | None,
+        content: str,
+        source: Literal["agent", "user"],
+    ) -> tuple[CoworkMemoryRecord, CoworkMemoryRecord | None]: ...
+
+    async def update_cowork_memory(
+        self, *, memory_id: UUID, content: str | None, restore: bool
+    ) -> tuple[CoworkMemoryRecord, CoworkMemoryRecord]: ...
+
+    async def forget_cowork_memory(self, *, memory_id: UUID) -> CoworkMemoryRecord | None: ...
+
+    async def get_cowork_memory(self, *, memory_id: UUID) -> CoworkMemoryRecord | None: ...
+
+    async def list_cowork_memories(
+        self,
+        *,
+        conversation_id: UUID,
+        workspace_paths: list[str],
+        include_forgotten: bool,
+        limit: int,
+    ) -> list[CoworkMemoryRecord]: ...
 
     # scheduler
     async def create_schedule(

@@ -18,7 +18,10 @@ import {
   fetchCoworkArtifacts,
   fetchArtifactPreview,
   fetchCoworkGrants,
+  fetchCoworkMemories,
   fetchCoworkRoots,
+  forgetCoworkMemory,
+  patchCoworkMemory,
   fetchProviders,
   revokeCoworkRoot,
   respondToCoworkInteraction,
@@ -30,12 +33,14 @@ import {
   type ConversationContextUsage,
   type ConversationMessage,
   type CoworkArtifact,
+  type CoworkMemory,
   type CoworkGrant,
   type CoworkRoot,
   type ProviderProfile,
 } from "@/lib/api";
 import { isTauriRuntime, pickCoworkDirectory } from "@/lib/desktop";
 import { useCoworkRun } from "@/lib/use-cowork-run";
+import type { MemorySavedPayload } from "@/lib/run-protocol";
 
 const TOOL_LABELS: Record<string, string> = {
   ask_user: "等待你的答复",
@@ -66,6 +71,12 @@ const TOOL_LABELS: Record<string, string> = {
   inspect_office_file: "读取文档结构",
   edit_word: "编辑 Word",
   edit_excel: "编辑 Excel",
+};
+
+const MEMORY_SCOPE_LABELS: Record<string, string> = {
+  global: "所有会话",
+  workspace: "当前工作目录",
+  conversation: "仅本次会话",
 };
 
 const CAPABILITY_LABELS: Record<string, string> = {
@@ -180,6 +191,11 @@ export default function CoworkPage() {
   const [roots, setRoots] = useState<CoworkRoot[]>([]);
   const [grants, setGrants] = useState<CoworkGrant[]>([]);
   const [artifacts, setArtifacts] = useState<CoworkArtifact[]>([]);
+  const [memories, setMemories] = useState<CoworkMemory[]>([]);
+  const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
+  const [memoryDraft, setMemoryDraft] = useState("");
+  // 已经撤销过的记忆写入不再提示；memoryWrites 由事件流累积，页面不能直接改它。
+  const [undoneMemories, setUndoneMemories] = useState<string[]>([]);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [goal, setGoal] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -216,16 +232,18 @@ export default function CoworkPage() {
   }, [openConversationMenuId]);
 
   const loadSession = useCallback(async (id: string) => {
-    const [rootResponse, grantResponse, artifactResponse, messageResponse, contextResponse] = await Promise.all([
+    const [rootResponse, grantResponse, artifactResponse, memoryResponse, messageResponse, contextResponse] = await Promise.all([
       fetchCoworkRoots(id),
       fetchCoworkGrants(id),
       fetchCoworkArtifacts(id),
+      fetchCoworkMemories(id),
       fetchConversationMessages(id),
       fetchConversationContextUsage(id).catch(() => null),
     ]);
     setRoots(rootResponse.items);
     setGrants(grantResponse.items);
     setArtifacts(artifactResponse.items);
+    setMemories(memoryResponse.items);
     setMessages(messageResponse.items);
     if (contextResponse !== null) setContextUsage(contextResponse);
   }, []);
@@ -233,6 +251,72 @@ export default function CoworkPage() {
   useEffect(() => () => {
     if (artifactPreview !== null) URL.revokeObjectURL(artifactPreview.url);
   }, [artifactPreview]);
+
+  // 模型写过记忆就重拉面板：面板显示的必须和注入给模型的是同一份。
+  useEffect(() => {
+    if (conversationId === null || run.memoryWrites.length === 0) return;
+    fetchCoworkMemories(conversationId)
+      .then((response) => setMemories(response.items))
+      .catch(() => undefined);
+  }, [conversationId, run.memoryWrites.length]);
+
+  const refreshMemories = useCallback(async () => {
+    if (conversationId === null) return;
+    const response = await fetchCoworkMemories(conversationId);
+    setMemories(response.items);
+  }, [conversationId]);
+
+  const saveMemoryEdit = useCallback(async (memoryId: string) => {
+    const content = memoryDraft.trim();
+    if (content === "") return;
+    setBusy(true);
+    try {
+      await patchCoworkMemory(memoryId, { content });
+      setEditingMemoryId(null);
+      await refreshMemories();
+      setNotice("记忆已更新，下一轮起对模型生效。");
+    } catch (reason) {
+      setNotice(readableError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }, [memoryDraft, refreshMemories]);
+
+  const removeMemory = useCallback(async (memoryId: string) => {
+    setBusy(true);
+    try {
+      await forgetCoworkMemory(memoryId);
+      await refreshMemories();
+      setNotice("已忘记这条记忆，模型下一轮不会再看到它。");
+    } catch (reason) {
+      setNotice(readableError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }, [refreshMemories]);
+
+  const undoMemoryWrite = useCallback(async (write: MemorySavedPayload) => {
+    setBusy(true);
+    try {
+      if (write.action === "saved") {
+        await forgetCoworkMemory(write.memory.id);
+      } else if (write.action === "forgotten") {
+        await patchCoworkMemory(write.memory.id, { restore: true });
+      } else if (write.previous_content !== null) {
+        await patchCoworkMemory(write.memory.id, { content: write.previous_content });
+      }
+      setUndoneMemories((current) => [...current, write.memory.id]);
+      await refreshMemories();
+    } catch (reason) {
+      setNotice(readableError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }, [refreshMemories]);
+
+  const pendingMemoryWrites = run.memoryWrites.filter(
+    (write) => !undoneMemories.includes(write.memory.id),
+  );
 
   const previewArtifact = useCallback(async (artifact: CoworkArtifact) => {
     setBusy(true);
@@ -841,6 +925,27 @@ export default function CoworkPage() {
                           </div>
                         </header>
 
+                        {pendingMemoryWrites.length > 0 && (
+                          <section className="workdesk-memory-notices" aria-live="polite">
+                            {pendingMemoryWrites.map((write) => (
+                              <article key={write.memory.id}>
+                                <WorkdeskIcon name="shield" />
+                                <p>
+                                  <strong>
+                                    {write.action === "forgotten"
+                                      ? "已忘记"
+                                      : write.action === "updated"
+                                        ? "已更新记忆"
+                                        : "已记住"}
+                                  </strong>
+                                  <span>{write.memory.content}</span>
+                                </p>
+                                <button disabled={busy} onClick={() => void undoMemoryWrite(write)} type="button">撤销</button>
+                              </article>
+                            ))}
+                          </section>
+                        )}
+
                         {run.todos.length > 0 && (
                           <section className="workdesk-todos" aria-label="任务清单">
                             <header>
@@ -1018,6 +1123,34 @@ export default function CoworkPage() {
                     {roots.length > 0 && <h4>本次会话已授权目录</h4>}
                     {roots.map((root) => (
                       <article key={root.id}><div><strong>{root.label}</strong><small title={root.canonical_path}>{shortPath(root.canonical_path)} · {(capabilitiesByRoot.get(root.id) ?? []).join(" · ")}</small></div><button disabled={busy || running} onClick={() => void removeRoot(root.id)} type="button">收回</button></article>
+                    ))}
+                  </div>
+                </details>
+                <details className="workdesk-permission-menu workdesk-memory-menu">
+                  <summary><WorkdeskIcon name="shield" /><span>记忆</span><b>{memories.length > 0 ? memories.length : "⌄"}</b></summary>
+                  <div>
+                    <h3>长期记忆</h3>
+                    <p>这些事实会在每一轮注入给模型，面板里看到的就是它看到的。global 对所有会话有效，workspace 只对当前工作目录有效，conversation 只在本次会话有效。</p>
+                    {memories.length === 0 && <h4>还没有记忆。模型在你表达长期偏好时会自己记下来。</h4>}
+                    {memories.map((memory) => (
+                      <article key={memory.id}>
+                        {editingMemoryId === memory.id ? (
+                          <>
+                            <textarea aria-label="编辑记忆" maxLength={4000} onChange={(event) => setMemoryDraft(event.target.value)} rows={3} value={memoryDraft} />
+                            <button disabled={busy || memoryDraft.trim() === ""} onClick={() => void saveMemoryEdit(memory.id)} type="button">保存</button>
+                            <button disabled={busy} onClick={() => setEditingMemoryId(null)} type="button">取消</button>
+                          </>
+                        ) : (
+                          <>
+                            <div>
+                              <strong>{memory.content}</strong>
+                              <small>{MEMORY_SCOPE_LABELS[memory.scope]}{memory.source === "user" ? " · 你添加的" : ""}{memory.workspace_path !== null ? ` · ${shortPath(memory.workspace_path)}` : ""}</small>
+                            </div>
+                            <button disabled={busy} onClick={() => { setEditingMemoryId(memory.id); setMemoryDraft(memory.content); }} type="button">编辑</button>
+                            <button disabled={busy} onClick={() => void removeMemory(memory.id)} type="button">忘记</button>
+                          </>
+                        )}
+                      </article>
                     ))}
                   </div>
                 </details>

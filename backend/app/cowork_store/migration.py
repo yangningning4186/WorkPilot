@@ -302,6 +302,26 @@ _SPECS = (
         ("id", "run_id", "conversation_id", "content", "status", "created_at", "consumed_at"),
         _RUN_CHILD.format(alias="source"),
     ),
+    _Spec(
+        "cowork_memories",
+        ("id",),
+        (
+            "id",
+            "scope",
+            "conversation_id",
+            "workspace_path",
+            "key",
+            "content",
+            "source",
+            "created_at",
+            "updated_at",
+            "forgotten_at",
+        ),
+        # global / workspace 记忆不绑会话，_OWNER_CONVERSATION 会把它们全过滤掉。
+        "(source.conversation_id IS NULL OR "
+        + _OWNER_CONVERSATION.format(alias="source").strip()
+        + ")",
+    ),
 )
 
 

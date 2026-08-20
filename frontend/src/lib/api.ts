@@ -445,6 +445,56 @@ export function fetchCoworkArtifacts(
   );
 }
 
+export type CoworkMemoryScope = "global" | "workspace" | "conversation";
+
+export interface CoworkMemory {
+  id: string;
+  scope: CoworkMemoryScope;
+  conversation_id: string | null;
+  workspace_path: string | null;
+  key: string | null;
+  content: string;
+  source: "agent" | "user";
+  created_at: string;
+  updated_at: string;
+  forgotten_at: string | null;
+}
+
+export function fetchCoworkMemories(
+  conversationId: string,
+  options: { includeForgotten?: boolean } = {},
+): Promise<{ items: CoworkMemory[] }> {
+  const query = options.includeForgotten ? "?include_forgotten=true" : "";
+  return request<{ items: CoworkMemory[] }>(
+    `/api/v1/cowork/sessions/${conversationId}/memories${query}`,
+  );
+}
+
+export function createCoworkMemory(
+  conversationId: string,
+  body: { content: string; scope: CoworkMemoryScope; key?: string | null },
+): Promise<CoworkMemory> {
+  return request<CoworkMemory>(`/api/v1/cowork/sessions/${conversationId}/memories`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** 改写或恢复一条记忆；客户端的「撤销」也走这里。 */
+export function patchCoworkMemory(
+  memoryId: string,
+  body: { content?: string; restore?: boolean },
+): Promise<CoworkMemory> {
+  return request<CoworkMemory>(`/api/v1/cowork/memories/${memoryId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function forgetCoworkMemory(memoryId: string): Promise<void> {
+  return requestVoid(`/api/v1/cowork/memories/${memoryId}`, { method: "DELETE" });
+}
+
 export interface ArtifactPreviewPayload {
   blob: Blob;
   mode: "quicklook" | "libreoffice" | "native-pdf" | "structure" | "text" | "unknown";

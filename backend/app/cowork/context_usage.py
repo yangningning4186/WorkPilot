@@ -18,6 +18,7 @@ from app.cowork.automation_tools import register_scheduler_tools
 from app.cowork.browser_tools import register_browser_tools
 from app.cowork.connector_tools import register_connector_tools
 from app.cowork.extensions import register_skill_tools
+from app.cowork.memory_tools import register_memory_tools
 from app.cowork.runtime import (
     COWORK_COMPACTION_PROMPTS,
     _system_prompt,
@@ -58,6 +59,7 @@ def _context_registry(settings: Settings) -> CoworkToolRegistry:
     register_browser_tools(registry)
     register_connector_tools(registry)
     register_scheduler_tools(registry)
+    register_memory_tools(registry)
     register_readonly_subagent(registry)
     _CONTEXT_REGISTRY_CACHE = (key, registry)
     return registry

@@ -6074,6 +6074,49 @@ textarea:focus-visible,
 .workdesk-tool-trace li > div { display: grid; min-width: 0; gap: 2px; }
 .workdesk-tool-trace li strong { font-size: 9px; }
 .workdesk-tool-trace li small { overflow: hidden; color: var(--workdesk-muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+/* 模型写入长期记忆后的内联提示。撤销必须就在原地，事后去面板里找等于没有。 */
+.workdesk-memory-notices { display: grid; gap: 4px; padding: 11px 12px 0; }
+.workdesk-memory-notices > article {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: var(--workdesk-accent-soft);
+}
+.workdesk-memory-notices > article > svg { width: 12px; height: 12px; color: var(--workdesk-accent); }
+.workdesk-memory-notices p { display: grid; min-width: 0; gap: 1px; margin: 0; }
+.workdesk-memory-notices strong { color: var(--workdesk-accent); font-size: 8px; font-weight: 680; }
+.workdesk-memory-notices span {
+  overflow: hidden;
+  color: var(--workdesk-ink);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workdesk-memory-notices button {
+  padding: 3px 8px;
+  border: 1px solid #bcd6cb;
+  border-radius: 7px;
+  background: #fff;
+  color: var(--workdesk-accent);
+  font-size: 8px;
+  cursor: pointer;
+}
+.workdesk-memory-notices button:disabled { opacity: .5; cursor: default; }
+
+/* 记忆面板复用默认权限菜单的样式，只补一个可编辑的多行输入。 */
+.workdesk-memory-menu textarea {
+  width: 100%;
+  padding: 6px 7px;
+  border: 1px solid #d9dedb;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 9px;
+  resize: vertical;
+}
+
 /* 模型自己维护的任务清单。排在执行过程之上：计划比工具日志更值得先看到。 */
 .workdesk-todos { padding: 11px 12px 3px; }
 .workdesk-todos > header {

@@ -16,6 +16,7 @@ export type RunEventType =
   | "tool.error"
   | "context.compacted"
   | "todo.update"
+  | "memory.saved"
   | "steering.queued"
   | "steering.applied"
   | "interrupt"
@@ -171,6 +172,22 @@ export interface TodoUpdatePayload {
   pending: number;
 }
 
+/** 模型写入长期记忆后的通知，带旧文本以支持撤销。 */
+export interface MemorySavedPayload {
+  action: "saved" | "updated" | "forgotten";
+  memory: {
+    id: string;
+    scope: "global" | "workspace" | "conversation";
+    key: string | null;
+    content: string;
+    source: "agent" | "user";
+    workspace_path: string | null;
+    forgotten: boolean;
+    updated_at: string;
+  };
+  previous_content: string | null;
+}
+
 export interface ArtifactPayload {
   kind: "review_preview" | "written_note" | "file";
   artifact_id?: string;
@@ -201,6 +218,7 @@ export type RunEventData =
   | InteractionResolvedPayload
   | ArtifactPayload
   | TodoUpdatePayload
+  | MemorySavedPayload
   | RunDonePayload
   | ErrorPayload;
 

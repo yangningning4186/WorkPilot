@@ -25,6 +25,7 @@ Capability = Literal[
     "shell.execute",
     "external.action",
 ]
+MemoryScope = Literal["global", "workspace", "conversation"]
 ArtifactKind = Literal["file", "report", "diff", "table"]
 AttachmentKind = Literal["image", "pdf", "text"]
 InteractionKind = Literal[
@@ -77,6 +78,34 @@ class SessionRootRecord:
     enabled: bool
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True)
+class CoworkMemoryRecord:
+    """一条长期记忆。
+
+    `forgotten_at` 是软删除：客户端的「撤销」和模型误删后的恢复都要能拿回原文，
+    硬删掉就没有第二次机会了。真正的清理由用户在记忆面板里显式做。
+    """
+
+    id: UUID
+    scope: MemoryScope
+    conversation_id: UUID | None
+    workspace_path: str | None
+    key: str | None
+    content: str
+    source: Literal["agent", "user"]
+    created_at: datetime
+    updated_at: datetime
+    forgotten_at: datetime | None
+
+
+class MemoryNotFoundError(LookupError):
+    pass
+
+
+class MemoryScopeError(ValueError):
+    pass
 
 
 @dataclass(frozen=True)

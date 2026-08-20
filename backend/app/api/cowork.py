@@ -18,6 +18,15 @@ from app.core.db import get_db_session
 from app.cowork.artifact_formats import TEXT_ARTIFACT_SUFFIXES
 from app.cowork.artifacts import ArtifactRegistrationError, list_artifacts, resolve_artifact_file
 from app.cowork.attachments import CoworkAttachmentError, store_attachment
+from app.cowork.memory import (
+    MemoryNotFoundError,
+    MemoryScopeError,
+    default_workspace_path,
+    forget_memory,
+    list_memories,
+    remember,
+    update_memory,
+)
 from app.cowork.office_preview import OfficePreviewError, render_office_preview
 from app.cowork.permissions import (
     CapabilityDeniedError,
@@ -38,6 +47,10 @@ from app.schemas.cowork import (
     CapabilityGrantCreate,
     CapabilityGrantListResponse,
     CapabilityGrantResponse,
+    MemoryCreate,
+    MemoryListResponse,
+    MemoryPatch,
+    MemoryResponse,
     SessionRootCreate,
     SessionRootListResponse,
     SessionRootResponse,
@@ -213,6 +226,100 @@ async def delete_capability_grant(
         raise _not_found(error) from error
     if not deleted:
         raise HTTPException(status_code=404, detail="能力授权不存在")
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _memory_response(record: object) -> MemoryResponse:
+    return MemoryResponse.model_validate(record, from_attributes=True)
+
+
+@router.get("/sessions/{conversation_id}/memories", response_model=MemoryListResponse)
+async def get_memories(
+    conversation_id: UUID,
+    session: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)],
+    include_forgotten: bool = False,
+) -> MemoryListResponse:
+    """列出当前会话可见的记忆。
+
+    可见范围和注入给模型的完全一致：global + 本会话授权目录的 workspace + 本会话。
+    面板里看到的就是模型看到的，不然用户没法判断"它为什么会这么以为"。
+    """
+
+    try:
+        roots = await list_session_roots(session, conversation_id=conversation_id)
+        items = await list_memories(
+            session,
+            conversation_id=conversation_id,
+            workspace_paths=[root.canonical_path for root in roots],
+            include_forgotten=include_forgotten,
+            limit=settings.cowork_memory_max_items,
+        )
+    except ConversationNotFoundError as error:
+        raise _not_found(error) from error
+    return MemoryListResponse(items=[_memory_response(item) for item in items])
+
+
+@router.post(
+    "/sessions/{conversation_id}/memories",
+    response_model=MemoryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_memory(
+    conversation_id: UUID, request: MemoryCreate, session: DbSession
+) -> MemoryResponse:
+    try:
+        workspace_path = (
+            await default_workspace_path(session, conversation_id=conversation_id)
+            if request.scope == "workspace"
+            else None
+        )
+        record, _ = await remember(
+            session,
+            conversation_id=conversation_id,
+            scope=request.scope,
+            content=request.content,
+            key=request.key,
+            workspace_path=workspace_path,
+            source="user",
+        )
+    except ConversationNotFoundError as error:
+        raise _not_found(error) from error
+    except MemoryScopeError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    await session.commit()
+    return _memory_response(record)
+
+
+@router.patch("/memories/{memory_id}", response_model=MemoryResponse)
+async def patch_memory(
+    memory_id: UUID, request: MemoryPatch, session: DbSession
+) -> MemoryResponse:
+    """改写或恢复一条记忆——客户端的「撤销」也走这里。"""
+
+    try:
+        record, _ = await update_memory(
+            session,
+            memory_id=memory_id,
+            content=request.content,
+            restore=request.restore,
+        )
+    except MemoryNotFoundError as error:
+        raise HTTPException(status_code=404, detail="记忆不存在") from error
+    except MemoryScopeError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    await session.commit()
+    return _memory_response(record)
+
+
+@router.delete("/memories/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_memory(memory_id: UUID, session: DbSession) -> Response:
+    """软删除。记录留着，撤销和事后追查都还能拿到原文。"""
+
+    record = await forget_memory(session, memory_id=memory_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="记忆不存在或已经 retire")
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
