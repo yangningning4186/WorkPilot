@@ -1,14 +1,16 @@
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import httpx
 import pytest
 
+from app.core.config import Settings
 from app.llm.provider_factory import ChatProviderConfig, build_chat_provider
 from app.security.secret_store import LocalSecretStore, SecretStoreError
 from app.services.provider_probe import probe_provider_profile
-from app.services.provider_profiles import ProviderProfileRecord
+from app.services.provider_profiles import ProviderProfileRecord, build_conversation_gateway
 
 
 def test_secret_store_encrypts_and_reuses_master_key(tmp_path: Path) -> None:
@@ -43,6 +45,37 @@ def test_provider_factory_keeps_provider_identity() -> None:
     )
 
     assert provider.name == "deepseek"
+
+
+@pytest.mark.asyncio
+async def test_sqlite_cowork_gateway_does_not_reference_postgres_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LocalStore:
+        async def list_conversation_metadata(self, **_: object) -> list[dict[str, object]]:
+            return [{"provider_profile_id": None, "model_override": None}]
+
+    captured: dict[str, object] = {}
+
+    def fake_build_model_gateway(settings: Settings, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        "app.cowork_store.routing.configured_cowork_store", lambda: LocalStore()
+    )
+    monkeypatch.setattr(
+        "app.services.provider_profiles.build_model_gateway", fake_build_model_gateway
+    )
+    await build_conversation_gateway(
+        AsyncMock(),
+        conversation_id=uuid4(),
+        settings=Settings(cowork_store_backend="sqlite"),
+        session_factory=AsyncMock(),
+        run_id=uuid4(),
+    )
+
+    assert captured["run_id"] is None
 
 
 @pytest.mark.asyncio

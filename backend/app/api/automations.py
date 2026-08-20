@@ -27,7 +27,13 @@ from app.schemas.automations import (
 )
 from app.schemas.runs import RunStatusResponse
 from app.services.cowork_interactions import list_unattended_inbox
-from app.services.cowork_permissions import list_session_roots
+from app.services.cowork_permissions import (
+    CoworkPermissionError,
+    SessionRootRecord,
+    create_session_root,
+    ensure_default_session_root,
+    list_session_roots,
+)
 from app.services.cowork_schedules import (
     ScheduleError,
     ScheduleNotFoundError,
@@ -58,11 +64,15 @@ def _schedule_response(
     *,
     last_run_status: str | None = None,
     pending_inbox_count: int = 0,
+    workspace_label: str | None = None,
+    workspace_path: str | None = None,
 ) -> ScheduleResponse:
     return ScheduleResponse(
         **schedule.__dict__,
         last_run_status=last_run_status,
         pending_inbox_count=pending_inbox_count,
+        workspace_label=workspace_label,
+        workspace_path=workspace_path,
     )
 
 
@@ -71,6 +81,8 @@ def _schedule_view_response(view: ScheduleView) -> ScheduleResponse:
         view.schedule,
         last_run_status=view.last_run_status,
         pending_inbox_count=view.pending_inbox_count,
+        workspace_label=view.workspace_label,
+        workspace_path=view.workspace_path,
     )
 
 
@@ -91,6 +103,7 @@ async def post_automation(
     request: ScheduleCreate,
     session: DbSession,
     owner: Owner,
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> ScheduleResponse:
     try:
         conversation_id = await ensure_conversation(
@@ -98,10 +111,23 @@ async def post_automation(
             conversation_id=request.conversation_id,
             scope=owner.scope,
             demo_session_id=owner.demo_session_id,
+            title=request.title if request.conversation_id is None else None,
         )
-        roots = await list_session_roots(session, conversation_id=conversation_id)
-        if not roots:
-            raise ScheduleError("创建自动化前必须先给该 Cowork 会话选择工作目录")
+        workspace: SessionRootRecord | None
+        if request.workspace_path is not None:
+            workspace = await create_session_root(
+                session,
+                conversation_id=conversation_id,
+                requested_path=request.workspace_path,
+                access_mode="read_write",
+                label=None,
+            )
+        else:
+            workspace = await ensure_default_session_root(
+                session,
+                conversation_id=conversation_id,
+                workspace_path=settings.cowork_default_workspace_path,
+            )
         schedule = await create_schedule(
             session,
             conversation_id=conversation_id,
@@ -112,10 +138,14 @@ async def post_automation(
             run_at=request.run_at,
             timezone=request.timezone,
         )
-    except (LookupError, ScheduleError, ValueError) as error:
+    except (LookupError, CoworkPermissionError, ScheduleError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     await session.commit()
-    return _schedule_response(schedule)
+    return _schedule_response(
+        schedule,
+        workspace_label=workspace.label if workspace is not None else None,
+        workspace_path=workspace.canonical_path if workspace is not None else None,
+    )
 
 
 @router.patch("/{schedule_id}", response_model=ScheduleResponse)
@@ -135,7 +165,13 @@ async def patch_automation(
     except ScheduleError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     await session.commit()
-    return _schedule_response(schedule)
+    roots = await list_session_roots(session, conversation_id=schedule.conversation_id)
+    workspace = roots[0] if roots else None
+    return _schedule_response(
+        schedule,
+        workspace_label=workspace.label if workspace is not None else None,
+        workspace_path=workspace.canonical_path if workspace is not None else None,
+    )
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -197,9 +233,7 @@ async def get_unattended_inbox(
     include_resolved: bool = False,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
 ) -> UnattendedInboxListResponse:
-    records = await list_unattended_inbox(
-        session, include_resolved=include_resolved, limit=limit
-    )
+    records = await list_unattended_inbox(session, include_resolved=include_resolved, limit=limit)
     items = [
         UnattendedInboxItemResponse(
             id=record.item.id,

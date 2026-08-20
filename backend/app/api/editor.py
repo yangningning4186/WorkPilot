@@ -190,9 +190,7 @@ async def read_editable_document(
     _: Annotated[RequestIdentity, Depends(require_owner_identity)],
 ) -> EditableDocumentResponse:
     try:
-        return await get_editable_document(
-            session, document_id=document_id, settings=settings
-        )
+        return await get_editable_document(session, document_id=document_id, settings=settings)
     except EditableDocumentNotFoundError as error:
         raise HTTPException(status_code=404, detail="文档或本地文件不存在") from error
     except (DocumentNotEditableError, LibraryPathError) as error:

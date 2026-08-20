@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import tempfile
 import time
@@ -25,20 +24,15 @@ from app.agent.persistence import (
     update_plan_step,
 )
 from app.agent.state import AgentState, json_state
+from app.agent_core.contracts import InvocationLease
+from app.agent_core.idempotency import (
+    InvocationInFlightError,
+    canonical_json,
+    invocation_identity,
+)
 from app.core.run_bus import RunBus
+from app.cowork_store.routing import configured_cowork_store
 from app.services.runs import append_events, finish_run
-
-
-class InvocationInFlightError(RuntimeError):
-    """相同副作用仍由另一个未过期租约持有。"""
-
-
-@dataclass(frozen=True)
-class InvocationLease:
-    idempotency_key: str
-    acquired: bool
-    result: dict[str, Any] | None = None
-    effect_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -47,32 +41,6 @@ class WriteNoteResult:
     content_sha256: str
     idempotency_key: str
     reused: bool
-
-
-def canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def invocation_identity(
-    *, run_id: UUID, plan_step_id: UUID, tool_name: str, args: dict[str, Any]
-) -> tuple[str, str]:
-    canonical_args = canonical_json(args)
-    args_hash = hashlib.sha256(canonical_args.encode()).hexdigest()
-    identity = canonical_json(
-        {
-            "run_id": str(run_id),
-            "plan_step_id": str(plan_step_id),
-            "tool_name": tool_name,
-            "args": args,
-        }
-    )
-    return hashlib.sha256(identity.encode()).hexdigest(), args_hash
 
 
 async def acquire_invocation(
@@ -89,6 +57,16 @@ async def acquire_invocation(
 
     if lease_s <= 0:
         raise ValueError("副作用租约必须大于 0 秒")
+    store = configured_cowork_store()
+    if store is not None and await store.get_run(run_id) is not None:
+        return await store.acquire_invocation(
+            run_id=run_id,
+            plan_step_id=plan_step_id,
+            tool_name=tool_name,
+            args=args,
+            worker_id=worker_id,
+            lease_s=lease_s,
+        )
     key, args_hash = invocation_identity(
         run_id=run_id,
         plan_step_id=plan_step_id,
@@ -188,6 +166,12 @@ async def complete_invocation(
     result: dict[str, Any],
     effect_ref: str,
 ) -> None:
+    store = configured_cowork_store()
+    if store is not None and await store.has_invocation(key=key):
+        await store.complete_invocation(
+            key=key, worker_id=worker_id, result=result, effect_ref=effect_ref
+        )
+        return
     completed = (
         await session.execute(
             text(
@@ -213,9 +197,11 @@ async def complete_invocation(
         raise InvocationInFlightError("工具调用租约已被其他 worker 接管")
 
 
-async def fail_invocation(
-    session: AsyncSession, *, key: str, worker_id: str, error: str
-) -> None:
+async def fail_invocation(session: AsyncSession, *, key: str, worker_id: str, error: str) -> None:
+    store = configured_cowork_store()
+    if store is not None and await store.has_invocation(key=key):
+        await store.fail_invocation(key=key, worker_id=worker_id, error=error)
+        return
     await session.execute(
         text(
             """
@@ -325,7 +311,9 @@ async def write_note(
 
     try:
         # rename 后、DB succeeded 前崩溃的恢复口：内容已相同就只结算，不再改写。
-        already_applied = target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == digest
+        already_applied = (
+            target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == digest
+        )
         if not already_applied:
             _atomic_replace_markdown(target, content)
             if after_replace is not None:
@@ -397,9 +385,7 @@ async def resume_review_after_human(
         completed["cursor"] = 6
         completed["interrupt"] = None
         completed["status"] = "done"
-        await update_plan_step(
-            session, run_id=run_id, step_id=step_id, status="skipped"
-        )
+        await update_plan_step(session, run_id=run_id, step_id=step_id, status="skipped")
         await record_attempt(
             session,
             run_id=run_id,
@@ -551,9 +537,7 @@ async def resume_review_after_human(
                     "title": "已写入综述笔记",
                     "path": result.path,
                     "content_sha256": result.content_sha256,
-                    "effect_ref": (
-                        f"file:{result.path}#sha256={result.content_sha256}"
-                    ),
+                    "effect_ref": (f"file:{result.path}#sha256={result.content_sha256}"),
                     "reused": result.reused,
                 },
             ),

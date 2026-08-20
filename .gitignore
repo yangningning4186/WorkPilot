@@ -55,5 +55,8 @@ Thumbs.db
 *.log
 logs/
 
+# 本地渲染与人工 QA 临时产物
+/tmp/
+
 # 实验跑批产物（体积大且可复现，台账里记结论即可）
 eval/outputs/pareto/

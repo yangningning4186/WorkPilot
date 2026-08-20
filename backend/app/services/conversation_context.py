@@ -182,8 +182,7 @@ async def load_conversation_context(
         + 180
     )
     truncated = summary_truncated or (
-        bool(rows)
-        and (int(rows[0]["total_rows"]) > len(rows) or len(newest_turns) < len(by_run))
+        bool(rows) and (int(rows[0]["total_rows"]) > len(rows) or len(newest_turns) < len(by_run))
     )
     for turn in newest_turns:
         char_cost = sum(len(item.content) + 32 for item in turn)
@@ -212,8 +211,7 @@ async def load_conversation_context(
         original_messages = messages
         content_budget = max(
             1,
-            (max_chars - len(rendered_summary or "") - 180)
-            // max(1, len(original_messages)),
+            (max_chars - len(rendered_summary or "") - 180) // max(1, len(original_messages)),
         )
         while not _context_fits(
             rendered,
@@ -231,7 +229,8 @@ async def load_conversation_context(
             elif original_messages and content_budget > 1:
                 content_budget = max(
                     1,
-                    content_budget - max(1, (overflow + len(original_messages) - 1) // len(original_messages)),
+                    content_budget
+                    - max(1, (overflow + len(original_messages) - 1) // len(original_messages)),
                 )
                 messages = [
                     ContextMessage(
@@ -420,9 +419,7 @@ async def resolve_contextual_query(
     query = current_query.strip()
     if not context.text:
         return query
-    prompt_budget = gateway.prompt_budget(
-        "contextual_query_rewrite", max_tokens=max_tokens
-    )
+    prompt_budget = gateway.prompt_budget("contextual_query_rewrite", max_tokens=max_tokens)
     messages = _fit_rewrite_messages(
         history=context.text,
         current_query=query,
@@ -629,9 +626,7 @@ def _render_context(
 ) -> str:
     return json.dumps(
         {
-            "historical_summary": (
-                None if summary is None else escape(summary, quote=False)
-            ),
+            "historical_summary": (None if summary is None else escape(summary, quote=False)),
             "recent_turns": [
                 {"role": item.role, "content": escape(item.content, quote=False)}
                 for item in messages

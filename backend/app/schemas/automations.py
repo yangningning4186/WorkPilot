@@ -6,7 +6,10 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class ScheduleCreate(BaseModel):
-    conversation_id: UUID
+    # 自动化默认创建独立会话，避免让用户先理解 Cowork 会话与目录的绑定关系。
+    # 兼容 API 调用方复用既有会话，但桌面端不再把它暴露成必填选项。
+    conversation_id: UUID | None = None
+    workspace_path: str | None = Field(default=None, min_length=1, max_length=4096)
     title: str = Field(min_length=1, max_length=200)
     goal: str = Field(min_length=1, max_length=4000)
     schedule_kind: Literal["once", "cron"]
@@ -16,7 +19,9 @@ class ScheduleCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_shape(self) -> "ScheduleCreate":
-        if self.schedule_kind == "once" and (self.run_at is None or self.cron_expression is not None):
+        if self.schedule_kind == "once" and (
+            self.run_at is None or self.cron_expression is not None
+        ):
             raise ValueError("单次计划必须只填写 run_at")
         if self.schedule_kind == "cron" and (not self.cron_expression or self.run_at is not None):
             raise ValueError("周期计划必须只填写 cron_expression")
@@ -49,6 +54,8 @@ class ScheduleResponse(BaseModel):
     run_count: int
     skipped_count: int
     pending_inbox_count: int
+    workspace_label: str | None = None
+    workspace_path: str | None = None
     created_at: datetime
     updated_at: datetime
 

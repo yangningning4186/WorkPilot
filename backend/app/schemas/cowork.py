@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 
 AccessMode = Literal["read_only", "read_write"]
 Capability = Literal[
+    "knowledge.read",
     "filesystem.read",
     "filesystem.write",
     "office.word.edit",
@@ -84,3 +85,15 @@ class ArtifactResponse(BaseModel):
 
 class ArtifactListResponse(BaseModel):
     items: list[ArtifactResponse]
+
+
+class AttachmentResponse(BaseModel):
+    id: UUID
+    conversation_id: UUID
+    message_id: UUID | None
+    run_id: UUID | None
+    kind: Literal["image", "pdf", "text"]
+    filename: str
+    media_type: str
+    size_bytes: int
+    sha256: str

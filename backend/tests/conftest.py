@@ -14,6 +14,10 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+# 集成测试中的既有服务/仓储用例显式覆盖 PostgreSQL 路径；SQLite 发布路径由
+# test_local_cowork_store 等套件单独启用，避免依赖产品默认值而漏测任一后端。
+os.environ.setdefault("COWORK_STORE_BACKEND", "postgres")
+
 from app.core.config import get_settings
 
 TEST_DATABASE_URL = os.getenv(
@@ -52,7 +56,8 @@ async def db_session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
             text(
                 """
                 TRUNCATE TABLE
-                    artifacts, capability_grants, session_roots,
+                    cowork_attachments, artifacts, capability_grants, session_roots,
+                    skill_distillation_jobs, skill_candidate_evidence, skill_candidates,
                     memory_extraction_jobs, memories,
                     feedback, llm_calls, cost_reservations, daily_cost_budgets,
                     eval_results, eval_runs, eval_items, eval_datasets,

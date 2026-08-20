@@ -114,9 +114,7 @@ def _read_bounded(path: Path, max_bytes: int) -> bytes:
     if not path.is_file():
         raise CoworkFileError(f"目标不是普通文件: {path}")
     if stat.st_size > max_bytes:
-        raise CoworkFileError(
-            f"文件大小 {stat.st_size} bytes 超过读取上限 {max_bytes} bytes"
-        )
+        raise CoworkFileError(f"文件大小 {stat.st_size} bytes 超过读取上限 {max_bytes} bytes")
     try:
         with path.open("rb") as stream:
             content = stream.read(max_bytes + 1)
@@ -362,14 +360,10 @@ def _write_text_file_sync(
     backup_versions: int,
 ) -> TextFileWriteResult:
     if path.suffix.casefold() in _KNOWN_BINARY_SUFFIXES:
-        raise CoworkFileError(
-            f"通用文本工具不能写入 {path.suffix} 二进制文档，请使用对应专用工具"
-        )
+        raise CoworkFileError(f"通用文本工具不能写入 {path.suffix} 二进制文档，请使用对应专用工具")
     encoded = content.encode("utf-8")
     if len(encoded) > max_bytes:
-        raise CoworkFileError(
-            f"写入内容 {len(encoded)} bytes 超过上限 {max_bytes} bytes"
-        )
+        raise CoworkFileError(f"写入内容 {len(encoded)} bytes 超过上限 {max_bytes} bytes")
     parent = path.parent
     if not parent.is_dir():
         raise CoworkFileError("目标文件的父目录不存在")
@@ -390,7 +384,9 @@ def _write_text_file_sync(
     elif baseline_sha256 is not None:
         raise CoworkFileError("目标文件尚不存在，baseline_sha256 必须省略")
 
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=parent)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=parent
+    )
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "wb") as stream:

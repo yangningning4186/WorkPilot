@@ -172,7 +172,9 @@ def _expand(value: object, env: Mapping[str, str], *, where: str) -> str:
         return ""
     if not isinstance(value, str):
         return str(value)
-    unknown = [name for name in findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", value) if name not in env]
+    unknown = [
+        name for name in findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", value) if name not in env
+    ]
     if unknown:
         raise RoutingConfigError(
             f"{where} 引用了路由表不认识的变量 {', '.join(sorted(set(unknown)))}；"
@@ -286,9 +288,7 @@ def parse_routing_table(document: object, env: Mapping[str, str]) -> RoutingTabl
             raise RoutingConfigError(
                 f"tiers.{name}.fallback 必须是档位名列表，例如 [main, external]"
             )
-        fallback = tuple(
-            _tier_name(item, where=f"tiers.{name}.fallback") for item in fallback_raw
-        )
+        fallback = tuple(_tier_name(item, where=f"tiers.{name}.fallback") for item in fallback_raw)
         if name in fallback:
             raise RoutingConfigError(f"tiers.{name}.fallback 不能引用自己")
         tiers[name] = TierSpec(
@@ -350,16 +350,14 @@ def parse_routing_table(document: object, env: Mapping[str, str]) -> RoutingTabl
         task = str(task_type)
         if task not in routes:
             raise RoutingConfigError(
-                f"escalation.{task} 没有对应的 routes 条目；"
-                "升档目标只有在起始档明确时才有意义"
+                f"escalation.{task} 没有对应的 routes 条目；升档目标只有在起始档明确时才有意义"
             )
         target = _tier_name(raw_target, where=f"escalation.{task}")
         if target not in tiers:
             raise RoutingConfigError(f"escalation.{task} 指向未声明的档位 {target}")
         if _ORDER[target] < _ORDER[routes[task]]:
             raise RoutingConfigError(
-                f"escalation.{task} 的目标 {target} 低于起始档 {routes[task]}；"
-                "升档不能往下降"
+                f"escalation.{task} 的目标 {target} 低于起始档 {routes[task]}；升档不能往下降"
             )
         # 目标 == 起始档是允许的，含义是"升档目标已登记但当前未启用"：
         # 把 routes 改成更低的档即刻生效，不必同时改两处。escalation_for() 会
@@ -402,9 +400,7 @@ def routing_env(settings: "Settings") -> dict[str, str]:
         "TIER_HEAVY_CONTEXT_WINDOW_TOKENS": str(settings.tier_heavy_context_window_tokens),
         "TIER_EXTERNAL_BASE_URL": settings.tier_external_base_url,
         "TIER_EXTERNAL_MODEL": settings.tier_external_model,
-        "TIER_EXTERNAL_CONTEXT_WINDOW_TOKENS": str(
-            settings.tier_external_context_window_tokens
-        ),
+        "TIER_EXTERNAL_CONTEXT_WINDOW_TOKENS": str(settings.tier_external_context_window_tokens),
         "EXTERNAL_API_KEY": settings.external_api_key,
         "CLUSTER_API_KEY": settings.cluster_api_key,
     }

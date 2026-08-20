@@ -138,9 +138,7 @@ async def _connector_request(
             follow_redirects=False,
             trust_env=False,
         ) as client:
-            response = await client.request(
-                method, url, params=query, headers=headers, json=body
-            )
+            response = await client.request(method, url, params=query, headers=headers, json=body)
     except httpx.TimeoutException as error:
         raise ValueError("连接器 API 请求超时") from error
     except httpx.HTTPError as error:

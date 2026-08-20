@@ -136,9 +136,7 @@ class AnnotationItemUpsert(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     gold_answer: str | None = Field(default=None, max_length=20000)
     gold_spans: list[GoldSpanInput] = Field(default_factory=list, max_length=20)
-    gold_evidence_groups: list[GoldEvidenceGroupInput] = Field(
-        default_factory=list, max_length=20
-    )
+    gold_evidence_groups: list[GoldEvidenceGroupInput] = Field(default_factory=list, max_length=20)
     gold_tools: list[GoldToolInput] = Field(default_factory=list, max_length=20)
     must_include: list[str] = Field(default_factory=list, max_length=30)
     must_not_include: list[str] = Field(default_factory=list, max_length=30)
@@ -177,9 +175,7 @@ class AnnotationItemUpsert(BaseModel):
             fact_ids = [group.fact_id for group in self.gold_evidence_groups]
             if len(fact_ids) != len(set(fact_ids)):
                 raise ValueError("fact_id 不能重复")
-            for span, group in zip(
-                self.gold_spans, self.gold_evidence_groups, strict=True
-            ):
+            for span, group in zip(self.gold_spans, self.gold_evidence_groups, strict=True):
                 if group.alternatives[0] != span:
                     raise ValueError("事实组第一个 alternative 必须是 canonical gold span")
         if self.category == "temporal":

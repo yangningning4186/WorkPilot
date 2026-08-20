@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.schemas.cowork import AttachmentResponse
+
 
 class ConversationCreate(BaseModel):
     title: str = Field(default="新会话", min_length=1, max_length=120)
@@ -28,6 +30,7 @@ class ConversationResponse(BaseModel):
     provider: str | None
     selected_model: str | None
     unattended: bool
+    archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -51,6 +54,10 @@ class ConversationRuntimeUpdate(BaseModel):
         return normalized or None
 
 
+class ConversationArchiveUpdate(BaseModel):
+    archived: bool
+
+
 class ConversationMessageResponse(BaseModel):
     id: UUID
     seq: int
@@ -60,9 +67,32 @@ class ConversationMessageResponse(BaseModel):
     run_id: UUID | None
     citations: list[dict[str, Any]]
     answer_mode: Literal["grounded", "general"] | None
+    attachments: list[AttachmentResponse] = Field(default_factory=list)
     created_at: datetime
 
 
 class ConversationMessageListResponse(BaseModel):
     items: list[ConversationMessageResponse]
     total: int
+
+
+class ConversationContextBreakdown(BaseModel):
+    system: int
+    tools: int
+    messages: int
+    tool_activity: int
+
+
+class ConversationContextUsageResponse(BaseModel):
+    used_tokens: int
+    context_window_tokens: int
+    max_input_tokens: int
+    trigger_tokens: int
+    trigger_ratio: float
+    auto_compaction: bool
+    compaction_revision: int
+    compaction_mode: Literal["none", "summary", "summary_fallback", "trim"]
+    model: str
+    run_status: str | None
+    estimated: bool
+    breakdown: ConversationContextBreakdown

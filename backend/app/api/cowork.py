@@ -1,12 +1,15 @@
+import asyncio
 import html
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import quote
 from uuid import UUID
 
 from docx import Document
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse
 from openpyxl import load_workbook  # type: ignore[import-untyped]
+from pptx import Presentation
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import require_owner_identity
@@ -15,6 +18,7 @@ from app.core.db import get_db_session
 from app.schemas.cowork import (
     ArtifactListResponse,
     ArtifactResponse,
+    AttachmentResponse,
     CapabilityGrantCreate,
     CapabilityGrantListResponse,
     CapabilityGrantResponse,
@@ -24,6 +28,7 @@ from app.schemas.cowork import (
 )
 from app.services.artifact_formats import TEXT_ARTIFACT_SUFFIXES
 from app.services.artifacts import ArtifactRegistrationError, list_artifacts, resolve_artifact_file
+from app.services.cowork_attachments import CoworkAttachmentError, store_attachment
 from app.services.cowork_permissions import (
     CapabilityDeniedError,
     ConversationNotFoundError,
@@ -36,6 +41,7 @@ from app.services.cowork_permissions import (
     revoke_capability_grant,
     revoke_session_root,
 )
+from app.services.office_preview import OfficePreviewError, render_office_preview
 
 
 async def require_cowork_enabled(
@@ -52,7 +58,9 @@ router = APIRouter(
 )
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 _PREVIEW_SECURITY_HEADERS = {
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    "Content-Security-Policy": (
+        "default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; sandbox"
+    ),
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
 }
@@ -70,12 +78,41 @@ def _not_found(error: ConversationNotFoundError) -> HTTPException:
     return HTTPException(status_code=404, detail="Cowork 会话不存在")
 
 
-@router.get(
-    "/sessions/{conversation_id}/roots", response_model=SessionRootListResponse
+@router.post(
+    "/sessions/{conversation_id}/attachments",
+    response_model=AttachmentResponse,
+    status_code=status.HTTP_201_CREATED,
 )
-async def get_session_roots(
-    conversation_id: UUID, session: DbSession
-) -> SessionRootListResponse:
+async def post_attachment(
+    conversation_id: UUID,
+    session: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)],
+    upload: Annotated[UploadFile, File()],
+) -> AttachmentResponse:
+    """接收一份待绑定输入附件；run 创建成功时才会把它绑定到消息。"""
+
+    try:
+        raw = await upload.read(settings.cowork_attachment_max_bytes + 1)
+        attachment = await store_attachment(
+            session,
+            conversation_id=conversation_id,
+            filename=upload.filename or "attachment",
+            declared_media_type=upload.content_type,
+            raw=raw,
+            settings=settings,
+        )
+    except CoworkAttachmentError as error:
+        await session.rollback()
+        status_code = 404 if str(error) == "Cowork 会话不存在" else 422
+        raise HTTPException(status_code=status_code, detail=str(error)) from error
+    finally:
+        await upload.close()
+    await session.commit()
+    return AttachmentResponse.model_validate(attachment, from_attributes=True)
+
+
+@router.get("/sessions/{conversation_id}/roots", response_model=SessionRootListResponse)
+async def get_session_roots(conversation_id: UUID, session: DbSession) -> SessionRootListResponse:
     try:
         items = await list_session_roots(session, conversation_id=conversation_id)
     except ConversationNotFoundError as error:
@@ -111,9 +148,7 @@ async def post_session_root(
     "/sessions/{conversation_id}/roots/{root_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-async def delete_session_root(
-    conversation_id: UUID, root_id: UUID, session: DbSession
-) -> Response:
+async def delete_session_root(conversation_id: UUID, root_id: UUID, session: DbSession) -> Response:
     try:
         deleted = await revoke_session_root(
             session, conversation_id=conversation_id, root_id=root_id
@@ -126,9 +161,7 @@ async def delete_session_root(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get(
-    "/sessions/{conversation_id}/grants", response_model=CapabilityGrantListResponse
-)
+@router.get("/sessions/{conversation_id}/grants", response_model=CapabilityGrantListResponse)
 async def get_capability_grants(
     conversation_id: UUID, session: DbSession
 ) -> CapabilityGrantListResponse:
@@ -184,12 +217,8 @@ async def delete_capability_grant(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get(
-    "/sessions/{conversation_id}/artifacts", response_model=ArtifactListResponse
-)
-async def get_artifacts(
-    conversation_id: UUID, session: DbSession
-) -> ArtifactListResponse:
+@router.get("/sessions/{conversation_id}/artifacts", response_model=ArtifactListResponse)
+async def get_artifacts(conversation_id: UUID, session: DbSession) -> ArtifactListResponse:
     try:
         items = await list_artifacts(session, conversation_id=conversation_id)
     except ConversationNotFoundError as error:
@@ -203,6 +232,7 @@ async def get_artifacts(
 async def get_artifact_preview(
     artifact_id: UUID,
     session: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> Response:
     try:
         resolved = await resolve_artifact_file(session, artifact_id=artifact_id)
@@ -219,17 +249,45 @@ async def get_artifact_preview(
             media_type="application/pdf",
             headers={
                 **_PREVIEW_SECURITY_HEADERS,
-                "Content-Disposition": f'inline; filename="{_safe_preview_name(path)}"',
+                "Content-Disposition": _preview_content_disposition(path),
+                "X-WorkPilot-Preview-Mode": "native-pdf",
             },
         )
-    if suffix == ".docx":
-        body = _docx_preview(path)
-    elif suffix == ".xlsx":
-        body = _xlsx_preview(path)
+    if suffix in {".docx", ".xlsx", ".pptx"}:
+        try:
+            rendered = await asyncio.to_thread(
+                render_office_preview,
+                path,
+                cache_root=settings.office_preview_cache_path,
+                timeout_s=settings.office_preview_timeout_s,
+                max_source_bytes=settings.office_preview_max_source_bytes,
+                max_cache_entries=settings.office_preview_max_cache_entries,
+            )
+        except OfficePreviewError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        if rendered is not None:
+            return FileResponse(
+                rendered.path,
+                media_type=rendered.media_type,
+                headers={
+                    **_PREVIEW_SECURITY_HEADERS,
+                    "Content-Disposition": _preview_content_disposition(path),
+                    "X-WorkPilot-Preview-Mode": rendered.mode,
+                },
+            )
+        body = (
+            _docx_preview(path)
+            if suffix == ".docx"
+            else _xlsx_preview(path)
+            if suffix == ".xlsx"
+            else _pptx_preview(path)
+        )
+        preview_mode = "structure"
     elif suffix in TEXT_ARTIFACT_SUFFIXES:
         if path.stat().st_size > 5 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="交付物过大，无法在线预览")
         body = f"<pre>{html.escape(path.read_text(encoding='utf-8', errors='replace'))}</pre>"
+        preview_mode = "text"
     else:
         raise HTTPException(status_code=415, detail="该交付物格式不支持在线预览")
     document = (
@@ -241,7 +299,7 @@ async def get_artifact_preview(
     )
     return HTMLResponse(
         document,
-        headers=_PREVIEW_SECURITY_HEADERS,
+        headers={**_PREVIEW_SECURITY_HEADERS, "X-WorkPilot-Preview-Mode": preview_mode},
     )
 
 
@@ -265,12 +323,45 @@ def _xlsx_preview(path: Path) -> str:
         for sheet in workbook.worksheets[:5]:
             blocks.append(f"<h2>{html.escape(sheet.title)}</h2><table>")
             for row in sheet.iter_rows(min_row=1, max_row=100, max_col=20, values_only=True):
-                blocks.append("<tr>" + "".join(f"<td>{html.escape(str(value if value is not None else ''))}</td>" for value in row) + "</tr>")
+                blocks.append(
+                    "<tr>"
+                    + "".join(
+                        f"<td>{html.escape(str(value if value is not None else ''))}</td>"
+                        for value in row
+                    )
+                    + "</tr>"
+                )
             blocks.append("</table>")
         return "".join(blocks)
     finally:
         workbook.close()
 
 
+def _pptx_preview(path: Path) -> str:
+    presentation = Presentation(str(path))
+    blocks: list[str] = []
+    for index, slide in enumerate(list(presentation.slides)[:100], start=1):
+        blocks.append(f"<h2>第 {index} 页</h2>")
+        for shape in slide.shapes:
+            text = getattr(shape, "text", "")
+            if text:
+                blocks.append(f"<p>{html.escape(str(text))}</p>")
+    return "".join(blocks)
+
+
 def _safe_preview_name(path: Path) -> str:
-    return "".join(character for character in path.name if character.isalnum() or character in "._-") or "artifact"
+    value = "".join(
+        character if character.isascii() and (character.isalnum() or character in "._-") else "_"
+        for character in path.name
+    ).strip("._")
+    if value:
+        return value
+    return f"artifact{path.suffix if path.suffix.isascii() else ''}"
+
+
+def _preview_content_disposition(path: Path) -> str:
+    """生成只含 ASCII 的响应头，同时保留 RFC 5987 中文文件名。"""
+
+    fallback = _safe_preview_name(path)
+    encoded = quote(path.name, safe="")
+    return f"inline; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"

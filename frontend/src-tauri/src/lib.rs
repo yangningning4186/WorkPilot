@@ -78,6 +78,9 @@ fn apply_runtime_env(command: &mut Command, token: &str) {
         .env("DESKTOP_MODE_ENABLED", "true")
         .env("DESKTOP_LAUNCH_TOKEN", token)
         .env("COWORK_ENABLED", "true")
+        .env("COWORK_STORE_BACKEND", "sqlite")
+        .env("TASK_QUEUE_BACKEND", "in_process")
+        .env("RUN_BUS_BACKEND", "in_process")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -128,7 +131,7 @@ fn wait_until_ready(api_base: &str, token: &str) -> Result<(), String> {
         }
         thread::sleep(Duration::from_millis(250));
     }
-    Err("sidecar 在 60 秒内未就绪，请检查 PostgreSQL、Redis 与迁移日志".to_string())
+    Err("sidecar 在 60 秒内未就绪，请检查本地存储与迁移日志".to_string())
 }
 
 fn start_sidecars() -> Result<(DesktopContext, Vec<Child>), String> {
@@ -138,7 +141,7 @@ fn start_sidecars() -> Result<(DesktopContext, Vec<Child>), String> {
     let api_base = format!("http://127.0.0.1:{port}");
     let backend = workspace_backend();
 
-    let (mut migration, mut api, mut worker) = if cfg!(debug_assertions) {
+    let (mut migration, mut api) = if cfg!(debug_assertions) {
         (
             development_command(
                 &backend,
@@ -156,17 +159,11 @@ fn start_sidecars() -> Result<(DesktopContext, Vec<Child>), String> {
                 ],
                 &token,
             ),
-            development_command(
-                &backend,
-                &["-m", "app.desktop_sidecar", "worker"],
-                &token,
-            ),
         )
     } else {
         (
             packaged_command("migrate", &[], &token)?,
             packaged_command("api", &["--port".into(), port.to_string()], &token)?,
-            packaged_command("worker", &[], &token)?,
         )
     };
 
@@ -180,15 +177,7 @@ fn start_sidecars() -> Result<(DesktopContext, Vec<Child>), String> {
     let api_child = api
         .spawn()
         .map_err(|error| format!("无法启动 API sidecar: {error}"))?;
-    let worker_child = match worker.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            let mut child = api_child;
-            let _ = child.kill();
-            return Err(format!("无法启动 Cowork worker sidecar: {error}"));
-        }
-    };
-    let mut children = vec![api_child, worker_child];
+    let mut children = vec![api_child];
     if let Err(error) = wait_until_ready(&api_base, &token) {
         for child in &mut children {
             let _ = child.kill();

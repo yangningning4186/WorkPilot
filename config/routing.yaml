@@ -73,6 +73,7 @@ routes:
   conversation_summary: main
   cowork_compaction: main
   memory_op: light
+  skill_distillation: light
 
   # —— 结构化抽取：**刻意留在 main**。
   # docs/07 §3 的设计是 light 起步、置信度不达标再升档，但那套升档机制还没实现。

@@ -116,16 +116,12 @@ class McpConfiguration(_StrictModel):
                     "blocked_side_effect_tools": sum(
                         1
                         for policy in server.tools.values()
-                        if policy.enabled
-                        and policy.side_effect
-                        and policy.approval != "always"
+                        if policy.enabled and policy.side_effect and policy.approval != "always"
                     ),
                     "blocked_data_scope_tools": sum(
                         1
                         for policy in server.tools.values()
-                        if policy.enabled
-                        and not policy.side_effect
-                        and policy.data_scope == "deny"
+                        if policy.enabled and not policy.side_effect and policy.data_scope == "deny"
                     ),
                     "catalog_sha256": server.catalog_sha256,
                     "oauth_connector_id": server.oauth_connector_id,
@@ -247,9 +243,8 @@ def _validate_persisted_secrets(raw_servers: object) -> None:
         if not isinstance(headers, dict):
             continue
         for header_name, value in headers.items():
-            if (
-                str(header_name).casefold() in {"authorization", "x-api-key", "api-key"}
-                and (not isinstance(value, str) or _ENV_REF.fullmatch(value) is None)
+            if str(header_name).casefold() in {"authorization", "x-api-key", "api-key"} and (
+                not isinstance(value, str) or _ENV_REF.fullmatch(value) is None
             ):
                 raise McpConfigurationError(
                     f"MCP 服务 {server_name} 的敏感 header {header_name} "

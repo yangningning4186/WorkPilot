@@ -71,9 +71,7 @@ def rerank_candidate_union(
     """
     unique_count = len({hit.chunk_id for hit in [*dense_hits, *lexical_hits]})
     if unique_count > MAX_RRF_CANDIDATES:
-        raise ValueError(
-            f"rerank 两臂并集超过上限 {MAX_RRF_CANDIDATES}: actual={unique_count}"
-        )
+        raise ValueError(f"rerank 两臂并集超过上限 {MAX_RRF_CANDIDATES}: actual={unique_count}")
     if unique_count == 0:
         return []
     return reciprocal_rank_fusion(
@@ -84,9 +82,7 @@ def rerank_candidate_union(
     )
 
 
-def apply_document_cap(
-    hits: list[DenseSearchHit], *, cap: int
-) -> list[DenseSearchHit]:
+def apply_document_cap(hits: list[DenseSearchHit], *, cap: int) -> list[DenseSearchHit]:
     """按 version_id 限制每篇文档在头部占用的名额，超额的降级到尾部。
 
     跨文档题里语义最近的那篇会吃掉几乎全部名额，题目真正需要的第二篇被饿死

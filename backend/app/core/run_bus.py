@@ -94,3 +94,12 @@ class InMemoryRunBus:
                 listeners.remove(event)
             if not listeners:
                 self._subscribers.pop(run_id, None)
+
+
+_in_memory_run_bus = InMemoryRunBus()
+
+
+def in_memory_run_bus() -> InMemoryRunBus:
+    """API 与嵌入式 worker 共进程时共享同一个唤醒总线。"""
+
+    return _in_memory_run_bus

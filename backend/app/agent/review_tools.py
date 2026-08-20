@@ -12,8 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.budget import CompletionClient
 from app.agent.state import ReviewCard, ReviewDocument, ReviewGroup
+from app.agent_core.budget import CompletionClient
 from app.llm.types import Message
 
 CARD_SYSTEM_PROMPT = """你是论文卡片抽取器。只能使用给定文档，不得补充外部知识。
@@ -165,8 +165,7 @@ class DatabaseModelReviewTools:
                     {
                         "title": document["title"],
                         "document": [
-                            {"ref": item.ref, "text": item.text}
-                            for item in evidence_catalog
+                            {"ref": item.ref, "text": item.text} for item in evidence_catalog
                         ],
                     },
                     ensure_ascii=False,
@@ -249,9 +248,7 @@ class DatabaseModelReviewTools:
             for name, document_ids in sorted(groups.items())
         ]
 
-    async def compare_documents(
-        self, cards: list[ReviewCard], groups: list[ReviewGroup]
-    ) -> str:
+    async def compare_documents(self, cards: list[ReviewCard], groups: list[ReviewGroup]) -> str:
         result = await self.gateway.complete(
             [
                 Message(role="system", content=COMPARE_SYSTEM_PROMPT),
@@ -383,9 +380,7 @@ class EvidenceAnchor:
         return self.quote
 
 
-def build_evidence_catalog(
-    source_text: str, *, max_entry_chars: int = 400
-) -> list[EvidenceAnchor]:
+def build_evidence_catalog(source_text: str, *, max_entry_chars: int = 400) -> list[EvidenceAnchor]:
     """把正文切成带稳定字符偏移编号的原文候选，不制造任何新文本。"""
 
     entries: list[EvidenceAnchor] = []
@@ -514,8 +509,7 @@ def resolve_card_evidence(
             raise ReviewToolResponseError(
                 "卡片 evidence_refs 无法解析",
                 model_message=(
-                    "；".join(details)
-                    + "。请从当前文档给出的 E 编号中选择 1-8 个不同编号，"
+                    "；".join(details) + "。请从当前文档给出的 E 编号中选择 1-8 个不同编号，"
                     "不要创造编号，也不要填写 evidence_quotes；重新输出完整 JSON 对象。"
                 ),
             )

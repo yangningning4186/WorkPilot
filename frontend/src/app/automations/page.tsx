@@ -8,13 +8,11 @@ import {
   ApiError,
   createCoworkSchedule,
   deleteCoworkSchedule,
-  fetchConversations,
   fetchCoworkSchedules,
   fetchUnattendedInbox,
   respondToCoworkInteraction,
   runCoworkSchedule,
   updateCoworkSchedule,
-  type ConversationSummary,
   type CoworkSchedule,
   type UnattendedInboxItem,
 } from "@/lib/api";
@@ -67,7 +65,6 @@ function requestText(item: UnattendedInboxItem): string {
 export default function AutomationsPage() {
   const [schedules, setSchedules] = useState<CoworkSchedule[]>([]);
   const [inbox, setInbox] = useState<UnattendedInboxItem[]>([]);
-  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -75,7 +72,7 @@ export default function AutomationsPage() {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [title, setTitle] = useState("");
   const [goal, setGoal] = useState("");
-  const [conversationId, setConversationId] = useState("");
+  const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [scheduleKind, setScheduleKind] = useState<"cron" | "once">("cron");
   const [cronExpression, setCronExpression] = useState(DEFAULT_CRON);
   const [runAt, setRunAt] = useState("");
@@ -93,15 +90,12 @@ export default function AutomationsPage() {
   const reload = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
     try {
-      const [scheduleData, inboxData, conversationData] = await Promise.all([
+      const [scheduleData, inboxData] = await Promise.all([
         fetchCoworkSchedules(),
         fetchUnattendedInbox(),
-        fetchConversations(),
       ]);
       setSchedules(scheduleData.items);
       setInbox(inboxData.items);
-      setConversations(conversationData.items);
-      setConversationId((current) => current || conversationData.items[0]?.id || "");
       setError(null);
     } catch (reason) {
       setError(readableError(reason));
@@ -120,15 +114,15 @@ export default function AutomationsPage() {
   }, [reload]);
 
   async function submitSchedule() {
-    if (!title.trim() || !goal.trim() || !conversationId) return;
+    if (!title.trim() || !goal.trim()) return;
     if (scheduleKind === "once" && !runAt) return;
     if (scheduleKind === "cron" && !cronExpression.trim()) return;
     setBusy("create");
     try {
       await createCoworkSchedule({
-        conversation_id: conversationId,
         title: title.trim(),
         goal: goal.trim(),
+        workspace_path: workspacePath ?? undefined,
         schedule_kind: scheduleKind,
         cron_expression: scheduleKind === "cron" ? cronExpression.trim() : undefined,
         run_at: scheduleKind === "once" ? new Date(runAt).toISOString() : undefined,
@@ -136,6 +130,7 @@ export default function AutomationsPage() {
       });
       setTitle("");
       setGoal("");
+      setWorkspacePath(null);
       setShowForm(false);
       await reload(true);
     } catch (reason) {
@@ -143,6 +138,11 @@ export default function AutomationsPage() {
     } finally {
       setBusy(null);
     }
+  }
+
+  async function chooseWorkspace() {
+    const selected = await pickCoworkDirectory();
+    if (selected !== null) setWorkspacePath(selected);
   }
 
   async function mutateSchedule(id: string, action: "toggle" | "run" | "delete") {
@@ -216,14 +216,14 @@ export default function AutomationsPage() {
           <header><div><span>NEW AUTOMATION</span><h2>安排一项无人值守任务</h2></div><small>不会自动批准新的权限或 Shell 命令</small></header>
           <div className="automation-form-grid">
             <label><span>名称</span><input maxLength={200} onChange={(event) => setTitle(event.target.value)} placeholder="例如：工作日晨报" value={title} /></label>
-            <label><span>工作会话</span><select onChange={(event) => setConversationId(event.target.value)} value={conversationId}><option value="">选择已连接工作区的会话</option>{conversations.map((item) => <option key={item.id} value={item.id}>{item.title ?? "Cowork 会话"}</option>)}</select></label>
+            <div className="automation-workspace-field"><span>工作区 <small>可选</small></span><div><button onClick={() => void chooseWorkspace()} title={workspacePath ?? "未指定时使用 ~/Documents/WorkPilot"} type="button">{workspacePath === null ? "WorkPilot 默认文件夹" : workspacePath.split(/[\\/]/).filter(Boolean).at(-1) ?? workspacePath}</button>{workspacePath !== null && <button aria-label="恢复默认工作区" className="clear" onClick={() => setWorkspacePath(null)} type="button">×</button>}</div><small>{workspacePath === null ? "~/Documents/WorkPilot；也可以为此自动化单独指定文件夹" : workspacePath}</small></div>
             <label className="wide"><span>任务说明</span><textarea maxLength={4000} onChange={(event) => setGoal(event.target.value)} placeholder="写清楚期望结果、输入范围和产物位置…" value={goal} /></label>
             <div className="automation-schedule-editor wide">
               <div className="automation-kind-tabs"><button className={scheduleKind === "cron" ? "active" : ""} onClick={() => setScheduleKind("cron")} type="button">周期执行</button><button className={scheduleKind === "once" ? "active" : ""} onClick={() => setScheduleKind("once")} type="button">单次执行</button></div>
               {scheduleKind === "cron" ? <><div className="automation-presets">{CRON_PRESETS.map((preset) => <button className={cronExpression === preset.value ? "active" : ""} key={preset.value} onClick={() => setCronExpression(preset.value)} type="button">{preset.label}</button>)}</div><label><span>五段 cron · {timezone}</span><input onChange={(event) => setCronExpression(event.target.value)} value={cronExpression} /></label></> : <label><span>执行时间 · {timezone}</span><input min={minimumRunAt} onChange={(event) => setRunAt(event.target.value)} type="datetime-local" value={runAt} /></label>}
             </div>
           </div>
-          <footer><span>计划使用所选会话现有的目录和 capability；过期授权不会被续期。</span><button disabled={busy === "create" || !title.trim() || !goal.trim() || !conversationId || (scheduleKind === "once" && !runAt) || (scheduleKind === "cron" && !cronExpression.trim())} onClick={() => void submitSchedule()} type="button">{busy === "create" ? "正在创建…" : "创建计划"}</button></footer>
+          <footer><span>未指定时使用默认工作区；Shell 和外部动作仍不会自动批准。</span><button disabled={busy === "create" || !title.trim() || !goal.trim() || (scheduleKind === "once" && !runAt) || (scheduleKind === "cron" && !cronExpression.trim())} onClick={() => void submitSchedule()} type="button">{busy === "create" ? "正在创建…" : "创建计划"}</button></footer>
         </section>
       )}
 
@@ -232,7 +232,7 @@ export default function AutomationsPage() {
       <section className="automation-grid">
         <div className="automation-column">
           <header className="automation-section-title"><div><span>计划</span><h2>自动化任务</h2></div><small>{schedules.length} 项</small></header>
-          {loading ? <div className="automation-empty">正在读取本机计划…</div> : schedules.length === 0 ? <div className="automation-empty"><strong>还没有自动化</strong><p>先在 Cowork 连接工作目录，再安排第一次运行。</p><button onClick={() => setShowForm(true)} type="button">创建计划</button></div> : <div className="automation-list">{schedules.map((schedule) => <article className={`automation-task-card ${schedule.enabled ? "" : "paused"}`} key={schedule.id}><div className="automation-task-head"><span className="automation-clock">{schedule.schedule_kind === "cron" ? "↻" : "1×"}</span><div><h3>{schedule.title}</h3><p>{schedule.goal}</p></div><i className={schedule.enabled ? "online" : ""}>{schedule.enabled ? "运行中" : "已暂停"}</i></div><dl><div><dt>下次运行</dt><dd>{schedule.enabled ? formatDate(schedule.next_run_at) : "已暂停"}</dd></div><div><dt>运行 / 跳过</dt><dd>{schedule.run_count} / {schedule.skipped_count}</dd></div><div><dt>上一轮</dt><dd>{schedule.last_run_status ?? "尚未运行"}</dd></div></dl>{schedule.pending_inbox_count > 0 && <div className="automation-task-alert">有 {schedule.pending_inbox_count} 项需要处理</div>}<footer><button disabled={busy !== null} onClick={() => void mutateSchedule(schedule.id, "toggle")} type="button">{schedule.enabled ? "暂停" : "启用"}</button><button disabled={busy !== null} onClick={() => void mutateSchedule(schedule.id, "run")} type="button">立即运行</button><button className="danger" disabled={busy !== null} onClick={() => void mutateSchedule(schedule.id, "delete")} type="button">删除</button></footer></article>)}</div>}
+          {loading ? <div className="automation-empty">正在读取本机计划…</div> : schedules.length === 0 ? <div className="automation-empty"><strong>还没有自动化</strong><p>自动化可以使用 WorkPilot 默认工作区，也可以单独指定一个本地文件夹。</p><button onClick={() => setShowForm(true)} type="button">创建计划</button></div> : <div className="automation-list">{schedules.map((schedule) => <article className={`automation-task-card ${schedule.enabled ? "" : "paused"}`} key={schedule.id}><div className="automation-task-head"><span className="automation-clock">{schedule.schedule_kind === "cron" ? "↻" : "1×"}</span><div><h3>{schedule.title}</h3><p>{schedule.goal}</p></div><i className={schedule.enabled ? "online" : ""}>{schedule.enabled ? "运行中" : "已暂停"}</i></div><dl><div><dt>下次运行</dt><dd>{schedule.enabled ? formatDate(schedule.next_run_at) : "已暂停"}</dd></div><div><dt>工作区</dt><dd title={schedule.workspace_path ?? "默认工作区"}>{schedule.workspace_label ?? "默认工作区"}</dd></div><div><dt>上一轮</dt><dd>{schedule.last_run_status ?? "尚未运行"}</dd></div></dl>{schedule.pending_inbox_count > 0 && <div className="automation-task-alert">有 {schedule.pending_inbox_count} 项需要处理</div>}<footer><button disabled={busy !== null} onClick={() => void mutateSchedule(schedule.id, "toggle")} type="button">{schedule.enabled ? "暂停" : "启用"}</button><button disabled={busy !== null} onClick={() => void mutateSchedule(schedule.id, "run")} type="button">立即运行</button><button className="danger" disabled={busy !== null} onClick={() => void mutateSchedule(schedule.id, "delete")} type="button">删除</button></footer></article>)}</div>}
         </div>
 
         <aside className="automation-inbox-column">

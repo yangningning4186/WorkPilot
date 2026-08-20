@@ -64,7 +64,9 @@ def _compactor(
 
 async def test_compaction_only_changes_outbound_view_and_keeps_canonical_suffix() -> None:
     provider = DeterministicProvider(
-        completion_text='{"summary":"前两次 inspect 已完成，保留了关键结果。"}'
+        completion_text=(
+            '{"summary":"目标是检查三个文件；前两次 inspect 已完成，保留了关键结果。"}'
+        )
     )
     compactor, meter = _compactor(provider, keep_recent=1)
     canonical: list[dict[str, object]] = [{"role": "user", "content": "检查三个文件"}]
@@ -81,8 +83,8 @@ async def test_compaction_only_changes_outbound_view_and_keeps_canonical_suffix(
     assert prepared.after_tokens < prepared.before_tokens
     assert meter.budget["used_calls"] == 1
     outbound = prepared.messages
-    assert outbound[1].content == "检查三个文件"
-    assert "cowork_history_summary" in outbound[2].content
+    assert "cowork_history_summary" in outbound[1].content
+    assert "检查三个文件" in outbound[1].content
     assert all(
         call.id not in {"call-1", "call-2"} for message in outbound for call in message.tool_calls
     )
@@ -102,4 +104,46 @@ async def test_compaction_retries_summary_once_then_uses_unattended_trim_fallbac
     assert prepared.mode == "summary_fallback"
     assert "inspect[call-1]" in prepared.compaction["summary"]
     assert "effect_ref" in prepared.compaction["summary"]
+    assert prepared.messages[-1].role == "user"
+    assert prepared.messages[-1].content == "检查文件"
     assert meter.budget["used_calls"] == 2
+
+
+async def test_forced_compaction_never_archives_the_only_current_question() -> None:
+    provider = DeterministicProvider(completion_text='{"summary":"不应调用"}')
+    compactor, meter = _compactor(provider, keep_recent=2, trigger_ratio=1.0)
+
+    prepared = await compactor.prepare(
+        [{"role": "user", "content": "这是当前问题，必须原样保留"}],
+        default_compaction_state(),
+        forced=True,
+    )
+
+    assert prepared.compaction["summary_upto"] == 1
+    assert prepared.messages[-1].content == "这是当前问题，必须原样保留"
+    assert meter.budget["used_calls"] == 1
+
+
+async def test_compaction_at_85_percent_archives_plain_conversation_turns() -> None:
+    provider = DeterministicProvider(
+        completion_text='{"summary":"用户此前要求整理新闻，assistant 已给出候选条目。"}'
+    )
+    compactor, _ = _compactor(provider, keep_recent=2, trigger_ratio=0.85)
+    canonical: list[dict[str, object]] = [
+        {"role": "user", "content": "搜索今天的 AI 新闻" + "甲" * 650},
+        {"role": "assistant", "content": "这里是五条新闻" + "乙" * 650},
+        {"role": "user", "content": "请缩短摘要" + "丙" * 650},
+        {"role": "assistant", "content": "已经缩短" + "丁" * 650},
+        {"role": "user", "content": "把上面的新闻整理成文档"},
+    ]
+
+    prepared = await compactor.prepare(
+        canonical,
+        default_compaction_state(),
+        forced=False,
+    )
+
+    assert prepared.changed is True
+    assert prepared.compaction["summary_upto"] == 3
+    assert "cowork_history_summary" in prepared.messages[1].content
+    assert prepared.messages[-1].content == "把上面的新闻整理成文档"

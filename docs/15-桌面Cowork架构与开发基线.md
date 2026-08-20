@@ -1,5 +1,8 @@
 # 15 · 桌面 Cowork 架构与开发基线
 
+> 存储迁移：桌面 Cowork 正按 [ADR-0010](adr/0010-cowork本地存储与rag数据面分离.md)
+> 迁移到 SQLite WAL + JSONL；论文/RAG 数据面继续使用 PostgreSQL + pgvector。
+
 > 状态：Cowork 工具循环、会话能力授权、桌面壳、Office、Provider/连接器、MCP/Skill、
 > Scheduler/Inbox 与隔离只读子 Agent 已实现。本文记录 OpenWorker 类本地 Cowork 的开发基线。
 

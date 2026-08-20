@@ -6,6 +6,7 @@ import fitz  # type: ignore[import-untyped]
 import pytest
 from docx import Document
 from openpyxl import load_workbook  # type: ignore[import-untyped]
+from pptx import Presentation  # type: ignore[import-untyped]
 
 from app.services.native_artifacts import create_native_artifact
 
@@ -65,6 +66,30 @@ def test_native_artifact_generation_docx_xlsx_pdf(tmp_path: Path) -> None:
     assert overwritten.backup_path.exists()
 
 
+def test_native_pptx_is_editable_widescreen_deck(tmp_path: Path) -> None:
+    pptx_path = tmp_path / "儿童节.pptx"
+    result = create_native_artifact(
+        pptx_path,
+        format="pptx",
+        title="快乐六一",
+        content="",
+        sheets=[],
+        slides=[
+            {"title": "节日由来", "bullets": ["关爱儿童", "快乐成长"]},
+            {"title": "活动安排", "body": "游戏、表演与分享"},
+        ],
+        baseline_sha256=None,
+    )
+
+    presentation = Presentation(str(pptx_path))
+    assert result.mime_type.endswith("presentationml.presentation")
+    assert len(presentation.slides) == 3
+    assert presentation.slide_width / presentation.slide_height == pytest.approx(16 / 9)
+    assert "快乐六一" in " ".join(
+        shape.text for shape in presentation.slides[0].shapes if hasattr(shape, "text")
+    )
+
+
 def test_native_pdf_paginates_cjk_and_overwrite_preserves_mode(tmp_path: Path) -> None:
     pdf_path = tmp_path / "long.pdf"
     tail = "末尾不可丢失"
@@ -102,3 +127,33 @@ def test_native_pdf_paginates_cjk_and_overwrite_preserves_mode(tmp_path: Path) -
             sheets=[],
             baseline_sha256="0" * 64,
         )
+
+
+def test_native_pdf_renders_markdown_as_document_layout(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "markdown.pdf"
+    create_native_artifact(
+        pdf_path,
+        format="pdf",
+        title="MCP 总结",
+        content=(
+            "# MCP 内容标题\n\n"
+            "## 核心结论\n\n"
+            "**MCP** 用于连接模型与工具。\n\n"
+            "- 支持资源\n- 支持工具\n\n"
+            "| 角色 | 收益 |\n| --- | --- |\n| 开发者 | 降低集成成本 |\n\n"
+            "```text\nHost -> Client -> Server\n```"
+        ),
+        sheets=[],
+        baseline_sha256=None,
+    )
+
+    with fitz.open(pdf_path) as pdf:
+        extracted = "\n".join(page.get_text() for page in pdf)
+        assert pdf.metadata["title"] == "MCP 总结"
+        assert extracted.count("MCP 总结") == 1
+        assert "MCP 内容标题" not in extracted
+        assert "核心结论" in extracted
+        assert "降低集成成本" in extracted
+        assert "Host -> Client -> Server" in extracted
+        assert "**MCP**" not in extracted
+        assert "| --- |" not in extracted

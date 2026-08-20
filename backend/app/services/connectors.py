@@ -168,7 +168,9 @@ async def update_connector_account(
     for key in ("client_id", "redirect_uri"):
         if changes.get(key) is not None:
             config[key] = str(changes[key]).strip()
-    secrets = {} if changes.get("clear_secrets") else secret_store.decrypt(current.secret_ciphertext)
+    secrets = (
+        {} if changes.get("clear_secrets") else secret_store.decrypt(current.secret_ciphertext)
+    )
     for key in ("client_secret", "access_token", "refresh_token"):
         if changes.get(key) is not None:
             value = str(changes[key]).strip()

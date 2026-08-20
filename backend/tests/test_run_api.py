@@ -181,6 +181,18 @@ async def test_delete_conversation_is_isolated_blocks_active_run_and_cascades(
             json={"query": "正在回答的问题", "conversation_id": conversation_id},
         )
         run_id = run_response.json()["run_id"]
+        await db_session.execute(
+            text(
+                """
+                UPDATE agent_runs
+                SET status = 'executing', worker_id = 'active-delete-test',
+                    lease_until = now() + interval '5 minutes'
+                WHERE id = :run_id
+                """
+            ),
+            {"run_id": UUID(run_id)},
+        )
+        await db_session.commit()
 
         busy = await owner.delete(f"/api/v1/conversations/{conversation_id}")
         assert busy.status_code == 409
@@ -194,7 +206,7 @@ async def test_delete_conversation_is_isolated_blocks_active_run_and_cascades(
             text(
                 """
                 UPDATE agent_runs
-                SET status = 'done', finished_at = now()
+                SET status = 'waiting_human', worker_id = NULL, lease_until = NULL
                 WHERE id = :run_id
                 """
             ),
@@ -224,6 +236,39 @@ async def test_delete_conversation_is_isolated_blocks_active_run_and_cascades(
     assert counts == (0, 0, 0)
 
 
+async def test_conversation_can_be_archived_filtered_and_restored(
+    db_session: AsyncSession,
+) -> None:
+    owner, _ = _client(db_session, RecordingQueue(), admin=True)
+    async with owner:
+        created = await owner.post("/api/v1/conversations", json={"title": "季度复盘"})
+        conversation_id = created.json()["id"]
+        archived = await owner.put(
+            f"/api/v1/conversations/{conversation_id}/archive",
+            json={"archived": True},
+        )
+        active_list = await owner.get("/api/v1/conversations")
+        archived_list = await owner.get("/api/v1/conversations?archived=true")
+        rejected_run = await owner.post(
+            "/api/v1/runs",
+            json={"query": "继续复盘", "conversation_id": conversation_id},
+        )
+        restored = await owner.put(
+            f"/api/v1/conversations/{conversation_id}/archive",
+            json={"archived": False},
+        )
+        restored_list = await owner.get("/api/v1/conversations")
+
+    assert archived.status_code == 200
+    assert archived.json()["archived_at"] is not None
+    assert all(item["id"] != conversation_id for item in active_list.json()["items"])
+    assert [item["id"] for item in archived_list.json()["items"]] == [conversation_id]
+    assert rejected_run.status_code == 404
+    assert restored.status_code == 200
+    assert restored.json()["archived_at"] is None
+    assert any(item["id"] == conversation_id for item in restored_list.json()["items"])
+
+
 async def test_create_run_sets_http_only_session_and_enqueues(
     db_session: AsyncSession,
 ) -> None:
@@ -249,6 +294,7 @@ async def test_create_run_sets_http_only_session_and_enqueues(
     run = await get_run(db_session, run_id)
     assert run is not None
     assert run.goal == "稠密检索如何召回内容?"
+    assert run.retrieval_top_k == 3
     scope, demo_session_id = (
         await db_session.execute(
             text("SELECT scope, demo_session_id FROM conversations WHERE id = :id"),

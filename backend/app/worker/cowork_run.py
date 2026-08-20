@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -12,23 +13,29 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.agent.budget import BudgetedGateway, BudgetMeter
 from app.agent.cowork_automation_tools import register_scheduler_tools
-from app.agent.cowork_browser_tools import register_browser_tools
+from app.agent.cowork_browser_tools import PlaywrightBrowserManager, register_browser_tools
 from app.agent.cowork_connector_tools import register_connector_tools
 from app.agent.cowork_extensions import register_mcp_tools, register_skill_tools
+from app.agent.cowork_rag_tools import register_rag_tools
 from app.agent.cowork_runtime import run_cowork_graph
 from app.agent.cowork_subagent import register_readonly_subagent
 from app.agent.cowork_tools import CoworkToolRegistry, build_default_cowork_registry
 from app.agent.state import BudgetState
+from app.agent_core.budget import BudgetedGateway, BudgetMeter
 from app.core.config import Settings, get_settings
+from app.core.queue import get_run_queue
 from app.core.run_bus import RunBus
+from app.cowork_store.factory import local_cowork_stores
+from app.cowork_store.routing import configured_cowork_store
 from app.llm.gateway import ModelGateway
 from app.mcp.client import McpClientManager
 from app.mcp.config import McpConfiguration, load_mcp_configuration
 from app.mcp.credentials import hydrate_mcp_oauth_credentials
+from app.memory.store import schedule_memory_extraction
 from app.security.secret_store import LocalSecretStore
 from app.services.provider_profiles import build_conversation_gateway
+from app.services.rag_service import PostgresRagService
 from app.services.runs import (
     append_events,
     append_message,
@@ -38,6 +45,7 @@ from app.services.runs import (
     get_run,
     renew_lease,
 )
+from app.skills.distillation_store import schedule_skill_distillation, successful_tool_names
 from app.worker.answer_run import worker_identity
 
 logger = structlog.get_logger(__name__)
@@ -109,19 +117,43 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
         )
         return
 
+    local_user_message = None
     async with session_factory() as session:
-        existing = (
-            await session.execute(
-                text(
-                    """
-                    SELECT id FROM messages
-                    WHERE run_id = :run_id AND role = 'assistant'
-                    ORDER BY seq LIMIT 1
-                    """
-                ),
-                {"run_id": run_id},
+        store = configured_cowork_store()
+        if store is not None and await store.get_run(run_id) is not None:
+            conversation_messages = await local_cowork_stores().conversations.read(
+                run.conversation_id
             )
-        ).scalar_one_or_none()
+            existing_message = next(
+                (
+                    item
+                    for item in conversation_messages
+                    if item.run_id == run_id and item.role == "assistant"
+                ),
+                None,
+            )
+            local_user_message = next(
+                (
+                    item
+                    for item in reversed(conversation_messages)
+                    if item.run_id == run_id and item.role == "user"
+                ),
+                None,
+            )
+            existing = None if existing_message is None else existing_message.record_id
+        else:
+            existing = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT id FROM messages
+                        WHERE run_id = :run_id AND role = 'assistant'
+                        ORDER BY seq LIMIT 1
+                        """
+                    ),
+                    {"run_id": run_id},
+                )
+            ).scalar_one_or_none()
         message_id = (
             UUID(str(existing))
             if existing is not None
@@ -166,6 +198,8 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
     raw_gateway: ModelGateway | None = ctx.get("cowork_gateway")
     owns_gateway = raw_gateway is None
     try:
+        memory_job = None
+        skill_job = None
         async with session_factory() as session:
             if raw_gateway is None:
                 raw_gateway = await build_conversation_gateway(
@@ -198,10 +232,24 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                     )
                     manager = await _cached_mcp_manager(ctx, configuration, settings)
                 await register_mcp_tools(registry, manager)
-                register_browser_tools(registry)
+                browser_manager = ctx.get("browser_manager")
+                if not isinstance(browser_manager, PlaywrightBrowserManager):
+                    browser_manager = PlaywrightBrowserManager()
+                    ctx["browser_manager"] = browser_manager
+                register_browser_tools(registry, browser_manager)
                 register_connector_tools(registry)
                 register_scheduler_tools(registry)
                 register_readonly_subagent(registry)
+                register_rag_tools(
+                    registry,
+                    PostgresRagService(
+                        session_factory,
+                        lexical_enabled=settings.lexical_rrf_enabled,
+                        lexical_mode=settings.lexical_mode,
+                        rrf_k=settings.rrf_k,
+                        settings=settings,
+                    ),
+                )
             else:
                 registry = configured_registry
             assert isinstance(registry, CoworkToolRegistry)
@@ -261,24 +309,81 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                 ),
             ]
             await append_events(session, run_id=run_id, events=events)
-            await finish_run(
+            finished_run = await finish_run(
                 session,
                 run_id=run_id,
                 status=run_status,
                 worker_id=worker_id,
                 error=state["error"],
             )
+            if (
+                finished_run
+                and run_status == "done"
+                and settings.cowork_store_backend != "sqlite"
+            ):
+                if settings.memory_extraction_enabled:
+                    memory_job = await schedule_memory_extraction(session, run_id=run_id)
+                if settings.skill_distillation_enabled:
+                    skill_job = await schedule_skill_distillation(session, run_id=run_id)
             await session.commit()
         await bus.publish(run_id)
+        if (
+            finished_run
+            and run_status == "done"
+            and settings.cowork_store_backend == "sqlite"
+        ):
+            try:
+                async with session_factory() as post_session:
+                    if settings.memory_extraction_enabled:
+                        if local_user_message is None:
+                            raise LookupError("SQLite Cowork run 缺少用户来源消息")
+                        memory_job = await schedule_memory_extraction(
+                            post_session,
+                            run_id=run_id,
+                            local_source_message_id=local_user_message.record_id,
+                            local_conversation_id=run.conversation_id,
+                            local_content=local_user_message.content,
+                            local_created_at=datetime.fromisoformat(local_user_message.created_at),
+                        )
+                    if settings.skill_distillation_enabled:
+                        skill_job = await schedule_skill_distillation(
+                            post_session,
+                            run_id=run_id,
+                            local_goal=run.goal,
+                            local_final_message=final_text,
+                            local_successful_tools=successful_tool_names(
+                                cast("dict[str, Any]", state)
+                            ),
+                        )
+                    await post_session.commit()
+            except Exception:
+                # Cowork 主运行已经持久化为成功；后处理失败只能告警，不能反向改终态。
+                logger.exception("SQLite Cowork 后处理作业创建失败", run_id=str(run_id))
+        if memory_job is not None or skill_job is not None:
+            try:
+                queue = ctx.get("run_queue") or await get_run_queue()
+                if memory_job is not None:
+                    await queue.enqueue_memory_job(memory_job.id, attempt=memory_job.attempts)
+                if skill_job is not None:
+                    await queue.enqueue_skill_job(skill_job.id, attempt=skill_job.attempts)
+            except Exception:
+                # 作业已可靠落库，定时 dispatcher 会补偿；不能把已成功的 Cowork 改成失败。
+                logger.exception("Cowork 后处理作业首次入队失败", run_id=str(run_id))
     except Exception as error:
-        logger.exception("Cowork run 执行失败", run_id=str(run_id))
+        error_detail = _cowork_error_detail(error)
+        logger.exception(
+            "Cowork run 执行失败",
+            run_id=str(run_id),
+            exception_type=type(error).__name__,
+            exception_detail=error_detail,
+        )
         await _fail_cowork(
             session_factory,
             bus,
             run_id=run_id,
             worker_id=worker_id,
             message_id=message_id,
-            error=str(error),
+            error=error_detail,
         )
     finally:
         if owns_gateway and raw_gateway is not None:
@@ -386,7 +491,18 @@ def _cowork_failure_message(error: str) -> str:
 
     detail = " ".join(error.split())
     if not detail:
-        return "Cowork 执行失败，未返回具体原因。请重试或缩小任务范围。"
+        return "Cowork 执行失败：运行时异常未携带说明，错误类型已记录，请重试。"
     if len(detail) > 360:
         detail = f"{detail[:357]}…"
     return f"Cowork 执行失败：{detail}"
+
+
+def _cowork_error_detail(error: BaseException) -> str:
+    """保证数据库和客户端永远拿到非空、可诊断的异常说明。"""
+
+    detail = " ".join(str(error).split())
+    if detail:
+        return detail
+    if isinstance(error, TimeoutError):
+        return "模型或工具请求超时，请重试"
+    return "运行时异常未携带说明；错误类型已写入日志，请重试"

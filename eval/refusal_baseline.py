@@ -10,22 +10,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from statistics import fmean
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.llm.gateway import ModelGateway, build_model_gateway
 from app.retrieval.citations import build_evidence_segments
-from app.retrieval.dense import DenseSearchHit, dense_search
-from app.retrieval.fusion import apply_document_cap, reciprocal_rank_fusion
-from app.retrieval.lexical import lexical_search
+from app.retrieval.pipeline import SearchPipeline, SearchPipelineRequest
 from app.services.evidence_sufficiency import (
     EvidenceAssessmentError,
     assess_evidence_sufficiency,
 )
 from app.services.grounded_answer import evaluate_refusal, retrieval_score_source
-from app.services.reranker import rerank_candidates
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @dataclass(frozen=True)
@@ -163,35 +159,35 @@ async def _evaluate_item(
 ) -> RefusalItemResult:
     started = time.monotonic()
     candidate_k = max(top_k, settings.rerank_candidate_k)
-    dense_hits = await dense_search(session, gateway, query=question, top_k=candidate_k)
-    hits: list[DenseSearchHit] = dense_hits
-    if strategy in {"dense-lexical-rrf", "dense-lexical-rrf-rerank"}:
-        lexical_hits = await lexical_search(
-            session, query=question, top_k=candidate_k, mode=settings.lexical_mode
-        )
-        hits = reciprocal_rank_fusion(
-            [dense_hits, lexical_hits], top_k=candidate_k, rrf_k=settings.rrf_k
-        )
-    if settings.document_cap_per_version:
-        hits = apply_document_cap(hits, cap=settings.document_cap_per_version)
-    if strategy == "dense-lexical-rrf-rerank" and len(hits) > top_k:
-        reranked = await rerank_candidates(
+    search = await SearchPipeline(session, gateway).search(
+        SearchPipelineRequest(
             query=question,
-            candidates=hits,
             top_k=top_k,
-            base_url=settings.reranker_base_url,
-            model=settings.reranker_model,
-            timeout_s=settings.reranker_timeout_s,
-            max_candidate_chars=settings.rerank_max_candidate_chars,
-            candidate_text_mode=settings.rerank_candidate_text_mode,
+            candidate_k=candidate_k,
+            retrieval_mode=("dense" if strategy == "dense-only" else "hybrid"),
+            lexical_enabled="lexical-rrf" in strategy,
+            lexical_mode=settings.lexical_mode,
+            rrf_k=settings.rrf_k,
+            document_cap_per_version=settings.document_cap_per_version,
+            rerank_enabled=strategy.endswith("rerank"),
+            reranker_base_url=settings.reranker_base_url,
+            reranker_model=settings.reranker_model,
+            reranker_timeout_s=settings.reranker_timeout_s,
+            rerank_max_candidate_chars=settings.rerank_max_candidate_chars,
+            rerank_candidate_text_mode=settings.rerank_candidate_text_mode,
         )
-        if not reranked.applied:
-            raise RuntimeError(reranked.reason)
-        hits = reranked.hits
+    )
+    if (
+        strategy.endswith("rerank")
+        and search.rerank.candidate_count > top_k
+        and not search.rerank.applied
+    ):
+        raise RuntimeError(search.rerank.reason)
+    hits = list(search.hits)
     score_source = retrieval_score_source(
         hits,
-        rerank_applied=strategy.endswith("rerank"),
-        lexical_rrf_applied="lexical-rrf" in strategy,
+        rerank_applied=search.rerank.applied,
+        lexical_rrf_applied=search.lexical_applied,
     )
     signals = evaluate_refusal(
         hits,

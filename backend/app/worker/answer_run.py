@@ -187,17 +187,11 @@ async def answer_run(
                                 gateway,
                                 conversation_id=run.conversation_id,
                                 current_run_id=run_id,
-                                context_window_tokens=(
-                                    answer_prompt_budget.context_window_tokens
-                                ),
+                                context_window_tokens=(answer_prompt_budget.context_window_tokens),
                                 trigger_ratio=settings.conversation_summary_trigger_ratio,
-                                keep_recent_turns=(
-                                    settings.conversation_summary_keep_recent_turns
-                                ),
+                                keep_recent_turns=(settings.conversation_summary_keep_recent_turns),
                                 max_summary_chars=settings.conversation_summary_max_chars,
-                                max_input_chars=(
-                                    settings.conversation_summary_input_max_chars
-                                ),
+                                max_input_chars=(settings.conversation_summary_input_max_chars),
                                 max_tokens=settings.conversation_summary_max_tokens,
                             )
                             # 摘要是独立 checkpoint；后续记忆或检索降级时不应随业务
@@ -245,9 +239,7 @@ async def answer_run(
                             run_id=str(run_id),
                         )
                 memory_context = ""
-                if settings.memory_recall_enabled and await run_uses_owner_memory(
-                    session, run_id
-                ):
+                if settings.memory_recall_enabled and await run_uses_owner_memory(session, run_id):
                     try:
                         recalled = await recall_memory_context(
                             session,

@@ -18,9 +18,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.llm.audit import SqlLlmCallAudit
@@ -28,8 +25,11 @@ from app.llm.gateway import ModelGateway, build_model_gateway
 from app.retrieval.dense import DenseSearchHit, dense_search
 from app.retrieval.fusion import reciprocal_rank_fusion
 from app.retrieval.lexical import lexical_search
+from app.retrieval.reranker import rerank_candidates
 from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
-from app.services.reranker import rerank_candidates
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from eval.dense_baseline import EvalItem, _load_items
 from eval.mapping import GoldSpan
 from eval.suites import load_suite, validate_suite

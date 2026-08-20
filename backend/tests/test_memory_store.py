@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from uuid6 import uuid7
 
 from app.memory.store import (
     PinnedMemoryError,
@@ -339,6 +340,64 @@ async def test_extraction_job_is_owner_only_idempotent_and_recoverable(
     )
     assert await finish_run(db_session, run_id=demo_run.id, status="done")
     assert await schedule_memory_extraction(db_session, run_id=demo_run.id) is None
+
+
+async def test_cowork_run_also_schedules_memory_distillation(
+    db_session: AsyncSession,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, scope="local_owner")
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="以后所有摘要都用表格",
+        budget_tokens=1000,
+        budget_calls=5,
+        budget_wall_ms=30_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content="以后所有摘要都用表格",
+        status="completed",
+        run_id=run.id,
+    )
+    assert await finish_run(db_session, run_id=run.id, status="done")
+
+    assert await schedule_memory_extraction(db_session, run_id=run.id) is not None
+
+
+async def test_sqlite_cowork_source_schedules_and_claims_memory_job(
+    db_session: AsyncSession,
+) -> None:
+    run_id = uuid7()
+    message_id = uuid7()
+    conversation_id = uuid7()
+    created_at = datetime.now(UTC)
+
+    job = await schedule_memory_extraction(
+        db_session,
+        run_id=run_id,
+        local_source_message_id=message_id,
+        local_conversation_id=conversation_id,
+        local_content="以后所有摘要都使用表格",
+        local_created_at=created_at,
+    )
+    assert job is not None and job.source_is_local is True
+    source = await claim_memory_job(
+        db_session,
+        job_id=job.id,
+        worker_id="local-memory",
+        lease_s=30,
+        max_attempts=3,
+    )
+
+    assert source is not None
+    assert source.job.run_id == run_id
+    assert source.job.source_message_id == message_id
+    assert source.conversation_id == conversation_id
+    assert source.content == "以后所有摘要都使用表格"
 
 
 async def test_dispatcher_recovers_expired_jobs_and_finalizes_exhausted_ones(

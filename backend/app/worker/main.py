@@ -5,6 +5,7 @@ from typing import Any, ClassVar
 
 from arq import cron
 
+from app.agent.cowork_browser_tools import PlaywrightBrowserManager
 from app.core.config import get_settings
 from app.core.db import close_database, session_factory
 from app.core.logging import configure_logging
@@ -18,10 +19,12 @@ from app.worker.maintenance import (
     cost_sweeper_tick,
     memory_dispatch_tick,
     scheduler_dispatch_tick,
+    skill_distillation_dispatch_tick,
     watchdog_tick,
 )
 from app.worker.memory_run import memory_extraction_job
 from app.worker.review_run import review_run
+from app.worker.skill_distillation_run import skill_distillation_job
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -33,22 +36,30 @@ async def startup(ctx: dict[str, Any]) -> None:
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
+    browser_manager = ctx.get("browser_manager")
+    if isinstance(browser_manager, PlaywrightBrowserManager):
+        await browser_manager.aclose()
     cached = ctx.get("mcp_manager_cache")
     if isinstance(cached, dict):
-        managers = {
-            manager for manager in cached.values() if isinstance(manager, McpClientManager)
-        }
+        managers = {manager for manager in cached.values() if isinstance(manager, McpClientManager)}
         await asyncio.gather(*(manager.aclose() for manager in managers))
     await close_redis()
     await close_database()
 
 
 class WorkerSettings:
-    functions: ClassVar = [answer_run, review_run, cowork_run, memory_extraction_job]
+    functions: ClassVar = [
+        answer_run,
+        review_run,
+        cowork_run,
+        memory_extraction_job,
+        skill_distillation_job,
+    ]
     cron_jobs: ClassVar = [
         # watchdog 频率要明显高于租约时长, 否则失联的 run 会长时间停在"正在回答"。
         cron(watchdog_tick, second={0, 20, 40}, run_at_startup=True),
         cron(memory_dispatch_tick, second={10, 30, 50}, run_at_startup=True),
+        cron(skill_distillation_dispatch_tick, second={15, 35, 55}, run_at_startup=True),
         cron(scheduler_dispatch_tick, second={5, 20, 35, 50}, run_at_startup=True),
         cron(cost_sweeper_tick, minute=set(range(0, 60, 5))),
     ]

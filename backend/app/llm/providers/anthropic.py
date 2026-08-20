@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import httpx
 
+from app.llm.errors import ProviderNotDispatchedError, ProviderResponseError
 from app.llm.providers.openai_compatible import (
-    ProviderResponseError,
     _dispatch_guard,
     _raise_with_body,
 )
@@ -17,7 +20,6 @@ from app.llm.types import (
     CompletionResult,
     EmbeddingResult,
     Message,
-    ProviderNotDispatchedError,
     ToolCall,
     ToolDefinition,
     Usage,
@@ -76,6 +78,26 @@ class AnthropicProvider:
             temperature=temperature,
         )
 
+    async def complete_with_tools_prompt_cache(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool,
+        max_tokens: int,
+        temperature: float,
+        prompt_cache_key: str,
+    ) -> CompletionResult:
+        # Anthropic 不接收业务 cache key；该参数只表明 Gateway 已为稳定前缀分组。
+        del parallel_tool_calls, prompt_cache_key
+        return await self._complete(
+            messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            cache_stable_prefix=True,
+        )
+
     async def _complete(
         self,
         messages: list[Message],
@@ -83,8 +105,9 @@ class AnthropicProvider:
         max_tokens: int,
         temperature: float,
         tools: list[ToolDefinition] | None = None,
+        cache_stable_prefix: bool = False,
     ) -> CompletionResult:
-        system, converted = _anthropic_messages(messages)
+        system, converted = await _anthropic_messages(messages)
         payload: dict[str, Any] = {
             "model": self.chat_model,
             "messages": converted,
@@ -92,7 +115,17 @@ class AnthropicProvider:
             "temperature": temperature,
         }
         if system:
-            payload["system"] = system
+            payload["system"] = (
+                [
+                    {
+                        "type": "text",
+                        "text": system,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+                if cache_stable_prefix
+                else system
+            )
         if tools:
             payload["tools"] = [
                 {
@@ -136,13 +169,21 @@ class AnthropicProvider:
         if not text_parts and not calls:
             raise ProviderResponseError("Anthropic 返回了空响应")
         usage = body.get("usage") or {}
+        cache_read_tokens = int(usage.get("cache_read_input_tokens", 0))
+        cache_write_tokens = int(usage.get("cache_creation_input_tokens", 0))
         return CompletionResult(
             text="".join(text_parts),
             model=str(body.get("model") or self.chat_model),
             provider=self.name,
             usage=Usage(
-                input_tokens=int(usage.get("input_tokens", 0)),
+                input_tokens=(
+                    int(usage.get("input_tokens", 0))
+                    + cache_read_tokens
+                    + cache_write_tokens
+                ),
                 output_tokens=int(usage.get("output_tokens", 0)),
+                prompt_cache_read_tokens=cache_read_tokens,
+                prompt_cache_write_tokens=cache_write_tokens,
             ),
             tool_calls=tuple(calls),
         )
@@ -163,7 +204,7 @@ class AnthropicProvider:
         await self._client.aclose()
 
 
-def _anthropic_messages(messages: list[Message]) -> tuple[str, list[dict[str, Any]]]:
+async def _anthropic_messages(messages: list[Message]) -> tuple[str, list[dict[str, Any]]]:
     system_parts: list[str] = []
     converted: list[dict[str, Any]] = []
     for message in messages:
@@ -201,11 +242,34 @@ def _anthropic_messages(messages: list[Message]) -> tuple[str, list[dict[str, An
                 ],
             )
             continue
-        _append_anthropic(
-            converted,
-            "user",
-            [{"type": "text", "text": message.content}],
-        )
+        blocks = [{"type": "text", "text": message.content}] if message.content else []
+        for attachment in message.attachments:
+            if attachment.kind in {"image", "pdf"}:
+                try:
+                    raw = await asyncio.to_thread(Path(attachment.path).read_bytes)
+                except OSError as error:
+                    raise ProviderResponseError(
+                        f"输入附件已丢失，请重新上传：{attachment.filename}"
+                    ) from error
+                source = {
+                    "type": "base64",
+                    "media_type": attachment.media_type,
+                    "data": base64.b64encode(raw).decode("ascii"),
+                }
+                block_type = "image" if attachment.kind == "image" else "document"
+                blocks.append({"type": block_type, "source": source})
+            else:
+                blocks.append(
+                    {
+                        "type": "text",
+                        "text": (
+                            f'<attachment name="{attachment.filename}" '
+                            f'type="{attachment.media_type}" untrusted="true">\n'
+                            f"{attachment.extracted_text}\n</attachment>"
+                        ),
+                    }
+                )
+        _append_anthropic(converted, "user", blocks or [{"type": "text", "text": ""}])
     return "\n\n".join(system_parts), converted
 
 

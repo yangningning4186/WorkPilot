@@ -28,8 +28,6 @@ from statistics import fmean
 from typing import Any
 
 import httpx
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.llm.audit import SqlLlmCallAudit
@@ -37,12 +35,14 @@ from app.llm.gateway import ModelGateway, build_model_gateway
 from app.retrieval.dense import DenseSearchHit, dense_search
 from app.retrieval.fusion import rerank_candidate_union
 from app.retrieval.lexical import lexical_search
-from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
-from app.services.reranker import (
+from app.retrieval.reranker import (
     build_candidate_text,
     candidate_content_offset,
     parse_cross_encoder_response,
 )
+from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from eval.dense_baseline import (
     EvalItem,
     _candidate_chunks,

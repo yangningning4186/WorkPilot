@@ -167,9 +167,7 @@ def coverage_aware_top_k(
     candidates = _candidate_map(all_rankings)
     aggregate_scores = {
         chunk_id: sum(
-            1.0 / (rrf_k + rank)
-            for ranks in rank_maps
-            if (rank := ranks.get(chunk_id)) is not None
+            1.0 / (rrf_k + rank) for ranks in rank_maps if (rank := ranks.get(chunk_id)) is not None
         )
         for chunk_id in candidates
     }
@@ -181,11 +179,7 @@ def coverage_aware_top_k(
         if len(selected_ids) >= top_k:
             break
         chosen = next(
-            (
-                hit.chunk_id
-                for hit in ranking[:rank_cutoff]
-                if hit.chunk_id not in selected_ids
-            ),
+            (hit.chunk_id for hit in ranking[:rank_cutoff] if hit.chunk_id not in selected_ids),
             None,
         )
         if chosen is not None:

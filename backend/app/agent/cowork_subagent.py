@@ -7,13 +7,13 @@ from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.agent.budget import ToolCompletionClient
 from app.agent.cowork_tools import (
     CoworkToolContext,
     CoworkToolRegistry,
     CoworkToolResult,
     CoworkToolSpec,
 )
+from app.agent_core.budget import ToolCompletionClient
 from app.llm.types import Message
 
 

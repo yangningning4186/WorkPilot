@@ -168,6 +168,29 @@ async def test_cancel_is_immediate_only_before_pickup(db_session: AsyncSession) 
     assert requested.cancel_requested is True
 
 
+async def test_watchdog_finalizes_cancelled_run_after_worker_disappears(
+    db_session: AsyncSession,
+) -> None:
+    run = await _new_run(db_session)
+    await claim_run(db_session, run_id=run.id, worker_id="worker-a", lease_s=60)
+    requested = await request_cancel(db_session, run_id=run.id)
+    assert requested.status == "executing"
+    await db_session.execute(
+        text("UPDATE agent_runs SET lease_until = now() - interval '1 second' WHERE id = :id"),
+        {"id": run.id},
+    )
+
+    reaped = await reap_expired_runs(db_session)
+
+    assert reaped.cancelled == [run.id]
+    assert reaped.recovered == []
+    refreshed = await get_run(db_session, run.id)
+    assert refreshed is not None
+    assert refreshed.status == "cancelled"
+    events = await list_events(db_session, run_id=run.id)
+    assert [event.type for event in events] == ["error", "run.done"]
+
+
 async def test_finish_run_requires_matching_worker(db_session: AsyncSession) -> None:
     run = await _new_run(db_session)
     await claim_run(db_session, run_id=run.id, worker_id="worker-a", lease_s=60)
@@ -201,9 +224,7 @@ async def test_messages_get_sequential_seq_per_conversation(db_session: AsyncSes
     assert seqs == [1, 2]
 
 
-async def _expired_review_run(
-    session: AsyncSession, *, with_checkpoint: bool = True
-) -> UUID:
+async def _expired_review_run(session: AsyncSession, *, with_checkpoint: bool = True) -> UUID:
     conversation_id = await ensure_conversation(session)
     run = await create_run(
         session,
@@ -246,9 +267,7 @@ async def test_watchdog_recovers_review_run_instead_of_failing_it(
     assert refreshed.status == "queued"
     assert refreshed.lease_until is None
 
-    reclaimed = await claim_run(
-        db_session, run_id=run_id, worker_id="worker-b", lease_s=60
-    )
+    reclaimed = await claim_run(db_session, run_id=run_id, worker_id="worker-b", lease_s=60)
     assert reclaimed is not None
     assert reclaimed.worker_id == "worker-b"
 
@@ -277,10 +296,7 @@ async def test_watchdog_stops_recovering_after_the_cap(
         assert reaped.recovered == [(run_id, attempt)]
         await claim_run(db_session, run_id=run_id, worker_id="worker-a", lease_s=60)
         await db_session.execute(
-            text(
-                "UPDATE agent_runs SET lease_until = now() - interval '1 second' "
-                "WHERE id = :id"
-            ),
+            text("UPDATE agent_runs SET lease_until = now() - interval '1 second' WHERE id = :id"),
             {"id": run_id},
         )
 

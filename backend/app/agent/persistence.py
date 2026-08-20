@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
 from app.agent.state import AgentState, PlanStepState, json_state
+from app.cowork_store.routing import configured_cowork_store
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,10 @@ async def update_plan_step(
 ) -> None:
     if status not in {"pending", "running", "done", "failed", "skipped"}:
         raise ValueError(f"非法 plan step 状态: {status}")
+    store = configured_cowork_store()
+    if store is not None and await store.get_run(run_id) is not None:
+        await store.update_plan_step_status(run_id=run_id, step_id=step_id, status=status)
+        return
     updated = (
         await session.execute(
             text(
@@ -128,6 +133,22 @@ async def record_attempt(
     tokens: int | None = None,
     error_model: str | None = None,
 ) -> UUID:
+    store = configured_cowork_store()
+    if store is not None and await store.get_run(run_id) is not None:
+        return await store.record_attempt(
+            run_id=run_id,
+            plan_step_id=plan_step_id,
+            attempt_no=attempt_no,
+            node=node,
+            status=status,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_result=tool_result,
+            idempotency_key=idempotency_key,
+            latency_ms=latency_ms,
+            tokens=tokens,
+            error_model=error_model,
+        )
     attempt_id = uuid7()
     await session.execute(
         text(
@@ -169,6 +190,9 @@ async def next_attempt_no(
     plan_step_id: UUID,
     node: str,
 ) -> int:
+    store = configured_cowork_store()
+    if store is not None and await store.get_run(run_id) is not None:
+        return await store.next_attempt_no(run_id=run_id, plan_step_id=plan_step_id, node=node)
     latest = (
         await session.execute(
             text(
@@ -210,9 +234,7 @@ async def save_checkpoint(
     return AgentCheckpoint(run_id, checkpoint_id, parent_id, clean)
 
 
-async def load_latest_checkpoint(
-    session: AsyncSession, *, run_id: UUID
-) -> AgentCheckpoint | None:
+async def load_latest_checkpoint(session: AsyncSession, *, run_id: UUID) -> AgentCheckpoint | None:
     row = (
         (
             await session.execute(

@@ -61,9 +61,7 @@ class _ReadableHtmlParser(HTMLParser):
             self._in_title = True
         elif lowered == "a":
             self._link_href = next((value for name, value in attrs if name == "href"), None)
-            self._link_class = next(
-                (value or "" for name, value in attrs if name == "class"), ""
-            )
+            self._link_class = next((value or "" for name, value in attrs if name == "class"), "")
             self._link_parts = []
         elif lowered in {"p", "div", "section", "article", "br", "li", "tr", "h1", "h2", "h3"}:
             self.text_parts.append("\n")
@@ -102,7 +100,7 @@ class _ReadableHtmlParser(HTMLParser):
         return title, text, tuple(self.links[:500])
 
 
-def _normalized_url(raw_url: str) -> str:
+def normalize_public_url(raw_url: str) -> str:
     try:
         parsed = urlsplit(raw_url.strip())
         port = parsed.port
@@ -136,7 +134,7 @@ def _is_public_address(address: str) -> bool:
     return bool(value.is_global)
 
 
-async def _assert_public_target(url: str) -> tuple[str, ...]:
+async def assert_public_target(url: str) -> tuple[str, ...]:
     parsed = urlsplit(url)
     assert parsed.hostname is not None
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -153,6 +151,12 @@ async def _assert_public_target(url: str) -> tuple[str, ...]:
     if not addresses or any(not _is_public_address(address) for address in addresses):
         raise CoworkWebError("网页工具不能访问本机、私有、保留或链路本地地址")
     return tuple(sorted(addresses, key=lambda item: (":" in item, item)))
+
+
+# 保留内部旧名称，既兼容已有扩展/测试的 monkeypatch，也让新浏览器执行器使用
+# 明确的公开名称。fetch_url 继续从别名取值，测试不会悄悄失去 DNS 隔离。
+_normalized_url = normalize_public_url
+_assert_public_target = assert_public_target
 
 
 def _pinned_request(url: str, address: str) -> tuple[str, str, str]:
@@ -302,7 +306,7 @@ async def search_web(
             if target:
                 raw_url = target
         try:
-            result_url = _normalized_url(raw_url)
+            result_url = normalize_public_url(raw_url)
         except CoworkWebError:
             continue
         if result_url in seen or urlsplit(result_url).hostname == "duckduckgo.com":
@@ -319,7 +323,9 @@ async def _parse_remote_pdf(content: bytes, *, settings: Settings) -> PdfSnapsho
         raise CoworkWebError(
             f"PDF 大小 {len(content)} bytes 超过上限 {settings.pdf_max_bytes} bytes"
         )
-    with tempfile.NamedTemporaryFile(prefix="workpilot-web-", suffix=".pdf", delete=False) as stream:
+    with tempfile.NamedTemporaryFile(
+        prefix="workpilot-web-", suffix=".pdf", delete=False
+    ) as stream:
         stream.write(content)
         temporary = Path(stream.name)
     try:

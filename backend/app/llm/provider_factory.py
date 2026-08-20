@@ -28,6 +28,7 @@ class ChatProviderConfig:
     api_key: str
     model: str
     timeout_s: float
+    prompt_cache_key_supported: bool = False
 
 
 def build_chat_provider(config: ChatProviderConfig, *, trust_env: bool = False) -> ModelProvider:
@@ -53,6 +54,9 @@ def build_chat_provider(config: ChatProviderConfig, *, trust_env: bool = False) 
         api_key=config.api_key,
         chat_model=config.model,
         embedding_model="conversation-only",
+        prompt_cache_key_supported=(
+            config.provider == "openai" or config.prompt_cache_key_supported
+        ),
         timeout_s=config.timeout_s,
         trust_env=trust_env,
     )

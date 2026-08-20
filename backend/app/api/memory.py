@@ -89,7 +89,9 @@ async def get_memories(
 
 
 @router.post("", response_model=MemoryResponse, status_code=status.HTTP_201_CREATED)
-async def post_memory(request: MemoryCreate, session: DbSession, gateway: Gateway) -> MemoryResponse:
+async def post_memory(
+    request: MemoryCreate, session: DbSession, gateway: Gateway
+) -> MemoryResponse:
     memory = await _write_memory(
         session,
         gateway,
@@ -114,9 +116,7 @@ async def patch_memory(
         raise HTTPException(status_code=404, detail="当前记忆不存在")
     if request.fact is None and request.category is None:
         assert request.pinned is not None
-        updated = await set_memory_pinned(
-            session, memory_id=memory_id, pinned=request.pinned
-        )
+        updated = await set_memory_pinned(session, memory_id=memory_id, pinned=request.pinned)
     else:
         updated = await _write_memory(
             session,

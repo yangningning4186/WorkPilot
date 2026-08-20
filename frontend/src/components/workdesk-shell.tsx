@@ -16,6 +16,8 @@ export type WorkdeskIconName =
   | "add"
   | "agent"
   | "automation"
+  | "archive"
+  | "dots"
   | "file"
   | "folder"
   | "mcp"
@@ -25,7 +27,9 @@ export type WorkdeskIconName =
   | "shield"
   | "skill"
   | "spark"
-  | "stop";
+  | "stop"
+  | "restore"
+  | "trash";
 
 export function WorkdeskIcon({ name }: { name: WorkdeskIconName }) {
   return (
@@ -33,6 +37,8 @@ export function WorkdeskIcon({ name }: { name: WorkdeskIconName }) {
       {name === "add" && <><circle cx="12" cy="12" r="8.5" /><path d="M12 8v8M8 12h8" /></>}
       {name === "agent" && <><path d="M5 7.5A3.5 3.5 0 0 1 8.5 4h7A3.5 3.5 0 0 1 19 7.5v5a3.5 3.5 0 0 1-3.5 3.5H11l-4.5 3v-3.7A3.5 3.5 0 0 1 5 12.5z" /><path d="M9 9.5h6M9 12.5h4" /></>}
       {name === "automation" && <><circle cx="12" cy="12" r="7.5" /><path d="M12 8v4l2.5 2M5.8 4.8 4 6.6M18.2 4.8 20 6.6" /></>}
+      {name === "archive" && <><path d="M4 7.5h16v12H4zM3.5 4.5h17v3h-17z" /><path d="M9 11h6" /></>}
+      {name === "dots" && <><circle cx="6" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="18" cy="12" r="1" /></>}
       {name === "file" && <><path d="M7 3.5h6l4 4v13H7z" /><path d="M13 3.5v4h4M9.5 12h5M9.5 15h5" /></>}
       {name === "folder" && <path d="M3.5 7.5A2.5 2.5 0 0 1 6 5h4l2 2h6a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 18 19H6a2.5 2.5 0 0 1-2.5-2.5z" />}
       {name === "mcp" && <><path d="M8 8.5V6a2 2 0 0 1 4 0v3M12 8.5V5a2 2 0 0 1 4 0v5" /><path d="M8 8.5a2 2 0 0 0-4 0v4.7c0 4.1 3.3 7.3 7.3 7.3h.7a6 6 0 0 0 6-6v-4a2 2 0 0 0-4 0v1" /></>}
@@ -43,6 +49,8 @@ export function WorkdeskIcon({ name }: { name: WorkdeskIconName }) {
       {name === "skill" && <><path d="M6 4.5h9.5A2.5 2.5 0 0 1 18 7v12.5H8.5A2.5 2.5 0 0 1 6 17z" /><path d="M6 17a2.5 2.5 0 0 1 2.5-2.5H18M10 8h4M10 11h5" /></>}
       {name === "spark" && <><path d="m12 3 1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5z" /><path d="m18.5 16 .6 2.4 2.4.6-2.4.6-.6 2.4-.6-2.4-2.4-.6 2.4-.6z" /></>}
       {name === "stop" && <rect height="9" rx="2" width="9" x="7.5" y="7.5" />}
+      {name === "restore" && <><path d="M5 8v5h5" /><path d="M6.5 12a6.5 6.5 0 1 0 1.4-4.1L5 10" /></>}
+      {name === "trash" && <><path d="M5.5 7h13M9 7V4.5h6V7M7.5 7l.7 12h7.6l.7-12M10 10.5v5M14 10.5v5" /></>}
     </svg>
   );
 }

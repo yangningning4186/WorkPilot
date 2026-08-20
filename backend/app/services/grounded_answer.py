@@ -16,14 +16,12 @@ from app.retrieval.citations import (
     build_evidence_segments,
     parse_citations,
 )
-from app.retrieval.coverage import CoverageSelectionResult, coverage_aware_hybrid_search
-from app.retrieval.dense import DenseSearchHit, multi_query_dense_search
-from app.retrieval.fusion import (
-    apply_document_cap,
-    reciprocal_rank_fusion,
-)
-from app.retrieval.lexical import lexical_search
-from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
+from app.retrieval.coverage import CoverageSelectionResult
+from app.retrieval.dense import DenseSearchHit
+from app.retrieval.pipeline import SearchPipeline, SearchPipelineRequest
+from app.retrieval.query_decomposition import QueryPlan
+from app.retrieval.reranker import RerankResult
+from app.retrieval.strategy import ChunkStrategy
 from app.services.conversation_context import CONVERSATION_USAGE_POLICY
 from app.services.evidence_sufficiency import (
     EvidenceAssessment,
@@ -31,12 +29,6 @@ from app.services.evidence_sufficiency import (
     assess_evidence_sufficiency,
 )
 from app.services.prompt_assembly import SystemPromptSection, assemble_system_prompt
-from app.services.query_decomposition import (
-    QueryPlan,
-    fallback_query_plan,
-    plan_retrieval_queries,
-)
-from app.services.reranker import RerankResult, rerank_candidates
 
 if TYPE_CHECKING:
     from app.core.config import Settings
@@ -48,9 +40,7 @@ RefusalReason = Literal[
     "evidence_gate_invalid",
 ]
 RetrievalScoreSource = Literal["dense", "lexical", "fusion", "rerank"]
-RefusalScoreGateSource = Literal[
-    "disabled", "dense", "lexical", "fusion", "rerank"
-]
+RefusalScoreGateSource = Literal["disabled", "dense", "lexical", "fusion", "rerank"]
 
 GROUNDED_ANSWER_POLICY = f"""你是 WorkPilot 的知识库问答助手。
 只能依据本次提供的证据回答, 不得使用外部知识或自行补充事实。
@@ -442,117 +432,44 @@ async def _prepare_generation(
 ) -> "_GenerationContext | GroundedAnswerResult":
     """检索 → 阈值拒答 → 证据门控。返回拒答结果, 或放行生成所需的上下文。"""
 
-    # 整条链路只认这一个 chunk strategy: dense、词法、RRF、rerank 全部显式传同一个值。
-    # 漏传会让 RRF/rerank 的"禁止混合"校验直接抛错, 这正是想要的——宁可失败, 不可静默混检索。
-    chunk_strategy = validate_chunk_strategy(chunk_strategy)
-    query_plan = await _build_query_plan(
-        gateway,
-        query=query,
-        enabled=query_decomposition_enabled,
-        max_subqueries=query_decomposition_max_subqueries,
-        max_tokens=query_decomposition_max_tokens,
-    )
-    if coverage_selection_enabled and not query_decomposition_enabled:
-        raise ValueError("coverage selector 需要同时开启 query decomposition")
-    if coverage_selection_enabled and rerank_enabled:
-        raise ValueError("coverage selector 与 rerank 不能同时作为最终排序器")
-    if coverage_selection_enabled and document_cap_per_version:
-        raise ValueError("coverage selector 暂不与 document cap 叠加")
-    # 候选池深度不再绑在 rerank 开关上。线上与评测都先在同样深度召回/融合。
-    candidate_k = max(top_k, rerank_candidate_k)
-    coverage_result = CoverageSelectionResult(
-        hits=[],
-        applied=False,
-        requirement_count=0,
-        covered_requirement_count=0,
-        candidate_count=0,
-        lexical_candidate_count=0,
-        reason=(
-            "coverage selector 已关闭"
-            if not coverage_selection_enabled
-            else "查询规划未分解，回退原 RRF"
-        ),
-    )
-    lexical_hits: list[DenseSearchHit] = []
-    if coverage_selection_enabled and query_plan.decomposed:
-        coverage_result = await coverage_aware_hybrid_search(
-            session,
-            gateway,
-            queries=query_plan.queries,
+    # 候选池深度与 rerank 开关解耦；线上、同步 API、流式 worker 与评测都从这里
+    # 进入同一条 SearchPipeline，禁止调用方各自拼装 dense/lexical/RRF/rerank。
+    search = await SearchPipeline(session, gateway).search(
+        SearchPipelineRequest(
+            query=query,
             top_k=top_k,
-            candidate_k=candidate_k,
-            rank_cutoff=coverage_rank_cutoff,
+            candidate_k=max(top_k, rerank_candidate_k),
+            strategy=chunk_strategy,
+            temporal_ctx=temporal_ctx,
+            max_evidence_chars=max_evidence_chars,
+            query_decomposition_enabled=query_decomposition_enabled,
+            query_decomposition_max_subqueries=query_decomposition_max_subqueries,
+            query_decomposition_max_tokens=query_decomposition_max_tokens,
+            coverage_selection_enabled=coverage_selection_enabled,
+            coverage_rank_cutoff=coverage_rank_cutoff,
             lexical_enabled=lexical_rrf_enabled,
             lexical_mode=lexical_mode,
             rrf_k=rrf_k,
-            strategy=chunk_strategy,
-            temporal_ctx=temporal_ctx,
+            document_cap_per_version=document_cap_per_version,
+            rerank_enabled=rerank_enabled,
+            reranker_base_url=reranker_base_url,
+            reranker_model=reranker_model,
+            reranker_timeout_s=reranker_timeout_s,
+            rerank_max_candidate_chars=rerank_max_candidate_chars,
+            rerank_candidate_text_mode=rerank_candidate_text_mode,
         )
-        candidate_hits = coverage_result.hits
-        lexical_candidate_count = coverage_result.lexical_candidate_count
-    else:
-        candidate_hits = await multi_query_dense_search(
-            session,
-            gateway,
-            queries=query_plan.queries,
-            top_k=candidate_k,
-            strategy=chunk_strategy,
-            temporal_ctx=temporal_ctx,
-        )
-        if lexical_rrf_enabled:
-            lexical_hits = await lexical_search(
-                session,
-                query=query,
-                top_k=candidate_k,
-                mode=lexical_mode,
-                strategy=chunk_strategy,
-                temporal_ctx=temporal_ctx,
-            )
-            # P1-A：生产保持 RRF Top-K -> rerank；union 仅供离线实验。
-            candidate_hits = reciprocal_rank_fusion(
-                [candidate_hits, lexical_hits],
-                top_k=candidate_k,
-                rrf_k=rrf_k,
-                strategy=chunk_strategy,
-            )
-        lexical_candidate_count = len(lexical_hits)
-    # cap 放在 rerank 之前: cross-encoder 只按单点相关性排序, 放到之后做
-    # 第二篇文档的块根本进不了精排后的 Top-K（台账 E7 B 组）。
-    # 非融合路径（关掉词法臂）同样需要, 所以放在 if 之外。
-    if document_cap_per_version:
-        candidate_hits = apply_document_cap(
-            candidate_hits, cap=document_cap_per_version
-        )
-    if rerank_enabled and len(candidate_hits) > top_k:
-        rerank_result = await rerank_candidates(
-            query=query,
-            candidates=candidate_hits,
-            top_k=top_k,
-            base_url=reranker_base_url,
-            model=reranker_model,
-            timeout_s=reranker_timeout_s,
-            max_candidate_chars=rerank_max_candidate_chars,
-            candidate_text_mode=rerank_candidate_text_mode,
-            strategy=chunk_strategy,
-        )
-    else:
-        rerank_result = RerankResult(
-            hits=candidate_hits[:top_k],
-            applied=False,
-            candidate_count=len(candidate_hits),
-            reason=(
-                coverage_result.reason
-                if coverage_result.applied
-                else "rerank 已关闭或候选数不足"
-            ),
-            model=None,
-            provider=None,
-        )
-    hits = rerank_result.hits
+    )
+    hits = list(search.hits)
+    evidence = list(search.evidence)
+    query_plan = search.query_plan
+    coverage_result = search.coverage
+    rerank_result = search.rerank
+    lexical_candidate_count = search.lexical_candidate_count
+    chunk_strategy = search.strategy
     score_source = retrieval_score_source(
         hits,
         rerank_applied=rerank_result.applied,
-        lexical_rrf_applied=lexical_rrf_enabled,
+        lexical_rrf_applied=search.lexical_applied,
     )
     signals = evaluate_refusal(
         hits,
@@ -573,12 +490,11 @@ async def _prepare_generation(
             query_plan=query_plan,
             coverage_result=coverage_result,
             rerank_result=rerank_result,
-            lexical_rrf_applied=lexical_rrf_enabled,
+            lexical_rrf_applied=search.lexical_applied,
             lexical_candidate_count=lexical_candidate_count,
             chunk_strategy=chunk_strategy,
         )
 
-    evidence = build_evidence_segments(hits, max_chars=max_evidence_chars)
     if not evidence:
         return _refusal_result(
             reason="no_evidence",
@@ -590,7 +506,7 @@ async def _prepare_generation(
             query_plan=query_plan,
             coverage_result=coverage_result,
             rerank_result=rerank_result,
-            lexical_rrf_applied=lexical_rrf_enabled,
+            lexical_rrf_applied=search.lexical_applied,
             lexical_candidate_count=lexical_candidate_count,
             chunk_strategy=chunk_strategy,
         )
@@ -628,7 +544,7 @@ async def _prepare_generation(
             query_plan=query_plan,
             coverage_result=coverage_result,
             rerank_result=rerank_result,
-            lexical_rrf_applied=lexical_rrf_enabled,
+            lexical_rrf_applied=search.lexical_applied,
             lexical_candidate_count=lexical_candidate_count,
             chunk_strategy=chunk_strategy,
         )
@@ -647,7 +563,7 @@ async def _prepare_generation(
             query_plan=query_plan,
             coverage_result=coverage_result,
             rerank_result=rerank_result,
-            lexical_rrf_applied=lexical_rrf_enabled,
+            lexical_rrf_applied=search.lexical_applied,
             lexical_candidate_count=lexical_candidate_count,
             chunk_strategy=chunk_strategy,
         )
@@ -663,7 +579,7 @@ async def _prepare_generation(
         query_plan=query_plan,
         coverage_result=coverage_result,
         rerank_result=rerank_result,
-        lexical_rrf_applied=lexical_rrf_enabled,
+        lexical_rrf_applied=search.lexical_applied,
         lexical_candidate_count=lexical_candidate_count,
         chunk_strategy=chunk_strategy,
     )
@@ -684,9 +600,7 @@ def build_gate_evidence(
 
     return build_evidence_segments(
         hits,
-        max_chars=(
-            rerank_evidence_gate_max_chars if rerank_applied else evidence_gate_max_chars
-        ),
+        max_chars=(rerank_evidence_gate_max_chars if rerank_applied else evidence_gate_max_chars),
     )
 
 
@@ -730,9 +644,7 @@ def _generated_result(
         query_plan_provider=context.query_plan.provider,
         coverage_selection_applied=context.coverage_result.applied,
         coverage_requirement_count=context.coverage_result.requirement_count,
-        coverage_covered_requirement_count=(
-            context.coverage_result.covered_requirement_count
-        ),
+        coverage_covered_requirement_count=(context.coverage_result.covered_requirement_count),
         coverage_candidate_count=context.coverage_result.candidate_count,
         coverage_reason=context.coverage_result.reason,
         rerank_applied=context.rerank_result.applied,
@@ -774,15 +686,11 @@ def evaluate_refusal(
     if not 0.0 <= margin_threshold <= 1.0:
         raise ValueError("refusal margin threshold 必须位于 0 到 1")
     if not hits:
-        return RetrievalRefusalSignals(
-            None, None, None, None, None, False, True, "no_evidence"
-        )
+        return RetrievalRefusalSignals(None, None, None, None, None, False, True, "no_evidence")
     resolved_source = score_source or retrieval_score_source(
         hits, rerank_applied=False, lexical_rrf_applied=False
     )
-    ranked_scores = sorted(
-        (_score_for_source(hit, resolved_source) for hit in hits), reverse=True
-    )
+    ranked_scores = sorted((_score_for_source(hit, resolved_source) for hit in hits), reverse=True)
     top_score = ranked_scores[0]
     second_score = ranked_scores[1] if len(ranked_scores) > 1 else None
     score_margin = top_score - second_score if second_score is not None else None
@@ -903,29 +811,6 @@ def _refusal_result(
     )
 
 
-async def _build_query_plan(
-    gateway: ModelGateway,
-    *,
-    query: str,
-    enabled: bool,
-    max_subqueries: int,
-    max_tokens: int,
-) -> QueryPlan:
-    if not enabled:
-        return fallback_query_plan(query, reason="查询分解已关闭")
-    try:
-        return await plan_retrieval_queries(
-            gateway,
-            query=query,
-            max_subqueries=max_subqueries,
-            max_tokens=max_tokens,
-        )
-    except Exception as error:
-        # 查询规划是召回增强项。结构化输出异常或远端模型暂时不可用时退回原查询,
-        # 不能让增强项拖垮现有 dense 链路。
-        return fallback_query_plan(query, reason=f"查询分解降级: {type(error).__name__}")
-
-
 def _build_user_prompt(
     query: str,
     evidence: list[EvidenceSegment],
@@ -943,9 +828,7 @@ def _build_user_prompt(
         }
         for segment in evidence
     ]
-    context_prefix = "\n\n".join(
-        part for part in (memory_context, conversation_context) if part
-    )
+    context_prefix = "\n\n".join(part for part in (memory_context, conversation_context) if part)
     if context_prefix:
         context_prefix += "\n\n"
     return (

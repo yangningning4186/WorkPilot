@@ -1,57 +1,43 @@
 """Cowork 交付物索引；文件内容仍留在用户授权目录。"""
 
 import json
-from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
+from app.cowork_contracts import (
+    ArtifactKind as ArtifactKind,
+)
+from app.cowork_contracts import (
+    ArtifactRecord as ArtifactRecord,
+)
+from app.cowork_contracts import (
+    ArtifactRegistrationError as ArtifactRegistrationError,
+)
+from app.cowork_store.routing import configured_cowork_store
 from app.services.cowork_permissions import (
     CapabilityDeniedError,
     ConversationNotFoundError,
     resolve_target_within_root,
 )
 
-ArtifactKind = Literal["file", "report", "diff", "table"]
-
-
-class ArtifactRegistrationError(RuntimeError):
-    pass
-
-
-@dataclass(frozen=True)
-class ArtifactRecord:
-    id: UUID
-    conversation_id: UUID
-    run_id: UUID | None
-    session_root_id: UUID | None
-    kind: ArtifactKind
-    title: str
-    uri: str
-    mime_type: str | None
-    meta: dict[str, Any]
-    created_at: datetime
-    updated_at: datetime
-
-
 _COLUMNS = """
     id, conversation_id, run_id, session_root_id, kind, title, uri, mime_type, meta,
     created_at, updated_at
 """
 _QUALIFIED_ARTIFACT_COLUMNS = ", ".join(
-    f"artifacts.{column.strip()} AS {column.strip()}"
-    for column in _COLUMNS.split(",")
+    f"artifacts.{column.strip()} AS {column.strip()}" for column in _COLUMNS.split(",")
 )
 
 
-async def list_artifacts(
-    session: AsyncSession, *, conversation_id: UUID
-) -> list[ArtifactRecord]:
+async def list_artifacts(session: AsyncSession, *, conversation_id: UUID) -> list[ArtifactRecord]:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.list_artifacts(conversation_id=conversation_id)
     owner = (
         await session.execute(
             text(
@@ -88,6 +74,9 @@ async def list_artifacts(
 async def resolve_artifact_file(
     session: AsyncSession, *, artifact_id: UUID
 ) -> tuple[ArtifactRecord, Path] | None:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.resolve_artifact_file(artifact_id=artifact_id)
     row = (
         (
             await session.execute(
@@ -133,6 +122,18 @@ async def register_artifact(
     mime_type: str | None = None,
     meta: dict[str, Any] | None = None,
 ) -> ArtifactRecord:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.register_artifact(
+            conversation_id=conversation_id,
+            kind=kind,
+            title=title,
+            uri=uri,
+            run_id=run_id,
+            session_root_id=session_root_id,
+            mime_type=mime_type,
+            meta=meta,
+        )
     if kind not in {"file", "report", "diff", "table"}:
         raise ValueError("未知 artifact kind")
     if not title.strip() or not uri.strip():
@@ -183,9 +184,7 @@ async def register_artifact(
         if canonical_root is None:
             raise ArtifactRegistrationError("artifact 绑定的会话目录不存在或已撤销")
         try:
-            stored_uri = str(
-                resolve_target_within_root(Path(canonical_root), Path(stored_uri))
-            )
+            stored_uri = str(resolve_target_within_root(Path(canonical_root), Path(stored_uri)))
         except CapabilityDeniedError as error:
             raise ArtifactRegistrationError("artifact 路径不在绑定的会话目录内") from error
     row = (

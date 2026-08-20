@@ -52,6 +52,14 @@ function TierCard({ tier }: { tier: CostTierUsage }) {
           <dd title="命中不消耗 GPU，也不计入 token">{ratio(tier.cache_hit_rate)}</dd>
         </div>
         <div>
+          <dt>Prompt Cache</dt>
+          <dd
+            title={`读取 ${count(tier.prompt_cache_read_tokens)} / 写入 ${count(tier.prompt_cache_write_tokens)} token`}
+          >
+            {ratio(tier.prompt_cache_read_rate)}
+          </dd>
+        </div>
+        <div>
           <dt>token</dt>
           <dd>{count(tier.total_tokens)}</dd>
         </div>
@@ -183,6 +191,10 @@ export default function CostPage() {
               <div>
                 <span>缓存命中率</span>
                 <strong>{ratio(data.totals.cache_hit_rate)}</strong>
+              </div>
+              <div>
+                <span>Prompt Cache</span>
+                <strong>{ratio(data.totals.prompt_cache_read_rate)}</strong>
               </div>
               <div>
                 <span>token</span>

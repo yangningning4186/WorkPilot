@@ -18,11 +18,14 @@ class SqlLlmCallAudit:
                 INSERT INTO llm_calls
                     (id, trace_id, run_id, eval_run_id, task_type, tier, model, provider,
                      prompt_tokens, output_tokens, latency_ms, success, cost_usd,
+                     prompt_cache_read_tokens, prompt_cache_write_tokens,
                      cached, cache_type, was_fallback, batch_id)
                 VALUES
                     (:id, :trace_id, :run_id, :eval_run_id, :task_type, :tier, :model,
                      :provider, :input_tokens, :output_tokens, :latency_ms, :success,
-                     :cost_usd, :cached, :cache_type, :was_fallback, :batch_id)
+                     :cost_usd, :prompt_cache_read_tokens,
+                     :prompt_cache_write_tokens, :cached, :cache_type,
+                     :was_fallback, :batch_id)
                 """
             ),
             {"id": uuid7(), **vars(call)},

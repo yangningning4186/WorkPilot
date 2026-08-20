@@ -20,6 +20,7 @@ from app.agent.cowork_runtime import (
     _external_action_sha256,
     _goal_mentions_office,
     initialize_cowork_state,
+    load_cowork_checkpoint,
 )
 from app.agent.cowork_tools import (
     CoworkToolContext,
@@ -42,7 +43,12 @@ from app.llm.gateway import ModelGateway
 from app.llm.providers.openai_compatible import ProviderContextOverflowError
 from app.llm.types import CompletionResult, Message, ToolCall, ToolDefinition, Usage
 from app.main import create_app
-from app.services.cowork_permissions import create_session_root, grant_capability
+from app.services.cowork_context_usage import get_cowork_context_usage
+from app.services.cowork_permissions import (
+    create_session_root,
+    grant_capability,
+    list_session_roots,
+)
 from app.services.request_identity import RequestIdentity
 from app.services.runs import (
     append_message,
@@ -53,7 +59,7 @@ from app.services.runs import (
     reap_expired_runs,
     request_cancel,
 )
-from app.worker.cowork_run import _cowork_failure_message, cowork_run
+from app.worker.cowork_run import _cowork_error_detail, _cowork_failure_message, cowork_run
 from tests.fakes import DeterministicProvider
 
 pytestmark = pytest.mark.integration
@@ -64,6 +70,7 @@ def test_cowork_failure_message_keeps_actionable_detail_bounded() -> None:
         "Cowork 执行失败：最新 checkpoint 不是 Cowork v2 state"
     )
     assert len(_cowork_failure_message("x" * 1000)) < 380
+    assert _cowork_error_detail(TimeoutError()) == "模型或工具请求超时，请重试"
 
 
 def test_external_approval_action_hash_is_stable_and_non_null() -> None:
@@ -78,6 +85,146 @@ def test_artifact_mime_must_match_trusted_extension() -> None:
     assert _trusted_artifact_mime_type(Path("report.xml"), None) == "application/xml"
     with pytest.raises(CoworkToolError, match="必须与扩展名一致"):
         _trusted_artifact_mime_type(Path("payload.xml"), "text/html")
+
+
+def test_ppt_goal_exposes_native_artifact_without_word_edit_route() -> None:
+    registry = build_default_cowork_registry()
+    names = {
+        definition.name for definition in registry.tool_definitions_for("帮我生成一个儿童节 PPT")
+    }
+
+    assert "create_native_artifact" in names
+    assert "edit_word" not in names
+
+
+async def test_new_cowork_run_inherits_assistant_and_tool_history(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await ensure_conversation(
+        db_session,
+        scope="local_owner",
+        title="Cowork 跨 run 上下文",
+    )
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    first = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="搜索今天的 AI 热点",
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=first.goal,
+        run_id=first.id,
+    )
+    registry = build_default_cowork_registry()
+    await initialize_cowork_state(db_session, run_id=first.id, registry=registry)
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=first.id)
+    assert checkpoint is not None
+    checkpoint.state["messages"].extend(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "web-1",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query":"AI 热点"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "web-1",
+                "content": '{"ok":true,"result":{"items":["新闻一"]}}',
+            },
+            {"role": "assistant", "content": "这里是今天的五条 AI 热点。"},
+        ]
+    )
+    checkpoint.state["status"] = "done"
+    await db_session.execute(
+        text(
+            """
+            UPDATE agent_checkpoints
+            SET state = CAST(:state AS jsonb)
+            WHERE run_id = :run_id AND checkpoint_id = :checkpoint_id
+            """
+        ),
+        {
+            "state": json.dumps(checkpoint.state, ensure_ascii=False),
+            "run_id": first.id,
+            "checkpoint_id": checkpoint.checkpoint_id,
+        },
+    )
+    await db_session.execute(
+        text("UPDATE agent_runs SET status = 'done' WHERE id = :run_id"),
+        {"run_id": first.id},
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="assistant",
+        content="这里是今天的五条 AI 热点。",
+        run_id=first.id,
+    )
+
+    second = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="把上面的新闻总结成一份文档",
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=second.goal,
+        run_id=second.id,
+    )
+    state = await initialize_cowork_state(
+        db_session,
+        run_id=second.id,
+        registry=registry,
+    )
+
+    assert [message["role"] for message in state["messages"]] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "user",
+    ]
+    assert state["messages"][2]["tool_call_id"] == "web-1"
+    assert state["messages"][3]["content"] == "这里是今天的五条 AI 热点。"
+    assert state["messages"][-1]["content"] == second.goal
+
+    usage = await get_cowork_context_usage(
+        db_session,
+        conversation_id=conversation_id,
+        settings=get_settings(),
+    )
+    assert usage["used_tokens"] > 0
+    assert usage["trigger_ratio"] == 0.85
+    assert usage["trigger_tokens"] < usage["context_window_tokens"]
+    assert usage["breakdown"]["tool_activity"] > 0
 
 
 def test_cowork_tool_result_structurally_truncates_content_and_keeps_baseline() -> None:
@@ -730,7 +877,11 @@ async def test_cowork_runner_executes_parallel_safe_read_batch_concurrently(
     await cowork_run(
         {
             "settings": get_settings().model_copy(
-                update={"cowork_max_steps": 4, "run_heartbeat_s": 60.0}
+                update={
+                    "cowork_max_steps": 4,
+                    "cowork_decision_max_tokens": 2048,
+                    "run_heartbeat_s": 60.0,
+                }
             ),
             "session_factory": session_factory,
             "bus": bus,
@@ -820,8 +971,11 @@ async def test_cowork_recovers_provider_context_overflow_without_mutating_canoni
         {
             "settings": get_settings().model_copy(
                 update={
-                    "cowork_max_steps": 4,
-                    "cowork_compaction_trigger_ratio": 1.0,
+                        "cowork_max_steps": 4,
+                        # 本用例只验证 provider overflow 恢复；固定较小输出预算，避免
+                        # 全局原生交付物 token 上限变化把测试转成 run token 熔断用例。
+                        "cowork_decision_max_tokens": 2048,
+                        "cowork_compaction_trigger_ratio": 1.0,
                     "run_heartbeat_s": 60.0,
                 }
             ),
@@ -911,8 +1065,9 @@ async def test_cowork_context_overflow_progress_guard_stops_recovery_loop(
         {
             "settings": get_settings().model_copy(
                 update={
-                    "cowork_max_steps": 4,
-                    "cowork_compaction_trigger_ratio": 1.0,
+                        "cowork_max_steps": 4,
+                        "cowork_decision_max_tokens": 2048,
+                        "cowork_compaction_trigger_ratio": 1.0,
                     "cowork_context_overflow_max_recoveries": 2,
                     "run_heartbeat_s": 60.0,
                 }
@@ -1058,6 +1213,25 @@ async def test_cowork_steering_and_ask_user_pause_resume_with_canonical_tool_his
     assert response.json()["status"] == "queued"
     assert queue.run_ids == [run.id]
     assert queue.attempts[0] > 0
+    leaked_interaction_messages = (
+        await db_session.execute(
+            text(
+                """
+                SELECT COUNT(*) FROM messages
+                WHERE conversation_id = :conversation_id
+                  AND run_id = :run_id
+                  AND role = 'user'
+                  AND content = :answer
+                """
+            ),
+            {
+                "conversation_id": conversation_id,
+                "run_id": run.id,
+                "answer": "按部门",
+            },
+        )
+    ).scalar_one()
+    assert leaked_interaction_messages == 0
 
     await cowork_run(context, str(run.id))
     completed = await get_run(db_session, run.id)
@@ -1564,7 +1738,11 @@ async def test_cowork_run_api_initializes_checkpoint_and_enqueues(
         yield db_session
 
     app = create_app()
+    settings = get_settings().model_copy(
+        update={"cowork_default_workspace_path": tmp_path / "WorkPilot"}
+    )
     app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_run_queue_dependency] = lambda: queue
     app.dependency_overrides[get_run_bus] = lambda: bus
     app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(scope="local_owner")
@@ -1594,6 +1772,45 @@ async def test_cowork_run_api_initializes_checkpoint_and_enqueues(
         )
     ).scalar_one()
     assert checkpoint_schema == "cowork.v2"
+
+
+async def test_cowork_run_api_does_not_require_workspace_for_default_permissions(
+    db_session: AsyncSession, tmp_path: Path
+) -> None:
+    conversation_id = await ensure_conversation(db_session, scope="local_owner", title="默认权限")
+    await db_session.commit()
+    queue = RecordingCoworkQueue()
+    bus = InMemoryRunBus()
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    app = create_app()
+    default_workspace = tmp_path / "WorkPilot"
+    settings = get_settings().model_copy(
+        update={"cowork_default_workspace_path": default_workspace}
+    )
+    app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_run_queue_dependency] = lambda: queue
+    app.dependency_overrides[get_run_bus] = lambda: bus
+    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(scope="local_owner")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/runs/cowork",
+            json={"conversation_id": str(conversation_id), "goal": "解释什么是 RAG"},
+        )
+
+    assert response.status_code == 202
+    run_id = UUID(response.json()["run_id"])
+    assert queue.run_ids == [run_id]
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.state["goal"] == "解释什么是 RAG"
+    roots = await list_session_roots(db_session, conversation_id=conversation_id)
+    assert roots[0].canonical_path == str(default_workspace)
+    assert roots[0].label == "WorkPilot 默认文件夹"
 
 
 async def test_expired_cowork_run_is_recovered_to_cowork_queue_class(

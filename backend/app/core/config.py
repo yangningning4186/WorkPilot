@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     database_url: str = "postgresql+asyncpg://workpilot:workpilot@localhost:5432/workpilot"
     redis_url: str = "redis://localhost:6379/0"
+    # Web/集群部署继续使用 Arq + Redis；桌面 sidecar 使用同进程队列，任务真相仍在
+    # 持久化 store 中，并由轮询 dispatcher 补偿进程退出时丢失的内存唤醒。
+    task_queue_backend: Literal["redis", "in_process"] = "redis"
+    run_bus_backend: Literal["redis", "in_process"] = "redis"
     session_cookie_name: str = "workpilot_session"
     session_ttl_s: int = Field(default=30 * 60, ge=300, le=90 * 24 * 60 * 60)
     session_cookie_secure: bool | None = None
@@ -66,14 +70,32 @@ class Settings(BaseSettings):
     workspace_max_operations: int = Field(default=100, ge=1, le=1_000)
     workspace_backup_versions_per_file: int = Field(default=10, ge=1, le=100)
     workspace_edit_max_tokens: int = Field(default=8_192, ge=128, le=32_768)
+    # Office 交付物预览使用系统 Quick Look 或 LibreOffice 做真实版面渲染。缓存属于
+    # WorkPilot 自有数据，不得写到用户授权工作区中。
+    office_preview_cache_path: Path = Path("../data/preview-cache")
+    office_preview_timeout_s: float = Field(default=30.0, gt=0, le=180)
+    office_preview_max_source_bytes: int = Field(
+        default=50 * 1024 * 1024, ge=1_024, le=500 * 1024 * 1024
+    )
+    office_preview_max_cache_entries: int = Field(default=100, ge=1, le=2_000)
     # Cowork 是现有 answer/review 运行时上的第三种工作流。目录授权与 artifact API
     # 可先独立上线；真正的通用工具循环仍可用此总开关紧急关闭。
     cowork_enabled: bool = True
-    cowork_max_steps: int = Field(default=12, ge=1, le=50)
-    cowork_decision_max_tokens: int = Field(default=2_048, ge=128, le=16_384)
+    # Cowork 本地存储采用兼容迁移：postgres 是现有实现，sqlite 是新的桌面实现。
+    # RAG 的 documents/chunks/pgvector 不受这个开关影响。
+    cowork_store_backend: Literal["postgres", "sqlite"] = "sqlite"
+    cowork_data_path: Path = Path("~/.workpilot")
+    cowork_dispatch_poll_s: float = Field(default=1.0, gt=0, le=30)
+    cowork_max_steps: int = Field(default=30, ge=1, le=50)
+    cowork_decision_max_tokens: int = Field(default=8_192, ge=128, le=16_384)
+    # Cowork 的一次决策会携带工具 schema、网页结果和跨轮历史，明显比普通聊天更重。
+    # 独立配置避免为了复杂任务放宽 Provider 探测等短请求的超时。
+    cowork_model_timeout_s: float = Field(default=120.0, gt=0, le=600)
     cowork_tool_result_max_chars: int = Field(default=20_000, ge=1_000, le=100_000)
     cowork_file_read_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1_024, le=100 * 1024 * 1024)
-    cowork_file_write_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1_024, le=100 * 1024 * 1024)
+    cowork_file_write_max_bytes: int = Field(
+        default=5 * 1024 * 1024, ge=1_024, le=100 * 1024 * 1024
+    )
     cowork_file_max_lines: int = Field(default=2_000, ge=1, le=50_000)
     cowork_search_max_results: int = Field(default=200, ge=1, le=2_000)
     cowork_pdf_text_max_chars: int = Field(default=60_000, ge=1_000, le=500_000)
@@ -81,7 +103,18 @@ class Settings(BaseSettings):
     cowork_web_max_redirects: int = Field(default=5, ge=0, le=10)
     cowork_web_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1_024, le=100 * 1024 * 1024)
     cowork_web_text_max_chars: int = Field(default=60_000, ge=1_000, le=500_000)
-    # MCP 配置与 Skill 内容都由本机管理员维护，不接受模型动态改写。
+    # 输入附件属于 WorkPilot 私有运行数据，不得写入用户授权工作区。单文件与单消息
+    # 数量都在入口硬限制，防止上传或 checkpoint 被大文件撑爆。
+    cowork_attachment_path: Path = Path("../data/cowork-attachments")
+    cowork_attachment_max_bytes: int = Field(
+        default=10 * 1024 * 1024, ge=1_024, le=100 * 1024 * 1024
+    )
+    cowork_attachment_max_count: int = Field(default=8, ge=1, le=20)
+    cowork_attachment_text_max_chars: int = Field(default=60_000, ge=1_000, le=500_000)
+    # 普通任务与未显式指定目录的自动化，都把新生成文件放进用户本机专用目录。
+    # 其他本地目录仍须用户按需授权，不能把进程 cwd 或项目仓库当作默认目录。
+    cowork_default_workspace_path: Path = Path("~/Documents/WorkPilot")
+    # MCP 配置与人工 Skill 内容由本机管理员维护；自动蒸馏只能走下方独立候选与晋升门禁。
     cowork_mcp_config_path: Path = Path("../config/mcp.yaml")
     cowork_mcp_connect_timeout_s: float = Field(default=15.0, gt=0, le=120)
     cowork_mcp_call_timeout_s: float = Field(default=60.0, gt=0, le=600)
@@ -89,6 +122,15 @@ class Settings(BaseSettings):
     cowork_skills_path: Path = Path("../skills")
     cowork_skill_max_files: int = Field(default=200, ge=1, le=2_000)
     cowork_skill_max_bytes: int = Field(default=256 * 1024, ge=1_024, le=2 * 1024 * 1024)
+    # 自动蒸馏先积累独立成功运行证据，再安装 learned-* Skill。高风险工具不会进入
+    # 自动晋升候选；阈值不是模型自己决定，而是服务端确定性门禁。
+    skill_distillation_enabled: bool = True
+    skill_auto_promotion_enabled: bool = True
+    skill_promotion_min_evidence: int = Field(default=3, ge=2, le=20)
+    skill_promotion_min_confidence: float = Field(default=0.82, ge=0.0, le=1.0)
+    skill_distillation_max_tokens: int = Field(default=900, ge=128, le=4_096)
+    skill_distillation_job_lease_s: int = Field(default=120, ge=10, le=1_800)
+    skill_distillation_job_max_attempts: int = Field(default=3, ge=1, le=10)
     # Provider API key、连接器凭证和 OAuth token 的数据库密文由此本机主密钥保护。
     # 主密钥不进入数据库、不进入 checkpoint，也不通过任何状态 API 返回。
     secret_store_key_path: Path = Path("../data/secrets/master.key")
@@ -140,6 +182,12 @@ class Settings(BaseSettings):
     # 根本没过模型, 却会被算进指标里。
     llm_cache_enabled: bool = True
     llm_cache_ttl_s: int = Field(default=24 * 60 * 60, ge=60, le=30 * 24 * 60 * 60)
+    # Provider 侧 Prompt Cache 只复用 KV 前缀，不复用模型输出。evaluation 仍强制关闭
+    # 显式写入，确保跑批延迟与 token 台账不被历史缓存污染。
+    provider_prompt_cache_enabled: bool = True
+    # 非官方 OpenAI-compatible 服务对 prompt_cache_key 的兼容性不统一。默认不发送，
+    # 经端点能力验证后再打开；provider=openai 不受此开关影响。
+    openai_compatible_prompt_cache_key_enabled: bool = False
     # 自建模型的等价云单价(docs/07 §7.2-7.3)。默认留空是**故意的**:
     # 编一个单价会让下游每一个成本数字都失去意义, 而且看不出来是编的。
     # 开批次前必须显式配置, 且 GPU_PRICE_SOURCE 要写得能被追溯。

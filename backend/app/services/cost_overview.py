@@ -41,6 +41,10 @@ SELECT tier,
        count(*) FILTER (WHERE cached)                   AS cached_count,
        count(*) FILTER (WHERE NOT success)              AS failed_count,
        count(*) FILTER (WHERE was_fallback)             AS fallback_count,
+       COALESCE(sum(prompt_cache_read_tokens) FILTER (WHERE NOT cached), 0)
+                                                           AS prompt_cache_read_tokens,
+       COALESCE(sum(prompt_cache_write_tokens) FILTER (WHERE NOT cached), 0)
+                                                           AS prompt_cache_write_tokens,
        COALESCE(sum(prompt_tokens) FILTER (WHERE NOT cached), 0) AS prompt_tokens,
        COALESCE(sum(output_tokens) FILTER (WHERE NOT cached), 0) AS output_tokens,
        percentile_disc(0.5) WITHIN GROUP (ORDER BY latency_ms)
@@ -58,6 +62,10 @@ _TASK_TYPE_SQL = """
 SELECT task_type, tier,
        count(*)                                         AS call_count,
        count(*) FILTER (WHERE cached)                   AS cached_count,
+       COALESCE(sum(prompt_cache_read_tokens) FILTER (WHERE NOT cached), 0)
+                                                           AS prompt_cache_read_tokens,
+       COALESCE(sum(prompt_cache_write_tokens) FILTER (WHERE NOT cached), 0)
+                                                           AS prompt_cache_write_tokens,
        COALESCE(sum(prompt_tokens + output_tokens) FILTER (WHERE NOT cached), 0) AS total_tokens
 FROM llm_calls
 WHERE created_at >= :window_from
@@ -81,15 +89,12 @@ async def get_cost_overview(
     batches = [
         summary
         for summary in (
-            _batch_summary(batch)
-            for batch in await load_batch_costs(session, label=label)
+            _batch_summary(batch) for batch in await load_batch_costs(session, label=label)
         )
         if summary is not None
     ]
     window = (
-        (await session.execute(text(_WINDOW_SQL), {"window_from": window_from}))
-        .mappings()
-        .one()
+        (await session.execute(text(_WINDOW_SQL), {"window_from": window_from})).mappings().one()
     )
     return CostOverviewResponse(
         totals=_totals(
@@ -106,11 +111,7 @@ async def get_cost_overview(
 
 
 async def _load_tiers(session: AsyncSession, window_from: datetime) -> list[TierUsage]:
-    rows = (
-        (await session.execute(text(_TIER_SQL), {"window_from": window_from}))
-        .mappings()
-        .all()
-    )
+    rows = (await session.execute(text(_TIER_SQL), {"window_from": window_from})).mappings().all()
     return [
         TierUsage(
             tier=str(row["tier"]),
@@ -118,6 +119,11 @@ async def _load_tiers(session: AsyncSession, window_from: datetime) -> list[Tier
             cached_count=int(row["cached_count"]),
             failed_count=int(row["failed_count"]),
             fallback_count=int(row["fallback_count"]),
+            prompt_cache_read_tokens=int(row["prompt_cache_read_tokens"]),
+            prompt_cache_write_tokens=int(row["prompt_cache_write_tokens"]),
+            prompt_cache_read_rate=_rate(
+                int(row["prompt_cache_read_tokens"]), int(row["prompt_tokens"])
+            ),
             prompt_tokens=int(row["prompt_tokens"]),
             output_tokens=int(row["output_tokens"]),
             total_tokens=int(row["prompt_tokens"]) + int(row["output_tokens"]),
@@ -130,13 +136,9 @@ async def _load_tiers(session: AsyncSession, window_from: datetime) -> list[Tier
     ]
 
 
-async def _load_task_types(
-    session: AsyncSession, window_from: datetime
-) -> list[TaskTypeUsage]:
+async def _load_task_types(session: AsyncSession, window_from: datetime) -> list[TaskTypeUsage]:
     rows = (
-        (await session.execute(text(_TASK_TYPE_SQL), {"window_from": window_from}))
-        .mappings()
-        .all()
+        (await session.execute(text(_TASK_TYPE_SQL), {"window_from": window_from})).mappings().all()
     )
     return [
         TaskTypeUsage(
@@ -145,6 +147,8 @@ async def _load_task_types(
             call_count=int(row["call_count"]),
             total_tokens=int(row["total_tokens"]),
             cache_hit_rate=_rate(int(row["cached_count"]), int(row["call_count"])),
+            prompt_cache_read_tokens=int(row["prompt_cache_read_tokens"]),
+            prompt_cache_write_tokens=int(row["prompt_cache_write_tokens"]),
         )
         for row in rows
     ]
@@ -203,6 +207,16 @@ def _totals(
         call_count=call_count,
         cached_count=cached_count,
         cache_hit_rate=_rate(cached_count, call_count),
+        prompt_cache_read_tokens=sum(
+            tier.prompt_cache_read_tokens for tier in tiers
+        ),
+        prompt_cache_write_tokens=sum(
+            tier.prompt_cache_write_tokens for tier in tiers
+        ),
+        prompt_cache_read_rate=_rate(
+            sum(tier.prompt_cache_read_tokens for tier in tiers),
+            sum(tier.prompt_tokens for tier in tiers),
+        ),
         total_tokens=sum(tier.total_tokens for tier in tiers),
         failed_count=sum(tier.failed_count for tier in tiers),
         fallback_count=sum(tier.fallback_count for tier in tiers),
@@ -232,9 +246,7 @@ def _undeployed_tiers(settings: Settings) -> list[str]:
     if table is None:
         return []
     return [
-        tier
-        for tier in TIERS
-        if tier in table.tiers and not table.tiers[tier].primary.available
+        tier for tier in TIERS if tier in table.tiers and not table.tiers[tier].primary.available
     ]
 
 

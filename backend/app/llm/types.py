@@ -4,15 +4,10 @@ from decimal import Decimal
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
+from app.llm.errors import ProviderNotDispatchedError as ProviderNotDispatchedError
+
 Role = Literal["system", "user", "assistant", "tool"]
-
-
-class ProviderNotDispatchedError(RuntimeError):
-    """确认请求尚未发给 provider。
-
-    只有能证明"一个字节都没发出去"的错误才允许抛这个类型: 它是费用释放的唯一依据。
-    发出之后的任何失败(读超时、连接中断)都可能已经计费, 必须走保守记账路径。
-    """
+AttachmentKind = Literal["image", "pdf", "text"]
 
 
 @dataclass(frozen=True)
@@ -31,6 +26,19 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class MessageAttachment:
+    """Provider-neutral input attachment stored outside canonical message bodies."""
+
+    kind: AttachmentKind
+    filename: str
+    media_type: str
+    path: str
+    size_bytes: int
+    sha256: str
+    extracted_text: str = ""
+
+
+@dataclass(frozen=True)
 class Message:
     """Provider-neutral canonical chat message.
 
@@ -42,12 +50,21 @@ class Message:
     content: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
+    attachments: tuple[MessageAttachment, ...] = ()
 
 
 @dataclass(frozen=True)
 class Usage:
+    """Provider-neutral token usage。
+
+    ``input_tokens`` 始终是完整输入量；prompt cache read/write 是其子集，用于衡量
+    Provider 侧前缀缓存，不等同于 WorkPilot 的 Redis 精确结果缓存。
+    """
+
     input_tokens: int = 0
     output_tokens: int = 0
+    prompt_cache_read_tokens: int = 0
+    prompt_cache_write_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -105,6 +122,21 @@ class ToolCallingProvider(Protocol):
     ) -> CompletionResult: ...
 
 
+class PromptCachingToolCallingProvider(Protocol):
+    """支持显式 Provider Prompt Cache 控制的 tool-calling adapter。"""
+
+    async def complete_with_tools_prompt_cache(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool,
+        max_tokens: int,
+        temperature: float,
+        prompt_cache_key: str,
+    ) -> CompletionResult: ...
+
+
 @dataclass(frozen=True)
 class AuditRecord:
     trace_id: str
@@ -116,6 +148,8 @@ class AuditRecord:
     output_tokens: int
     latency_ms: int
     success: bool
+    prompt_cache_read_tokens: int = 0
+    prompt_cache_write_tokens: int = 0
     cost_usd: Decimal | None = None
     # 缓存命中与 fallback 都是"这次调用实际发生了什么"的一部分。列在 M0 就建好了,
     # 一直没人写——看板要算命中率与降级率(docs/07 §9)就得靠这三列。

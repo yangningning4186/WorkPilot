@@ -26,7 +26,7 @@ from openpyxl.utils.cell import coordinate_to_tuple  # type: ignore[import-untyp
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.budget import CompletionClient
+from app.agent_core.budget import CompletionClient
 from app.core.config import Settings
 from app.llm.gateway import ModelGateway
 from app.llm.types import Message
@@ -734,9 +734,7 @@ def _apply_excel_plan(
             _sync_temp_file(temp_path, mode=original_mode)
             verified = load_workbook(temp_path, read_only=True, data_only=False, keep_links=True)
             verified.close()
-            _require_unchanged(
-                record.path, baseline_sha256, settings.workspace_max_file_bytes
-            )
+            _require_unchanged(record.path, baseline_sha256, settings.workspace_max_file_bytes)
             os.replace(temp_path, record.path)
         finally:
             temp_path.unlink(missing_ok=True)
@@ -926,11 +924,7 @@ def _iter_scanned_files(
             if scanned_entries > max_scan_entries:
                 return
             candidate = current_path / name
-            if (
-                name.startswith(".")
-                or name in _SKIPPED_SCAN_DIRECTORIES
-                or candidate.is_symlink()
-            ):
+            if name.startswith(".") or name in _SKIPPED_SCAN_DIRECTORIES or candidate.is_symlink():
                 continue
             kept_directories.append(name)
         directory_names[:] = kept_directories
@@ -1084,9 +1078,7 @@ def _response(
     )
 
 
-def _require_unchanged(
-    path: Path, baseline_sha256: str, max_file_bytes: int
-) -> _RawSnapshot:
+def _require_unchanged(path: Path, baseline_sha256: str, max_file_bytes: int) -> _RawSnapshot:
     snapshot = _read_raw_snapshot(path, max_file_bytes)
     if snapshot.sha256 != baseline_sha256:
         raise DocumentConflictError(snapshot.sha256)
@@ -1143,9 +1135,7 @@ def _prune_backups(record: _WorkspaceRecord, *, keep: Path, max_versions: int) -
         candidate = generation / relative
         if candidate.is_file() and not candidate.is_symlink():
             candidates.append(candidate)
-    candidates.sort(
-        key=lambda path: (path.stat().st_mtime_ns, path.parent.name), reverse=True
-    )
+    candidates.sort(key=lambda path: (path.stat().st_mtime_ns, path.parent.name), reverse=True)
     retained = {keep, *candidates[:max_versions]}
     for candidate in candidates:
         if candidate in retained:
@@ -1183,9 +1173,7 @@ def _atomic_write_bytes(
     change_count: int,
     settings: Settings,
 ) -> _AppliedFile:
-    current = _require_unchanged(
-        record.path, baseline_sha256, settings.workspace_max_file_bytes
-    )
+    current = _require_unchanged(record.path, baseline_sha256, settings.workspace_max_file_bytes)
     if content == current.raw:
         return _AppliedFile(current, None, 0)
     _, backup_uri = _create_backup(

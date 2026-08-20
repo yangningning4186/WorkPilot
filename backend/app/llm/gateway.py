@@ -11,7 +11,14 @@ from uuid6 import uuid7
 from app.core.config import Settings
 from app.llm.batch import current_batch_id
 from app.llm.cache import CompletionCache, completion_cache_key, is_cacheable
+from app.llm.errors import (
+    ModelContextOverflowError as ModelContextOverflowError,
+)
+from app.llm.errors import (
+    ProviderNotDispatchedError,
+)
 from app.llm.pricing import GatewayPricing, ModelPricing, estimate_tokens, is_measured
+from app.llm.prompt_cache import prompt_cache_key
 from app.llm.providers.openai_compatible import OpenAICompatibleProvider
 from app.llm.routing import (
     EndpointSpec,
@@ -29,7 +36,7 @@ from app.llm.types import (
     EmbeddingResult,
     Message,
     ModelProvider,
-    ProviderNotDispatchedError,
+    PromptCachingToolCallingProvider,
     ToolCallingProvider,
     ToolDefinition,
     Usage,
@@ -49,10 +56,6 @@ class EmbeddingIdentityError(ValueError):
     pass
 
 
-class ModelContextOverflowError(ValueError):
-    """本地预算判断已确定请求超过目标部署的上下文窗口，禁止发送。"""
-
-
 class NativeToolCallingUnsupportedError(ProviderNotDispatchedError):
     """路由链里的 provider 都没有实现原生 tool-calling。"""
 
@@ -65,6 +68,10 @@ def request_character_count(
     total = 0
     for message in messages:
         total += len(message.content)
+        for attachment in message.attachments:
+            # 图片由 provider 作为视觉 token 计费；PDF/文本的提取正文按实际字符
+            # 进入保守预算。固定开销覆盖图片编码与文档容器。
+            total += len(attachment.extracted_text) + 2_048
         if message.tool_call_id is not None:
             total += len(message.tool_call_id)
         total += sum(
@@ -164,19 +171,36 @@ class TierProviderPool:
         *,
         embedding_model: str,
         trust_env: bool,
+        openai_compatible_prompt_cache_key_supported: bool = False,
         factory: "ProviderFactory | None" = None,
     ) -> None:
         self._table = table
         self._embedding_model = embedding_model
         self._trust_env = trust_env
-        self._factory = factory or _default_provider_factory
+        self._factory = factory
+        self._openai_compatible_prompt_cache_key_supported = (
+            openai_compatible_prompt_cache_key_supported
+        )
         self._providers: dict[Tier, ModelProvider] = {}
 
     def _provider(self, endpoint: EndpointSpec) -> ModelProvider:
         cached = self._providers.get(endpoint.tier)
         if cached is None:
-            cached = self._factory(
-                endpoint, embedding_model=self._embedding_model, trust_env=self._trust_env
+            cached = (
+                _default_provider_factory(
+                    endpoint,
+                    embedding_model=self._embedding_model,
+                    trust_env=self._trust_env,
+                    prompt_cache_key_supported=(
+                        self._openai_compatible_prompt_cache_key_supported
+                    ),
+                )
+                if self._factory is None
+                else self._factory(
+                    endpoint,
+                    embedding_model=self._embedding_model,
+                    trust_env=self._trust_env,
+                )
             )
             self._providers[endpoint.tier] = cached
         return cached
@@ -206,7 +230,11 @@ class ProviderFactory(Protocol):
 
 
 def _default_provider_factory(
-    endpoint: EndpointSpec, *, embedding_model: str, trust_env: bool
+    endpoint: EndpointSpec,
+    *,
+    embedding_model: str,
+    trust_env: bool,
+    prompt_cache_key_supported: bool = False,
 ) -> ModelProvider:
     if endpoint.provider != "openai_compatible":
         raise ValueError(
@@ -219,6 +247,7 @@ def _default_provider_factory(
         chat_model=endpoint.model,
         embedding_model=embedding_model,
         enable_thinking=endpoint.enable_thinking,
+        prompt_cache_key_supported=prompt_cache_key_supported,
         timeout_s=endpoint.timeout_s,
         trust_env=trust_env,
     )
@@ -244,6 +273,7 @@ class ModelGateway:
         mode: RoutingMode = "online",
         completion_cache: CompletionCache | None = None,
         cache_ttl_s: int = 24 * 60 * 60,
+        provider_prompt_cache_enabled: bool = True,
         default_context_window_tokens: int = 32_768,
         context_safety_tokens: int = 512,
     ) -> None:
@@ -252,6 +282,7 @@ class ModelGateway:
         self._mode = mode
         self._cache = completion_cache
         self._cache_ttl_s = cache_ttl_s
+        self._provider_prompt_cache_enabled = provider_prompt_cache_enabled
         self._default_context_window_tokens = default_context_window_tokens
         self._context_safety_tokens = context_safety_tokens
         self._embedding_provider = embedding_provider or provider
@@ -350,6 +381,7 @@ class ModelGateway:
                 continue
 
             tool_method = None
+            prompt_cache_method = None
             if tools is not None:
                 candidate = getattr(provider, "complete_with_tools", None)
                 if not callable(candidate):
@@ -360,6 +392,17 @@ class ModelGateway:
                     self._log_fallback(task_type, tier, attempts[index + 1][0], dispatched=False)
                     continue
                 tool_method = cast("ToolCallingProvider", provider).complete_with_tools
+                prompt_candidate = getattr(
+                    provider, "complete_with_tools_prompt_cache", None
+                )
+                if (
+                    self._provider_prompt_cache_enabled
+                    and self._mode != "evaluation"
+                    and callable(prompt_candidate)
+                ):
+                    prompt_cache_method = cast(
+                        "PromptCachingToolCallingProvider", provider
+                    ).complete_with_tools_prompt_cache
 
             cache_key: str | None = None
             if cacheable:
@@ -405,6 +448,21 @@ class ModelGateway:
                 if tools is None:
                     result = await provider.complete(
                         messages, max_tokens=max_tokens, temperature=temperature
+                    )
+                elif prompt_cache_method is not None:
+                    result = await prompt_cache_method(
+                        messages,
+                        tools=tools,
+                        parallel_tool_calls=parallel_tool_calls,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        prompt_cache_key=prompt_cache_key(
+                            provider=provider.name,
+                            model=provider.chat_model,
+                            task_type=task_type,
+                            messages=messages,
+                            tools=tools,
+                        ),
                     )
                 else:
                     assert tool_method is not None
@@ -796,6 +854,12 @@ class ModelGateway:
                 provider=provider.name,
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
+                prompt_cache_read_tokens=(
+                    0 if cache_hit else usage.prompt_cache_read_tokens
+                ),
+                prompt_cache_write_tokens=(
+                    0 if cache_hit else usage.prompt_cache_write_tokens
+                ),
                 latency_ms=max(0, round((monotonic() - started) * 1000)),
                 success=success,
                 cost_usd=cost_usd,
@@ -885,6 +949,7 @@ def build_model_gateway(
         chat_model=settings.tier_main_model,
         embedding_model=settings.embedding_model,
         enable_thinking=settings.tier_main_enable_thinking,
+        prompt_cache_key_supported=settings.openai_compatible_prompt_cache_key_enabled,
         timeout_s=settings.model_timeout_s,
         trust_env=settings.model_trust_env,
     )
@@ -910,6 +975,9 @@ def build_model_gateway(
             table,
             embedding_model=settings.embedding_model,
             trust_env=settings.model_trust_env,
+            openai_compatible_prompt_cache_key_supported=(
+                settings.openai_compatible_prompt_cache_key_enabled
+            ),
         )
     )
     return ModelGateway(
@@ -927,6 +995,7 @@ def build_model_gateway(
         mode=mode,
         completion_cache=completion_cache,
         cache_ttl_s=settings.llm_cache_ttl_s,
+        provider_prompt_cache_enabled=settings.provider_prompt_cache_enabled,
         default_context_window_tokens=settings.tier_main_context_window_tokens,
         context_safety_tokens=settings.llm_context_safety_tokens,
     )
@@ -973,6 +1042,7 @@ def build_custom_model_gateway(
         run_id=run_id,
         completion_cache=completion_cache,
         cache_ttl_s=settings.llm_cache_ttl_s,
+        provider_prompt_cache_enabled=settings.provider_prompt_cache_enabled,
         default_context_window_tokens=context_window_tokens,
         context_safety_tokens=settings.llm_context_safety_tokens,
     )

@@ -64,7 +64,14 @@ def completion_cache_key(
         "max_tokens": max_tokens,
         # 浮点直接进 JSON 会有 0.1 vs 0.1000000001 的表示差异, 定死小数位。
         "temperature": f"{temperature:.4f}",
-        "messages": [[item.role, item.content] for item in messages],
+        "messages": [
+            [
+                item.role,
+                item.content,
+                [attachment.sha256 for attachment in item.attachments],
+            ]
+            for item in messages
+        ],
     }
     blob = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -102,6 +109,12 @@ class RedisCompletionCache:
                 usage=Usage(
                     input_tokens=int(payload["input_tokens"]),
                     output_tokens=int(payload["output_tokens"]),
+                    prompt_cache_read_tokens=int(
+                        payload.get("prompt_cache_read_tokens", 0)
+                    ),
+                    prompt_cache_write_tokens=int(
+                        payload.get("prompt_cache_write_tokens", 0)
+                    ),
                 ),
             )
         except (ValueError, KeyError, TypeError) as error:
@@ -117,6 +130,8 @@ class RedisCompletionCache:
                 "provider": result.provider,
                 "input_tokens": result.usage.input_tokens,
                 "output_tokens": result.usage.output_tokens,
+                "prompt_cache_read_tokens": result.usage.prompt_cache_read_tokens,
+                "prompt_cache_write_tokens": result.usage.prompt_cache_write_tokens,
             },
             ensure_ascii=False,
             separators=(",", ":"),

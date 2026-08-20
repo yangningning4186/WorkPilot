@@ -75,8 +75,9 @@ npm run dev:desktop
 ```
 
 桌面壳会自动选择随机本机端口，生成当次启动 token，执行 Alembic 迁移，
-并同时启动 FastAPI 与 Arq worker。目录必须经系统选择器授权；授权后该会话
-对目录内的通用文本和 Word / Excel 可直接读写，PDF 可受控读取，并能生成 Artifact；
+并同时启动 FastAPI 与 Arq worker。普通任务的新交付物默认写入本机 `~/Documents/WorkPilot`；
+读取或改写其他本机目录时再经系统选择器授权。授权后的目录可直接读写通用文本和
+Word / Excel，PDF 可受控读取，并能生成 PPTX / DOCX / XLSX / PDF 等 Artifact；
 这些操作在目录授权后不再逐条弹确认。
 读取公开网页/远程 PDF 需要在当前 Cowork 会话内额外授予 `network.read`。
 

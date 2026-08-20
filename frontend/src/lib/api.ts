@@ -48,6 +48,7 @@ export interface ConversationSummary {
   provider: string | null;
   selected_model: string | null;
   unattended: boolean;
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -72,12 +73,33 @@ export interface ConversationMessage {
   run_id: string | null;
   citations: CitationPayload[];
   answer_mode: AnswerMode | null;
+  attachments: CoworkAttachment[];
   created_at: string;
 }
 
 export interface ConversationMessageListResponse {
   items: ConversationMessage[];
   total: number;
+}
+
+export interface ConversationContextUsage {
+  used_tokens: number;
+  context_window_tokens: number;
+  max_input_tokens: number;
+  trigger_tokens: number;
+  trigger_ratio: number;
+  auto_compaction: boolean;
+  compaction_revision: number;
+  compaction_mode: "none" | "summary" | "summary_fallback" | "trim";
+  model: string;
+  run_status: string | null;
+  estimated: boolean;
+  breakdown: {
+    system: number;
+    tools: number;
+    messages: number;
+    tool_activity: number;
+  };
 }
 
 export interface RunStatusResponse {
@@ -109,7 +131,8 @@ export class ApiError extends Error {
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const desktop = await getDesktopContext();
   const headers = new Headers(init?.headers);
-  if (init?.body !== undefined && !headers.has("content-type")) {
+  const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
+  if (init?.body !== undefined && !isFormData && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
   if (desktop !== null) {
@@ -183,8 +206,10 @@ export function createRun(body: CreateRunRequest): Promise<CreateRunResponse> {
   });
 }
 
-export function fetchConversations(): Promise<ConversationListResponse> {
-  return request<ConversationListResponse>("/api/v1/conversations");
+export function fetchConversations(archived = false): Promise<ConversationListResponse> {
+  return request<ConversationListResponse>(
+    `/api/v1/conversations?archived=${archived ? "true" : "false"}`,
+  );
 }
 
 export function createConversation(title = "新会话"): Promise<ConversationSummary> {
@@ -196,6 +221,16 @@ export function createConversation(title = "新会话"): Promise<ConversationSum
 
 export function deleteConversation(conversationId: string): Promise<void> {
   return requestVoid(`/api/v1/conversations/${conversationId}`, { method: "DELETE" });
+}
+
+export function setConversationArchived(
+  conversationId: string,
+  archived: boolean,
+): Promise<ConversationSummary> {
+  return request<ConversationSummary>(`/api/v1/conversations/${conversationId}/archive`, {
+    method: "PUT",
+    body: JSON.stringify({ archived }),
+  });
 }
 
 export function updateConversationRuntime(
@@ -213,6 +248,15 @@ export function fetchConversationMessages(
 ): Promise<ConversationMessageListResponse> {
   return request<ConversationMessageListResponse>(
     `/api/v1/conversations/${conversationId}/messages`,
+  );
+}
+
+export function fetchConversationContextUsage(
+  conversationId: string,
+): Promise<ConversationContextUsage> {
+  return request<ConversationContextUsage>(
+    `/api/v1/conversations/${conversationId}/context-usage`,
+    { cache: "no-store" },
   );
 }
 
@@ -280,10 +324,24 @@ export function fetchRunEventStream(
 export interface CreateCoworkRunRequest {
   goal: string;
   conversation_id: string;
+  attachment_ids?: string[];
+}
+
+export interface CoworkAttachment {
+  id: string;
+  conversation_id: string;
+  message_id: string | null;
+  run_id: string | null;
+  kind: "image" | "pdf" | "text";
+  filename: string;
+  media_type: string;
+  size_bytes: number;
+  sha256: string;
 }
 
 export type CoworkAccessMode = "read_only" | "read_write";
 export type CoworkCapability =
+  | "knowledge.read"
   | "filesystem.read"
   | "filesystem.write"
   | "office.word.edit"
@@ -338,6 +396,18 @@ export function createCoworkRun(body: CreateCoworkRunRequest): Promise<CreateRun
   });
 }
 
+export function uploadCoworkAttachment(
+  conversationId: string,
+  file: File,
+): Promise<CoworkAttachment> {
+  const body = new FormData();
+  body.append("upload", file, file.name);
+  return request<CoworkAttachment>(
+    `/api/v1/cowork/sessions/${conversationId}/attachments`,
+    { method: "POST", body },
+  );
+}
+
 export function fetchCoworkRoots(conversationId: string): Promise<{ items: CoworkRoot[] }> {
   return request<{ items: CoworkRoot[] }>(
     `/api/v1/cowork/sessions/${conversationId}/roots`,
@@ -374,10 +444,18 @@ export function fetchCoworkArtifacts(
   );
 }
 
-export async function fetchArtifactPreview(artifactId: string): Promise<Blob> {
+export interface ArtifactPreviewPayload {
+  blob: Blob;
+  mode: "quicklook" | "libreoffice" | "native-pdf" | "structure" | "text" | "unknown";
+}
+
+export async function fetchArtifactPreview(artifactId: string): Promise<ArtifactPreviewPayload> {
   const response = await apiFetch(`/api/v1/cowork/artifacts/${artifactId}/preview`);
   if (!response.ok) throw new ApiError(response.status, await response.text());
-  return response.blob();
+  const rawMode = response.headers.get("x-workpilot-preview-mode") ?? "unknown";
+  const modes = new Set(["quicklook", "libreoffice", "native-pdf", "structure", "text"]);
+  const mode = modes.has(rawMode) ? rawMode as ArtifactPreviewPayload["mode"] : "unknown";
+  return { blob: await response.blob(), mode };
 }
 
 export function fetchRunEventLog(
@@ -406,12 +484,15 @@ export interface CoworkSchedule {
   run_count: number;
   skipped_count: number;
   pending_inbox_count: number;
+  workspace_label: string | null;
+  workspace_path: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface CreateCoworkScheduleRequest {
-  conversation_id: string;
+  conversation_id?: string;
+  workspace_path?: string;
   title: string;
   goal: string;
   schedule_kind: "once" | "cron";
@@ -504,6 +585,30 @@ export interface ManagedSkill {
   error: string | null;
 }
 
+export interface SkillCandidate {
+  id: string;
+  capability_key: string;
+  suggested_name: string;
+  description: string;
+  skill_md: string;
+  tools: string[];
+  confidence: number;
+  status: "collecting" | "promoted" | "needs_review" | "rejected";
+  evidence_count: number;
+  promoted_name: string | null;
+  review_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SkillCandidatesResponse {
+  enabled: boolean;
+  auto_promotion_enabled: boolean;
+  min_evidence: number;
+  min_confidence: number;
+  items: SkillCandidate[];
+}
+
 export interface McpServerStatus {
   name: string;
   enabled: boolean;
@@ -573,6 +678,24 @@ export interface McpProbeResponse {
 
 export function fetchSkillsStatus(): Promise<SkillsStatusResponse> {
   return request<SkillsStatusResponse>("/api/v1/integrations/skills");
+}
+
+export function fetchSkillCandidates(): Promise<SkillCandidatesResponse> {
+  return request<SkillCandidatesResponse>("/api/v1/integrations/skills/candidates");
+}
+
+export function promoteSkillCandidate(candidateId: string): Promise<SkillCandidate> {
+  return request<SkillCandidate>(
+    `/api/v1/integrations/skills/candidates/${encodeURIComponent(candidateId)}/promote`,
+    { method: "POST" },
+  );
+}
+
+export function rejectSkillCandidate(candidateId: string): Promise<SkillCandidate> {
+  return request<SkillCandidate>(
+    `/api/v1/integrations/skills/candidates/${encodeURIComponent(candidateId)}/reject`,
+    { method: "POST" },
+  );
 }
 
 export function fetchMcpStatus(): Promise<McpStatusResponse> {
@@ -974,6 +1097,9 @@ export interface CostTierUsage {
   cached_count: number;
   failed_count: number;
   fallback_count: number;
+  prompt_cache_read_tokens: number;
+  prompt_cache_write_tokens: number;
+  prompt_cache_read_rate: number;
   prompt_tokens: number;
   output_tokens: number;
   total_tokens: number;
@@ -989,6 +1115,8 @@ export interface CostTaskTypeUsage {
   call_count: number;
   total_tokens: number;
   cache_hit_rate: number;
+  prompt_cache_read_tokens: number;
+  prompt_cache_write_tokens: number;
 }
 
 export interface CostBatchSummary {
@@ -1023,6 +1151,9 @@ export interface CostOverviewResponse {
     call_count: number;
     cached_count: number;
     cache_hit_rate: number;
+    prompt_cache_read_tokens: number;
+    prompt_cache_write_tokens: number;
+    prompt_cache_read_rate: number;
     total_tokens: number;
     failed_count: number;
     fallback_count: number;

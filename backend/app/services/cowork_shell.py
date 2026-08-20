@@ -141,9 +141,7 @@ async def execute_shell_command(
     stdout_task = asyncio.create_task(_read_limited(process.stdout, max_output_bytes))
     stderr_task = asyncio.create_task(_read_limited(process.stderr, max_output_bytes))
     process_task = asyncio.create_task(process.wait())
-    cancel_task = (
-        asyncio.create_task(cancel_event.wait()) if cancel_event is not None else None
-    )
+    cancel_task = asyncio.create_task(cancel_event.wait()) if cancel_event is not None else None
     waiters: set[asyncio.Task[int] | asyncio.Task[bool]] = {process_task}
     if cancel_task is not None:
         waiters.add(cancel_task)
@@ -162,9 +160,7 @@ async def execute_shell_command(
             pending_error = CoworkShellCancelledError("用户停止，shell 进程已终止")
         else:
             await _terminate_process_group(process, terminate_grace_s)
-            pending_error = CoworkShellTimeoutError(
-                f"shell 命令超过 {timeout_s:g} 秒，已终止"
-            )
+            pending_error = CoworkShellTimeoutError(f"shell 命令超过 {timeout_s:g} 秒，已终止")
     finally:
         if cancel_task is not None:
             cancel_task.cancel()
@@ -186,9 +182,7 @@ async def execute_shell_command(
     )
 
 
-async def _read_limited(
-    stream: asyncio.StreamReader, max_bytes: int
-) -> tuple[bytes, bool]:
+async def _read_limited(stream: asyncio.StreamReader, max_bytes: int) -> tuple[bytes, bool]:
     retained = bytearray()
     truncated = False
     while True:
@@ -202,9 +196,7 @@ async def _read_limited(
             truncated = True
 
 
-async def _terminate_process_group(
-    process: asyncio.subprocess.Process, grace_s: float
-) -> None:
+async def _terminate_process_group(process: asyncio.subprocess.Process, grace_s: float) -> None:
     if process.returncode is not None:
         return
     try:

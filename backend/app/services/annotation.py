@@ -425,9 +425,7 @@ async def validate_evidence_groups(
     validated: list[dict[str, object]] = []
     for group in groups:
         alternatives = await validate_gold_spans(session, group.alternatives)
-        validated.append(
-            {"fact_id": group.fact_id.strip(), "alternatives": alternatives}
-        )
+        validated.append({"fact_id": group.fact_id.strip(), "alternatives": alternatives})
     return validated
 
 
@@ -512,10 +510,7 @@ async def _write_item(
 
 def _item_response(row: Any) -> AnnotationItemResponse:
     spans = [GoldSpanInput.model_validate(item) for item in row["gold_spans"]]
-    groups = [
-        GoldEvidenceGroupInput.model_validate(item)
-        for item in row["gold_evidence_groups"]
-    ]
+    groups = [GoldEvidenceGroupInput.model_validate(item) for item in row["gold_evidence_groups"]]
     tools = [GoldToolInput.model_validate(item) for item in row["gold_tools"]]
     issues: list[str] = []
     spans_valid = bool(row["spans_valid"])

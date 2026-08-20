@@ -4,6 +4,61 @@
 
 与 backend 平级的一等模块，不是测试目录的附属。
 
+## Cowork 单 Agent 40 条基线
+
+`cowork-core-40.json` 是 Cowork 的首个端到端标注候选集：32 条 dev、8 条冻结 test，
+覆盖 workspace、artifact、Office、Web、knowledge/RAG 与安全/HITL 六类任务。每条记录均包含
+可复现 fixture、初始 capability、期望终态、gold 工具、工具顺序/调用预算和确定性成功断言；
+knowledge 类额外强制 `EvidenceBundle` 合约，不允许 `chunk_id`、内部 score 或 ORM 泄漏。
+
+当前套件由助手起草，因此固定为 `origin=synthetic`、
+`review_status=pending_human_review`。它可以用于打通 runner 和比较工程回归，但 owner 完成
+逐条复核前不得宣称为 human 产品质量基线，也不得用 test split 调参。
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_task_suite
+PYTHONPATH=backend backend/.venv/bin/pytest backend/tests/test_cowork_task_suite.py -q
+```
+
+runner 会为每题创建隔离工作区和独立 Cowork Run，走生产 `run_cowork_graph`；Web 与 RAG
+改用 suite 内的确定性 adapter，不访问公网或生产资料库。默认只跑 dev：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
+  --label cowork-dev-v1 --split dev --allow-synthetic --allow-model-send \
+  --authorization-note '<已核验的模型端点与合成数据发送授权>'
+```
+
+跑完整 40 条必须显式留下 test access 审计：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
+  --label cowork-core40-v1 --split all --include-test \
+  --test-access-note '<本次冻结验收原因>' \
+  --allow-synthetic --allow-model-send \
+  --authorization-note '<已核验的模型端点与合成数据发送授权>'
+```
+
+输出位于 `eval/outputs/cowork-core/<timestamp>-<label>/`：`observations.jsonl` 保留逐题
+checkpoint/tool trace，`report.json` 提供机器可读总表及 category/split 分层，`report.md`
+提供人工摘要。主指标是规则轨 `task_success_rate`、Gold 工具选择准确率、
+`actual_tool_calls / optimal_tool_calls` 步骤效率、P95 延迟和 Token；同时报告工具错误率与恢复数。
+runner 逐题落盘，某一题或进程失败不会抹掉已经完成的 observation。
+
+若只调整了标注或确定性 scorer，可复用既有 observation 离线重评分，不再次调用模型；延迟、
+Token 和工具轨迹保持原值，并在 manifest 记录源报告哈希：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
+  --label cowork-core40-v1-rescored \
+  --rescore-report eval/outputs/cowork-core/<baseline>/report.json \
+  --include-test --test-access-note '<离线重评分原因>' --allow-synthetic
+```
+
+首轮人工复核应逐条确认：prompt 是否自然且无歧义、fixture 是否足以作答、gold 工具是否是
+最短安全路径、断言是否真的代表任务完成、HITL/权限预期是否符合产品策略。复核完成后再提升
+版本并冻结 test split；不要直接修改已经产生正式报告的版本。
+
 ## A5 长期记忆注入
 
 `memory_injection_experiment.py` 对同一批个人化任务严格配对运行 memory off/on，冻结模型、

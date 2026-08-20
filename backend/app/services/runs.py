@@ -8,7 +8,6 @@
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -16,79 +15,31 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
-# 终态之后不再产生任何事件, SSE 可以安全断开。
-TERMINAL_RUN_STATUSES = frozenset({"done", "failed", "cancelled", "budget_exceeded"})
+from app.agent_core.contracts import (
+    TERMINAL_RUN_STATUSES as TERMINAL_RUN_STATUSES,
+)
+from app.agent_core.contracts import (
+    RunEvent as RunEvent,
+)
+from app.agent_core.contracts import (
+    RunRecord as RunRecord,
+)
+from app.agent_core.contracts import (
+    WorkflowType as WorkflowType,
+)
+from app.agent_core.errors import RunNotFoundError as RunNotFoundError
+from app.cowork_store.jsonl import JsonlMessage
+from app.cowork_store.routing import configured_cowork_store
+
 # 内联进 SQL 的常量白名单, 不接受外部输入。
 _TERMINAL_SQL = "(" + ", ".join(f"'{status}'" for status in sorted(TERMINAL_RUN_STATUSES)) + ")"
 MESSAGE_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
-WorkflowType = Literal["answer", "literature_review", "cowork"]
-
-
-class RunNotFoundError(LookupError):
-    pass
-
-
-@dataclass(frozen=True)
-class RunEvent:
-    run_id: UUID
-    seq: int
-    type: str
-    payload: dict[str, Any]
-    created_at: datetime
-
-    @property
-    def event_id(self) -> str:
-        """SSE 的 id: 字段, 断线重连时浏览器会用它填 Last-Event-ID。"""
-
-        return f"{self.run_id}:{self.seq}"
-
-    def envelope(self) -> dict[str, Any]:
-        # seq 用字符串: DB 是 BIGINT, 直接给 JS number 会丢精度(docs/08 §3.2)。
-        return {
-            "id": self.event_id,
-            "run_id": str(self.run_id),
-            "seq": str(self.seq),
-            "type": self.type,
-            "data": self.payload,
-        }
-
-
-@dataclass(frozen=True)
-class RunRecord:
-    id: UUID
-    conversation_id: UUID
-    goal: str
-    status: str
-    worker_id: str | None
-    lease_until: datetime | None
-    cancel_requested_at: datetime | None
-    budget_tokens: int
-    budget_calls: int
-    budget_wall_ms: int
-    used_tokens: int
-    used_calls: int
-    next_seq: int
-    error: str | None
-    schedule_id: UUID | None
-    unattended: bool
-    run_trigger: Literal["manual", "schedule", "catchup"]
-    workflow_type: WorkflowType = "answer"
-    # grounded = 依据资料库回答; general = 用户显式选择的通用知识回答(不可溯源)。
-    answer_mode: Literal["grounded", "general"] = "grounded"
-
-    @property
-    def is_terminal(self) -> bool:
-        return self.status in TERMINAL_RUN_STATUSES
-
-    @property
-    def cancel_requested(self) -> bool:
-        return self.cancel_requested_at is not None
 
 
 _RUN_COLUMNS = """
     id, conversation_id, goal, status, worker_id, lease_until, cancel_requested_at,
     budget_tokens, budget_calls, budget_wall_ms, used_tokens, used_calls, next_seq, error,
-    answer_mode, workflow_type, schedule_id, unattended, run_trigger
+    answer_mode, workflow_type, schedule_id, unattended, run_trigger, retrieval_top_k
 """
 _RUN_COLUMNS_QUALIFIED = ", ".join(f"ar.{column.strip()}" for column in _RUN_COLUMNS.split(","))
 
@@ -110,11 +61,25 @@ async def ensure_conversation(
     if scope == "demo" and demo_session_id is None:
         raise ValueError("demo 对话必须绑定 demo session")
 
+    store = configured_cowork_store() if scope == "local_owner" else None
+    if store is not None:
+        if conversation_id is not None:
+            active = await store.list_conversation_metadata(
+                conversation_id=conversation_id, archived=False, limit=1
+            )
+            if not active:
+                if await store.conversation_exists(conversation_id):
+                    raise LookupError("对话已归档，请先恢复")
+                raise LookupError(f"对话不存在: {conversation_id}")
+            return conversation_id
+        return await store.create_conversation(title=title)
+
     if conversation_id is not None:
         statement = """
             SELECT id FROM conversations
             WHERE id = :id
               AND scope = :scope
+              AND archived_at IS NULL
               AND (
                 (:scope = 'local_owner' AND demo_session_id IS NULL)
                 OR (:scope = 'demo' AND demo_session_id = :demo_session_id)
@@ -157,6 +122,7 @@ async def create_run(
     budget_calls: int,
     budget_wall_ms: int,
     answer_mode: str = "grounded",
+    retrieval_top_k: int = 5,
     workflow_type: WorkflowType = "answer",
     schedule_id: UUID | None = None,
     unattended: bool = False,
@@ -168,10 +134,27 @@ async def create_run(
         raise ValueError("answer_mode 只能是 grounded 或 general")
     if workflow_type not in {"answer", "literature_review", "cowork"}:
         raise ValueError("workflow_type 只能是 answer、literature_review 或 cowork")
+    if not 1 <= retrieval_top_k <= 20:
+        raise ValueError("retrieval_top_k 必须位于 1 到 20")
     if run_trigger not in {"manual", "schedule", "catchup"}:
         raise ValueError("run_trigger 无效")
     if schedule_id is not None and workflow_type != "cowork":
         raise ValueError("只有 Cowork run 可以关联 schedule")
+    store = configured_cowork_store()
+    if store is not None and workflow_type == "cowork":
+        return await store.create_run(
+            conversation_id=conversation_id,
+            goal=goal,
+            budget_tokens=budget_tokens,
+            budget_calls=budget_calls,
+            budget_wall_ms=budget_wall_ms,
+            answer_mode=answer_mode,  # type: ignore[arg-type]
+            retrieval_top_k=retrieval_top_k,
+            workflow_type=workflow_type,
+            schedule_id=schedule_id,
+            unattended=unattended,
+            run_trigger=run_trigger,
+        )
     run_id = uuid7()
     await session.execute(
         text(
@@ -179,10 +162,10 @@ async def create_run(
             INSERT INTO agent_runs
                 (id, conversation_id, goal, status,
                  budget_tokens, budget_calls, budget_wall_ms, answer_mode, workflow_type,
-                 schedule_id, unattended, run_trigger)
+                 schedule_id, unattended, run_trigger, retrieval_top_k)
             VALUES (:id, :conversation_id, :goal, 'queued',
                     :budget_tokens, :budget_calls, :budget_wall_ms, :answer_mode,
-                    :workflow_type, :schedule_id, :unattended, :run_trigger)
+                    :workflow_type, :schedule_id, :unattended, :run_trigger, :retrieval_top_k)
             """
         ),
         {
@@ -197,6 +180,7 @@ async def create_run(
             "schedule_id": schedule_id,
             "unattended": unattended,
             "run_trigger": run_trigger,
+            "retrieval_top_k": retrieval_top_k,
         },
     )
     run = await get_run(session, run_id)
@@ -206,6 +190,11 @@ async def create_run(
 
 
 async def get_run(session: AsyncSession, run_id: UUID) -> RunRecord | None:
+    store = configured_cowork_store()
+    if store is not None:
+        local = await store.get_run(run_id)
+        if local is not None:
+            return local
     row = (
         (
             await session.execute(
@@ -260,6 +249,11 @@ async def get_run_for_identity(
 
     if scope not in {"local_owner", "demo"}:
         raise ValueError("未知 identity scope")
+    store = configured_cowork_store() if scope == "local_owner" else None
+    if store is not None:
+        local = await store.get_run(run_id)
+        if local is not None:
+            return local
     row = (
         (
             await session.execute(
@@ -374,6 +368,9 @@ async def append_events(
 
     if not events:
         return []
+    store = configured_cowork_store()
+    if store is not None and await store.get_run(run_id) is not None:
+        return await store.append_events(run_id=run_id, events=events)
     allocated_end = (
         await session.execute(
             text(
@@ -430,6 +427,9 @@ async def list_events(
         raise ValueError("after_seq 不能为负数")
     if not 1 <= limit <= 1000:
         raise ValueError("limit 必须位于 1 到 1000")
+    store = configured_cowork_store()
+    if store is not None and await store.get_run(run_id) is not None:
+        return (await store.list_events(run_id=run_id, after_seq=after_seq))[:limit]
     rows = (
         (
             await session.execute(
@@ -466,6 +466,9 @@ async def claim_run(
 
     if lease_s <= 0:
         raise ValueError("租约时长必须大于 0")
+    store = configured_cowork_store()
+    if store is not None and await store.get_run(run_id) is not None:
+        return await store.claim_run(run_id=run_id, worker_id=worker_id, lease_s=lease_s)
     row = (
         (
             await session.execute(
@@ -504,6 +507,11 @@ async def renew_lease(
     lease_s: int,
 ) -> RunRecord | None:
     """续租并返回最新状态; 租约已被别人接管时返回 None。"""
+
+    store = configured_cowork_store()
+    if store is not None and await store.get_run(run_id) is not None:
+        renewed = await store.renew_run_lease(run_id=run_id, worker_id=worker_id, lease_s=lease_s)
+        return await store.get_run(run_id) if renewed else None
 
     row = (
         (
@@ -545,6 +553,10 @@ async def add_run_usage(
         raise ValueError("run 用量增量不能为负")
     if used_tokens == 0 and used_calls == 0:
         return
+    store = configured_cowork_store()
+    if store is not None and await store.get_run(run_id) is not None:
+        await store.add_run_usage(run_id=run_id, used_tokens=used_tokens, used_calls=used_calls)
+        return
     await session.execute(
         text(
             """
@@ -573,6 +585,16 @@ async def finish_run(
 
     if status not in TERMINAL_RUN_STATUSES:
         raise ValueError(f"不是终态: {status}")
+    store = configured_cowork_store()
+    if store is not None and await store.get_run(run_id) is not None:
+        return await store.finish_run(
+            run_id=run_id,
+            status=status,
+            worker_id=worker_id,
+            error=error,
+            used_tokens=used_tokens,
+            used_calls=used_calls,
+        )
     updated = (
         await session.execute(
             text(
@@ -616,6 +638,10 @@ async def request_cancel(
     还没被 worker 领走就直接落终态; 已经在跑则只打标记, 由 worker 在下一个检查点
     自己收尾——否则会出现"状态已终态但事件还在继续写"的不一致。
     """
+
+    store = configured_cowork_store() if scope in {None, "local_owner"} else None
+    if store is not None and await store.get_run(run_id) is not None:
+        return await store.request_cancel(run_id=run_id)
 
     row = (
         (
@@ -675,6 +701,7 @@ class ReapedRuns:
     failed: list[UUID]
     recovered: list[tuple[UUID, int]]
     recovered_cowork: list[tuple[UUID, int]]
+    cancelled: list[UUID]
 
 
 async def reap_expired_runs(
@@ -693,8 +720,149 @@ async def reap_expired_runs(
         raise ValueError("limit 必须大于 0")
     if max_recovery < 0:
         raise ValueError("自动恢复次数上限不能为负")
-    recoverable_predicate = """
-        ar.workflow_type IN ('literature_review', 'cowork')
+    store = configured_cowork_store()
+    local_failed: list[UUID] = []
+    local_recovered: list[tuple[UUID, int]] = []
+    local_cancelled: list[UUID] = []
+    if store is not None:
+        local = await store.reap_expired_runs(limit=limit, max_recovery=max_recovery)
+        local_failed = local["failed"]
+        local_recovered = local["recovered"]
+        local_cancelled = local["cancelled"]
+        for run_id, attempt in local_recovered:
+            await append_events(
+                session,
+                run_id=run_id,
+                events=[
+                    (
+                        "step.update",
+                        {
+                            "status": "recovering",
+                            "summary": f"worker 失联，正在从最近 checkpoint 恢复（第 {attempt} 次）。",
+                        },
+                    )
+                ],
+            )
+        for run_id in local_failed:
+            await append_events(
+                session,
+                run_id=run_id,
+                events=[
+                    (
+                        "error",
+                        {
+                            "code": "worker_lease_expired",
+                            "retryable": True,
+                            "user_message": "worker 失联，任务未能安全恢复。",
+                        },
+                    )
+                ],
+            )
+        for run_id in local_cancelled:
+            await append_events(
+                session,
+                run_id=run_id,
+                events=[
+                    (
+                        "error",
+                        {
+                            "code": "cancelled",
+                            "retryable": True,
+                            "user_message": "任务已取消。",
+                        },
+                    ),
+                    ("run.done", {"workflow_type": "cowork", "status": "cancelled"}),
+                ],
+            )
+    # SQLite 只承载 Cowork 控制面；answer / literature_review 仍在 PostgreSQL。
+    # 因此不能在处理完本地 store 后提前返回，且下面的 SQL 必须只排除已由
+    # SQLite 负责的 cowork 行，继续收敛 PostgreSQL 中的其他工作流。
+    postgres_workflow_filter = "AND workflow_type <> 'cowork'" if store is not None else ""
+    # 取消请求可能恰好撞上 worker 退出或人工交互恢复。此时既没有活 worker 收尾，
+    # 也不能把它重新排队；watchdog 负责把这种半终止状态收敛为明确终态。
+    cancelled_rows = (
+        (
+            await session.execute(
+                text(
+                    f"""
+                    UPDATE agent_runs
+                    SET status = 'cancelled', finished_at = now(), worker_id = NULL,
+                        lease_until = NULL, heartbeat_at = NULL, updated_at = now()
+                    WHERE id IN (
+                        SELECT id FROM agent_runs
+                        WHERE cancel_requested_at IS NOT NULL
+                          {postgres_workflow_filter}
+                          AND status NOT IN ('completed', 'failed', 'cancelled', 'budget_exceeded')
+                          AND (
+                            status IN ('queued', 'waiting_human')
+                            OR (status = 'executing' AND (lease_until IS NULL OR lease_until < now()))
+                          )
+                        ORDER BY updated_at
+                        LIMIT :limit
+                        FOR UPDATE SKIP LOCKED
+                    )
+                    RETURNING id, workflow_type
+                    """
+                ),
+                {"limit": limit},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    cancelled = [UUID(str(row["id"])) for row in cancelled_rows]
+    for row in cancelled_rows:
+        run_id = UUID(str(row["id"]))
+        if row["workflow_type"] == "cowork":
+            await session.execute(
+                text(
+                    """
+                    UPDATE cowork_inbox_items
+                    SET status = 'cancelled', responded_at = COALESCE(responded_at, now())
+                    WHERE run_id = :run_id AND status = 'pending'
+                    """
+                ),
+                {"run_id": run_id},
+            )
+        await session.execute(
+            text(
+                """
+                UPDATE messages
+                SET status = 'cancelled', content = CASE
+                    WHEN role = 'assistant' AND content = '' THEN 'Cowork 任务已停止。'
+                    ELSE content
+                END, updated_at = now()
+                WHERE run_id = :run_id AND status = 'streaming'
+                """
+            ),
+            {"run_id": run_id},
+        )
+        await append_events(
+            session,
+            run_id=run_id,
+            events=[
+                (
+                    "error",
+                    {
+                        "code": "cancelled",
+                        "retryable": True,
+                        "user_message": "任务已取消。",
+                    },
+                ),
+                (
+                    "run.done",
+                    {"workflow_type": row["workflow_type"], "status": "cancelled"},
+                ),
+            ],
+        )
+    recoverable_workflows = (
+        "ar.workflow_type = 'literature_review'"
+        if store is not None
+        else "ar.workflow_type IN ('literature_review', 'cowork')"
+    )
+    recoverable_predicate = f"""
+        {recoverable_workflows}
+        AND ar.cancel_requested_at IS NULL
         AND ar.recovery_count < :max_recovery
         AND EXISTS (
             SELECT 1 FROM agent_checkpoints ac WHERE ac.run_id = ar.id
@@ -717,6 +885,7 @@ async def reap_expired_runs(
                         WHERE ar.status NOT IN {_TERMINAL_SQL}
                           AND ar.lease_until IS NOT NULL
                           AND ar.lease_until < now()
+                          {"AND ar.workflow_type <> 'cowork'" if store is not None else ""}
                           AND {recoverable_predicate}
                         ORDER BY ar.lease_until
                         LIMIT :limit
@@ -774,6 +943,7 @@ async def reap_expired_runs(
                         WHERE ar.status NOT IN {_TERMINAL_SQL}
                           AND ar.lease_until IS NOT NULL
                           AND ar.lease_until < now()
+                          {"AND ar.workflow_type <> 'cowork'" if store is not None else ""}
                           AND NOT ({recoverable_predicate})
                         ORDER BY ar.lease_until
                         LIMIT :limit
@@ -814,9 +984,10 @@ async def reap_expired_runs(
             {"run_id": run_id},
         )
     return ReapedRuns(
-        failed=[UUID(str(run_id)) for run_id in run_ids],
+        failed=local_failed + [UUID(str(run_id)) for run_id in run_ids],
         recovered=recovered,
-        recovered_cowork=recovered_cowork,
+        recovered_cowork=local_recovered + recovered_cowork,
+        cancelled=local_cancelled + cancelled,
     )
 
 
@@ -831,6 +1002,32 @@ async def append_message(
     trace_id: str | None = None,
 ) -> UUID:
     """在对话末尾追加消息, seq 由数据库同事务计算。"""
+
+    store = configured_cowork_store()
+    if store is not None and await store.conversation_exists(conversation_id):
+        from app.cowork_store.factory import local_cowork_stores
+
+        message_id = uuid7()
+        seq = await store.allocate_message(
+            record_id=message_id,
+            conversation_id=conversation_id,
+            role=role,
+            status=status,
+            run_id=run_id,
+            title_source=content,
+        )
+        await local_cowork_stores().conversations.append(
+            JsonlMessage.create(
+                record_id=message_id,
+                conversation_id=conversation_id,
+                seq=seq,
+                role=role,  # type: ignore[arg-type]
+                content=content,
+                status=status,  # type: ignore[arg-type]
+                run_id=run_id,
+            )
+        )
+        return message_id
 
     message_id = uuid7()
     await session.execute(
@@ -882,6 +1079,30 @@ async def finalize_message(
 ) -> None:
     if status not in MESSAGE_TERMINAL_STATUSES:
         raise ValueError(f"不是消息终态: {status}")
+    store = configured_cowork_store()
+    if store is not None:
+        from dataclasses import replace
+
+        from app.cowork_store.factory import local_cowork_stores
+
+        messages = local_cowork_stores().conversations
+        conversation_id = await store.get_message_conversation_id(record_id=message_id)
+        current = (
+            None
+            if conversation_id is None
+            else await messages.find(message_id, conversation_id=conversation_id)
+        )
+        if current is not None:
+            await messages.append(
+                replace(
+                    current,
+                    status=status,  # type: ignore[arg-type]
+                    content=current.content if content is None else content,
+                    citations=current.citations if citations is None else tuple(citations),
+                )
+            )
+            await store.update_message_status(record_id=message_id, status=status)
+            return
     await session.execute(
         text(
             """

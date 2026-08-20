@@ -12,7 +12,6 @@ from langgraph.graph import END, START, StateGraph
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.budget import BudgetMeter, RunBudgetExceededError
 from app.agent.persistence import (
     ensure_plan,
     load_latest_checkpoint,
@@ -31,6 +30,7 @@ from app.agent.state import (
     json_state,
     normalize_budget,
 )
+from app.agent_core.budget import BudgetMeter, RunBudgetExceededError
 from app.core.run_bus import RunBus
 from app.services.runs import add_run_usage, append_events, finish_run, get_run
 
@@ -144,9 +144,7 @@ async def initialize_review_state(
         run_id=run_id,
         events=[("plan", {"workflow_type": "literature_review", "steps": plan})],
     )
-    await save_checkpoint(
-        session, run_id=run_id, state=state, parent_id=None
-    )
+    await save_checkpoint(session, run_id=run_id, state=state, parent_id=None)
     await session.commit()
     if bus is not None:
         await bus.publish(run_id)
@@ -182,9 +180,7 @@ class _ReviewGraphExecution:
 
         tokens = self.meter.budget["used_tokens"] - self._flushed_tokens
         calls = self.meter.budget["used_calls"] - self._flushed_calls
-        await add_run_usage(
-            self.session, run_id=run_id, used_tokens=tokens, used_calls=calls
-        )
+        await add_run_usage(self.session, run_id=run_id, used_tokens=tokens, used_calls=calls)
         self._flushed_tokens = self.meter.budget["used_tokens"]
         self._flushed_calls = self.meter.budget["used_calls"]
 
@@ -206,9 +202,7 @@ class _ReviewGraphExecution:
             plan_step_id=step_id,
             node=node,
         )
-        await update_plan_step(
-            self.session, run_id=run_id, step_id=step_id, status="running"
-        )
+        await update_plan_step(self.session, run_id=run_id, step_id=step_id, status="running")
         await append_events(
             self.session,
             run_id=run_id,
@@ -243,9 +237,7 @@ class _ReviewGraphExecution:
             failed["plan"][step_idx]["status"] = "failed"
             failed["error"] = str(error)
             await self._flush_usage(run_id)
-            await update_plan_step(
-                self.session, run_id=run_id, step_id=step_id, status="failed"
-            )
+            await update_plan_step(self.session, run_id=run_id, step_id=step_id, status="failed")
             await record_attempt(
                 self.session,
                 run_id=run_id,
@@ -337,9 +329,7 @@ class _ReviewGraphExecution:
                 ),
                 {"run_id": run_id},
             )
-        await update_plan_step(
-            self.session, run_id=run_id, step_id=step_id, status="done"
-        )
+        await update_plan_step(self.session, run_id=run_id, step_id=step_id, status="done")
         await record_attempt(
             self.session,
             run_id=run_id,
@@ -388,9 +378,7 @@ class _ReviewGraphExecution:
         tripped["error"] = str(error)
         tripped["interrupt"] = None
         await self._flush_usage(run_id)
-        await update_plan_step(
-            self.session, run_id=run_id, step_id=step_id, status="failed"
-        )
+        await update_plan_step(self.session, run_id=run_id, step_id=step_id, status="failed")
         await record_attempt(
             self.session,
             run_id=run_id,
@@ -443,9 +431,7 @@ class _ReviewGraphExecution:
             ],
         )
         # 用量已经逐节点写过, 这里只落终态, 不再重复累加。
-        await finish_run(
-            self.session, run_id=run_id, status="budget_exceeded", error=str(error)
-        )
+        await finish_run(self.session, run_id=run_id, status="budget_exceeded", error=str(error))
         await self._commit_and_publish(run_id)
         return tripped
 
@@ -459,24 +445,28 @@ class _ReviewGraphExecution:
             if actual_ids != expected_ids:
                 missing = sorted(expected_ids - actual_ids)
                 raise ValueError(f"文档不可用或没有活跃版本: {missing}")
-            return {"documents": documents}, f"已确认 {len(documents)} 篇文档", {
-                "document_count": len(documents)
-            }
+            return (
+                {"documents": documents},
+                f"已确认 {len(documents)} 篇文档",
+                {"document_count": len(documents)},
+            )
         if step_idx == 1:
             cards = [await self.tools.extract_card(item) for item in state["documents"]]
-            return {"cards": cards}, f"已抽取 {len(cards)} 张卡片", {
-                "card_count": len(cards)
-            }
+            return {"cards": cards}, f"已抽取 {len(cards)} 张卡片", {"card_count": len(cards)}
         if step_idx == 2:
             groups = await self.tools.group_cards(state["cards"])
-            return {"groups": groups}, f"已形成 {len(groups)} 个方法组", {
-                "group_count": len(groups)
-            }
+            return (
+                {"groups": groups},
+                f"已形成 {len(groups)} 个方法组",
+                {"group_count": len(groups)},
+            )
         if step_idx == 3:
             comparison = await self.tools.compare_documents(state["cards"], state["groups"])
-            return {"comparison": comparison}, "已完成横向比较", {
-                "comparison_chars": len(comparison)
-            }
+            return (
+                {"comparison": comparison},
+                "已完成横向比较",
+                {"comparison_chars": len(comparison)},
+            )
         if step_idx == 4:
             draft = await self.tools.generate_review(
                 goal=state["goal"],
@@ -525,9 +515,7 @@ async def run_readonly_review(
         return current
 
     def route(current: AgentState) -> str:
-        if current["status"] != "executing" or current["cursor"] >= len(
-            READONLY_NODE_NAMES
-        ):
+        if current["status"] != "executing" or current["cursor"] >= len(READONLY_NODE_NAMES):
             return END
         return READONLY_NODE_NAMES[current["cursor"]]
 
@@ -537,6 +525,7 @@ async def run_readonly_review(
     destinations: dict[Hashable, str] = {name: name for name in READONLY_NODE_NAMES}
     destinations[END] = END
     builder.add_conditional_edges("route", route, destinations)
+
     def make_operation(step_idx: int) -> Callable[[AgentState], Awaitable[AgentState]]:
         async def operation_node(current: AgentState) -> AgentState:
             return await execution.execute(current, step_idx)

@@ -20,10 +20,13 @@ dependencies = [
   "mcp>=1.28.1,<2",
   "openpyxl>=3.1,<4",
   "pgvector>=0.4,<1",
+  "playwright==1.55.0",
   "pydantic-settings>=2.10,<3",
   "pymupdf>=1.26,<2",
   "python-docx>=1.2,<2",
   # config/routing.yaml 的解析。此前只是 langgraph 的传递依赖, 直接 import 就要显式声明。
+  "python-multipart>=0.0.20,<1",
+  "python-pptx>=1.0,<2",
   "pyyaml>=6.0.3,<7",
   # arq 全系列都把 redis 卡在 <6, 因此从 6.x 回退到 5.x。
   # 用到的只有 from_url / publish / pubsub / aclose, 5.0.1+ 全部具备。

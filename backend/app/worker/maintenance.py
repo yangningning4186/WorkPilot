@@ -13,6 +13,7 @@ from app.services.cowork_schedules import (
     list_dispatchable_scheduled_runs,
 )
 from app.services.runs import reap_expired_runs
+from app.skills.distillation_store import list_dispatchable_skill_jobs
 
 logger = structlog.get_logger(__name__)
 
@@ -29,9 +30,7 @@ async def watchdog_tick(ctx: dict[str, Any]) -> int:
     session_factory = ctx["session_factory"]
     settings = ctx["settings"]
     async with session_factory() as session:
-        reaped = await reap_expired_runs(
-            session, max_recovery=settings.run_max_recovery
-        )
+        reaped = await reap_expired_runs(session, max_recovery=settings.run_max_recovery)
         await session.commit()
     queue = await get_run_queue()
     for run_id, attempt in reaped.recovered:
@@ -44,13 +43,22 @@ async def watchdog_tick(ctx: dict[str, Any]) -> int:
     for run_id in reaped.failed:
         # 唤醒还挂在 SSE 上的客户端, 让它们立刻读到 error 事件而不是干等心跳。
         await bus.publish(run_id)
+    for run_id in reaped.cancelled:
+        await bus.publish(run_id)
     if reaped.recovered:
         logger.warning("重新入队失联的固定综述 run", count=len(reaped.recovered))
     if reaped.recovered_cowork:
         logger.warning("重新入队失联的 Cowork run", count=len(reaped.recovered_cowork))
     if reaped.failed:
         logger.warning("回收失联 run", count=len(reaped.failed))
-    return len(reaped.failed) + len(reaped.recovered) + len(reaped.recovered_cowork)
+    if reaped.cancelled:
+        logger.info("收敛已请求取消的 run", count=len(reaped.cancelled))
+    return (
+        len(reaped.failed)
+        + len(reaped.recovered)
+        + len(reaped.recovered_cowork)
+        + len(reaped.cancelled)
+    )
 
 
 async def cost_sweeper_tick(ctx: dict[str, Any]) -> int:
@@ -79,6 +87,24 @@ async def memory_dispatch_tick(ctx: dict[str, Any]) -> int:
     queue = ctx.get("run_queue") or await get_run_queue()
     for job_id, attempt in jobs:
         await queue.enqueue_memory_job(job_id, attempt=attempt)
+    return len(jobs)
+
+
+async def skill_distillation_dispatch_tick(ctx: dict[str, Any]) -> int:
+    """补偿 Skill 蒸馏作业首次入队失败与失联租约。"""
+
+    settings = ctx["settings"]
+    if not settings.skill_distillation_enabled:
+        return 0
+    session_factory = ctx["session_factory"]
+    async with session_factory() as session:
+        jobs = await list_dispatchable_skill_jobs(
+            session, max_attempts=settings.skill_distillation_job_max_attempts
+        )
+        await session.commit()
+    queue = ctx.get("run_queue") or await get_run_queue()
+    for job_id, attempt in jobs:
+        await queue.enqueue_skill_job(job_id, attempt=attempt)
     return len(jobs)
 
 

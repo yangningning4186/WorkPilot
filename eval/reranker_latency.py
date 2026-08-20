@@ -11,10 +11,6 @@ from statistics import fmean
 from uuid import UUID
 
 import httpx
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-from uuid6 import uuid7
-
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.llm.audit import SqlLlmCallAudit
@@ -22,7 +18,11 @@ from app.llm.gateway import ModelGateway, build_model_gateway
 from app.retrieval.dense import DenseSearchHit, dense_search
 from app.retrieval.fusion import rerank_candidate_union
 from app.retrieval.lexical import lexical_search
-from app.services.reranker import rerank_candidates
+from app.retrieval.reranker import rerank_candidates
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from uuid6 import uuid7
+
 from eval.metrics.diagnostics import percentile
 
 

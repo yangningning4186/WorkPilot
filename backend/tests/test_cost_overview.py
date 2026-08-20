@@ -40,6 +40,8 @@ def _record(
     input_tokens: int = 900,
     output_tokens: int = 100,
     latency_ms: int = 1000,
+    prompt_cache_read_tokens: int = 0,
+    prompt_cache_write_tokens: int = 0,
     batch_id: object = None,
 ) -> AuditRecord:
     return AuditRecord(
@@ -52,6 +54,8 @@ def _record(
         output_tokens=output_tokens,
         latency_ms=latency_ms,
         success=success,
+        prompt_cache_read_tokens=prompt_cache_read_tokens,
+        prompt_cache_write_tokens=prompt_cache_write_tokens,
         cached=cached,
         cache_type="exact" if cached else None,
         was_fallback=was_fallback,
@@ -167,6 +171,30 @@ async def test_failures_and_fallbacks_are_counted_separately(
     assert overview.totals.failed_count == 1
     assert overview.totals.fallback_count == 1
     assert overview.totals.call_count == 3
+
+
+async def test_provider_prompt_cache_tokens_are_reported_separately(
+    db_session: AsyncSession,
+) -> None:
+    audit = SqlLlmCallAudit(db_session)
+    await audit.record(
+        _record(
+            input_tokens=1_000,
+            output_tokens=100,
+            prompt_cache_read_tokens=750,
+            prompt_cache_write_tokens=200,
+        )
+    )
+
+    overview = await get_cost_overview(db_session, settings=_Settings())  # type: ignore[arg-type]
+
+    main = next(tier for tier in overview.by_tier if tier.tier == "main")
+    assert main.prompt_cache_read_tokens == 750
+    assert main.prompt_cache_write_tokens == 200
+    assert main.prompt_cache_read_rate == 0.75
+    # Prompt cache 仍执行了模型，不得冒充零成本的 exact cache hit。
+    assert main.cached_count == 0
+    assert main.total_tokens == 1_100
 
 
 async def test_task_type_breakdown_shows_which_tier_answered(

@@ -1,18 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { AdminSessionControl, useAdminSession } from "@/components/admin-session";
 import { AnswerMarkdown } from "@/components/answer-markdown";
 import { WorkdeskIcon, WorkdeskNavigation } from "@/components/workdesk-shell";
 import {
   ApiError,
-  addCoworkRoot,
   cancelRun,
   createConversation,
   createCoworkRun,
+  deleteConversation,
   fetchConversationMessages,
+  fetchConversationContextUsage,
   fetchConversations,
   fetchCoworkArtifacts,
   fetchArtifactPreview,
@@ -21,9 +22,12 @@ import {
   fetchProviders,
   revokeCoworkRoot,
   respondToCoworkInteraction,
+  setConversationArchived,
   steerCoworkRun,
   updateConversationRuntime,
+  uploadCoworkAttachment,
   type ConversationSummary,
+  type ConversationContextUsage,
   type ConversationMessage,
   type CoworkArtifact,
   type CoworkGrant,
@@ -44,6 +48,18 @@ const TOOL_LABELS: Record<string, string> = {
   write_text_file: "写入文本",
   search_files: "搜索文件",
   read_pdf: "读取 PDF",
+  browser_open: "打开浏览器",
+  browser_snapshot: "读取页面 DOM",
+  browser_click: "点击网页控件",
+  browser_back: "浏览器返回",
+  browser_type: "填写网页输入",
+  browser_select: "选择网页选项",
+  browser_upload: "上传网页文件",
+  browser_download: "下载网页文件",
+  browser_screenshot: "保存网页截图",
+  browser_find: "查找页面内容",
+  browser_close: "关闭浏览器",
+  explore: "只读子 Agent 调查",
   fetch_url: "读取网页",
   create_artifact: "生成交付物",
   list_office_files: "扫描 Word / Excel",
@@ -53,6 +69,7 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 const CAPABILITY_LABELS: Record<string, string> = {
+  "knowledge.read": "读取个人资料库",
   "filesystem.read": "读取文件",
   "filesystem.write": "写入文件",
   "office.word.edit": "编辑 Word",
@@ -96,6 +113,55 @@ function artifactNote(artifact: CoworkArtifact): string {
   return typeof count === "number" ? `已写入 ${count} 处修改` : "已登记到交付物索引";
 }
 
+function formatTokenCount(value: number): string {
+  if (value < 1000) return `${Math.max(0, Math.round(value))}`;
+  return `${(value / 1000).toFixed(value >= 100_000 ? 0 : 1)}K`;
+}
+
+function ContextUsageMeter({ usage, draft }: { usage: ConversationContextUsage | null; draft: string }) {
+  if (usage === null) {
+    return <span className="workdesk-context-meter-loading" aria-label="正在计算上下文用量" />;
+  }
+  const draftTokens = draft.trim() === "" ? 0 : draft.length + 8;
+  const usedTokens = usage.used_tokens + draftTokens;
+  const ratio = Math.min(1, usedTokens / Math.max(1, usage.context_window_tokens));
+  const percent = ratio * 100;
+  const thresholdPercent = usage.trigger_ratio * 100;
+  const breakdown = [
+    { key: "system", label: "系统提示词", value: usage.breakdown.system, color: "#19ad91" },
+    { key: "tools", label: "工具与子 Agent", value: usage.breakdown.tools, color: "#ddb05e" },
+    { key: "messages", label: "对话消息", value: usage.breakdown.messages, color: "#7658e8" },
+    { key: "activity", label: "Tool 调用与结果", value: usage.breakdown.tool_activity, color: "#29b9ce" },
+    { key: "draft", label: "当前输入", value: draftTokens, color: "#4d79e9" },
+  ];
+  return (
+    <details className="workdesk-context-meter">
+      <summary aria-label={`上下文已使用 ${percent.toFixed(1)}%`} title={`${percent.toFixed(1)}% · ${formatTokenCount(usedTokens)} / ${formatTokenCount(usage.context_window_tokens)}`}>
+        <svg aria-hidden="true" viewBox="0 0 36 36">
+          <circle className="track" cx="18" cy="18" r="14" />
+          <circle className={percent >= thresholdPercent ? "value warning" : "value"} cx="18" cy="18" pathLength="100" r="14" strokeDasharray={`${percent} ${100 - percent}`} />
+        </svg>
+        <span>{Math.round(percent)}%</span>
+      </summary>
+      <section className="workdesk-context-popover">
+        <header><div><small>CONTEXT WINDOW</small><strong>上下文用量</strong></div><span>{usage.model}</span></header>
+        <div className="workdesk-context-total"><b>{percent.toFixed(1)}%</b><span>已使用 {formatTokenCount(usedTokens)} / {formatTokenCount(usage.context_window_tokens)}</span></div>
+        <div className="workdesk-context-bar" aria-hidden="true">
+          {breakdown.map((item) => <i key={item.key} style={{ background: item.color, width: `${Math.min(100, item.value / Math.max(1, usage.context_window_tokens) * 100)}%` }} />)}
+          <em style={{ left: `${Math.min(100, thresholdPercent)}%` }} />
+        </div>
+        <div className="workdesk-context-breakdown">
+          {breakdown.map((item) => <div key={item.key}><i style={{ background: item.color }} /><span>{item.label}</span><b>{(item.value / Math.max(1, usage.context_window_tokens) * 100).toFixed(1)}%</b></div>)}
+        </div>
+        <footer>
+          <span>{usage.auto_compaction ? `达到 ${thresholdPercent.toFixed(0)}% 自动压缩` : "自动压缩已关闭"}</span>
+          <b>{usage.compaction_revision > 0 ? `已压缩 ${usage.compaction_revision} 次` : "尚未压缩"}</b>
+        </footer>
+      </section>
+    </details>
+  );
+}
+
 export default function CoworkPage() {
   const { state: authState } = useAdminSession();
   const desktopReady = useSyncExternalStore(
@@ -104,12 +170,19 @@ export default function CoworkPage() {
     () => false,
   );
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [archivedConversations, setArchivedConversations] = useState<ConversationSummary[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
+  const [managingConversationId, setManagingConversationId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<ConversationSummary | null>(null);
+  const [openConversationMenuId, setOpenConversationMenuId] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [roots, setRoots] = useState<CoworkRoot[]>([]);
   const [grants, setGrants] = useState<CoworkGrant[]>([]);
   const [artifacts, setArtifacts] = useState<CoworkArtifact[]>([]);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [goal, setGoal] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const attachmentInput = useRef<HTMLInputElement>(null);
   const [activePrompt, setActivePrompt] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -119,20 +192,41 @@ export default function CoworkPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [workMode, setWorkMode] = useState<"office" | "research">("office");
   const [providers, setProviders] = useState<ProviderProfile[]>([]);
-  const [artifactPreview, setArtifactPreview] = useState<{ title: string; url: string } | null>(null);
+  const [contextUsage, setContextUsage] = useState<ConversationContextUsage | null>(null);
+  const [artifactPreview, setArtifactPreview] = useState<{ title: string; url: string; mode: string } | null>(null);
   const run = useCoworkRun(runId);
 
+  useEffect(() => {
+    if (openConversationMenuId === null) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!(event.target instanceof Element) || event.target.closest(".workdesk-task-menu") === null) {
+        setOpenConversationMenuId(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenConversationMenuId(null);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [openConversationMenuId]);
+
   const loadSession = useCallback(async (id: string) => {
-    const [rootResponse, grantResponse, artifactResponse, messageResponse] = await Promise.all([
+    const [rootResponse, grantResponse, artifactResponse, messageResponse, contextResponse] = await Promise.all([
       fetchCoworkRoots(id),
       fetchCoworkGrants(id),
       fetchCoworkArtifacts(id),
       fetchConversationMessages(id),
+      fetchConversationContextUsage(id).catch(() => null),
     ]);
     setRoots(rootResponse.items);
     setGrants(grantResponse.items);
     setArtifacts(artifactResponse.items);
     setMessages(messageResponse.items);
+    if (contextResponse !== null) setContextUsage(contextResponse);
   }, []);
 
   useEffect(() => () => {
@@ -142,10 +236,10 @@ export default function CoworkPage() {
   const previewArtifact = useCallback(async (artifact: CoworkArtifact) => {
     setBusy(true);
     try {
-      const blob = await fetchArtifactPreview(artifact.id);
+      const preview = await fetchArtifactPreview(artifact.id);
       setArtifactPreview((current) => {
         if (current !== null) URL.revokeObjectURL(current.url);
-        return { title: artifact.title, url: URL.createObjectURL(blob) };
+        return { title: artifact.title, url: URL.createObjectURL(preview.blob), mode: preview.mode };
       });
     } catch (reason) {
       setNotice(readableError(reason));
@@ -159,8 +253,9 @@ export default function CoworkPage() {
     let cancelled = false;
     const load = async () => {
       try {
-        const [response, providerResponse] = await Promise.all([
+        const [response, archivedResponse, providerResponse] = await Promise.all([
           fetchConversations(),
+          fetchConversations(true),
           fetchProviders(),
         ]);
         if (cancelled) return;
@@ -181,6 +276,7 @@ export default function CoworkPage() {
         }
         if (cancelled) return;
         setConversations(items);
+        setArchivedConversations(archivedResponse.items);
         setProviders(providerResponse.items.filter((item) => item.enabled));
         setConversationId(selected.id);
       } catch (reason) {
@@ -210,6 +306,13 @@ export default function CoworkPage() {
   }, [conversationId, loadSession]);
 
   useEffect(() => {
+    if (conversationId === null || run.cursor === 0n) return;
+    fetchConversationContextUsage(conversationId)
+      .then(setContextUsage)
+      .catch(() => undefined);
+  }, [conversationId, run.cursor]);
+
+  useEffect(() => {
     if (conversationId === null || (run.phase !== "done" && run.artifactEvents.length === 0)) {
       return;
     }
@@ -230,6 +333,9 @@ export default function CoworkPage() {
       .catch(() => undefined);
   }, [conversationId, run.phase]);
 
+  const steering = run.phase === "connecting" || run.phase === "executing";
+  const running = steering || run.phase === "waiting_human";
+
   const capabilitiesByRoot = useMemo(() => {
     const values = new Map<string, string[]>();
     for (const grant of grants) {
@@ -240,26 +346,6 @@ export default function CoworkPage() {
     }
     return values;
   }, [grants]);
-
-  const addRoot = useCallback(async () => {
-    if (conversationId === null) return;
-    setBusy(true);
-    setNotice(null);
-    try {
-      const selected = await pickCoworkDirectory();
-      if (selected === null) {
-        if (!isTauriRuntime()) setNotice("目录授权只在 Tauri 桌面版可用。");
-        return;
-      }
-      await addCoworkRoot(conversationId, { path: selected, access_mode: "read_write" });
-      await loadSession(conversationId);
-      setNotice("目录已授权读写。后续 Word / Excel 任务会直接执行。");
-    } catch (reason) {
-      setNotice(readableError(reason));
-    } finally {
-      setBusy(false);
-    }
-  }, [conversationId, loadSession]);
 
   const removeRoot = useCallback(
     async (rootId: string) => {
@@ -281,38 +367,160 @@ export default function CoworkPage() {
   const createSession = useCallback(async () => {
     setBusy(true);
     try {
-      const created = await createConversation(`Cowork ${conversations.length + 1}`);
+      const created = await createConversation(
+        `Cowork ${conversations.length + archivedConversations.length + 1}`,
+      );
       setConversations((current) => [created, ...current]);
+      setShowArchived(false);
       setConversationId(created.id);
       setRunId(null);
       setMessages([]);
+      setContextUsage(null);
       setActivePrompt(null);
+      setAttachments([]);
       setNotice(null);
     } catch (reason) {
       setNotice(readableError(reason));
     } finally {
       setBusy(false);
     }
-  }, [conversations.length]);
+  }, [archivedConversations.length, conversations.length]);
+
+  const openConversation = useCallback((item: ConversationSummary) => {
+    setOpenConversationMenuId(null);
+    setConversationId(item.id);
+    setRunId(null);
+    setActivePrompt(null);
+    setAttachments([]);
+    setNotice(null);
+  }, []);
+
+  const changeConversationArchive = useCallback(async (
+    target: ConversationSummary,
+    archived: boolean,
+  ) => {
+    if (running) return;
+    setOpenConversationMenuId(null);
+    setManagingConversationId(target.id);
+    setNotice(null);
+    try {
+      const updated = await setConversationArchived(target.id, archived);
+      if (archived) {
+        setConversations((current) => current.filter((item) => item.id !== target.id));
+        setArchivedConversations((current) => [
+          updated,
+          ...current.filter((item) => item.id !== target.id),
+        ]);
+        if (target.id === conversationId) setShowArchived(true);
+        setNotice("会话已归档，可随时从归档列表恢复。");
+      } else {
+        setArchivedConversations((current) => current.filter((item) => item.id !== target.id));
+        setConversations((current) => [
+          updated,
+          ...current.filter((item) => item.id !== target.id),
+        ]);
+        setShowArchived(false);
+        setNotice("会话已恢复到任务列表。");
+      }
+    } catch (reason) {
+      setNotice(
+        reason instanceof ApiError && reason.status === 409
+          ? "该会话的任务正在执行，请停止任务或稍后再操作。"
+          : readableError(reason),
+      );
+    } finally {
+      setManagingConversationId(null);
+    }
+  }, [conversationId, running]);
+
+  const removeConversation = useCallback(async (target: ConversationSummary) => {
+    if (running) return;
+    setOpenConversationMenuId(null);
+    setManagingConversationId(target.id);
+    setNotice(null);
+    try {
+      await deleteConversation(target.id);
+      const remainingActive = conversations.filter((item) => item.id !== target.id);
+      const remainingArchived = archivedConversations.filter((item) => item.id !== target.id);
+      setConversations(remainingActive);
+      setArchivedConversations(remainingArchived);
+      if (target.id === conversationId) {
+        const next = remainingActive[0] ?? remainingArchived[0];
+        if (next === undefined) {
+          const created = await createConversation("Cowork 工作台");
+          setConversations([created]);
+          setShowArchived(false);
+          openConversation(created);
+        } else {
+          setShowArchived(next.archived_at !== null);
+          openConversation(next);
+        }
+      }
+      setNotice("会话已永久删除。");
+    } catch (reason) {
+      setNotice(
+        reason instanceof ApiError && reason.status === 409
+          ? "该会话的任务正在执行，请停止任务或稍后再删除。"
+          : readableError(reason),
+      );
+    } finally {
+      setManagingConversationId(null);
+      setPendingDelete(null);
+    }
+  }, [archivedConversations, conversationId, conversations, openConversation, running]);
 
   const execute = useCallback(async () => {
-    if (conversationId === null || goal.trim() === "" || roots.length === 0) return;
+    if (
+      conversationId === null
+      || goal.trim() === ""
+    ) return;
     const prompt = goal.trim();
     setBusy(true);
     setNotice(null);
     try {
-      const response = await createCoworkRun({ conversation_id: conversationId, goal: prompt });
+      const uploaded = await Promise.all(
+        attachments.map((file) => uploadCoworkAttachment(conversationId, file)),
+      );
+      const response = await createCoworkRun({
+        conversation_id: conversationId,
+        goal: prompt,
+        attachment_ids: uploaded.map((item) => item.id),
+      });
       setStopping(false);
       setActivePrompt(prompt);
       setRunId(response.run_id);
       setGoal("");
+      setAttachments([]);
       await loadSession(conversationId);
     } catch (reason) {
       setNotice(readableError(reason));
     } finally {
       setBusy(false);
     }
-  }, [conversationId, goal, loadSession, roots.length]);
+  }, [attachments, conversationId, goal, loadSession]);
+
+  const addAttachments = useCallback((files: FileList | File[]) => {
+    const accepted = Array.from(files).filter((file) => {
+      const suffix = file.name.toLowerCase().split(".").pop() ?? "";
+      return file.type.startsWith("image/")
+        || file.type === "application/pdf"
+        || ["txt", "md", "markdown", "csv", "tsv", "json", "xml", "yaml", "yml"].includes(suffix);
+    });
+    if (accepted.length === 0) {
+      setNotice("只支持图片、PDF 和 UTF-8 文本附件。");
+      return;
+    }
+    const tooLarge = accepted.find((file) => file.size > 10 * 1024 * 1024);
+    if (tooLarge !== undefined) {
+      setNotice(`${tooLarge.name} 超过 10 MB，未添加。`);
+      return;
+    }
+    setAttachments((current) => {
+      const merged = [...current, ...accepted].slice(0, 8);
+      if (current.length + accepted.length > 8) setNotice("每条消息最多添加 8 个附件。");
+      return merged;
+    });
+  }, []);
 
   const stopCowork = useCallback(async () => {
     if (runId === null || stopping) return;
@@ -374,11 +582,14 @@ export default function CoworkPage() {
     await respondToInteraction({ approved: true, path: selected });
   }, [respondToInteraction]);
 
-  const steering = run.phase === "connecting" || run.phase === "executing";
-  const running = steering || run.phase === "waiting_human";
   const submitComposer = steering ? sendSteering : execute;
   const prompts = workMode === "office" ? OFFICE_PROMPTS : RESEARCH_PROMPTS;
-  const activeConversation = conversations.find((item) => item.id === conversationId);
+  const listedConversations = showArchived ? archivedConversations : conversations;
+  const activeConversation = [...conversations, ...archivedConversations].find(
+    (item) => item.id === conversationId,
+  );
+  const conversationArchived = activeConversation?.archived_at !== null
+    && activeConversation?.archived_at !== undefined;
 
   const selectProvider = useCallback(async (providerId: string) => {
     if (conversationId === null || running) return;
@@ -391,6 +602,7 @@ export default function CoworkPage() {
         unattended: activeConversation?.unattended ?? false,
       });
       setConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
+      fetchConversationContextUsage(conversationId).then(setContextUsage).catch(() => undefined);
     } catch (reason) {
       setNotice(readableError(reason));
     } finally {
@@ -415,6 +627,7 @@ export default function CoworkPage() {
         unattended: activeConversation.unattended,
       });
       setConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
+      fetchConversationContextUsage(conversationId).then(setContextUsage).catch(() => undefined);
     } catch (reason) {
       setNotice(readableError(reason));
     } finally {
@@ -438,10 +651,10 @@ export default function CoworkPage() {
   const hasConversation = messages.length > 0 || runId !== null;
   const visibleMessages =
     runId === null ? messages : messages.filter((message) => message.run_id !== runId);
-  const currentPrompt =
-    activePrompt ??
-    messages.find((message) => message.run_id === runId && message.role === "user")?.content ??
-    null;
+  const currentPromptMessage = messages.find(
+    (message) => message.run_id === runId && message.role === "user",
+  );
+  const currentPrompt = activePrompt ?? currentPromptMessage?.content ?? null;
   const runStatusLabel =
     run.phase === "waiting_human"
       ? "需要你的答复"
@@ -474,40 +687,72 @@ export default function CoworkPage() {
         />
 
         <section className="workdesk-sidebar-group">
-          <header><span>任务</span><small>{conversations.length}</small></header>
+          <header className="workdesk-task-heading">
+            <span>{showArchived ? "已归档" : "任务"}</span>
+            <small>{listedConversations.length}</small>
+            <button
+              aria-pressed={showArchived}
+              className={showArchived ? "active" : ""}
+              disabled={busy || running}
+              onClick={() => setShowArchived((current) => !current)}
+              type="button"
+            >
+              <WorkdeskIcon name={showArchived ? "restore" : "archive"} />
+              {showArchived ? "返回任务" : "归档"}
+            </button>
+          </header>
           <div className="workdesk-task-list">
-            {conversations.slice(0, 7).map((item) => (
-              <button
-                className={item.id === conversationId ? "active" : ""}
-                disabled={running}
-                key={item.id}
-                onClick={() => {
-                  setConversationId(item.id);
-                  setRunId(null);
-                  setActivePrompt(null);
-                }}
-                type="button"
-              >
-                <span>{item.title ?? "Cowork 任务"}</span>
-                <small>{item.id === conversationId ? "当前" : new Date(item.updated_at).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}</small>
-              </button>
+            {listedConversations.slice(0, 12).map((item) => (
+              <div className={`workdesk-task-row${item.id === conversationId ? " active" : ""}`} key={item.id}>
+                <button
+                  className="workdesk-task-select"
+                  disabled={running}
+                  onClick={() => openConversation(item)}
+                  type="button"
+                >
+                  <span>{item.title ?? "Cowork 任务"}</span>
+                  <small>{item.id === conversationId ? "当前" : new Date(item.updated_at).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}</small>
+                </button>
+                <div className={`workdesk-task-menu${openConversationMenuId === item.id ? " open" : ""}`}>
+                  <button
+                    aria-controls={`conversation-menu-${item.id}`}
+                    aria-expanded={openConversationMenuId === item.id}
+                    aria-haspopup="menu"
+                    aria-label={`管理会话：${item.title ?? "Cowork 任务"}`}
+                    className="workdesk-task-menu-trigger"
+                    onClick={() => setOpenConversationMenuId((current) => current === item.id ? null : item.id)}
+                    type="button"
+                  >
+                    <WorkdeskIcon name="dots" />
+                  </button>
+                  {openConversationMenuId === item.id && <div id={`conversation-menu-${item.id}`} role="menu">
+                    <button
+                      disabled={running || managingConversationId !== null}
+                      onClick={() => void changeConversationArchive(item, !showArchived)}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <WorkdeskIcon name={showArchived ? "restore" : "archive"} />
+                      {showArchived ? "恢复会话" : "归档会话"}
+                    </button>
+                    <button
+                      className="danger"
+                      disabled={running || managingConversationId !== null}
+                      onClick={() => {
+                        setOpenConversationMenuId(null);
+                        setPendingDelete(item);
+                      }}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <WorkdeskIcon name="trash" />永久删除
+                    </button>
+                  </div>}
+                </div>
+              </div>
             ))}
-            {conversations.length === 0 && <p>连接后会在这里显示任务记录</p>}
+            {listedConversations.length === 0 && <p>{showArchived ? "还没有归档会话" : "连接后会在这里显示任务记录"}</p>}
           </div>
-        </section>
-
-        <section className="workdesk-sidebar-group workdesk-spaces">
-          <header><span>工作空间</span><small>{roots.length}</small></header>
-          <button className="workdesk-add-space" disabled={busy || conversationId === null || !desktopReady} onClick={() => void addRoot()} type="button">
-            <WorkdeskIcon name="folder" /><span>{roots.length === 0 ? "选择本地文件夹" : "添加工作空间"}</span><b>＋</b>
-          </button>
-          {roots.map((root) => (
-            <div className="workdesk-space" key={root.id}>
-              <span><WorkdeskIcon name="folder" /></span>
-              <div><strong>{root.label}</strong><small title={root.canonical_path}>{shortPath(root.canonical_path)}</small></div>
-              <i aria-label="已连接" />
-            </div>
-          ))}
         </section>
 
         <footer className="workdesk-account">
@@ -520,16 +765,7 @@ export default function CoworkPage() {
       <section className="workdesk-main">
         <header className="workdesk-topline">
           <div><span className={authState === "authenticated" ? "online" : ""} />{authState === "authenticated" ? "本地 Agent 已连接" : "正在连接本地 Agent"}</div>
-          <button
-            aria-label={roots.length === 0 ? "选择工作目录" : "添加工作目录"}
-            disabled={busy || conversationId === null || !desktopReady}
-            onClick={() => void addRoot()}
-            title={roots[0]?.canonical_path ?? "选择本机文件夹作为工作目录"}
-            type="button"
-          >
-            <WorkdeskIcon name="folder" />
-            <span>{roots.length === 0 ? "选择工作目录" : `${roots[0]?.label}${roots.length > 1 ? ` +${roots.length - 1}` : ""}`}</span>
-          </button>
+          <span className="workdesk-default-scope"><WorkdeskIcon name="shield" />默认权限</span>
           <p>{activeConversation?.title ?? "新任务"}</p>
         </header>
 
@@ -557,12 +793,20 @@ export default function CoworkPage() {
               </>
             ) : (
               <section aria-label="Cowork 对话" className="workdesk-chat-thread">
-                {visibleMessages.filter((message) => message.content.trim() !== "").map((message) => (
+                {conversationArchived && (
+                  <div className="workdesk-archived-banner">
+                    <WorkdeskIcon name="archive" />
+                    <div><strong>此会话已归档</strong><span>内容保持只读，恢复后可以继续任务。</span></div>
+                    <button disabled={managingConversationId !== null} onClick={() => activeConversation !== undefined && void changeConversationArchive(activeConversation, false)} type="button">恢复会话</button>
+                  </div>
+                )}
+                {visibleMessages.filter((message) => message.content.trim() !== "" || message.attachments.length > 0).map((message) => (
                   <article className={`workdesk-message ${message.role}`} key={message.id}>
                     {message.role === "assistant" && <span className="workdesk-agent-avatar"><WorkdeskIcon name="spark" /></span>}
                     <div className="workdesk-message-body">
                       {message.role === "assistant" && <small>WorkPilot</small>}
                       {message.role === "assistant" ? <AnswerMarkdown text={message.content} /> : <p>{message.content}</p>}
+                      {message.attachments.length > 0 && <div className="workdesk-message-attachments">{message.attachments.map((item) => <span key={item.id}><WorkdeskIcon name="file" /><b>{item.filename}</b><small>{item.kind === "image" ? "图片" : item.kind === "pdf" ? "PDF" : "文本"}</small></span>)}</div>}
                     </div>
                   </article>
                 ))}
@@ -571,7 +815,7 @@ export default function CoworkPage() {
                   <>
                     {currentPrompt !== null && (
                       <article className="workdesk-message user current">
-                        <div className="workdesk-message-body"><p>{currentPrompt}</p></div>
+                        <div className="workdesk-message-body"><p>{currentPrompt}</p>{currentPromptMessage !== undefined && currentPromptMessage.attachments.length > 0 && <div className="workdesk-message-attachments">{currentPromptMessage.attachments.map((item) => <span key={item.id}><WorkdeskIcon name="file" /><b>{item.filename}</b><small>{item.kind === "image" ? "图片" : item.kind === "pdf" ? "PDF" : "文本"}</small></span>)}</div>}</div>
                       </article>
                     )}
                     <article className="workdesk-message assistant current" aria-live="polite">
@@ -688,40 +932,74 @@ export default function CoworkPage() {
               </section>
             )}
 
-            <section className="workdesk-composer" aria-label="创建 Cowork 任务">
+            <section className={`workdesk-composer${conversationArchived ? " is-archived" : ""}`} aria-label="创建 Cowork 任务">
+              <input
+                accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,text/markdown,text/csv,application/json,.txt,.md,.markdown,.csv,.tsv,.json,.xml,.yaml,.yml"
+                aria-label="选择图片、PDF 或文本附件"
+                hidden
+                multiple
+                onChange={(event) => {
+                  if (event.target.files !== null) addAttachments(event.target.files);
+                  event.target.value = "";
+                }}
+                ref={attachmentInput}
+                type="file"
+              />
+              {attachments.length > 0 && (
+                <div className="workdesk-attachment-tray" aria-label="待发送附件">
+                  {attachments.map((file, index) => (
+                    <span key={`${file.name}:${file.lastModified}:${index}`}>
+                      <WorkdeskIcon name="file" />
+                      <b title={file.name}>{file.name}</b>
+                      <small>{file.size < 1024 * 1024 ? `${Math.max(1, Math.round(file.size / 1024))} KB` : `${(file.size / 1024 / 1024).toFixed(1)} MB`}</small>
+                      <button aria-label={`移除 ${file.name}`} disabled={busy} onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))} type="button">×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <textarea
                 aria-label={steering ? "向运行中的 Cowork 追加指令" : "你想让 Cowork 完成什么？"}
-                disabled={run.phase === "waiting_human" || responding}
+                disabled={run.phase === "waiting_human" || responding || conversationArchived}
                 id="cowork-goal"
                 maxLength={4000}
                 onChange={(event) => setGoal(event.target.value)}
                 onKeyDown={(event) => {
                   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void submitComposer();
                 }}
-                placeholder={run.phase === "waiting_human" ? "请先回复上方的问题" : steering ? "补充要求或调整方向…" : hasConversation ? "继续这段对话，或交代一个新任务…" : "今天帮你做些什么？输入指令修改 Word、Excel，或整理工作空间里的资料"}
+                onDrop={(event) => {
+                  if (steering || event.dataTransfer.files.length === 0) return;
+                  event.preventDefault();
+                  addAttachments(event.dataTransfer.files);
+                }}
+                onDragOver={(event) => {
+                  if (!steering && event.dataTransfer.types.includes("Files")) event.preventDefault();
+                }}
+                placeholder={conversationArchived ? "此会话已归档，恢复后可以继续" : run.phase === "waiting_human" ? "请先回复上方的问题" : steering ? "补充要求或调整方向…" : hasConversation ? "继续这段对话，或交代一个新任务…" : "今天帮你做些什么？可以直接提问、上传资料，或交代一项任务"}
                 rows={hasConversation ? 2 : 4}
                 value={goal}
               />
               <div className="workdesk-composer-actions">
-                <button aria-label="添加工作空间" disabled={busy || !desktopReady} onClick={() => void addRoot()} type="button"><WorkdeskIcon name="add" /></button>
-                <span>{run.phase === "waiting_human" ? "请先处理对话中的请求" : steering ? "发送后将在安全边界转向" : roots.length === 0 ? "需要先选择工作空间" : "Agent 已就绪"}</span>
+                <button aria-label="添加图片、PDF 或文本附件" disabled={busy || running || conversationArchived} onClick={() => attachmentInput.current?.click()} title={conversationArchived ? "恢复会话后可添加附件" : running ? "运行期间暂不支持追加附件" : "添加图片、PDF 或文本（最多 8 个）"} type="button"><WorkdeskIcon name="add" /></button>
+                <span>{conversationArchived ? "归档会话 · 只读" : run.phase === "waiting_human" ? "请先处理对话中的请求" : steering ? "发送后将在安全边界转向" : attachments.length > 0 ? `已添加 ${attachments.length} 个附件` : "默认权限 · Agent 已就绪"}</span>
+                <ContextUsageMeter draft={goal} usage={contextUsage} />
                 <label className="workdesk-model-select" title="按会话切换 Provider">
                   <WorkdeskIcon name="spark" />
-                  <select disabled={busy || running} onChange={(event) => void selectProvider(event.target.value)} value={activeConversation?.provider_profile_id ?? ""}>
+                  <select disabled={busy || running || conversationArchived} onChange={(event) => void selectProvider(event.target.value)} value={activeConversation?.provider_profile_id ?? ""}>
                     <option value="">系统默认</option>
                     {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
                   </select>
                 </label>
-                <button aria-label={steering ? "追加运行指令" : "开始执行任务"} className="workdesk-send" disabled={busy || run.phase === "waiting_human" || roots.length === 0 || goal.trim() === ""} onClick={() => void submitComposer()} type="button"><WorkdeskIcon name="send" /></button>
+                <button aria-label={steering ? "追加运行指令" : "开始执行任务"} className="workdesk-send" disabled={busy || conversationArchived || run.phase === "waiting_human" || goal.trim() === ""} onClick={() => void submitComposer()} type="button"><WorkdeskIcon name="send" /></button>
               </div>
               <footer>
-                <button disabled={busy || !desktopReady} onClick={() => void addRoot()} type="button"><WorkdeskIcon name="folder" /><span>{roots.length === 0 ? "选择工作空间" : `${roots[0]?.label}${roots.length > 1 ? ` +${roots.length - 1}` : ""}`}</span><b>⌄</b></button>
                 <details className="workdesk-permission-menu">
-                  <summary><WorkdeskIcon name="shield" /><span>读写与 Office 编辑</span><b>⌄</b></summary>
+                  <summary><WorkdeskIcon name="shield" /><span>默认权限</span><b>⌄</b></summary>
                   <div>
-                    <h3>本次会话权限</h3>
-                    {roots.length === 0 ? <p>选择目录后，将申请读取、写入、Word 和 Excel 编辑能力。</p> : roots.map((root) => (
-                      <article key={root.id}><div><strong>{root.label}</strong><small>{(capabilitiesByRoot.get(root.id) ?? []).join(" · ")}</small></div><button disabled={busy || running} onClick={() => void removeRoot(root.id)} type="button">收回</button></article>
+                    <h3>默认权限</h3>
+                    <p>普通任务可以直接开始，新生成的文件默认保存在本机 ~/Documents/WorkPilot。读取其他本机目录、运行 Shell 或操作外部系统时，WorkPilot 会在需要的那一步单独向你确认。</p>
+                    {roots.length > 0 && <h4>本次会话已授权目录</h4>}
+                    {roots.map((root) => (
+                      <article key={root.id}><div><strong>{root.label}</strong><small title={root.canonical_path}>{shortPath(root.canonical_path)} · {(capabilitiesByRoot.get(root.id) ?? []).join(" · ")}</small></div><button disabled={busy || running} onClick={() => void removeRoot(root.id)} type="button">收回</button></article>
                     ))}
                   </div>
                 </details>
@@ -731,10 +1009,25 @@ export default function CoworkPage() {
                 <span>{steering ? "⌘ Enter 追加指令" : "⌘ Enter 发送"}</span>
               </footer>
             </section>
-            {artifactPreview !== null && <div className="workdesk-preview-backdrop"><section className="workdesk-preview-dialog"><header><strong>{artifactPreview.title}</strong><button onClick={() => setArtifactPreview(null)} type="button">关闭</button></header><iframe referrerPolicy="no-referrer" sandbox="" src={artifactPreview.url} title={`${artifactPreview.title} 预览`} /></section></div>}
+            {artifactPreview !== null && <div className="workdesk-preview-backdrop"><section className="workdesk-preview-dialog"><header><div><strong>{artifactPreview.title}</strong><span>{artifactPreview.mode === "quicklook" ? "macOS 系统版面渲染" : artifactPreview.mode === "libreoffice" ? "LibreOffice 分页渲染" : artifactPreview.mode === "native-pdf" ? "原生 PDF" : artifactPreview.mode === "structure" ? "结构预览 · 未检测到版面渲染器" : "安全预览"}</span></div><button onClick={() => setArtifactPreview(null)} type="button">关闭</button></header><iframe referrerPolicy="no-referrer" sandbox="" src={artifactPreview.url} title={`${artifactPreview.title} 预览`} /></section></div>}
           </div>
         )}
       </section>
+      {pendingDelete !== null && (
+        <div className="workdesk-conversation-dialog-backdrop" onMouseDown={(event) => {
+          if (event.currentTarget === event.target && managingConversationId === null) setPendingDelete(null);
+        }}>
+          <section aria-describedby="workdesk-delete-description" aria-labelledby="workdesk-delete-title" aria-modal="true" className="workdesk-conversation-dialog" role="alertdialog">
+            <span className="workdesk-dialog-icon danger"><WorkdeskIcon name="trash" /></span>
+            <div><small>永久删除</small><h2 id="workdesk-delete-title">{pendingDelete.title ?? "Cowork 任务"}</h2></div>
+            <p id="workdesk-delete-description">会话、消息、运行记录和交付物索引会从本机永久删除；等待回复或尚未开始的任务会一并取消。已经生成的文件不会被删除。</p>
+            <footer>
+              <button disabled={managingConversationId !== null} onClick={() => setPendingDelete(null)} type="button">取消</button>
+              <button className="danger" disabled={managingConversationId !== null} onClick={() => void removeConversation(pendingDelete)} type="button">{managingConversationId === pendingDelete.id ? "正在删除…" : "确认永久删除"}</button>
+            </footer>
+          </section>
+        </div>
+      )}
       {notice !== null && <div className="cowork-toast" role="status">{notice}<button aria-label="关闭提示" onClick={() => setNotice(null)} type="button">×</button></div>}
     </main>
   );

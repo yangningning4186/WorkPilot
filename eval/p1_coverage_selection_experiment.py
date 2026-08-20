@@ -23,12 +23,13 @@ from app.retrieval.coverage import (
 from app.retrieval.dense import DenseSearchHit, dense_search
 from app.retrieval.fusion import reciprocal_rank_fusion
 from app.retrieval.lexical import lexical_search
-from app.services.query_decomposition import (
+from app.retrieval.query_decomposition import (
     QueryDecompositionError,
     QueryPlan,
     fallback_query_plan,
     plan_retrieval_queries,
 )
+
 from eval.dense_baseline import EvalItem, _load_items
 from eval.p1_retrieval_diagnostics import _span_rank
 from eval.suites import load_suite, validate_suite

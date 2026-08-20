@@ -55,9 +55,7 @@ def list_managed_skills(root: Path, *, max_files: int, max_bytes: int) -> list[M
         try:
             skill = load_skill_file(child / "SKILL.md", max_bytes=max_bytes)
         except (OSError, UnicodeError, SkillCatalogError) as error:
-            result.append(
-                ManagedSkill(child.name, False, None, None, resources, str(error))
-            )
+            result.append(ManagedSkill(child.name, False, None, None, resources, str(error)))
         else:
             result.append(
                 ManagedSkill(
@@ -123,6 +121,38 @@ def install_skill(
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return _managed_one(target, max_bytes=max_bytes)
+
+
+def install_auto_distilled_skill(
+    root: Path,
+    *,
+    name: str,
+    capability_key: str,
+    skill_md: str,
+    max_bytes: int,
+) -> ManagedSkill:
+    """幂等安装自动蒸馏 Skill，但绝不覆盖同名人工 Skill。"""
+
+    resolved = _safe_root(root)
+    target = _skill_dir(resolved, name)
+    replace = target.exists()
+    if replace:
+        existing = target / "SKILL.md"
+        try:
+            raw = existing.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            raise FileExistsError(f"同名 Skill 已存在且无法确认来源: {name}") from error
+        markers = ("origin: auto_distilled", f"capability_key: {capability_key}")
+        if not all(marker in raw for marker in markers):
+            raise FileExistsError(f"同名人工 Skill 已存在，自动晋升未覆盖: {name}")
+    return install_skill(
+        resolved,
+        name=name,
+        skill_md=skill_md,
+        enabled=True,
+        max_bytes=max_bytes,
+        replace=replace,
+    )
 
 
 def set_skill_enabled(root: Path, *, name: str, enabled: bool, max_bytes: int) -> ManagedSkill:
@@ -214,9 +244,7 @@ def import_skill_zip(
         shutil.rmtree(staging, ignore_errors=True)
 
 
-def read_skill_resource(
-    root: Path, *, name: str, resource: str, max_bytes: int
-) -> tuple[str, str]:
+def read_skill_resource(root: Path, *, name: str, resource: str, max_bytes: int) -> tuple[str, str]:
     skill_dir = _skill_dir(_safe_root(root), name)
     relative = PurePosixPath(resource)
     if relative.is_absolute() or ".." in relative.parts or not relative.parts:

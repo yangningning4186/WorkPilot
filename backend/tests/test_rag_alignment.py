@@ -5,10 +5,11 @@ import pytest
 from uuid6 import uuid7
 
 from app.core.config import Settings
+from app.retrieval import pipeline as search_pipeline
 from app.retrieval.coverage import CoverageSelectionResult
 from app.retrieval.dense import DenseSearchHit
+from app.retrieval.query_decomposition import QueryPlan
 from app.services import grounded_answer
-from app.services.query_decomposition import QueryPlan
 
 
 @pytest.mark.asyncio
@@ -87,8 +88,8 @@ async def test_candidate_pool_depth_does_not_depend_on_rerank_switch(
         requested.append(("lexical", cast(int, kwargs["top_k"])))
         return []
 
-    monkeypatch.setattr(grounded_answer, "multi_query_dense_search", fake_dense)
-    monkeypatch.setattr(grounded_answer, "lexical_search", fake_lexical)
+    monkeypatch.setattr(search_pipeline, "multi_query_dense_search", fake_dense)
+    monkeypatch.setattr(search_pipeline, "lexical_search", fake_lexical)
 
     result = await grounded_answer.answer_with_citations(
         object(),  # type: ignore[arg-type]
@@ -147,8 +148,8 @@ async def test_decomposed_query_uses_coverage_selector_and_reports_provenance(
             reason="covered 2/2",
         )
 
-    monkeypatch.setattr(grounded_answer, "_build_query_plan", fake_plan)
-    monkeypatch.setattr(grounded_answer, "coverage_aware_hybrid_search", fake_coverage)
+    monkeypatch.setattr(search_pipeline.SearchPipeline, "_build_query_plan", fake_plan)
+    monkeypatch.setattr(search_pipeline, "coverage_aware_hybrid_search", fake_coverage)
 
     result = await grounded_answer.answer_with_citations(
         object(),  # type: ignore[arg-type]

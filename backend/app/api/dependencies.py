@@ -9,7 +9,7 @@ from app.core.config import Settings, get_settings
 from app.core.db import get_db_session, session_factory
 from app.core.queue import RunQueue, get_run_queue
 from app.core.redis import redis_client
-from app.core.run_bus import RedisRunBus, RunBus
+from app.core.run_bus import RedisRunBus, RunBus, in_memory_run_bus
 from app.llm.audit import SqlLlmCallAudit
 from app.llm.gateway import ModelGateway, build_model_gateway
 from app.services.admin_sessions import AdminSessionStore, RedisAdminSessionStore
@@ -21,6 +21,8 @@ from app.services.request_identity import RequestIdentity
 
 
 def get_run_bus() -> RunBus:
+    if get_settings().run_bus_backend == "in_process":
+        return in_memory_run_bus()
     return RedisRunBus(redis_client)
 
 

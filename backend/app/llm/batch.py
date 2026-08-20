@@ -103,9 +103,7 @@ def batch_spec_from_settings(
 
 
 @asynccontextmanager
-async def gpu_batch(
-    session: AsyncSession, spec: BatchSpec
-) -> AsyncIterator[UUID]:
+async def gpu_batch(session: AsyncSession, spec: BatchSpec) -> AsyncIterator[UUID]:
     """开一个批次，块内所有网关调用共享同一个 `batch_id`。
 
     墙钟用 `monotonic()` 测：数据库的 `now()` 是事务开始时间，同一事务里写的多条

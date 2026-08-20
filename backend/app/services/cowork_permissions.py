@@ -4,7 +4,7 @@
 检查 grant，但不会再要求逐操作确认。
 """
 
-from dataclasses import dataclass
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -14,82 +14,53 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
-AccessMode = Literal["read_only", "read_write"]
-Capability = Literal[
-    "filesystem.read",
-    "filesystem.write",
-    "office.word.edit",
-    "office.excel.edit",
-    "network.read",
-    "shell.execute",
-    "external.action",
-]
-
-PATH_CAPABILITIES = frozenset(
-    {"filesystem.read", "filesystem.write", "office.word.edit", "office.excel.edit"}
+from app.cowork_contracts import (
+    AccessMode as AccessMode,
 )
-GLOBAL_CAPABILITIES = frozenset({"network.read", "shell.execute", "external.action"})
-ALL_CAPABILITIES = PATH_CAPABILITIES | GLOBAL_CAPABILITIES
+from app.cowork_contracts import (
+    Capability as Capability,
+)
+from app.cowork_contracts import (
+    CapabilityDeniedError as CapabilityDeniedError,
+)
+from app.cowork_contracts import (
+    CapabilityGrantRecord as CapabilityGrantRecord,
+)
+from app.cowork_contracts import (
+    ConversationNotFoundError as ConversationNotFoundError,
+)
+from app.cowork_contracts import (
+    CoworkPermissionError as CoworkPermissionError,
+)
+from app.cowork_contracts import (
+    PathAuthorization as PathAuthorization,
+)
+from app.cowork_contracts import (
+    SessionRootNotFoundError as SessionRootNotFoundError,
+)
+from app.cowork_contracts import (
+    SessionRootRecord as SessionRootRecord,
+)
+from app.cowork_policy import (
+    ALL_CAPABILITIES as ALL_CAPABILITIES,
+)
+from app.cowork_policy import (
+    GLOBAL_CAPABILITIES as GLOBAL_CAPABILITIES,
+)
+from app.cowork_policy import (
+    PATH_CAPABILITIES as PATH_CAPABILITIES,
+)
+from app.cowork_policy import (
+    canonicalize_root as canonicalize_root,
+)
+from app.cowork_policy import (
+    resolve_target_within_root as resolve_target_within_root,
+)
+from app.cowork_store.routing import configured_cowork_store
+
 _WORD_SUFFIXES = frozenset({".docx"})
 _EXCEL_SUFFIXES = frozenset({".xlsx"})
-
-
-class CoworkPermissionError(RuntimeError):
-    pass
-
-
-class ConversationNotFoundError(LookupError):
-    pass
-
-
-class SessionRootNotFoundError(LookupError):
-    pass
-
-
-class CapabilityDeniedError(PermissionError):
-    pass
-
-
-@dataclass(frozen=True)
-class SessionRootRecord:
-    id: UUID
-    conversation_id: UUID
-    requested_path: str
-    canonical_path: str
-    label: str
-    access_mode: AccessMode
-    enabled: bool
-    created_at: datetime
-    updated_at: datetime
-
-
-@dataclass(frozen=True)
-class CapabilityGrantRecord:
-    id: UUID
-    conversation_id: UUID
-    session_root_id: UUID | None
-    capability: Capability
-    grant_source: str
-    expires_at: datetime | None
-    revoked_at: datetime | None
-    created_at: datetime
-    updated_at: datetime
-
-    @property
-    def active(self) -> bool:
-        return self.revoked_at is None and (
-            self.expires_at is None or self.expires_at > datetime.now(UTC)
-        )
-
-
-@dataclass(frozen=True)
-class PathAuthorization:
-    conversation_id: UUID
-    root_id: UUID
-    root_path: Path
-    target_path: Path
-    access_mode: AccessMode
-    capability: Capability
+DEFAULT_WORKSPACE_LABEL = "WorkPilot 默认文件夹"
 
 
 _ROOT_COLUMNS = """
@@ -102,32 +73,51 @@ _GRANT_COLUMNS = """
 """
 
 
-def canonicalize_root(requested_path: str) -> Path:
-    if "\x00" in requested_path:
-        raise CoworkPermissionError("目录路径包含非法空字符")
-    path = Path(requested_path).expanduser()
-    if not path.is_absolute():
-        raise CoworkPermissionError("会话目录必须使用绝对路径")
+def _prepare_managed_workspace(path: Path) -> str:
+    """创建仅当前用户可访问的 WorkPilot 默认输出目录。"""
+
+    resolved = path.expanduser().resolve(strict=False)
+    process_cwd = Path.cwd().resolve()
+    if process_cwd == resolved or process_cwd.is_relative_to(resolved):
+        raise CoworkPermissionError("WorkPilot 默认文件夹不能是项目或应用工作目录")
     try:
-        resolved = path.resolve(strict=True)
+        resolved.mkdir(mode=0o700, parents=True, exist_ok=True)
+        resolved.chmod(0o700)
     except OSError as error:
-        raise CoworkPermissionError("会话目录不存在或不可访问") from error
+        raise CoworkPermissionError("无法创建 WorkPilot 默认文件夹") from error
     if not resolved.is_dir():
-        raise CoworkPermissionError("会话目录必须是已存在的文件夹")
-    return resolved
+        raise CoworkPermissionError("WorkPilot 默认文件夹路径不是目录")
+    return str(resolved)
 
 
-def resolve_target_within_root(root: Path, target: Path) -> Path:
-    """解析现有或待创建目标，并拒绝 `..` 与符号链接造成的越界。"""
+async def ensure_default_session_root(
+    session: AsyncSession,
+    *,
+    conversation_id: UUID,
+    workspace_path: Path,
+) -> SessionRootRecord:
+    """为普通任务和自动化幂等挂载 WorkPilot 默认读写目录。"""
 
-    canonical_root = root.resolve(strict=True)
-    candidate = target if target.is_absolute() else canonical_root / target
-    try:
-        resolved = candidate.resolve(strict=False)
-        resolved.relative_to(canonical_root)
-    except (OSError, ValueError) as error:
-        raise CapabilityDeniedError("目标路径不在已授权会话目录内") from error
-    return resolved
+    prepared = await asyncio.to_thread(_prepare_managed_workspace, workspace_path)
+    canonical_default = Path(prepared)
+    roots = await list_session_roots(session, conversation_id=conversation_id)
+    for root in roots:
+        if (
+            root.label == DEFAULT_WORKSPACE_LABEL
+            and Path(root.canonical_path) != canonical_default
+        ):
+            await revoke_session_root(
+                session,
+                conversation_id=conversation_id,
+                root_id=root.id,
+            )
+    return await create_session_root(
+        session,
+        conversation_id=conversation_id,
+        requested_path=prepared,
+        access_mode="read_write",
+        label=DEFAULT_WORKSPACE_LABEL,
+    )
 
 
 async def _ensure_owner_conversation(session: AsyncSession, conversation_id: UUID) -> None:
@@ -165,6 +155,15 @@ async def create_session_root(
     label: str | None = None,
 ) -> SessionRootRecord:
     """登记用户选取的目录，并一次性授予对应文件能力。"""
+
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.create_session_root(
+            conversation_id=conversation_id,
+            requested_path=requested_path,
+            access_mode=access_mode,
+            label=label,
+        )
 
     if access_mode not in {"read_only", "read_write"}:
         raise ValueError("access_mode 只能是 read_only 或 read_write")
@@ -245,6 +244,9 @@ async def create_session_root(
 async def list_session_roots(
     session: AsyncSession, *, conversation_id: UUID
 ) -> list[SessionRootRecord]:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.list_session_roots(conversation_id=conversation_id)
     await _ensure_owner_conversation(session, conversation_id)
     rows = (
         (
@@ -254,10 +256,14 @@ async def list_session_roots(
                     SELECT {_ROOT_COLUMNS}
                     FROM session_roots
                     WHERE conversation_id = :conversation_id AND enabled = true
-                    ORDER BY created_at, id
+                    ORDER BY CASE WHEN label = :default_label THEN 1 ELSE 0 END,
+                             created_at, id
                     """
                 ),
-                {"conversation_id": conversation_id},
+                {
+                    "conversation_id": conversation_id,
+                    "default_label": DEFAULT_WORKSPACE_LABEL,
+                },
             )
         )
         .mappings()
@@ -269,6 +275,9 @@ async def list_session_roots(
 async def revoke_session_root(
     session: AsyncSession, *, conversation_id: UUID, root_id: UUID
 ) -> bool:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.revoke_session_root(conversation_id=conversation_id, root_id=root_id)
     await _ensure_owner_conversation(session, conversation_id)
     changed = await session.execute(
         text(
@@ -307,6 +316,15 @@ async def grant_capability(
     grant_source: Literal["user", "policy"] = "user",
     expires_in_s: int | None = None,
 ) -> CapabilityGrantRecord:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.grant_capability(
+            conversation_id=conversation_id,
+            capability=capability,
+            session_root_id=session_root_id,
+            grant_source=grant_source,
+            expires_in_s=expires_in_s,
+        )
     if capability not in ALL_CAPABILITIES:
         raise ValueError("未知 capability")
     await _ensure_owner_conversation(session, conversation_id)
@@ -418,6 +436,9 @@ async def grant_capability(
 async def list_capability_grants(
     session: AsyncSession, *, conversation_id: UUID
 ) -> list[CapabilityGrantRecord]:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.list_capability_grants(conversation_id=conversation_id)
     await _ensure_owner_conversation(session, conversation_id)
     rows = (
         (
@@ -444,6 +465,11 @@ async def list_capability_grants(
 async def revoke_capability_grant(
     session: AsyncSession, *, conversation_id: UUID, grant_id: UUID
 ) -> bool:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.revoke_capability_grant(
+            conversation_id=conversation_id, grant_id=grant_id
+        )
     await _ensure_owner_conversation(session, conversation_id)
     changed = await session.execute(
         text(
@@ -463,6 +489,11 @@ async def revoke_capability_grant(
 async def authorize_capability(
     session: AsyncSession, *, conversation_id: UUID, capability: Capability
 ) -> CapabilityGrantRecord:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.authorize_capability(
+            conversation_id=conversation_id, capability=capability
+        )
     if capability not in GLOBAL_CAPABILITIES:
         raise ValueError("路径 capability 必须通过 authorize_path 校验")
     row = (
@@ -499,6 +530,13 @@ async def authorize_path(
     target_path: Path,
     capability: Capability,
 ) -> PathAuthorization:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.authorize_path(
+            conversation_id=conversation_id,
+            target_path=target_path,
+            capability=capability,
+        )
     if capability not in PATH_CAPABILITIES:
         raise ValueError("非路径 capability 必须通过 authorize_capability 校验")
     # Root/grant 是加法语义，不存在嵌套 deny。排序只让多个有效 grant 同时命中时

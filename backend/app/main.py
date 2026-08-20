@@ -30,13 +30,24 @@ from app.core.logging import configure_logging
 from app.core.queue import close_run_queue
 from app.core.redis import close_redis
 from app.core.trace import TraceIdMiddleware
+from app.cowork_store.factory import close_local_cowork_stores, initialize_local_cowork_stores
+from app.worker.local_runtime import EmbeddedWorkerRuntime
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level)
+    embedded_worker: EmbeddedWorkerRuntime | None = None
+    if settings.cowork_store_backend == "sqlite":
+        await initialize_local_cowork_stores(settings)
+    if settings.task_queue_backend == "in_process":
+        embedded_worker = await EmbeddedWorkerRuntime.start(settings)
+        app.state.embedded_worker = embedded_worker
     yield
+    if embedded_worker is not None:
+        await embedded_worker.stop()
+    await close_local_cowork_stores()
     await close_run_queue()
     await close_redis()
     await close_database()

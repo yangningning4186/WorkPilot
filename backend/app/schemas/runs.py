@@ -48,6 +48,7 @@ class CreateCoworkRunRequest(BaseModel):
     goal: str = Field(min_length=1, max_length=4000)
     # root grant 绑定 conversation，因此 Cowork 必须显式选择已有 owner 会话。
     conversation_id: UUID
+    attachment_ids: list[UUID] = Field(default_factory=list, max_length=20)
 
 
 class ResumeRunRequest(BaseModel):

@@ -18,6 +18,9 @@ class TierUsage(BaseModel):
     cached_count: int
     failed_count: int
     fallback_count: int
+    prompt_cache_read_tokens: int
+    prompt_cache_write_tokens: int
+    prompt_cache_read_rate: float
     prompt_tokens: int
     output_tokens: int
     total_tokens: int
@@ -34,6 +37,8 @@ class TaskTypeUsage(BaseModel):
     call_count: int
     total_tokens: int
     cache_hit_rate: float
+    prompt_cache_read_tokens: int
+    prompt_cache_write_tokens: int
 
 
 class BatchSummary(BaseModel):
@@ -74,6 +79,9 @@ class CostTotals(BaseModel):
     call_count: int
     cached_count: int
     cache_hit_rate: float
+    prompt_cache_read_tokens: int
+    prompt_cache_write_tokens: int
+    prompt_cache_read_rate: float
     total_tokens: int
     failed_count: int
     fallback_count: int

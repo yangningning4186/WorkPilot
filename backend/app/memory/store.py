@@ -71,6 +71,10 @@ class MemoryExtractionJob:
     finished_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    source_is_local: bool = False
+    source_conversation_id: UUID | None = None
+    source_content: str | None = None
+    source_created_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -88,7 +92,8 @@ _MEMORY_COLUMNS = """
 
 _JOB_COLUMNS = """
     id, run_id, source_message_id, extractor_version, status, attempts, worker_id,
-    lease_until, available_at, operations, error, finished_at, created_at, updated_at
+    lease_until, available_at, operations, error, finished_at, created_at, updated_at,
+    source_is_local, source_conversation_id, source_content, source_created_at
 """
 
 
@@ -663,10 +668,55 @@ async def schedule_memory_extraction(
     *,
     run_id: UUID,
     extractor_version: str = EXTRACTOR_VERSION,
+    local_source_message_id: UUID | None = None,
+    local_conversation_id: UUID | None = None,
+    local_content: str | None = None,
+    local_created_at: datetime | None = None,
 ) -> MemoryExtractionJob | None:
-    """仅为已完成的 local_owner answer run 建立一次抽取作业。"""
+    """为已完成的 local_owner 对话或 Cowork run 建立一次抽取作业。"""
 
-    row = (
+    local_values = (
+        local_source_message_id,
+        local_conversation_id,
+        local_content,
+        local_created_at,
+    )
+    local_mode = any(value is not None for value in local_values)
+    if local_mode and any(value is None for value in local_values):
+        raise ValueError("SQLite 记忆来源快照字段必须完整")
+    if local_mode:
+        row = (
+            (
+                await session.execute(
+                    text(
+                        f"""
+                        INSERT INTO memory_extraction_jobs
+                            (id, run_id, source_message_id, extractor_version,
+                             source_is_local, source_conversation_id, source_content,
+                             source_created_at)
+                        VALUES
+                            (:id, :run_id, :source_message_id, :extractor_version,
+                             true, :conversation_id, :content, :created_at)
+                        ON CONFLICT (run_id) DO NOTHING
+                        RETURNING {_JOB_COLUMNS}
+                        """
+                    ),
+                    {
+                        "id": uuid7(),
+                        "run_id": run_id,
+                        "source_message_id": local_source_message_id,
+                        "extractor_version": extractor_version,
+                        "conversation_id": local_conversation_id,
+                        "content": local_content,
+                        "created_at": local_created_at,
+                    },
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+    else:
+        row = (
         (
             await session.execute(
                 text(
@@ -685,7 +735,7 @@ async def schedule_memory_extraction(
                     ) m ON true
                     WHERE ar.id = :run_id
                       AND ar.status = 'done'
-                      AND ar.workflow_type = 'answer'
+                      AND ar.workflow_type IN ('answer', 'cowork')
                       AND c.scope = 'local_owner'
                       AND c.demo_session_id IS NULL
                     ON CONFLICT (run_id) DO NOTHING
@@ -697,7 +747,7 @@ async def schedule_memory_extraction(
         )
         .mappings()
         .one_or_none()
-    )
+        )
     if row is not None:
         return _job(row)
     existing = (
@@ -738,19 +788,43 @@ async def claim_memory_job(
                         worker_id = :worker_id,
                         lease_until = now() + make_interval(secs => :lease_s),
                         error = NULL
-                    FROM messages m, conversations c
                     WHERE j.id = :job_id
-                      AND j.source_message_id = m.id
-                      AND m.conversation_id = c.id
-                      AND c.scope = 'local_owner'
-                      AND c.demo_session_id IS NULL
+                      AND (
+                        (j.source_is_local = true
+                         AND j.source_content IS NOT NULL
+                         AND j.source_conversation_id IS NOT NULL
+                         AND j.source_created_at IS NOT NULL)
+                        OR
+                        (j.source_is_local = false
+                         AND EXISTS (
+                           SELECT 1 FROM messages m
+                           JOIN conversations c ON c.id = m.conversation_id
+                           WHERE m.id = j.source_message_id
+                             AND c.scope = 'local_owner'
+                             AND c.demo_session_id IS NULL
+                         ))
+                      )
                       AND j.attempts < :max_attempts
                       AND (
                         (j.status = 'queued' AND j.available_at <= now())
                         OR (j.status = 'running' AND j.lease_until < now())
                       )
                     RETURNING {_qualified_job_columns("j")},
-                              m.conversation_id, m.content, m.created_at AS message_created_at
+                              COALESCE(
+                                j.source_conversation_id,
+                                (SELECT m.conversation_id FROM messages m
+                                 WHERE m.id = j.source_message_id)
+                              ) AS conversation_id,
+                              COALESCE(
+                                j.source_content,
+                                (SELECT m.content FROM messages m
+                                 WHERE m.id = j.source_message_id)
+                              ) AS content,
+                              COALESCE(
+                                j.source_created_at,
+                                (SELECT m.created_at FROM messages m
+                                 WHERE m.id = j.source_message_id)
+                              ) AS message_created_at
                     """
                 ),
                 {

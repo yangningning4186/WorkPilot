@@ -44,9 +44,7 @@ class RecordingQueue:
 
 
 async def _owner_workspace(db_session: AsyncSession, root: Path):
-    conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="自动化测试"
-    )
+    conversation_id = await ensure_conversation(db_session, scope="local_owner", title="自动化测试")
     await create_session_root(
         db_session,
         conversation_id=conversation_id,
@@ -238,9 +236,7 @@ async def test_automation_api_creates_lists_and_runs_unattended(
     app.dependency_overrides[get_run_queue_dependency] = lambda: queue
     app.dependency_overrides[get_run_bus] = lambda: bus
     app.dependency_overrides[get_settings] = lambda: settings
-    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(
-        scope="local_owner"
-    )
+    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(scope="local_owner")
     transport = httpx.ASGITransport(app=app)
     run_at = datetime.now(UTC) + timedelta(days=1)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -256,9 +252,7 @@ async def test_automation_api_creates_lists_and_runs_unattended(
             },
         )
         listed = await client.get("/api/v1/automations")
-        started = await client.post(
-            f"/api/v1/automations/{created.json()['id']}/run"
-        )
+        started = await client.post(f"/api/v1/automations/{created.json()['id']}/run")
         inbox = await client.get("/api/v1/automations/inbox/items")
 
     assert created.status_code == 201
@@ -270,3 +264,51 @@ async def test_automation_api_creates_lists_and_runs_unattended(
     assert queue.run_ids == [UUID(started.json()["run_id"])]
     assert inbox.status_code == 200
     assert inbox.json() == {"items": [], "total": 0}
+
+
+async def test_automation_api_accepts_default_permissions_or_optional_workspace(
+    db_session: AsyncSession, tmp_path: Path
+) -> None:
+    expected_workspace_path = str(tmp_path)
+    default_workspace_path = tmp_path / "workpilot-default"
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = Settings(cowork_default_workspace_path=default_workspace_path)
+    app = create_app(settings)
+    app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(scope="local_owner")
+    transport = httpx.ASGITransport(app=app)
+    run_at = datetime.now(UTC) + timedelta(days=1)
+    base = {
+        "goal": "生成每日摘要",
+        "schedule_kind": "once",
+        "run_at": run_at.isoformat(),
+        "timezone": "Asia/Shanghai",
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        default_schedule = await client.post(
+            "/api/v1/automations", json={**base, "title": "默认权限任务"}
+        )
+        workspace_schedule = await client.post(
+            "/api/v1/automations",
+            json={
+                **base,
+                "title": "指定工作区任务",
+                "workspace_path": str(tmp_path),
+            },
+        )
+        listed = await client.get("/api/v1/automations")
+
+    assert default_schedule.status_code == 201
+    assert default_schedule.json()["workspace_label"] == "WorkPilot 默认文件夹"
+    assert default_schedule.json()["workspace_path"] == str(default_workspace_path)
+    assert workspace_schedule.status_code == 201
+    assert workspace_schedule.json()["workspace_label"] == tmp_path.name
+    assert workspace_schedule.json()["workspace_path"] == expected_workspace_path
+    assert listed.status_code == 200
+    by_title = {item["title"]: item for item in listed.json()["items"]}
+    assert by_title["默认权限任务"]["workspace_path"] == str(default_workspace_path)
+    assert by_title["指定工作区任务"]["workspace_path"] == expected_workspace_path

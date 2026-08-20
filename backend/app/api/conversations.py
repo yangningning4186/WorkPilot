@@ -5,8 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_request_identity
+from app.core.config import get_settings
 from app.core.db import get_db_session
 from app.schemas.conversations import (
+    ConversationArchiveUpdate,
+    ConversationContextUsageResponse,
     ConversationCreate,
     ConversationListResponse,
     ConversationMessageListResponse,
@@ -20,8 +23,10 @@ from app.services.conversations import (
     get_conversation,
     list_conversation_messages,
     list_conversations,
+    set_conversation_archived,
     update_conversation_runtime,
 )
+from app.services.cowork_context_usage import get_cowork_context_usage
 from app.services.request_identity import RequestIdentity
 from app.services.runs import ensure_conversation
 
@@ -38,12 +43,14 @@ def _conversation_response(value: object) -> ConversationResponse:
 async def get_conversations(
     session: DbSession,
     identity: Identity,
+    archived: bool = False,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
 ) -> ConversationListResponse:
     items = await list_conversations(
         session,
         scope=identity.scope,
         demo_session_id=identity.demo_session_id,
+        archived=archived,
         limit=limit,
     )
     return ConversationListResponse(
@@ -103,6 +110,29 @@ async def put_conversation_runtime(
     return _conversation_response(updated)
 
 
+@router.put("/{conversation_id}/archive", response_model=ConversationResponse)
+async def put_conversation_archive(
+    conversation_id: UUID,
+    request: ConversationArchiveUpdate,
+    session: DbSession,
+    identity: Identity,
+) -> ConversationResponse:
+    try:
+        updated = await set_conversation_archived(
+            session,
+            conversation_id=conversation_id,
+            scope=identity.scope,
+            demo_session_id=identity.demo_session_id,
+            archived=request.archived,
+        )
+    except ConversationBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if updated is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    await session.commit()
+    return _conversation_response(updated)
+
+
 @router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_conversation_route(
     conversation_id: UUID,
@@ -142,8 +172,32 @@ async def get_messages(
         raise HTTPException(status_code=404, detail="会话不存在")
     return ConversationMessageListResponse(
         items=[
-            ConversationMessageResponse.model_validate(item, from_attributes=True)
-            for item in items
+            ConversationMessageResponse.model_validate(item, from_attributes=True) for item in items
         ],
         total=len(items),
     )
+
+
+@router.get(
+    "/{conversation_id}/context-usage",
+    response_model=ConversationContextUsageResponse,
+)
+async def get_context_usage(
+    conversation_id: UUID,
+    session: DbSession,
+    identity: Identity,
+) -> ConversationContextUsageResponse:
+    conversation = await get_conversation(
+        session,
+        conversation_id=conversation_id,
+        scope=identity.scope,
+        demo_session_id=identity.demo_session_id,
+    )
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    usage = await get_cowork_context_usage(
+        session,
+        conversation_id=conversation_id,
+        settings=get_settings(),
+    )
+    return ConversationContextUsageResponse.model_validate(usage)

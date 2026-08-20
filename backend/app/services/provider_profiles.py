@@ -78,11 +78,7 @@ def _record(row: Any) -> ProviderProfileRecord:
 
 async def list_provider_profiles(session: AsyncSession) -> list[ProviderProfileRecord]:
     rows = (
-        (
-            await session.execute(
-                text(f"SELECT {_COLUMNS} FROM provider_profiles ORDER BY name, id")
-            )
-        )
+        (await session.execute(text(f"SELECT {_COLUMNS} FROM provider_profiles ORDER BY name, id")))
         .mappings()
         .all()
     )
@@ -174,7 +170,14 @@ async def update_provider_profile(
         "metadata": current.metadata,
         "ciphertext": current.api_key_ciphertext,
     }
-    for key in ("name", "base_url", "default_model", "context_window_tokens", "enabled", "metadata"):
+    for key in (
+        "name",
+        "base_url",
+        "default_model",
+        "context_window_tokens",
+        "enabled",
+        "metadata",
+    ):
         if key in changes and changes[key] is not None:
             fields[key] = changes[key]
     if changes.get("clear_api_key"):
@@ -229,11 +232,49 @@ async def build_conversation_gateway(
     session_factory: async_sessionmaker[AsyncSession],
     run_id: UUID,
 ) -> ModelGateway:
-    row = (
-        (
-            await session.execute(
-                text(
-                    """
+    from app.cowork_store.routing import configured_cowork_store
+
+    store = configured_cowork_store()
+    local_metadata = (
+        []
+        if store is None
+        else await store.list_conversation_metadata(
+            conversation_id=conversation_id, archived=None, limit=1
+        )
+    )
+    row: Any
+    if local_metadata:
+        local = local_metadata[0]
+        profile_id = local["provider_profile_id"]
+        if profile_id is None:
+            row = None
+        else:
+            profile_row = (
+                (
+                    await session.execute(
+                        text(
+                            """SELECT id, name, provider, base_url, default_model,
+                                      api_key_ciphertext, context_window_tokens, enabled,
+                                      metadata, created_at, updated_at
+                               FROM provider_profiles WHERE id = :profile_id"""
+                        ),
+                        {"profile_id": profile_id},
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            row = (
+                None
+                if profile_row is None
+                else {**dict(profile_row), "model_override": local["model_override"]}
+            )
+    else:
+        row = (
+            (
+                await session.execute(
+                    text(
+                        """
                     SELECT p.id, p.name, p.provider, p.base_url, p.default_model,
                            p.api_key_ciphertext, p.context_window_tokens, p.enabled,
                            p.metadata, p.created_at, p.updated_at, c.model_override
@@ -241,17 +282,29 @@ async def build_conversation_gateway(
                     LEFT JOIN provider_profiles p ON p.id = c.provider_profile_id
                     WHERE c.id = :conversation_id
                     """
-                ),
-                {"conversation_id": conversation_id},
+                    ),
+                    {"conversation_id": conversation_id},
+                )
             )
+            .mappings()
+            .one_or_none()
         )
-        .mappings()
-        .one_or_none()
-    )
     audit = SqlLlmCallAudit(session)
     budget = build_cost_guard(settings, session_factory)
+    # SQLite Cowork run 不存在于 PostgreSQL agent_runs 表。审计与成本表仍属于
+    # PostgreSQL 数据面，因此不能把本地 run_id 写进它们的外键；trace、provider、
+    # model、token 与成本事实仍正常保留。Cowork 自身用量由 SQLite run 记录维护。
+    postgres_run_id = None if settings.cowork_store_backend == "sqlite" else run_id
     if row is None or row["id"] is None:
-        return build_model_gateway(settings, audit_sink=audit, budget_guard=budget, run_id=run_id)
+        cowork_settings = settings.model_copy(
+            update={"model_timeout_s": settings.cowork_model_timeout_s}
+        )
+        return build_model_gateway(
+            cowork_settings,
+            audit_sink=audit,
+            budget_guard=budget,
+            run_id=postgres_run_id,
+        )
     profile = _record({key: row[key] for key in _COLUMN_NAMES})
     if not profile.enabled:
         raise RuntimeError(f"会话选择的 Provider {profile.name} 已停用，请重新选择")
@@ -266,7 +319,11 @@ async def build_conversation_gateway(
             base_url=profile.base_url,
             api_key=api_key,
             model=model,
-            timeout_s=settings.model_timeout_s,
+            timeout_s=settings.cowork_model_timeout_s,
+            prompt_cache_key_supported=(
+                settings.openai_compatible_prompt_cache_key_enabled
+                and profile.provider == "openai_compatible"
+            ),
         ),
         trust_env=settings.model_trust_env,
     )
@@ -276,7 +333,7 @@ async def build_conversation_gateway(
         context_window_tokens=profile.context_window_tokens,
         audit_sink=audit,
         budget_guard=budget,
-        run_id=run_id,
+        run_id=postgres_run_id,
     )
 
 

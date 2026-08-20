@@ -8,6 +8,7 @@ from app.llm.providers.openai_compatible import (
     OpenAICompatibleProvider,
     ProviderContextOverflowError,
     ProviderResponseError,
+    ProviderTimeoutError,
 )
 from app.llm.types import Message, ToolCall, ToolDefinition
 from tests.fakes import DeterministicProvider
@@ -175,6 +176,114 @@ async def test_gateway_maps_native_parallel_tool_calls_and_canonical_history() -
     }
 
 
+async def test_openai_compatible_provider_converts_complete_deepseek_dsml() -> None:
+    dsml = """准备生成文件。
+<｜DSML｜tool_calls>
+<｜DSML｜invoke name="create_native_artifact">
+<｜DSML｜parameter name="path" string="true">日报.pptx</｜DSML｜parameter>
+<｜DSML｜parameter name="slides" string="false">[{"title":"封面"}]</｜DSML｜parameter>
+</｜DSML｜invoke>
+</｜DSML｜tool_calls>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "model": "deepseek-v4-flash",
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {"role": "assistant", "content": dsml},
+                    }
+                ],
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="deepseek-v4-flash",
+        embedding_model="embed",
+        client=client,
+    )
+    result = await provider.complete_with_tools(
+        [Message(role="user", content="生成日报")],
+        tools=[
+            ToolDefinition(
+                name="create_native_artifact",
+                description="生成文件",
+                parameters={"type": "object"},
+            )
+        ],
+        parallel_tool_calls=True,
+        max_tokens=8_192,
+        temperature=0.0,
+    )
+    await client.aclose()
+
+    assert result.text == "准备生成文件。"
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].name == "create_native_artifact"
+    assert json.loads(result.tool_calls[0].arguments) == {
+        "path": "日报.pptx",
+        "slides": [{"title": "封面"}],
+    }
+    assert "DSML" not in result.text
+
+
+async def test_openai_compatible_provider_rejects_truncated_deepseek_dsml() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "model": "deepseek-v4-flash",
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {
+                            "role": "assistant",
+                            "content": (
+                                "即将生成。\n<｜DSML｜tool_calls>\n"
+                                '<｜DSML｜invoke name="create_native_artifact">'
+                            ),
+                        },
+                    }
+                ],
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="deepseek-v4-flash",
+        embedding_model="embed",
+        client=client,
+    )
+    with pytest.raises(ProviderResponseError, match="工具调用输出被截断"):
+        await provider.complete_with_tools(
+            [Message(role="user", content="生成日报")],
+            tools=[
+                ToolDefinition(
+                    name="create_native_artifact",
+                    description="生成文件",
+                    parameters={"type": "object"},
+                )
+            ],
+            parallel_tool_calls=True,
+            max_tokens=8_192,
+            temperature=0.0,
+        )
+    await client.aclose()
+
+
 async def test_openai_compatible_provider_classifies_context_overflow_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         del request
@@ -202,6 +311,30 @@ async def test_openai_compatible_provider_classifies_context_overflow_response()
     with pytest.raises(ProviderContextOverflowError, match="context_length_exceeded"):
         await provider.complete(
             [Message(role="user", content="oversized")],
+            max_tokens=20,
+            temperature=0.0,
+        )
+    await client.aclose()
+
+
+async def test_openai_compatible_provider_translates_empty_read_timeout() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("", request=request)
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="chat",
+        embedding_model="embed",
+        client=client,
+    )
+
+    with pytest.raises(ProviderTimeoutError, match="模型服务响应超时"):
+        await provider.complete(
+            [Message(role="user", content="complex task")],
             max_tokens=20,
             temperature=0.0,
         )

@@ -116,7 +116,9 @@ async def complete_oauth(
     if row is None:
         raise ValueError("OAuth state 无效或已使用")
     if row["expires_at"] <= datetime.now(UTC):
-        await session.execute(text("DELETE FROM oauth_states WHERE state = :state"), {"state": state})
+        await session.execute(
+            text("DELETE FROM oauth_states WHERE state = :state"), {"state": state}
+        )
         raise ValueError("OAuth state 已过期，请重新发起授权")
 
     from app.services.connectors import get_connector_account
@@ -237,7 +239,12 @@ async def _github_exchange(
         "https://api.github.com/user",
         headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
     )
-    return OAuthIdentity(str(user.get("id") or "") or None, str(user.get("login") or "") or None, {**existing, **payload}, None)
+    return OAuthIdentity(
+        str(user.get("id") or "") or None,
+        str(user.get("login") or "") or None,
+        {**existing, **payload},
+        None,
+    )
 
 
 async def _feishu_exchange(
@@ -284,7 +291,10 @@ async def _wecom_exchange(
     token_payload = await _get_json(
         client,
         "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
-        params={"corpid": account.config["client_id"], "corpsecret": _required(existing, "client_secret")},
+        params={
+            "corpid": account.config["client_id"],
+            "corpsecret": _required(existing, "client_secret"),
+        },
     )
     token = _required(token_payload, "access_token")
     user = await _get_json(
@@ -323,7 +333,9 @@ async def _wechat_exchange(
         "https://api.weixin.qq.com/sns/userinfo",
         params={"access_token": token, "openid": openid, "lang": "zh_CN"},
     )
-    return OAuthIdentity(openid, str(user.get("nickname") or "") or None, {**existing, **payload}, _expiry(payload))
+    return OAuthIdentity(
+        openid, str(user.get("nickname") or "") or None, {**existing, **payload}, _expiry(payload)
+    )
 
 
 async def _tencent_docs_exchange(
@@ -357,7 +369,9 @@ async def _post_json(
     headers: dict[str, str] | None = None,
     form: bool = False,
 ) -> dict[str, Any]:
-    response = await client.post(url, data=data if form else None, json=None if form else data, headers=headers)
+    response = await client.post(
+        url, data=data if form else None, json=None if form else data, headers=headers
+    )
     response.raise_for_status()
     return _object(response.json())
 
@@ -377,7 +391,11 @@ async def _get_json(
 def _object(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("OAuth 服务响应不是 object")
-    if value.get("error") or value.get("errcode") not in {None, 0} or value.get("code") not in {None, 0}:
+    if (
+        value.get("error")
+        or value.get("errcode") not in {None, 0}
+        or value.get("code") not in {None, 0}
+    ):
         raise ValueError(str(value.get("error_description") or value.get("errmsg") or value))
     return value
 

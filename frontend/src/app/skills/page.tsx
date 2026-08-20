@@ -6,10 +6,14 @@ import { WorkdeskAppShell, WorkdeskIcon } from "@/components/workdesk-shell";
 import {
   ApiError,
   deleteSkill,
+  fetchSkillCandidates,
   fetchSkillsStatus,
+  promoteSkillCandidate,
+  rejectSkillCandidate,
   saveSkill,
   setSkillEnabled,
   type SkillsStatusResponse,
+  type SkillCandidatesResponse,
 } from "@/lib/api";
 
 function skillError(reason: unknown): string {
@@ -19,6 +23,7 @@ function skillError(reason: unknown): string {
 
 export default function SkillsPage() {
   const [status, setStatus] = useState<SkillsStatusResponse | null>(null);
+  const [candidates, setCandidates] = useState<SkillCandidatesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showEditor, setShowEditor] = useState(false);
@@ -29,7 +34,12 @@ export default function SkillsPage() {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      setStatus(await fetchSkillsStatus());
+      const [skillStatus, candidateStatus] = await Promise.all([
+        fetchSkillsStatus(),
+        fetchSkillCandidates(),
+      ]);
+      setStatus(skillStatus);
+      setCandidates(candidateStatus);
       setError(null);
     } catch (reason) {
       setError(skillError(reason));
@@ -43,6 +53,19 @@ export default function SkillsPage() {
     try {
       await saveSkill(skillName.trim(), skillMd, status?.installed.some((item) => item.name === skillName.trim()) ?? false);
       setShowEditor(false);
+      await reload();
+    } catch (reason) {
+      setError(skillError(reason));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const reviewCandidate = async (candidateId: string, action: "promote" | "reject") => {
+    setBusy(candidateId);
+    try {
+      if (action === "promote") await promoteSkillCandidate(candidateId);
+      else await rejectSkillCandidate(candidateId);
       await reload();
     } catch (reason) {
       setError(skillError(reason));
@@ -93,8 +116,31 @@ export default function SkillsPage() {
               <div><strong>{status.installed.length}</strong><span>已安装</span></div>
               <div><strong>{status.skills.length}</strong><span>已启用</span></div>
               <div><strong>{status.errors.length}</strong><span>目录错误</span></div>
+              <div><strong>{candidates?.items.filter((item) => item.status === "collecting" || item.status === "needs_review").length ?? 0}</strong><span>蒸馏候选</span></div>
               <div className="wide"><span>来源目录</span><code>{status.source_path}</code></div>
             </section>
+
+            {candidates !== null && (
+              <section className="skill-distillation-panel">
+                <header>
+                  <div><span>AUTO DISTILLATION</span><h2>Skills 自动蒸馏与晋升</h2></div>
+                  <small>{candidates.enabled ? `连续 ${candidates.min_evidence} 次独立成功 · 置信度 ≥ ${(candidates.min_confidence * 100).toFixed(0)}%` : "当前已关闭"}</small>
+                </header>
+                <p>候选只学习成功工具链，不读取文件正文；Shell、外部动作和 MCP 工具不会自动晋升。</p>
+                {candidates.items.length === 0 ? <div className="skill-candidate-empty">完成可复用的 Cowork 流程后，候选会在这里积累证据。</div> : (
+                  <div className="skill-candidate-list">
+                    {candidates.items.map((candidate) => <article key={candidate.id}>
+                      <header><div><strong>{candidate.suggested_name}</strong><code>{candidate.capability_key}</code></div><span className={`status ${candidate.status}`}>{candidate.status === "collecting" ? "积累证据" : candidate.status === "promoted" ? "已晋升" : candidate.status === "needs_review" ? "需要复核" : "已拒绝"}</span></header>
+                      <p>{candidate.description}</p>
+                      <div className="skill-candidate-meter"><i style={{ width: `${Math.min(100, candidate.evidence_count / candidates.min_evidence * 100)}%` }} /><span>{candidate.evidence_count} / {candidates.min_evidence} 次成功证据 · {(candidate.confidence * 100).toFixed(0)}%</span></div>
+                      {candidate.tools.length > 0 && <footer>{candidate.tools.map((tool) => <code key={tool}>{tool}</code>)}</footer>}
+                      {candidate.review_reason !== null && <small>{candidate.review_reason}</small>}
+                      {(candidate.status === "collecting" || candidate.status === "needs_review") && <div className="skill-candidate-actions"><button disabled={busy !== null} onClick={() => void reviewCandidate(candidate.id, "promote")} type="button">立即晋升</button><button className="danger" disabled={busy !== null} onClick={() => void reviewCandidate(candidate.id, "reject")} type="button">拒绝</button></div>}
+                    </article>)}
+                  </div>
+                )}
+              </section>
+            )}
 
             {status.errors.length > 0 && (
               <section className="integration-notice error">

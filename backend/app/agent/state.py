@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Literal, TypedDict, cast
 
+from app.agent_core.contracts import BudgetState as BudgetState
+
 
 class PlanStepState(TypedDict):
     id: str
@@ -13,18 +15,6 @@ class PlanStepState(TypedDict):
     tool: str | None
     depends_on: list[int]
     status: Literal["pending", "running", "done", "failed", "skipped"]
-
-
-class BudgetState(TypedDict):
-    max_tokens: int
-    used_tokens: int
-    max_calls: int
-    used_calls: int
-    max_wall_ms: int
-    # 累计"执行中"墙钟。只累加执行分段的时长, 因此 waiting_human 的人工思考时间与
-    # 两次 worker 之间的空档都不计入——墙钟预算防的是失控执行, 不是人的犹豫。
-    used_wall_ms: int
-    started_at_ms: int
 
 
 class InterruptState(TypedDict):
@@ -106,4 +96,3 @@ def json_state(state: AgentState) -> AgentState:
     if not isinstance(decoded, dict):  # pragma: no cover - AgentState 根节点固定为对象
         raise TypeError("AgentState 必须是 JSON object")
     return cast("AgentState", decoded)
-

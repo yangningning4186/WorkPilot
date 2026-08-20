@@ -16,8 +16,11 @@ from app.services.cowork_permissions import (
     authorize_capability,
     authorize_path,
     create_session_root,
+    ensure_default_session_root,
     grant_capability,
     list_capability_grants,
+    list_session_roots,
+    revoke_capability_grant,
     revoke_session_root,
 )
 from app.services.request_identity import RequestIdentity
@@ -32,6 +35,30 @@ async def _owner_conversation(session: AsyncSession) -> UUID:
     )
     await session.commit()
     return conversation_id
+
+
+async def test_user_selected_root_precedes_managed_default(
+    db_session: AsyncSession, tmp_path: Path
+) -> None:
+    conversation_id = await _owner_conversation(db_session)
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    chosen = await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(selected),
+        access_mode="read_write",
+        label="用户项目",
+    )
+    managed = await ensure_default_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        workspace_path=tmp_path / "managed",
+    )
+
+    roots = await list_session_roots(db_session, conversation_id=conversation_id)
+
+    assert [item.id for item in roots[:2]] == [chosen.id, managed.id]
 
 
 async def test_read_write_root_grants_office_without_shell_and_revokes_together(
@@ -90,6 +117,35 @@ async def test_read_write_root_grants_office_without_shell_and_revokes_together(
             db_session,
             conversation_id=conversation_id,
             capability="network.read",
+        )
+    with pytest.raises(CapabilityDeniedError, match=r"knowledge\.read"):
+        await authorize_capability(
+            db_session,
+            conversation_id=conversation_id,
+            capability="knowledge.read",
+        )
+    knowledge_grant = await grant_capability(
+        db_session,
+        conversation_id=conversation_id,
+        capability="knowledge.read",
+    )
+    assert (
+        await authorize_capability(
+            db_session,
+            conversation_id=conversation_id,
+            capability="knowledge.read",
+        )
+    ).id == knowledge_grant.id
+    assert await revoke_capability_grant(
+        db_session,
+        conversation_id=conversation_id,
+        grant_id=knowledge_grant.id,
+    )
+    with pytest.raises(CapabilityDeniedError, match=r"knowledge\.read"):
+        await authorize_capability(
+            db_session,
+            conversation_id=conversation_id,
+            capability="knowledge.read",
         )
     network_grant = await grant_capability(
         db_session,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import UUID
@@ -17,6 +16,16 @@ from app.agent.cowork_extensions import register_skill_tools
 from app.agent.cowork_runtime import initialize_cowork_state
 from app.agent.cowork_tools import build_default_cowork_registry
 from app.core.config import Settings
+from app.cowork_contracts import (
+    ScheduleKind as ScheduleKind,
+)
+from app.cowork_contracts import (
+    ScheduleRecord as ScheduleRecord,
+)
+from app.cowork_contracts import (
+    ScheduleView as ScheduleView,
+)
+from app.cowork_store.routing import configured_cowork_store
 from app.services.runs import (
     append_events,
     append_message,
@@ -24,7 +33,6 @@ from app.services.runs import (
     finish_run,
 )
 
-ScheduleKind = Literal["once", "cron"]
 RunTrigger = Literal["manual", "schedule", "catchup"]
 _ACTIVE_STATUSES = "('queued','executing','waiting_human')"
 
@@ -39,33 +47,6 @@ class ScheduleNotFoundError(LookupError):
 
 class ScheduleOverlapError(RuntimeError):
     pass
-
-
-@dataclass(frozen=True)
-class ScheduleRecord:
-    id: UUID
-    conversation_id: UUID
-    title: str
-    goal: str
-    schedule_kind: ScheduleKind
-    cron_expression: str | None
-    run_at: datetime | None
-    timezone: str
-    enabled: bool
-    next_run_at: datetime | None
-    last_run_at: datetime | None
-    last_run_id: UUID | None
-    run_count: int
-    skipped_count: int
-    created_at: datetime
-    updated_at: datetime
-
-
-@dataclass(frozen=True)
-class ScheduleView:
-    schedule: ScheduleRecord
-    last_run_status: str | None
-    pending_inbox_count: int
 
 
 _COLUMNS = """
@@ -141,6 +122,18 @@ async def create_schedule(
         timezone=timezone,
         after=current,
     )
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.create_schedule(
+            conversation_id=conversation_id,
+            title=normalized_title,
+            goal=normalized_goal,
+            schedule_kind=schedule_kind,
+            cron_expression=cron_expression.strip() if cron_expression else None,
+            run_at=run_at,
+            timezone=timezone,
+            next_run_at=next_run_at,
+        )
     row = (
         (
             await session.execute(
@@ -177,13 +170,16 @@ async def create_schedule(
 async def get_schedule(
     session: AsyncSession, *, schedule_id: UUID, for_update: bool = False
 ) -> ScheduleRecord | None:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.get_schedule(schedule_id=schedule_id)
     suffix = " FOR UPDATE" if for_update else ""
     row = (
         (
             await session.execute(
                 text(
                     f"""
-                    SELECT schedules.{', schedules.'.join(item.strip() for item in _COLUMNS.split(','))}
+                    SELECT schedules.{", schedules.".join(item.strip() for item in _COLUMNS.split(","))}
                     FROM cowork_schedules AS schedules
                     JOIN conversations AS conversations ON conversations.id = schedules.conversation_id
                     WHERE schedules.id = :schedule_id
@@ -202,6 +198,9 @@ async def get_schedule(
 
 
 async def list_schedules(session: AsyncSession, *, limit: int = 100) -> list[ScheduleView]:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.list_schedules(limit=limit)
     if not 1 <= limit <= 200:
         raise ScheduleError("schedule limit 必须位于 1 到 200")
     columns = ", ".join(f"schedules.{item.strip()}" for item in _COLUMNS.split(","))
@@ -211,15 +210,26 @@ async def list_schedules(session: AsyncSession, *, limit: int = 100) -> list[Sch
                 text(
                     f"""
                     SELECT {columns}, runs.status AS last_run_status,
+                           workspace.label AS workspace_label,
+                           workspace.canonical_path AS workspace_path,
                            COUNT(inbox.id) FILTER (WHERE inbox.status = 'pending') AS pending_inbox_count
                     FROM cowork_schedules AS schedules
                     JOIN conversations AS conversations ON conversations.id = schedules.conversation_id
                     LEFT JOIN agent_runs AS runs ON runs.id = schedules.last_run_id
                     LEFT JOIN cowork_inbox_items AS inbox
                       ON inbox.run_id = runs.id AND inbox.unattended = true
+                    LEFT JOIN LATERAL (
+                        SELECT roots.label, roots.canonical_path
+                        FROM session_roots AS roots
+                        WHERE roots.conversation_id = schedules.conversation_id
+                          AND roots.enabled = true
+                        ORDER BY roots.created_at, roots.id
+                        LIMIT 1
+                    ) AS workspace ON true
                     WHERE conversations.scope = 'local_owner'
                       AND conversations.demo_session_id IS NULL
-                    GROUP BY schedules.id, runs.status
+                    GROUP BY schedules.id, runs.status,
+                             workspace.label, workspace.canonical_path
                     ORDER BY schedules.enabled DESC, schedules.next_run_at NULLS LAST,
                              schedules.created_at DESC
                     LIMIT :limit
@@ -236,6 +246,8 @@ async def list_schedules(session: AsyncSession, *, limit: int = 100) -> list[Sch
             schedule=_record({key: row[key] for key in ScheduleRecord.__dataclass_fields__}),
             last_run_status=row["last_run_status"],
             pending_inbox_count=int(row["pending_inbox_count"]),
+            workspace_label=row["workspace_label"],
+            workspace_path=row["workspace_path"],
         )
         for row in rows
     ]
@@ -285,6 +297,23 @@ async def update_schedule(
         next_run_at = current.next_run_at
     else:
         next_run_at = None
+    store = configured_cowork_store()
+    if store is not None:
+        updated = await store.update_schedule_fields(
+            schedule_id=schedule_id,
+            values={
+                "title": title,
+                "goal": goal,
+                "enabled": enabled,
+                "cron_expression": cron_expression,
+                "run_at": run_at,
+                "timezone": timezone,
+                "next_run_at": next_run_at,
+            },
+        )
+        if updated is None:
+            raise ScheduleNotFoundError(str(schedule_id))
+        return updated
     row = (
         (
             await session.execute(
@@ -320,6 +349,9 @@ async def delete_schedule(session: AsyncSession, *, schedule_id: UUID) -> bool:
     current = await get_schedule(session, schedule_id=schedule_id, for_update=True)
     if current is None:
         return False
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.delete_schedule(schedule_id=schedule_id)
     deleted = (
         await session.execute(
             text("DELETE FROM cowork_schedules WHERE id = :schedule_id RETURNING id"),
@@ -341,9 +373,10 @@ def _next_after_fire(schedule: ScheduleRecord, *, now: datetime) -> datetime | N
     )
 
 
-async def _conversation_has_active_run(
-    session: AsyncSession, *, conversation_id: UUID
-) -> bool:
+async def _conversation_has_active_run(session: AsyncSession, *, conversation_id: UUID) -> bool:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.conversation_has_active_run(conversation_id=conversation_id)
     active = (
         await session.execute(
             text(
@@ -393,15 +426,18 @@ async def _create_schedule_run(
     try:
         # 计划行锁、run/checkpoint 创建和 next_run_at 推进必须由外层同一事务提交。
         # 若这里提前 commit，会在计划仍显示到期时释放锁，形成重复派发窗口。
-        await initialize_cowork_state(
-            session, run_id=run.id, registry=registry, commit=False
-        )
+        await initialize_cowork_state(session, run_id=run.id, registry=registry, commit=False)
     except ValueError as error:
         message = f"自动化未能启动：{error}"
         await append_events(
             session,
             run_id=run.id,
-            events=[("error", {"code": "schedule_start_failed", "retryable": True, "user_message": message})],
+            events=[
+                (
+                    "error",
+                    {"code": "schedule_start_failed", "retryable": True, "user_message": message},
+                )
+            ],
         )
         await finish_run(session, run_id=run.id, status="failed", error=message)
         return run.id, False
@@ -417,6 +453,43 @@ async def dispatch_due_schedules(
     limit: int = 20,
 ) -> list[UUID]:
     current = (now or datetime.now(UTC)).astimezone(UTC)
+    store = configured_cowork_store()
+    if store is not None:
+        schedule_ids = await store.claim_due_schedules(
+            now_iso=current.isoformat(timespec="microseconds"), limit=limit
+        )
+        local_queued: list[UUID] = []
+        for schedule_id in schedule_ids:
+            schedule = await store.get_schedule(schedule_id=schedule_id)
+            if schedule is None or not schedule.enabled:
+                continue
+            next_run = _next_after_fire(schedule, now=current)
+            if await store.conversation_has_active_run(conversation_id=schedule.conversation_id):
+                await store.update_schedule_fields(
+                    schedule_id=schedule.id,
+                    values={
+                        "next_run_at": next_run,
+                        "enabled": schedule.schedule_kind != "once",
+                        "skipped_count": schedule.skipped_count + 1,
+                    },
+                )
+                continue
+            run_id, runnable = await _create_schedule_run(
+                session, schedule=schedule, settings=settings, trigger=trigger
+            )
+            await store.update_schedule_fields(
+                schedule_id=schedule.id,
+                values={
+                    "next_run_at": next_run,
+                    "enabled": schedule.schedule_kind != "once",
+                    "last_run_at": current,
+                    "last_run_id": run_id,
+                    "run_count": schedule.run_count + 1,
+                },
+            )
+            if runnable:
+                local_queued.append(run_id)
+        return local_queued
     rows = (
         (
             await session.execute(
@@ -440,9 +513,7 @@ async def dispatch_due_schedules(
     for row in rows:
         schedule = _record(row)
         next_run = _next_after_fire(schedule, now=current)
-        if await _conversation_has_active_run(
-            session, conversation_id=schedule.conversation_id
-        ):
+        if await _conversation_has_active_run(session, conversation_id=schedule.conversation_id):
             await session.execute(
                 text(
                     """
@@ -499,6 +570,17 @@ async def run_schedule_now(
     run_id, runnable = await _create_schedule_run(
         session, schedule=schedule, settings=settings, trigger="manual"
     )
+    store = configured_cowork_store()
+    if store is not None:
+        await store.update_schedule_fields(
+            schedule_id=schedule.id,
+            values={
+                "last_run_at": datetime.now(UTC),
+                "last_run_id": run_id,
+                "run_count": schedule.run_count + 1,
+            },
+        )
+        return run_id, runnable
     await session.execute(
         text(
             """
@@ -516,6 +598,13 @@ async def run_schedule_now(
 async def list_dispatchable_scheduled_runs(
     session: AsyncSession, *, limit: int = 100
 ) -> list[UUID]:
+    store = configured_cowork_store()
+    if store is not None:
+        return [
+            run.id
+            for run in await store.list_queued_runs(limit=limit)
+            if run.schedule_id is not None
+        ]
     rows = (
         await session.execute(
             text(

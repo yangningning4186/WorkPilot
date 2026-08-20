@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
 
+from app.core.config import get_settings
 from app.core.db import session_factory
 from app.core.redis import redis_client
 
@@ -24,7 +25,8 @@ async def ready() -> HealthResponse:
     try:
         async with session_factory() as session:
             await session.execute(text("SELECT 1"))
-        await redis_client.ping()
+        if get_settings().task_queue_backend == "redis":
+            await redis_client.ping()
     except Exception as exc:
         raise HTTPException(status_code=503, detail="依赖服务尚未就绪") from exc
     return HealthResponse()

@@ -2,6 +2,7 @@
 
 import re
 from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,8 +27,14 @@ from app.schemas.skills import (
 )
 from app.security.secret_store import LocalSecretStore
 from app.skills.catalog import SkillCatalogError, load_skill_catalog
+from app.skills.distillation_store import (
+    get_skill_candidate,
+    list_skill_candidates,
+    set_candidate_status,
+)
 from app.skills.lifecycle import (
     import_skill_zip,
+    install_auto_distilled_skill,
     install_skill,
     list_managed_skills,
     read_skill_resource,
@@ -170,9 +177,7 @@ async def pin_mcp_catalog(
     session: DbSession,
 ) -> dict[str, Any]:
     probe = await probe_mcp_server(server_name, settings, session)
-    editable = load_mcp_configuration(
-        settings.cowork_mcp_config_path, resolve_environment=False
-    )
+    editable = load_mcp_configuration(settings.cowork_mcp_config_path, resolve_environment=False)
     server = editable.servers.get(server_name)
     if server is None:
         raise HTTPException(status_code=404, detail="MCP 服务不存在")
@@ -223,6 +228,72 @@ def get_skills_status(
             )
         ],
     }
+
+
+@router.get("/skills/candidates")
+async def get_skill_candidates(
+    session: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, Any]:
+    items = await list_skill_candidates(session)
+    return {
+        "enabled": settings.skill_distillation_enabled,
+        "auto_promotion_enabled": settings.skill_auto_promotion_enabled,
+        "min_evidence": settings.skill_promotion_min_evidence,
+        "min_confidence": settings.skill_promotion_min_confidence,
+        "items": [item.public(include_skill_md=True) for item in items],
+    }
+
+
+@router.post("/skills/candidates/{candidate_id}/promote")
+async def promote_skill_candidate(
+    candidate_id: UUID,
+    session: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, Any]:
+    candidate = await get_skill_candidate(session, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Skill 候选不存在")
+    if candidate.status == "rejected":
+        raise HTTPException(status_code=409, detail="已拒绝的 Skill 候选不能直接晋升")
+    try:
+        install_auto_distilled_skill(
+            settings.cowork_skills_path,
+            name=candidate.suggested_name,
+            capability_key=candidate.capability_key,
+            skill_md=candidate.skill_md,
+            max_bytes=settings.cowork_skill_max_bytes,
+        )
+    except (FileExistsError, OSError, UnicodeError, SkillCatalogError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    updated = await set_candidate_status(
+        session,
+        candidate_id=candidate.id,
+        status="promoted",
+        promoted_name=candidate.suggested_name,
+    )
+    await session.commit()
+    return updated.public(include_skill_md=True)
+
+
+@router.post("/skills/candidates/{candidate_id}/reject")
+async def reject_skill_candidate(
+    candidate_id: UUID,
+    session: DbSession,
+) -> dict[str, Any]:
+    candidate = await get_skill_candidate(session, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Skill 候选不存在")
+    if candidate.status == "promoted":
+        raise HTTPException(status_code=409, detail="已晋升 Skill 请从已安装列表停用或卸载")
+    updated = await set_candidate_status(
+        session,
+        candidate_id=candidate.id,
+        status="rejected",
+        review_reason="用户已拒绝",
+    )
+    await session.commit()
+    return updated.public(include_skill_md=True)
 
 
 @router.put("/skills/{skill_name}")
@@ -298,7 +369,9 @@ def post_skill_import(
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
-@router.get("/skills/{skill_name}/resources/{resource_path:path}", response_model=SkillResourceResponse)
+@router.get(
+    "/skills/{skill_name}/resources/{resource_path:path}", response_model=SkillResourceResponse
+)
 def get_skill_resource(
     skill_name: str,
     resource_path: str,

@@ -3,64 +3,35 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Literal, cast
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
+from app.cowork_contracts import (
+    InboxRecord as InboxRecord,
+)
+from app.cowork_contracts import (
+    InteractionKind as InteractionKind,
+)
+from app.cowork_contracts import (
+    InteractionStatus as InteractionStatus,
+)
+from app.cowork_contracts import (
+    SteeringRecord as SteeringRecord,
+)
+from app.cowork_contracts import (
+    UnattendedInboxRecord as UnattendedInboxRecord,
+)
+from app.cowork_store.routing import configured_cowork_store
 from app.services.cowork_permissions import (
     AccessMode,
     Capability,
     create_session_root,
     grant_capability,
 )
-
-InteractionKind = Literal[
-    "ask_user", "directory_request", "capability_request", "shell_approval", "external_approval"
-]
-InteractionStatus = Literal["pending", "answered", "approved", "rejected", "cancelled"]
-
-
-@dataclass(frozen=True)
-class SteeringRecord:
-    id: UUID
-    run_id: UUID
-    conversation_id: UUID
-    content: str
-    status: str
-    created_at: datetime
-    consumed_at: datetime | None
-
-
-@dataclass(frozen=True)
-class InboxRecord:
-    id: UUID
-    run_id: UUID
-    conversation_id: UUID
-    kind: InteractionKind
-    status: InteractionStatus
-    resume_token: UUID
-    tool_call_id: str
-    plan_step_id: UUID
-    request: dict[str, Any]
-    response: dict[str, Any] | None
-    created_at: datetime
-    responded_at: datetime | None
-    unattended: bool
-
-
-@dataclass(frozen=True)
-class UnattendedInboxRecord:
-    item: InboxRecord
-    run_goal: str
-    run_status: str
-    schedule_id: UUID | None
-    schedule_title: str | None
-
 
 _STEERING_COLUMNS = """
     id, run_id, conversation_id, content, status, created_at, consumed_at
@@ -83,6 +54,11 @@ async def enqueue_steering(
     conversation_id: UUID,
     content: str,
 ) -> SteeringRecord:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.enqueue_steering(
+            run_id=run_id, conversation_id=conversation_id, content=content
+        )
     normalized = content.strip()
     if not 1 <= len(normalized) <= 4000:
         raise ValueError("steering 内容长度必须位于 1 到 4000")
@@ -111,10 +87,12 @@ async def enqueue_steering(
     return SteeringRecord(**row)
 
 
-async def consume_pending_steering(
-    session: AsyncSession, *, run_id: UUID
-) -> list[SteeringRecord]:
+async def consume_pending_steering(session: AsyncSession, *, run_id: UUID) -> list[SteeringRecord]:
     """锁住并消费当前已排队 steering；调用方必须和 checkpoint 一起提交。"""
+
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.consume_pending_steering(run_id=run_id)
 
     rows = (
         (
@@ -143,7 +121,9 @@ async def consume_pending_steering(
         .mappings()
         .all()
     )
-    return sorted((SteeringRecord(**row) for row in rows), key=lambda item: (item.created_at, item.id))
+    return sorted(
+        (SteeringRecord(**row) for row in rows), key=lambda item: (item.created_at, item.id)
+    )
 
 
 async def create_inbox_item(
@@ -156,6 +136,16 @@ async def create_inbox_item(
     plan_step_id: UUID,
     request: dict[str, Any],
 ) -> InboxRecord:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.create_inbox_item(
+            run_id=run_id,
+            conversation_id=conversation_id,
+            kind=kind,
+            tool_call_id=tool_call_id,
+            plan_step_id=plan_step_id,
+            request=request,
+        )
     row = (
         (
             await session.execute(
@@ -196,6 +186,9 @@ async def list_unattended_inbox(
     include_resolved: bool = False,
     limit: int = 100,
 ) -> list[UnattendedInboxRecord]:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.list_unattended_inbox(include_resolved=include_resolved, limit=limit)
     if not 1 <= limit <= 200:
         raise ValueError("inbox limit 必须位于 1 到 200")
     status_clause = "" if include_resolved else "AND inbox.status = 'pending'"
@@ -247,6 +240,9 @@ async def get_pending_inbox_item(
     resume_token: UUID,
     for_update: bool = False,
 ) -> InboxRecord | None:
+    store = configured_cowork_store()
+    if store is not None:
+        return await store.get_inbox_item(run_id=run_id, resume_token=resume_token)
     suffix = " FOR UPDATE" if for_update else ""
     row = (
         (
@@ -346,6 +342,13 @@ async def resolve_inbox_item(
         response["command_sha256"] = item.request.get("command_sha256")
 
     response["status"] = status
+    store = configured_cowork_store()
+    if store is not None:
+        updated = await store.update_inbox_item(item_id=item.id, status=status, response=response)
+        if updated is None:
+            raise ValueError("这条运行中请求已经处理")
+        return updated, response
+
     row = (
         (
             await session.execute(
@@ -373,6 +376,10 @@ async def resolve_inbox_item(
 
 
 async def cancel_pending_interaction(session: AsyncSession, *, run_id: UUID) -> None:
+    store = configured_cowork_store()
+    if store is not None:
+        await store.cancel_pending_interaction(run_id=run_id)
+        return
     await session.execute(
         text(
             """

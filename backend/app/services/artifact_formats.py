@@ -18,6 +18,4 @@ TEXT_ARTIFACT_MIME_BY_SUFFIX: Final[dict[str, str]] = {
     ".yaml": "application/yaml",
     ".yml": "application/yaml",
 }
-TEXT_ARTIFACT_SUFFIXES: Final[frozenset[str]] = frozenset(
-    TEXT_ARTIFACT_MIME_BY_SUFFIX
-)
+TEXT_ARTIFACT_SUFFIXES: Final[frozenset[str]] = frozenset(TEXT_ARTIFACT_MIME_BY_SUFFIX)

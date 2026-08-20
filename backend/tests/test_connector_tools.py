@@ -110,6 +110,34 @@ def test_dynamic_tool_catalog_keeps_initial_schema_bounded_and_activates_matches
     assert "act_connector_api" in activated
 
 
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "整理今日 AI 资讯并生成日报",
+        "查找最新人工智能新闻",
+        "汇总本周 AI 热点",
+        "Create a daily AI news briefing",
+    ],
+)
+def test_news_goals_activate_web_tools(goal: str) -> None:
+    registry = build_default_cowork_registry()
+
+    names = {item.name for item in registry.tool_definitions_for(goal)}
+
+    assert {"web_search", "fetch_url"} <= names
+
+
+def test_tool_catalog_matches_english_aliases_for_chinese_web_tools() -> None:
+    registry = build_default_cowork_registry()
+
+    matches = registry.search_tools("AI news latest", max_results=8)
+    names = {item["name"] for item in matches}
+
+    assert {"web_search", "fetch_url"} <= names
+    web_search = next(item for item in matches if item["name"] == "web_search")
+    assert "ai news" in web_search["search_aliases"]
+
+
 def test_read_only_subagent_catalog_is_bounded_and_excludes_external_actions() -> None:
     registry = build_default_cowork_registry()
     register_browser_tools(registry)
@@ -123,7 +151,8 @@ def test_read_only_subagent_catalog_is_bounded_and_excludes_external_actions() -
     names = {item.name for item in tools}
 
     assert len(tools) <= 12
-    assert {"browser_open", "web_search"} <= names
+    assert {"browser_snapshot", "web_search"} <= names
+    assert "browser_open" not in names
     assert "search_tool_catalog" not in names
     assert "act_connector_api" not in names
     assert "read_connector_api" not in names

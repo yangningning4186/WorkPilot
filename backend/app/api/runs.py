@@ -12,10 +12,10 @@ from app.agent.cowork_runtime import initialize_cowork_state, resume_cowork_afte
 from app.agent.cowork_tools import build_default_cowork_registry
 from app.agent.review_graph import initialize_review_state
 from app.agent.write_note import (
-    InvocationInFlightError,
     resolve_note_path,
     resume_review_after_human,
 )
+from app.agent_core.idempotency import InvocationInFlightError
 from app.api.dependencies import (
     get_request_identity,
     get_run_bus,
@@ -27,6 +27,7 @@ from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
 from app.core.queue import RunQueue
 from app.core.run_bus import RunBus
+from app.cowork_store.routing import local_run_guard
 from app.schemas.runs import (
     CoworkInteractionResponseRequest,
     CoworkSteeringRequest,
@@ -38,13 +39,17 @@ from app.schemas.runs import (
     RunEventListResponse,
     RunStatusResponse,
 )
+from app.services.cowork_attachments import CoworkAttachmentError, bind_attachments
 from app.services.cowork_interactions import (
     cancel_pending_interaction,
     enqueue_steering,
     get_pending_inbox_item,
     resolve_inbox_item,
 )
-from app.services.cowork_permissions import CoworkPermissionError
+from app.services.cowork_permissions import (
+    CoworkPermissionError,
+    ensure_default_session_root,
+)
 from app.services.demo_sessions import consume_question_quota
 from app.services.request_identity import RequestIdentity
 from app.services.run_stream import parse_last_event_id, stream_run_events
@@ -130,6 +135,7 @@ async def create_answer_run(
         budget_calls=settings.run_budget_calls,
         budget_wall_ms=settings.run_budget_wall_ms,
         answer_mode=request.mode,
+        retrieval_top_k=request.top_k,
     )
     trace_id = str(structlog.contextvars.get_contextvars().get("trace_id") or "local")
     await append_message(
@@ -248,58 +254,48 @@ async def respond_to_cowork_interaction(
     bus: Annotated[RunBus, Depends(get_run_bus)],
     identity: Annotated[RequestIdentity, Depends(require_owner_identity)],
 ) -> RunStatusResponse:
-    await session.execute(
-        text("SELECT id FROM agent_runs WHERE id = :run_id FOR UPDATE"), {"run_id": run_id}
-    )
-    run = await get_run_for_identity(
-        session,
-        run_id=run_id,
-        scope=identity.scope,
-        demo_session_id=identity.demo_session_id,
-    )
-    if run is None or run.workflow_type != "cowork":
-        raise HTTPException(status_code=404, detail="Cowork run 不存在")
-    item = await get_pending_inbox_item(
-        session, run_id=run_id, resume_token=resume_token, for_update=True
-    )
-    if item is None:
-        raise HTTPException(status_code=404, detail="运行中请求不存在")
-    try:
-        if item.status == "pending":
-            if run.status != "waiting_human":
-                raise ValueError("Cowork run 当前不在等待用户处理")
-            item, response = await resolve_inbox_item(
-                session,
-                item=item,
-                approved=request.approved,
-                answer=request.answer,
-                path=request.path,
+    async with local_run_guard(run_id) as locally_locked:
+        if not locally_locked:
+            await session.execute(
+                text("SELECT id FROM agent_runs WHERE id = :run_id FOR UPDATE"),
+                {"run_id": run_id},
             )
-            await resume_cowork_after_human(
-                session, run_id=run_id, item=item, response=response
-            )
-            if item.kind == "ask_user" and request.answer is not None:
-                trace_id = str(
-                    structlog.contextvars.get_contextvars().get("trace_id") or "local"
-                )
-                await append_message(
+        run = await get_run_for_identity(
+            session,
+            run_id=run_id,
+            scope=identity.scope,
+            demo_session_id=identity.demo_session_id,
+        )
+        if run is None or run.workflow_type != "cowork":
+            raise HTTPException(status_code=404, detail="Cowork run 不存在")
+        item = await get_pending_inbox_item(
+            session, run_id=run_id, resume_token=resume_token, for_update=not locally_locked
+        )
+        if item is None:
+            raise HTTPException(status_code=404, detail="运行中请求不存在")
+        try:
+            if item.status == "pending":
+                if run.status != "waiting_human":
+                    raise ValueError("Cowork run 当前不在等待用户处理")
+                item, response = await resolve_inbox_item(
                     session,
-                    conversation_id=run.conversation_id,
-                    role="user",
-                    content=request.answer.strip(),
-                    status="completed",
-                    run_id=run_id,
-                    trace_id=trace_id,
+                    item=item,
+                    approved=request.approved,
+                    answer=request.answer,
+                    path=request.path,
                 )
-        elif run.status != "queued":
-            raise ValueError("这条运行中请求已经处理")
-    except (CoworkPermissionError, LookupError, PermissionError, ValueError) as error:
-        await session.rollback()
-        raise HTTPException(status_code=409, detail=str(error)) from error
+                await resume_cowork_after_human(
+                    session, run_id=run_id, item=item, response=response
+                )
+            elif run.status != "queued":
+                raise ValueError("这条运行中请求已经处理")
+        except (CoworkPermissionError, LookupError, PermissionError, ValueError) as error:
+            await session.rollback()
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
-    # 同一个 inbox 使用稳定 attempt，HTTP 重试只会命中同一 Arq job id。
-    attempt = item.id.int % 2_000_000_000 + 1
-    await session.commit()
+        # 同一个 inbox 使用稳定 attempt，HTTP 重试只会命中同一 Arq job id。
+        attempt = item.id.int % 2_000_000_000 + 1
+        await session.commit()
     await bus.publish(run_id)
     try:
         await queue.enqueue_cowork_run(run_id, attempt=attempt)
@@ -345,6 +341,15 @@ async def create_cowork_run(
         )
     except LookupError as error:
         raise HTTPException(status_code=404, detail="Cowork 会话不存在") from error
+    try:
+        await ensure_default_session_root(
+            session,
+            conversation_id=conversation_id,
+            workspace_path=settings.cowork_default_workspace_path,
+        )
+    except CoworkPermissionError as error:
+        await session.rollback()
+        raise HTTPException(status_code=503, detail=str(error)) from error
     run = await create_run(
         session,
         conversation_id=conversation_id,
@@ -355,7 +360,7 @@ async def create_cowork_run(
         workflow_type="cowork",
     )
     trace_id = str(structlog.contextvars.get_contextvars().get("trace_id") or "local")
-    await append_message(
+    message_id = await append_message(
         session,
         conversation_id=conversation_id,
         role="user",
@@ -364,6 +369,18 @@ async def create_cowork_run(
         run_id=run.id,
         trace_id=trace_id,
     )
+    try:
+        await bind_attachments(
+            session,
+            conversation_id=conversation_id,
+            attachment_ids=request.attachment_ids,
+            message_id=message_id,
+            run_id=run.id,
+            max_count=settings.cowork_attachment_max_count,
+        )
+    except CoworkAttachmentError as error:
+        await session.rollback()
+        raise HTTPException(status_code=422, detail=str(error)) from error
     try:
         registry = build_default_cowork_registry()
         register_skill_tools(registry, settings)

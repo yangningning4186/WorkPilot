@@ -13,6 +13,7 @@ from app.agent.budget import (
 from app.llm.gateway import ModelContextOverflowError
 from app.llm.types import (
     CompletionResult,
+    EmbeddingResult,
     Message,
     ProviderNotDispatchedError,
     Usage,
@@ -47,6 +48,23 @@ class RecordingGateway:
         if self.error is not None:
             raise self.error
         return CompletionResult(text="回答", model="fake-chat", provider="fake", usage=self.usage)
+
+
+class RecordingEmbeddingGateway(RecordingGateway):
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        task_type: str = "embedding",
+    ) -> EmbeddingResult:
+        del texts, task_type
+        self.dispatched += 1
+        return EmbeddingResult(
+            embeddings=[[0.1, 0.2]],
+            model="fake-embedding",
+            provider="fake",
+            usage=Usage(input_tokens=2),
+        )
 
 
 def _messages(chars: int = 40) -> list[Message]:
@@ -154,3 +172,18 @@ async def test_local_context_overflow_is_not_charged_as_a_dispatched_call() -> N
 
     assert meter.budget["used_calls"] == 0
     assert meter.budget["used_tokens"] == 0
+
+
+async def test_embedding_for_rag_tool_uses_the_same_run_budget() -> None:
+    meter = BudgetMeter(review_budget(max_tokens=10, max_calls=1), chars_per_token=1.0)
+    gateway = RecordingEmbeddingGateway()
+
+    result = await BudgetedGateway(gateway, meter).embed(["RAG!"])
+
+    assert result.embeddings == [[0.1, 0.2]]
+    assert gateway.dispatched == 1
+    assert meter.budget["used_calls"] == 1
+    assert meter.budget["used_tokens"] == 2
+    with pytest.raises(RunBudgetExceededError):
+        await BudgetedGateway(gateway, meter).embed(["again"])
+    assert gateway.dispatched == 1

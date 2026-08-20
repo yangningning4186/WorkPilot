@@ -21,18 +21,23 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.llm.gateway import ModelGateway, build_model_gateway
 from app.retrieval.dense import DenseSearchHit, _dense_search_by_vector
 from app.retrieval.fusion import reciprocal_rank_fusion, rerank_candidate_union
 from app.retrieval.lexical import lexical_search
+from app.retrieval.reranker import build_candidate_text, parse_cross_encoder_response
 from app.retrieval.strategy import ChunkStrategy, validate_chunk_strategy
-from app.services.reranker import build_candidate_text, parse_cross_encoder_response
-from eval.dense_baseline import EvalItem, _candidate_chunks, _load_items, _retrieved_chunk
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from eval.dense_baseline import (
+    EvalItem,
+    _candidate_chunks,
+    _load_items,
+    _retrieved_chunk,
+)
 from eval.mapping import GoldSpan, RetrievedChunk, hits
 from eval.metrics.retrieval import evaluate_retrieval
 from eval.stats import MetricSamples, RatioPoint, paired_bootstrap

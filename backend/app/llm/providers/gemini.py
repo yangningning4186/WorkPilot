@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import httpx
 
+from app.llm.errors import ProviderNotDispatchedError, ProviderResponseError
 from app.llm.providers.openai_compatible import (
-    ProviderResponseError,
     _dispatch_guard,
     _raise_with_body,
 )
@@ -18,7 +21,6 @@ from app.llm.types import (
     CompletionResult,
     EmbeddingResult,
     Message,
-    ProviderNotDispatchedError,
     ToolCall,
     ToolDefinition,
     Usage,
@@ -81,7 +83,7 @@ class GeminiProvider:
         temperature: float,
         tools: list[ToolDefinition] | None = None,
     ) -> CompletionResult:
-        system, contents = _gemini_contents(messages)
+        system, contents = await _gemini_contents(messages)
         payload: dict[str, Any] = {
             "contents": contents,
             "generationConfig": {
@@ -145,6 +147,9 @@ class GeminiProvider:
             usage=Usage(
                 input_tokens=int(usage.get("promptTokenCount", 0)),
                 output_tokens=int(usage.get("candidatesTokenCount", 0)),
+                prompt_cache_read_tokens=int(
+                    usage.get("cachedContentTokenCount", 0)
+                ),
             ),
             tool_calls=tuple(calls),
         )
@@ -164,7 +169,7 @@ class GeminiProvider:
         await self._client.aclose()
 
 
-def _gemini_contents(messages: list[Message]) -> tuple[str, list[dict[str, Any]]]:
+async def _gemini_contents(messages: list[Message]) -> tuple[str, list[dict[str, Any]]]:
     system_parts: list[str] = []
     contents: list[dict[str, Any]] = []
     call_names: dict[str, str] = {}
@@ -204,13 +209,38 @@ def _gemini_contents(messages: list[Message]) -> tuple[str, list[dict[str, Any]]
                 [{"functionResponse": {"name": name, "response": response}}],
             )
             continue
-        _append_gemini(contents, "user", [{"text": message.content}])
+        parts = [{"text": message.content}] if message.content else []
+        for attachment in message.attachments:
+            if attachment.kind in {"image", "pdf"}:
+                try:
+                    raw = await asyncio.to_thread(Path(attachment.path).read_bytes)
+                except OSError as error:
+                    raise ProviderResponseError(
+                        f"输入附件已丢失，请重新上传：{attachment.filename}"
+                    ) from error
+                parts.append(
+                    {
+                        "inlineData": {
+                            "mimeType": attachment.media_type,
+                            "data": base64.b64encode(raw).decode("ascii"),
+                        }
+                    }
+                )
+            else:
+                parts.append(
+                    {
+                        "text": (
+                            f'<attachment name="{attachment.filename}" '
+                            f'type="{attachment.media_type}" untrusted="true">\n'
+                            f"{attachment.extracted_text}\n</attachment>"
+                        )
+                    }
+                )
+        _append_gemini(contents, "user", parts or [{"text": ""}])
     return "\n\n".join(system_parts), contents
 
 
-def _append_gemini(
-    contents: list[dict[str, Any]], role: str, parts: list[dict[str, Any]]
-) -> None:
+def _append_gemini(contents: list[dict[str, Any]], role: str, parts: list[dict[str, Any]]) -> None:
     if contents and contents[-1]["role"] == role:
         contents[-1]["parts"].extend(parts)
     else:

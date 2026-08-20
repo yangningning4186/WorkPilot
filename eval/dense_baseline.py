@@ -12,28 +12,23 @@ from statistics import fmean
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-from uuid6 import uuid7
-
 from app.core.config import Settings
 from app.core.db import close_database, session_factory
 from app.ingest.chunk_strategies import count_tokens
 from app.llm.audit import SqlLlmCallAudit
 from app.llm.gateway import ModelGateway, build_model_gateway
-from app.retrieval.dense import DenseSearchHit, dense_search, multi_query_dense_search
-from app.retrieval.fusion import (
-    apply_document_cap,
-    reciprocal_rank_fusion,
-)
-from app.retrieval.lexical import LEXICAL_MODES, lexical_search
+from app.retrieval.dense import DenseSearchHit
+from app.retrieval.lexical import LEXICAL_MODES
+from app.retrieval.pipeline import RetrievalMode, SearchPipeline, SearchPipelineRequest
 from app.retrieval.strategy import (
     CHUNK_STRATEGIES,
     ChunkStrategy,
     validate_chunk_strategy,
 )
-from app.services.query_decomposition import plan_retrieval_queries
-from app.services.reranker import rerank_candidates
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from uuid6 import uuid7
+
 from eval.mapping import (
     GoldEvidenceGroup,
     GoldSpan,
@@ -569,12 +564,6 @@ async def _evaluate_items(
     return results
 
 
-def _capped(hits: list[DenseSearchHit], *, settings: Settings) -> list[DenseSearchHit]:
-    """按配置施加每文档名额上限；0 表示关闭（默认），保持既有行为逐位不变。"""
-    cap = settings.document_cap_per_version
-    return apply_document_cap(hits, cap=cap) if cap else hits
-
-
 async def _retrieve_with_strategy(
     session: AsyncSession,
     gateway: ModelGateway,
@@ -589,142 +578,51 @@ async def _retrieve_with_strategy(
     lex_mode: str,
     temporal_ctx: datetime | None = None,
 ) -> list[DenseSearchHit]:
-    if strategy == "dense-only":
-        return await dense_search(
-            session,
-            gateway,
+    mode_by_strategy: dict[str, RetrievalMode] = {
+        "dense-only": "dense",
+        "lexical-only": "lexical",
+        "multi-query-dense": "dense",
+        "dense-rerank": "dense",
+        "dense-lexical-rrf": "hybrid",
+        "dense-lexical-rrf-rerank": "hybrid",
+    }
+    try:
+        retrieval_mode = mode_by_strategy[strategy]
+    except KeyError as error:  # pragma: no cover - CLI 与入口已校验
+        raise AssertionError(f"未处理的检索策略: {strategy}") from error
+    rerank_enabled = strategy in {"dense-rerank", "dense-lexical-rrf-rerank"}
+    candidate_k = (
+        max(diagnostic_k, settings.rerank_candidate_k)
+        if strategy == "dense-lexical-rrf-rerank"
+        else diagnostic_k
+    )
+    result = await SearchPipeline(session, gateway).search(
+        SearchPipelineRequest(
             query=query,
             top_k=diagnostic_k,
+            candidate_k=candidate_k,
             strategy=chunk_strategy,
             temporal_ctx=temporal_ctx,
+            retrieval_mode=retrieval_mode,
+            query_decomposition_enabled=strategy == "multi-query-dense",
+            query_decomposition_max_subqueries=settings.query_decomposition_max_subqueries,
+            query_decomposition_max_tokens=settings.query_decomposition_max_tokens,
+            lexical_enabled=retrieval_mode == "hybrid",
+            lexical_mode=lex_mode,
+            rrf_k=settings.rrf_k,
+            document_cap_per_version=settings.document_cap_per_version,
+            rerank_enabled=rerank_enabled,
+            force_rerank=rerank_enabled,
+            reranker_base_url=settings.reranker_base_url,
+            reranker_model=settings.reranker_model,
+            reranker_timeout_s=settings.reranker_timeout_s,
+            rerank_max_candidate_chars=settings.rerank_max_candidate_chars,
+            rerank_candidate_text_mode=text_mode,
         )
-    if strategy == "lexical-only":
-        # 单臂对照: RRF 里 dense 会兜住词法的失效, 只看融合结果无法归因词法打分的好坏。
-        return await lexical_search(
-            session,
-            query=query,
-            top_k=diagnostic_k,
-            mode=lex_mode,
-            strategy=chunk_strategy,
-            temporal_ctx=temporal_ctx,
-        )
-    if strategy == "multi-query-dense":
-        plan = await plan_retrieval_queries(
-            gateway,
-            query=query,
-            max_subqueries=settings.query_decomposition_max_subqueries,
-            max_tokens=settings.query_decomposition_max_tokens,
-        )
-        return await multi_query_dense_search(
-            session,
-            gateway,
-            queries=plan.queries,
-            top_k=diagnostic_k,
-            per_query_top_k=diagnostic_k,
-            strategy=chunk_strategy,
-            temporal_ctx=temporal_ctx,
-        )
-    if strategy == "dense-rerank":
-        candidates = await dense_search(
-            session,
-            gateway,
-            query=query,
-            top_k=diagnostic_k,
-            strategy=chunk_strategy,
-            temporal_ctx=temporal_ctx,
-        )
-        if len(candidates) <= top_k:
-            return candidates
-        # 返回精排后的完整排序而不是 Top-K: 正式指标仍按 top_k 截断(evaluate_retrieval
-        # 内部取 retrieved[:top_k]), 但漏召回归因和 budget recall 需要看到 Top-K 之外的
-        # 深度, 否则精排策略的诊断信息弱于非精排策略, 分不清"排在 11-50 位"和"没召回"。
-        result = await rerank_candidates(
-            query=query,
-            candidates=candidates,
-            top_k=len(candidates),
-            base_url=settings.reranker_base_url,
-            model=settings.reranker_model,
-            timeout_s=settings.reranker_timeout_s,
-            max_candidate_chars=settings.rerank_max_candidate_chars,
-            candidate_text_mode=text_mode,
-            strategy=chunk_strategy,
-        )
-        if not result.applied:
-            raise RuntimeError(result.reason)
-        return result.hits
-    if strategy == "dense-lexical-rrf":
-        dense_hits = await dense_search(
-            session,
-            gateway,
-            query=query,
-            top_k=diagnostic_k,
-            strategy=chunk_strategy,
-            temporal_ctx=temporal_ctx,
-        )
-        lexical_hits = await lexical_search(
-            session,
-            query=query,
-            top_k=diagnostic_k,
-            mode=lex_mode,
-            strategy=chunk_strategy,
-            temporal_ctx=temporal_ctx,
-        )
-        return _capped(
-            reciprocal_rank_fusion(
-                [dense_hits, lexical_hits],
-                top_k=diagnostic_k,
-                rrf_k=settings.rrf_k,
-                strategy=chunk_strategy,
-            ),
-            settings=settings,
-        )
-    if strategy == "dense-lexical-rrf-rerank":
-        arm_candidate_k = max(diagnostic_k, settings.rerank_candidate_k)
-        dense_hits = await dense_search(
-            session,
-            gateway,
-            query=query,
-            top_k=arm_candidate_k,
-            strategy=chunk_strategy,
-            temporal_ctx=temporal_ctx,
-        )
-        lexical_hits = await lexical_search(
-            session,
-            query=query,
-            top_k=arm_candidate_k,
-            mode=lex_mode,
-            strategy=chunk_strategy,
-            temporal_ctx=temporal_ctx,
-        )
-        candidates = _capped(
-            reciprocal_rank_fusion(
-                [dense_hits, lexical_hits],
-                top_k=arm_candidate_k,
-                rrf_k=settings.rrf_k,
-                strategy=chunk_strategy,
-            ),
-            settings=settings,
-        )
-        if len(candidates) <= top_k:
-            return candidates
-        # 返回精排后的完整排序而不是 Top-K: 正式指标仍按 top_k 截断(evaluate_retrieval
-        # 内部取 retrieved[:top_k]), 但漏召回归因和 budget recall 需要看到 Top-K 之外的
-        # 深度, 否则精排策略的诊断信息弱于非精排策略, 分不清"排在 11-50 位"和"没召回"。
-        result = await rerank_candidates(
-            query=query,
-            candidates=candidates,
-            top_k=len(candidates),
-            base_url=settings.reranker_base_url,
-            model=settings.reranker_model,
-            timeout_s=settings.reranker_timeout_s,
-            max_candidate_chars=settings.rerank_max_candidate_chars,
-            candidate_text_mode=text_mode,
-            strategy=chunk_strategy,
-        )
-        if not result.applied:
-            raise RuntimeError(result.reason)
-        return result.hits
-    raise AssertionError(f"未处理的检索策略: {strategy}")
+    )
+    if rerank_enabled and result.rerank.candidate_count > top_k and not result.rerank.applied:
+        raise RuntimeError(result.rerank.reason)
+    return list(result.hits)
 
 
 async def _candidate_chunks(
