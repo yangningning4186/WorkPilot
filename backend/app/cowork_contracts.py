@@ -34,6 +34,7 @@ InteractionKind = Literal[
     "capability_request",
     "shell_approval",
     "external_approval",
+    "plan_approval",
 ]
 InteractionStatus = Literal["pending", "answered", "approved", "rejected", "cancelled"]
 ScheduleKind = Literal["once", "cron"]

@@ -12,6 +12,7 @@
 | 原生交付物 | 原子生成 DOCX/XLSX/PDF，覆盖需 baseline，保留有界备份；Artifacts 内联 PDF、语义预览 DOCX/XLSX | 语义预览不承诺替代 Office 的像素级排版渲染 |
 | Scheduler / Inbox | 单次/五段 cron、离线最多补跑一次、重叠保护、Redis 入队补偿、立即运行、暂停/恢复/删除；跨会话 Inbox | Unattended 不自动续权；提问、目录/能力、Shell 与外部动作都会安全暂停 |
 | 长期记忆 | `remember` / `memory_update` / `memory_forget` / `memory_read`；global / workspace / conversation 三级作用域，软删除，每轮钉进 system prompt；客户端记忆面板与内联撤销 | 不复用 RAG 的 memory：那套做时序有效性建模（ADR-0005），且 `rag ⊥ cowork`；只注入本会话可见的那部分，别的会话与目录的记忆一律不可见 |
+| 计划模式 | 会话发起时可选；计划阶段只下发只读与交互工具，`propose_plan` 提交方案后暂停，批准即翻转运行时模式并把步骤变成任务清单；客户端计划卡片支持批准或带修改意见退回 | 批准是 checkpoint 里 `mode` 的翻转，不是 prompt 约定：未批准前写工具既不下发，执行边界也拒绝；准入判据是 `risk`/`execution` 而不是工具名单 |
 | 任务清单 | `todo_write` 整份替换的 pending/in_progress/done 清单，存进 checkpoint、钉进每轮 system prompt、前端独立渲染 | 与 `agent_plan_steps` 并存不互相替代：前者是模型主动声明的计划，后者是 runtime 从 tool call 派生的事后日志 |
 | 只读子 Agent | `explore` 独立上下文、共享预算、轮次/调用上限、证据工具记录 | 过滤所有副作用、Shell 与 `external.action`，当前不开放可写子 Agent |
 | 工具规模治理 | 核心目录、按目标相关选择、`search_tool_catalog` 动态激活；历史 tool_call 引用过的 schema 跨话题保留 | 目录按轮重算且有上限，不因某个工具曾被下发过就永久驻留；只有历史调用过的和显式激活的是单调的 |

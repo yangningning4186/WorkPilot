@@ -41,6 +41,7 @@ from app.cowork.permissions import (
     authorize_path,
     list_session_roots,
 )
+from app.cowork.plans import PLAN_TOOL_NAME, ProposePlanArgs
 from app.cowork.shell import assess_shell_command, execute_shell_command
 from app.cowork.todos import TodoWriteArgs, todo_items, todo_summary
 from app.cowork.web import fetch_url, search_web
@@ -444,6 +445,42 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
             if len(definitions) >= max_tools:
                 break
         return definitions
+
+    def plan_mode_allows(self, name: str) -> bool:
+        """计划模式下这个工具能不能执行。
+
+        判据是副作用落在哪里，不是一张工具名单：``risk == "read"`` 的工具什么都不改；
+        交互工具（ask_user / request_directory / request_capability / propose_plan）
+        每一次都要用户当场点头，本身就是征求同意的动作。名单会随着新工具不断增长而
+        漏掉新成员，判据不会。
+        """
+
+        try:
+            spec = self.get(name)
+        except ToolRegistryError:
+            return False
+        return spec.risk == "read" or spec.execution == "interaction"
+
+    def plan_mode_tool_names(self) -> frozenset[str]:
+        return frozenset(name for name in self._tools if self.plan_mode_allows(name))
+
+    def plan_mode_definitions(self, definitions: list[ToolDefinition]) -> list[ToolDefinition]:
+        """把下发目录裁成计划阶段可用的那部分，并保证提计划的入口一定在。
+
+        propose_plan 不进 ``core`` 目录：执行模式下它是纯噪声，只在计划模式才有意义。
+        """
+
+        allowed = [item for item in definitions if self.plan_mode_allows(item.name)]
+        if PLAN_TOOL_NAME in self._tools and all(item.name != PLAN_TOOL_NAME for item in allowed):
+            spec = self.get(PLAN_TOOL_NAME)
+            allowed.append(
+                ToolDefinition(
+                    name=spec.name,
+                    description=spec.description,
+                    parameters=spec.resolved_input_schema(),
+                )
+            )
+        return allowed
 
     async def execute(
         self,
@@ -1046,6 +1083,23 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             effect="external",
             parallel_safe=False,
             handler=_run_shell,
+        )
+    )
+    registry.register(
+        CoworkToolSpec(
+            name=PLAN_TOOL_NAME,
+            description=(
+                "计划模式下提交执行方案并暂停等待用户批准。"
+                "steps 是准备按顺序做的事，批准后会直接成为你的任务清单；"
+                "notes 写风险、前提和你替用户做的假设。必须单独调用。"
+            ),
+            args_model=ProposePlanArgs,
+            risk="external",
+            effect="none",
+            parallel_safe=False,
+            handler=None,
+            execution="interaction",
+            search_aliases=("plan", "计划", "方案"),
         )
     )
     registry.register(

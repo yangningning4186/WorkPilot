@@ -6218,6 +6218,17 @@ textarea:focus-visible,
 .workdesk-shell-command { overflow-x: auto; margin: 0; padding: 11px 12px; border: 1px solid #26332d; border-radius: 10px; background: #17201c; color: #d9ebe2; font: 9px/1.6 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
 .workdesk-inbox-card textarea { width: 100%; min-height: 72px; resize: vertical; padding: 10px 11px; border: 1px solid #d8dfdb; border-radius: 10px; outline: 0; background: rgb(255 255 255 / 82%); color: var(--workdesk-ink); font: inherit; font-size: 10px; line-height: 1.5; }
 .workdesk-inbox-card textarea:focus { border-color: var(--workdesk-accent); box-shadow: 0 0 0 3px rgb(23 107 88 / 8%); }
+.workdesk-plan-steps { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; counter-reset: none; }
+.workdesk-plan-steps li { display: flex; align-items: flex-start; gap: 8px; }
+.workdesk-plan-steps li > span { display: grid; flex: 0 0 auto; width: 16px; height: 16px; place-items: center; border-radius: 50%; background: rgb(23 107 88 / 10%); color: var(--workdesk-accent); font-size: 8px; font-weight: 700; }
+.workdesk-plan-steps li > p { margin: 0; color: var(--workdesk-ink); font-size: 10px; line-height: 1.5; }
+.workdesk-plan-notes { padding: 8px 10px; border-left: 2px solid #cfded7; background: rgb(255 255 255 / 62%); }
+.workdesk-inbox-card textarea[rows="2"] { min-height: 48px; }
+.workdesk-plan-toggle { display: flex; height: 28px; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid #d7ded9; border-radius: 999px; background: #fff; color: #5b635e; font-size: 9px; font-weight: 650; cursor: pointer; transition: background 140ms ease, border-color 140ms ease, color 140ms ease; }
+.workdesk-plan-toggle:hover:not(:disabled) { border-color: #9db9ac; color: var(--workdesk-accent); }
+.workdesk-plan-toggle.is-on { border-color: var(--workdesk-accent); background: rgb(23 107 88 / 9%); color: var(--workdesk-accent); }
+.workdesk-plan-toggle:disabled { opacity: .5; cursor: not-allowed; }
+.workdesk-plan-toggle svg { width: 13px; height: 13px; }
 .workdesk-inbox-choices { display: flex; flex-wrap: wrap; gap: 6px; }
 .workdesk-inbox-choices button { padding: 6px 9px; border: 1px solid #d3dfd9; border-radius: 999px; background: #fff; color: #52605a; font-size: 8px; cursor: pointer; }
 .workdesk-inbox-choices button:hover { border-color: #9db9ac; color: var(--workdesk-accent); }

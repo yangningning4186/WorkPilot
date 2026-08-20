@@ -145,14 +145,21 @@ export interface InterruptPayload {
     | "directory_request"
     | "capability_request"
     | "shell_approval"
-    | "external_approval";
+    | "external_approval"
+    | "plan_approval";
   resume_token: string;
   payload: Record<string, unknown>;
 }
 
 export interface InteractionResolvedPayload {
   inbox_id: string;
-  kind: "ask_user" | "directory_request" | "capability_request" | "shell_approval" | "external_approval";
+  kind:
+    | "ask_user"
+    | "directory_request"
+    | "capability_request"
+    | "shell_approval"
+    | "external_approval"
+    | "plan_approval";
   status: "answered" | "approved" | "rejected";
 }
 

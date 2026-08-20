@@ -51,6 +51,8 @@ class CreateCoworkRunRequest(BaseModel):
     # root grant 绑定 conversation，因此 Cowork 必须显式选择已有 owner 会话。
     conversation_id: UUID
     attachment_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    # 计划模式：只放行只读工具，必须先提交计划并获得批准才会开始动手。
+    plan_mode: bool = False
 
 
 class ResumeRunRequest(BaseModel):

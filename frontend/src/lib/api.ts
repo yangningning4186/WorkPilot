@@ -325,6 +325,8 @@ export interface CreateCoworkRunRequest {
   goal: string;
   conversation_id: string;
   attachment_ids?: string[];
+  /** 计划模式：只放行只读工具，先出方案等你批准再动手。 */
+  plan_mode?: boolean;
 }
 
 export interface CoworkAttachment {

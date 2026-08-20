@@ -206,6 +206,7 @@ export default function CoworkPage() {
   const [stopping, setStopping] = useState(false);
   const [responding, setResponding] = useState(false);
   const [interactionAnswer, setInteractionAnswer] = useState("");
+  const [planMode, setPlanMode] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [workMode, setWorkMode] = useState<"office" | "research">("office");
   const [providers, setProviders] = useState<ProviderProfile[]>([]);
@@ -570,6 +571,7 @@ export default function CoworkPage() {
         conversation_id: conversationId,
         goal: prompt,
         attachment_ids: uploaded.map((item) => item.id),
+        plan_mode: planMode,
       });
       setStopping(false);
       setActivePrompt(prompt);
@@ -582,7 +584,7 @@ export default function CoworkPage() {
     } finally {
       setBusy(false);
     }
-  }, [attachments, conversationId, goal, loadSession]);
+  }, [attachments, conversationId, goal, loadSession, planMode]);
 
   const addAttachments = useCallback((files: FileList | File[]) => {
     const accepted = Array.from(files).filter((file) => {
@@ -732,6 +734,12 @@ export default function CoworkPage() {
   const shellCommand =
     typeof interactionPayload.command === "string" ? interactionPayload.command : "";
   const shellCwd = typeof interactionPayload.cwd === "string" ? interactionPayload.cwd : "";
+  const planSummary =
+    typeof interactionPayload.summary === "string" ? interactionPayload.summary : "我打算这样做";
+  const planSteps = Array.isArray(interactionPayload.steps)
+    ? interactionPayload.steps.filter((item): item is string => typeof item === "string")
+    : [];
+  const planNotes = typeof interactionPayload.notes === "string" ? interactionPayload.notes : "";
   const runAnswer = run.answer || run.progressSummary || "";
   const hasConversation = messages.length > 0 || runId !== null;
   const visibleMessages =
@@ -1013,6 +1021,17 @@ export default function CoworkPage() {
                                 {interactionPayload.has_operators === true && <small className="risk">命令包含 shell 操作符，不能进入 allowlist，本次必须单独批准。</small>}
                                 <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">拒绝</button><button className="primary danger" disabled={responding} onClick={() => void respondToInteraction({ approved: true })} type="button">批准并运行一次</button></div>
                               </>
+                            ) : run.interrupt.kind === "plan_approval" ? (
+                              <>
+                                <h3>{planSummary}</h3>
+                                <ol className="workdesk-plan-steps">
+                                  {planSteps.map((step, index) => <li key={`${index}:${step}`}><span>{index + 1}</span><p>{step}</p></li>)}
+                                </ol>
+                                {planNotes !== "" && <p className="workdesk-plan-notes">{planNotes}</p>}
+                                <small>批准后这些步骤会成为任务清单，写入类工具才会解锁。要改的话直接写在下面。</small>
+                                <textarea aria-label="对这个计划的修改意见" disabled={responding} maxLength={4000} onChange={(event) => setInteractionAnswer(event.target.value)} placeholder="想改哪里？留空直接批准" rows={2} value={interactionAnswer} />
+                                <div className="workdesk-inbox-actions"><button disabled={responding || interactionAnswer.trim() === ""} onClick={() => void respondToInteraction({ approved: false, answer: interactionAnswer.trim() })} type="button">按这些意见重做计划</button><button className="primary" disabled={responding} onClick={() => void respondToInteraction({ approved: true, answer: interactionAnswer.trim() || undefined })} type="button">批准并开始执行</button></div>
+                              </>
                             ) : run.interrupt.kind === "external_approval" ? (
                               <>
                                 <h3>允许执行这次外部动作？</h3>
@@ -1103,7 +1122,7 @@ export default function CoworkPage() {
               />
               <div className="workdesk-composer-actions">
                 <button aria-label="添加图片、PDF 或文本附件" disabled={busy || running || conversationArchived} onClick={() => attachmentInput.current?.click()} title={conversationArchived ? "恢复会话后可添加附件" : running ? "运行期间暂不支持追加附件" : "添加图片、PDF 或文本（最多 8 个）"} type="button"><WorkdeskIcon name="add" /></button>
-                <span>{conversationArchived ? "归档会话 · 只读" : run.phase === "waiting_human" ? "请先处理对话中的请求" : steering ? "发送后将在安全边界转向" : attachments.length > 0 ? `已添加 ${attachments.length} 个附件` : "默认权限 · Agent 已就绪"}</span>
+                <span>{conversationArchived ? "归档会话 · 只读" : run.phase === "waiting_human" ? "请先处理对话中的请求" : steering ? "发送后将在安全边界转向" : attachments.length > 0 ? `已添加 ${attachments.length} 个附件` : planMode ? "计划模式 · 先出方案等你批准" : "默认权限 · Agent 已就绪"}</span>
                 <ContextUsageMeter draft={goal} usage={contextUsage} />
                 <label className="workdesk-model-select" title="按会话切换 Provider">
                   <WorkdeskIcon name="spark" />
@@ -1112,6 +1131,7 @@ export default function CoworkPage() {
                     {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
                   </select>
                 </label>
+                <button aria-checked={planMode} aria-label="先出计划再执行" className={`workdesk-plan-toggle${planMode ? " is-on" : ""}`} disabled={busy || running || conversationArchived || steering} onClick={() => setPlanMode((current) => !current)} role="switch" title="打开后 Cowork 会先调研并提交计划，等你批准再动手" type="button"><WorkdeskIcon name="shield" /><span>先出计划</span></button>
                 <button aria-label={steering ? "追加运行指令" : "开始执行任务"} className="workdesk-send" disabled={busy || conversationArchived || run.phase === "waiting_human" || goal.trim() === ""} onClick={() => void submitComposer()} type="button"><WorkdeskIcon name="send" /></button>
               </div>
               <footer>

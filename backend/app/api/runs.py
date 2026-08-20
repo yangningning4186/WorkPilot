@@ -389,6 +389,7 @@ async def create_cowork_run(
             run_id=run.id,
             registry=registry,
             bus=bus,
+            plan_mode=request.plan_mode,
         )
     except ValueError as error:
         await session.rollback()

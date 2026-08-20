@@ -341,6 +341,21 @@ async def resolve_inbox_item(
             status = "approved"
         else:
             status = "rejected"
+    elif item.kind == "plan_approval":
+        # 退回时用户的意见就是模型下一轮的输入，必须落进 tool 结果；只回一个
+        # "被拒绝"会让它原样再提一遍同一个计划。
+        feedback = (answer or "").strip()
+        if len(feedback) > 4000:
+            raise ValueError("修改意见不能超过 4000 个字符")
+        if feedback:
+            response["feedback"] = feedback
+        if approved:
+            status = "approved"
+        else:
+            response.setdefault(
+                "feedback", "用户没有批准这个计划，请重新拟定后再提交，不要直接开始执行"
+            )
+            status = "rejected"
     else:
         status = "approved" if approved else "rejected"
         response["command_sha256"] = item.request.get("command_sha256")
