@@ -1,19 +1,21 @@
 """定时维护: 回收失联 run, 落账过期费用预留。"""
 
+import asyncio
 from typing import Any
 
 import structlog
 
 from app.core.queue import get_run_queue
 from app.core.run_bus import RunBus
+from app.cowork.memory import list_dispatchable_memory_jobs
 from app.cowork.schedules import (
+    claim_due_sleeping_runs,
     dispatch_due_schedules,
     list_dispatchable_scheduled_runs,
 )
-from app.cowork.skills.distillation_store import list_dispatchable_skill_jobs
-from app.rag.memory.store import list_dispatchable_memory_jobs
+from app.cowork.skills.candidate_store import list_dispatchable_skill_jobs
 from app.runstore.runs import reap_expired_runs
-from app.telemetry.cost_budget import sweep_expired_reservations
+from app.telemetry import default_telemetry_store
 
 logger = structlog.get_logger(__name__)
 
@@ -33,11 +35,8 @@ async def watchdog_tick(ctx: dict[str, Any]) -> int:
         reaped = await reap_expired_runs(session, max_recovery=settings.run_max_recovery)
         await session.commit()
     queue = await get_run_queue()
-    for run_id, attempt in reaped.recovered:
-        # 先入队再唤醒: 客户端读到"正在恢复"时任务已经在队列里, 不会看到一段空窗。
-        await queue.enqueue_review_run(run_id, attempt=attempt)
-        await bus.publish(run_id)
     for run_id, attempt in reaped.recovered_cowork:
+        # 先入队再唤醒: 客户端读到"正在恢复"时任务已经在队列里, 不会看到一段空窗。
         await queue.enqueue_cowork_run(run_id, attempt=attempt)
         await bus.publish(run_id)
     for run_id in reaped.failed:
@@ -45,8 +44,6 @@ async def watchdog_tick(ctx: dict[str, Any]) -> int:
         await bus.publish(run_id)
     for run_id in reaped.cancelled:
         await bus.publish(run_id)
-    if reaped.recovered:
-        logger.warning("重新入队失联的固定综述 run", count=len(reaped.recovered))
     if reaped.recovered_cowork:
         logger.warning("重新入队失联的 Cowork run", count=len(reaped.recovered_cowork))
     if reaped.failed:
@@ -55,7 +52,6 @@ async def watchdog_tick(ctx: dict[str, Any]) -> int:
         logger.info("收敛已请求取消的 run", count=len(reaped.cancelled))
     return (
         len(reaped.failed)
-        + len(reaped.recovered)
         + len(reaped.recovered_cowork)
         + len(reaped.cancelled)
     )
@@ -64,26 +60,22 @@ async def watchdog_tick(ctx: dict[str, Any]) -> int:
 async def cost_sweeper_tick(ctx: dict[str, Any]) -> int:
     """过期未结算的预留按上限落账, 否则额度会被永久占住。"""
 
-    session_factory = ctx["session_factory"]
-    async with session_factory() as session:
-        swept = await sweep_expired_reservations(session)
+    del ctx  # 费用预留在自己的 SQLite 库里，不需要业务 session
+    swept = await default_telemetry_store().sweep_expired()
     if swept:
         logger.warning("按上限结算过期费用预留", count=swept)
     return swept
 
 
 async def memory_dispatch_tick(ctx: dict[str, Any]) -> int:
-    """补偿 DB 作业已创建但首次 Redis 入队失败的窗口。"""
+    """补偿作业已落库但首次入队失败的窗口，并收敛重试耗尽的作业。"""
 
     settings = ctx["settings"]
     if not settings.memory_extraction_enabled:
         return 0
-    session_factory = ctx["session_factory"]
-    async with session_factory() as session:
-        jobs = await list_dispatchable_memory_jobs(
-            session, max_attempts=settings.memory_job_max_attempts
-        )
-        await session.commit()
+    jobs = await list_dispatchable_memory_jobs(
+        max_attempts=settings.memory_job_max_attempts
+    )
     queue = ctx.get("run_queue") or await get_run_queue()
     for job_id, attempt in jobs:
         await queue.enqueue_memory_job(job_id, attempt=attempt)
@@ -91,20 +83,23 @@ async def memory_dispatch_tick(ctx: dict[str, Any]) -> int:
 
 
 async def skill_distillation_dispatch_tick(ctx: dict[str, Any]) -> int:
-    """补偿 Skill 蒸馏作业首次入队失败与失联租约。"""
+    """补偿 Skill 蒸馏作业首次入队失败与失联租约。
+
+    队列在候选目录里，不需要业务 session：一次扫描就是一次 listdir。
+    """
 
     settings = ctx["settings"]
     if not settings.skill_distillation_enabled:
         return 0
-    session_factory = ctx["session_factory"]
-    async with session_factory() as session:
-        jobs = await list_dispatchable_skill_jobs(
-            session, max_attempts=settings.skill_distillation_job_max_attempts
-        )
-        await session.commit()
+    jobs = await asyncio.to_thread(
+        list_dispatchable_skill_jobs,
+        settings.cowork_skill_candidates_path,
+        max_attempts=settings.skill_distillation_job_max_attempts,
+        lease_s=settings.skill_distillation_job_lease_s,
+    )
     queue = ctx.get("run_queue") or await get_run_queue()
-    for job_id, attempt in jobs:
-        await queue.enqueue_skill_job(job_id, attempt=attempt)
+    for run_id, attempt in jobs:
+        await queue.enqueue_skill_job(run_id, attempt=attempt)
     return len(jobs)
 
 
@@ -122,8 +117,10 @@ async def scheduler_dispatch_tick(ctx: dict[str, Any]) -> int:
             settings=settings,
             trigger="catchup" if first_tick else "schedule",
         )
+        # 自唤醒和计划派发共用这一个 tick：两者都是"到点了把 run 放进队列"。
+        woken = await claim_due_sleeping_runs(session)
         await session.commit()
-        dispatchable = await list_dispatchable_scheduled_runs(session)
+        dispatchable = [*await list_dispatchable_scheduled_runs(session), *woken]
     ctx["cowork_scheduler_started"] = True
     queue = ctx.get("run_queue") or await get_run_queue()
     bus: RunBus = ctx["bus"]

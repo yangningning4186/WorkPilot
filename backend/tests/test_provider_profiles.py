@@ -48,7 +48,7 @@ def test_provider_factory_keeps_provider_identity() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sqlite_cowork_gateway_does_not_reference_postgres_run(
+async def test_sqlite_cowork_gateway_records_the_local_run_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class LocalStore:
@@ -62,20 +62,24 @@ async def test_sqlite_cowork_gateway_does_not_reference_postgres_run(
         return object()
 
     monkeypatch.setattr(
-        "app.cowork_store.routing.configured_cowork_store", lambda: LocalStore()
+        "app.cowork_store.routing.cowork_store", lambda: LocalStore()
     )
     monkeypatch.setattr(
         "app.cowork.provider_profiles.build_model_gateway", fake_build_model_gateway
     )
+    run_id = uuid4()
     await build_conversation_gateway(
         AsyncMock(),
         conversation_id=uuid4(),
         settings=Settings(cowork_store_backend="sqlite"),
         session_factory=AsyncMock(),
-        run_id=uuid4(),
+        run_id=run_id,
     )
 
-    assert captured["run_id"] is None
+    # 审计库以前在 PostgreSQL，有一条指向 agent_runs 的外键，所以 SQLite 的 Cowork run
+    # 只能把 run_id 丢掉——成本因此归不到具体任务上。审计换成 SQLite 之后没有那条外键了，
+    # 本地 run_id 必须原样记进去。
+    assert captured["run_id"] == run_id
 
 
 @pytest.mark.asyncio

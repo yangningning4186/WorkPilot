@@ -1,40 +1,22 @@
-from collections.abc import AsyncIterator
-
 import httpx
-from sqlalchemy.ext.asyncio import AsyncSession
+import pytest
 
-from app.api.dependencies import get_model_gateway, require_owner_identity
-from app.core.db import get_db_session
+from app.api.dependencies import require_owner_identity
 from app.main import create_app
-from app.platform.request_identity import RequestIdentity
-from tests.fakes import DeterministicProvider
-from workpilot_ai.gateway import ModelGateway
+
+pytestmark = pytest.mark.usefixtures("local_cowork_store")
 
 
-def _test_app(db_session: AsyncSession, *, owner: bool):
-    async def override_session() -> AsyncIterator[AsyncSession]:
-        yield db_session
-
-    async def override_gateway() -> AsyncIterator[ModelGateway]:
-        gateway = ModelGateway(
-            DeterministicProvider(),
-            embedding_dimensions=1024,
-            embedding_revision="memory-api-test",
-        )
-        yield gateway
-
+def _test_app(*, owner: bool):
+    # 记忆已经不读数据库了：面板走的就是 Cowork 的那份 SQLite 存储。
     app = create_app()
-    app.dependency_overrides[get_db_session] = override_session
-    app.dependency_overrides[get_model_gateway] = override_gateway
     if owner:
-        app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(
-            scope="local_owner"
-        )
+        app.dependency_overrides[require_owner_identity] = lambda: None
     return app
 
 
-async def test_memory_api_is_owner_only(db_session: AsyncSession) -> None:
-    transport = httpx.ASGITransport(app=_test_app(db_session, owner=False))
+async def test_memory_api_is_owner_only() -> None:
+    transport = httpx.ASGITransport(app=_test_app(owner=False))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/v1/memories")
 
@@ -42,10 +24,8 @@ async def test_memory_api_is_owner_only(db_session: AsyncSession) -> None:
     assert response.json()["detail"] == "需要先登录 owner"
 
 
-async def test_memory_api_manual_lifecycle_preserves_history(
-    db_session: AsyncSession,
-) -> None:
-    transport = httpx.ASGITransport(app=_test_app(db_session, owner=True))
+async def test_memory_api_manual_lifecycle_preserves_history() -> None:
+    transport = httpx.ASGITransport(app=_test_app(owner=True))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         created = await client.post(
             "/api/v1/memories",

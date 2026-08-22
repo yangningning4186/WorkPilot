@@ -36,6 +36,10 @@ class Badcase:
 
 # 只登记**已经修好**的问题。仍在归因中的（D7 的精排 badcase、E7 的 retrieval miss）
 # 不属于这里——棘轮锁的是"不许退回去"，不是"待办清单"。
+#
+# 2026-08-21 摘掉两条：E5（证据门控误拒）与 C（成本查询按 label 撞车）。它们锁的代码
+# 分别随 pgvector 主答路径与 GPU 批次摊销一起退役了。登记一条没有活覆盖的 badcase，
+# 棘轮就锁不住任何东西——那比不登记更糟，因为它看起来像被保护着。
 BADCASES: tuple[Badcase, ...] = (
     Badcase(
         case_id="E2-ts-rank-cd-中文bigram",
@@ -46,36 +50,11 @@ BADCASES: tuple[Badcase, ...] = (
             "cover density 奖励词间距离近的结果，而中文 bigram 天然分散在整个 chunk 里"
         ),
         fix="默认 lexical 排序函数从 ts_rank_cd 换成 ts_rank（纯词频，不看词间距离）",
+        # 端到端那条覆盖随 pgvector 主答路径一起退役了（2026-08-21）。这里保留的是
+        # 仍然成立的那一半：排序函数的默认值。E5（证据门控误拒）整条摘掉——它锁的是
+        # grounded_answer 的证据打包顺序，那段代码已经不存在，留着只是让棘轮空转。
         covered_by=(
             "tests.test_regression_badcases::test_default_lexical_mode_stays_ts_rank",
-            "tests.test_grounded_answer::test_ranked_modes_beat_coverage_on_english_stopword_query",
-        ),
-    ),
-    Badcase(
-        case_id="E5-evidence-gate-误拒",
-        discovered="2026-08-16",
-        source="docs/experiments/2026-08-16-E5-evidence-gate误拒修复.md",
-        symptom=(
-            "21 条可答题被证据门控误拒：旧的 round-robin 打包按文档轮流取 block，"
-            "把 rerank 排出来的顺序打散了，最相关的证据反而没进门控的上下文"
-        ),
-        fix="证据打包改为 sequential，保持 rerank 顺序，并允许同一文档的后续 block",
-        covered_by=(
-            "tests.test_grounded_answer::test_gate_evidence_keeps_rerank_order_and_later_blocks",
-        ),
-    ),
-    Badcase(
-        case_id="C-成本查询按label撞车",
-        discovered="2026-08-16",
-        source="docs/experiments/2026-08-16-C-质量成本帕累托前沿.md",
-        symptom=(
-            "帕累托矩阵里 C3 的墙钟是 1.6 秒、0 次调用、20 道题——物理上不可能。"
-            "中断过的跑批留下同名空壳批次，按 label 查询取到了废数据；"
-            "C2 也被同样污染，只是数字'看起来合理'不会被发现"
-        ),
-        fix="程序化取用一律按 batch_id（label 是人给的名字，重跑必然撞车）",
-        covered_by=(
-            "tests.test_cost_report::test_same_label_from_a_rerun_does_not_contaminate_lookups",
         ),
     ),
     Badcase(

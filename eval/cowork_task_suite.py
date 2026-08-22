@@ -10,54 +10,61 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from app.cowork.tools import build_default_cowork_registry
+from app.cowork_policy import ALL_CAPABILITIES
+
 SCHEMA_VERSION = "cowork-task-suite.v1"
-DEFAULT_SUITE = Path(__file__).parent / "suites" / "cowork-core-40.json"
-EXPECTED_ITEMS = 40
-EXPECTED_SPLITS = {"dev": 32, "test": 8}
+DEFAULT_SUITE = Path(__file__).parent / "suites" / "cowork-core-48.json"
+EXPECTED_ITEMS = 48
+EXPECTED_SPLITS = {"dev": 37, "test": 11}
 EXPECTED_CATEGORIES = {
-    "workspace": 8,
+    # 只读 git 视图（git_status / git_diff / git_log）与「读长文件后做局部替换」
+    # 都归在 workspace 下：它们回答的是同一类问题——在用户的目录里看清现状再动手。
+    "workspace": 12,
     "artifact": 8,
     "office": 6,
     "web": 6,
     "knowledge": 8,
+    # 工作区文档的沉浸阅读：locator 寻址、读过再引、不知道就说不知道。和 knowledge 分开，
+    # 因为那一类考的是跨文档检索，这一类考的是单份文档内的定位与引用可回溯。
+    "reading": 4,
     "safety_hitl": 4,
 }
 
-KNOWN_TOOLS = {
-    "ask_user",
-    "browser_close",
-    "browser_find",
-    "browser_open",
-    "browser_snapshot",
-    "create_artifact",
-    "create_native_artifact",
-    "edit_excel",
-    "edit_word",
-    "fetch_url",
-    "inspect_office_file",
-    "list_files",
-    "list_office_files",
-    "list_workspace_roots",
-    "read_text_file",
-    "request_capability",
-    "request_directory",
-    "run_shell",
-    "search_files",
-    "search_knowledge",
-    "web_search",
-    "write_text_file",
+# 工具名与 capability 都从产品注册表现取, 不再手抄。
+# 手抄过一次的代价已经付了: 注册表给 search_knowledge 加上 knowledge.read 之后,
+# 这份名单没跟上, 八条 knowledge 任务在"尚未授予 knowledge.read"上全灭了一整轮,
+# 而套件校验一声不吭——它照的是自己那份过期的镜子。
+_REGISTRY = build_default_cowork_registry()
+
+# 只有需要运行期对象(RAG service、浏览器管理器)才注册的工具进不了默认注册表,
+# 它们的 capability 在这里显式声明。这份声明**允许**过期, 因为它不是最后一道关:
+# runner 会拿真正要跑的那个 registry 再核一遍(_assert_item_is_solvable), 那一遍
+# 按定义不可能漂移。这里只负责让"改错工具名"在不花模型调用的前提下就被拦住。
+_ADAPTER_TOOL_CAPABILITIES: dict[str, frozenset[str]] = {
+    "search_knowledge": frozenset({"knowledge.read"}),
+    "browser_open": frozenset({"network.read", "browser.control"}),
+    "browser_snapshot": frozenset({"browser.control"}),
+    "browser_find": frozenset({"browser.control"}),
+    "browser_close": frozenset({"browser.control"}),
 }
 
-KNOWN_CAPABILITIES = {
-    "filesystem.read",
-    "filesystem.write",
-    "network.read",
-    "shell.execute",
-    "office.word.edit",
-    "office.excel.edit",
+KNOWN_CAPABILITIES = frozenset(ALL_CAPABILITIES)
+KNOWN_TOOLS = _REGISTRY.names() | frozenset(_ADAPTER_TOOL_CAPABILITIES)
+# 工具执行前会校验的 capability 全集, 用来判断题目给的授权够不够跑通它自己的 gold。
+TOOL_CAPABILITIES: dict[str, frozenset[str]] = {
+    **_ADAPTER_TOOL_CAPABILITIES,
+    **{
+        name: frozenset(
+            ({_REGISTRY.get(name).capability} - {None})
+            | set(_REGISTRY.get(name).extra_capabilities)
+        )
+        for name in _REGISTRY.names()
+    },
 }
 
 KNOWN_ASSERTIONS = {
@@ -111,6 +118,31 @@ def _non_empty_strings(values: object, *, label: str) -> list[str]:
     ):
         raise CoworkSuiteError(f"{label} 必须是非空字符串数组")
     return values
+
+
+def missing_capabilities_for(
+    required_tools: Iterable[str],
+    granted: Iterable[str],
+    *,
+    tool_capabilities: Mapping[str, frozenset[str]] = TOOL_CAPABILITIES,
+) -> dict[str, list[str]]:
+    """gold 要求调用的工具里, 哪些的 capability 这道题根本没授权。
+
+    这类题目不是"难", 是**不可解**: 工具执行入口会先拒掉, 模型只能转去
+    request_capability, run 停在 waiting_human, 于是这一分永远拿不到。把它算进
+    成功率等于在给评分注入一个与被测系统无关的常数项。
+    """
+
+    available = set(granted)
+    gaps: dict[str, list[str]] = {}
+    for name in required_tools:
+        needed = tool_capabilities.get(name)
+        if needed is None:
+            continue
+        lacking = sorted(needed - available)
+        if lacking:
+            gaps[name] = lacking
+    return gaps
 
 
 def _validate_tool_labels(item_id: str, gold: dict[str, Any]) -> None:
@@ -210,6 +242,12 @@ def validate_suite(payload: dict[str, Any]) -> None:
         if not isinstance(gold, dict):
             raise CoworkSuiteError(f"{item_id}: 缺 gold")
         _validate_tool_labels(item_id, gold)
+        gaps = missing_capabilities_for(gold.get("required_tools", []), capabilities)
+        if gaps:
+            detail = "; ".join(f"{name} 需要 {caps}" for name, caps in sorted(gaps.items()))
+            raise CoworkSuiteError(
+                f"{item_id}: granted_capabilities 不足以跑通自己的 gold（{detail}）"
+            )
         if gold.get("expected_status") not in {"done", "waiting_human"}:
             raise CoworkSuiteError(f"{item_id}: expected_status 非法")
         assertions = gold.get("assertions")

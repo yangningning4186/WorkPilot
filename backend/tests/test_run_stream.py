@@ -2,8 +2,10 @@ import asyncio
 import json
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.core.db import DbSession as AsyncSession
+from app.core.db import session_factory
 from app.core.run_bus import InMemoryRunBus
 from app.runstore.run_stream import parse_last_event_id, stream_run_events
 from app.runstore.runs import append_events, create_run, ensure_conversation, finish_run
@@ -42,7 +44,7 @@ async def test_stream_replays_history_then_stops_at_terminal(
     await finish_run(db_session, run_id=run.id, status="done")
     await db_session.commit()
 
-    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    factory = session_factory
     frames = [
         frame
         async for frame in stream_run_events(factory, InMemoryRunBus(), run_id=run.id, after_seq=0)
@@ -83,7 +85,7 @@ async def test_stream_resumes_from_cursor_without_replaying_seen_events(
     await finish_run(db_session, run_id=run.id, status="done")
     await db_session.commit()
 
-    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    factory = session_factory
     frames = [
         frame
         async for frame in stream_run_events(factory, InMemoryRunBus(), run_id=run.id, after_seq=1)
@@ -109,7 +111,7 @@ async def test_stream_picks_up_events_written_after_subscription(
     )
     await db_session.commit()
 
-    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    factory = session_factory
     bus = InMemoryRunBus()
     frames: list[str] = []
 

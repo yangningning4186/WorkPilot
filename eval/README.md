@@ -4,12 +4,15 @@
 
 与 backend 平级的一等模块，不是测试目录的附属。
 
-## Cowork 单 Agent 40 条基线
+## Cowork 单 Agent 48 条基线
 
-`cowork-core-40.json` 是 Cowork 的首个端到端标注候选集：32 条 dev、8 条冻结 test，
-覆盖 workspace、artifact、Office、Web、knowledge/RAG 与安全/HITL 六类任务。每条记录均包含
+`cowork-core-48.json` 是 Cowork 的首个端到端标注候选集：37 条 dev、11 条冻结 test，
+覆盖 workspace（含只读 git 视图）、artifact、Office、Web、knowledge/RAG、工作区文档沉浸阅读
+与安全/HITL 七类任务。每条记录均包含
 可复现 fixture、初始 capability、期望终态、gold 工具、工具顺序/调用预算和确定性成功断言；
-knowledge 类额外强制 `EvidenceBundle` 合约，不允许 `chunk_id`、内部 score 或 ORM 泄漏。
+knowledge 类额外强制 `EvidenceBundle` 合约，不允许 `chunk_id`、内部 score 或 ORM 泄漏；
+reading 类强制 locator 引用（`[p.N]`），并留一条负例考"文档答不了就直说答不了"——
+这一档最糟的失败不是答错，而是凭对同名论文的印象编出一个像模像样的页码。
 
 当前套件由助手起草，因此固定为 `origin=synthetic`、
 `review_status=pending_human_review`。它可以用于打通 runner 和比较工程回归，但 owner 完成

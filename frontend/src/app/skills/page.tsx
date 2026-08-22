@@ -61,11 +61,11 @@ export default function SkillsPage() {
     }
   };
 
-  const reviewCandidate = async (candidateId: string, action: "promote" | "reject") => {
-    setBusy(candidateId);
+  const reviewCandidate = async (capabilityKey: string, action: "promote" | "reject") => {
+    setBusy(capabilityKey);
     try {
-      if (action === "promote") await promoteSkillCandidate(candidateId);
-      else await rejectSkillCandidate(candidateId);
+      if (action === "promote") await promoteSkillCandidate(capabilityKey);
+      else await rejectSkillCandidate(capabilityKey);
       await reload();
     } catch (reason) {
       setError(skillError(reason));
@@ -129,13 +129,13 @@ export default function SkillsPage() {
                 <p>候选只学习成功工具链，不读取文件正文；Shell、外部动作和 MCP 工具不会自动晋升。</p>
                 {candidates.items.length === 0 ? <div className="skill-candidate-empty">完成可复用的 Cowork 流程后，候选会在这里积累证据。</div> : (
                   <div className="skill-candidate-list">
-                    {candidates.items.map((candidate) => <article key={candidate.id}>
+                    {candidates.items.map((candidate) => <article key={candidate.capability_key}>
                       <header><div><strong>{candidate.suggested_name}</strong><code>{candidate.capability_key}</code></div><span className={`status ${candidate.status}`}>{candidate.status === "collecting" ? "积累证据" : candidate.status === "promoted" ? "已晋升" : candidate.status === "needs_review" ? "需要复核" : "已拒绝"}</span></header>
                       <p>{candidate.description}</p>
                       <div className="skill-candidate-meter"><i style={{ width: `${Math.min(100, candidate.evidence_count / candidates.min_evidence * 100)}%` }} /><span>{candidate.evidence_count} / {candidates.min_evidence} 次成功证据 · {(candidate.confidence * 100).toFixed(0)}%</span></div>
                       {candidate.tools.length > 0 && <footer>{candidate.tools.map((tool) => <code key={tool}>{tool}</code>)}</footer>}
                       {candidate.review_reason !== null && <small>{candidate.review_reason}</small>}
-                      {(candidate.status === "collecting" || candidate.status === "needs_review") && <div className="skill-candidate-actions"><button disabled={busy !== null} onClick={() => void reviewCandidate(candidate.id, "promote")} type="button">立即晋升</button><button className="danger" disabled={busy !== null} onClick={() => void reviewCandidate(candidate.id, "reject")} type="button">拒绝</button></div>}
+                      {(candidate.status === "collecting" || candidate.status === "needs_review") && <div className="skill-candidate-actions"><button disabled={busy !== null} onClick={() => void reviewCandidate(candidate.capability_key, "promote")} type="button">立即晋升</button><button className="danger" disabled={busy !== null} onClick={() => void reviewCandidate(candidate.capability_key, "reject")} type="button">拒绝</button></div>}
                     </article>)}
                   </div>
                 )}

@@ -74,6 +74,15 @@ class TextFileWriteResult:
 
 
 @dataclass(frozen=True)
+class TextFileReplaceResult:
+    path: Path
+    sha256: str
+    size_bytes: int
+    backup_path: Path | None
+    replacements: int
+
+
+@dataclass(frozen=True)
 class FileListItem:
     path: Path
     relative_path: str
@@ -245,6 +254,16 @@ def _list_files_sync(
     return items, truncated
 
 
+def ripgrep_path() -> str | None:
+    """ripgrep 可执行文件，找不到时回落到纯 Python 扫描。
+
+    结果不缓存：sidecar 可能在用户装完 ripgrep 之后还活着，缓存一个 None 会让它一直
+    走慢路径。`which` 本身只是一次 PATH 查表，比一次目录遍历便宜好几个数量级。
+    """
+
+    return shutil.which("rg")
+
+
 async def search_files(
     root: Path,
     *,
@@ -255,6 +274,32 @@ async def search_files(
     max_scan_entries: int,
     max_file_bytes: int,
 ) -> tuple[list[FileSearchMatch], bool, int]:
+    """在目录里按文件名与文本内容搜索字面字符串。
+
+    有 ripgrep 就用 ripgrep：它是多线程的、跳过二进制文件、并且尊重 `.gitignore`。
+    纯 Python 那条路会把 `node_modules`、`target/`、构建产物全部逐字节读一遍，在真实
+    仓库上是几十倍的差距，还会把一堆 vendored 代码当成命中回给模型。
+
+    找不到 ripgrep 时回落到原来的实现——功能等价，只是慢，且不认 `.gitignore`。
+    """
+
+    executable = ripgrep_path()
+    if executable is not None:
+        try:
+            return await _search_files_ripgrep(
+                root,
+                executable=executable,
+                query=query,
+                pattern=pattern,
+                case_sensitive=case_sensitive,
+                max_results=max_results,
+                max_scan_entries=max_scan_entries,
+                max_file_bytes=max_file_bytes,
+            )
+        except _RipgrepUnavailable:
+            # ripgrep 在但跑不起来（版本太老、参数不认、被安全策略拦下）不该让搜索整个失败，
+            # 回落到 Python 实现即可。真正的用法错误（正则、权限）不走这个分支。
+            pass
     return await asyncio.to_thread(
         _search_files_sync,
         root,
@@ -265,6 +310,160 @@ async def search_files(
         max_scan_entries=max_scan_entries,
         max_file_bytes=max_file_bytes,
     )
+
+
+class _RipgrepUnavailable(RuntimeError):
+    pass
+
+
+_RIPGREP_TIMEOUT_S = 30.0
+
+
+async def _run_ripgrep(argv: tuple[str, ...], *, cwd: Path, max_bytes: int) -> str:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(cwd),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError as error:  # pragma: no cover - which() 命中后再失败极罕见
+        raise _RipgrepUnavailable(str(error)) from error
+    assert process.stdout is not None and process.stderr is not None
+    try:
+        stdout, stderr, _ = await asyncio.wait_for(
+            asyncio.gather(
+                _read_stream_bounded(process.stdout, max_bytes),
+                _read_stream_bounded(process.stderr, 8 * 1024),
+                process.wait(),
+            ),
+            timeout=_RIPGREP_TIMEOUT_S,
+        )
+    except TimeoutError as error:
+        process.kill()
+        await process.wait()
+        raise _RipgrepUnavailable("ripgrep 超时") from error
+    # 0 = 有命中，1 = 无命中，其余都是 ripgrep 自己出了问题。
+    if process.returncode not in (0, 1):
+        raise _RipgrepUnavailable(stderr.decode("utf-8", errors="replace").strip())
+    return stdout.decode("utf-8", errors="replace")
+
+
+async def _read_stream_bounded(stream: asyncio.StreamReader, max_bytes: int) -> bytes:
+    retained = bytearray()
+    while True:
+        chunk = await stream.read(8192)
+        if not chunk:
+            return bytes(retained)
+        room = max_bytes - len(retained)
+        if room > 0:
+            retained.extend(chunk[:room])
+
+
+async def _search_files_ripgrep(
+    root: Path,
+    *,
+    executable: str,
+    query: str,
+    pattern: str,
+    case_sensitive: bool,
+    max_results: int,
+    max_scan_entries: int,
+    max_file_bytes: int,
+) -> tuple[list[FileSearchMatch], bool, int]:
+    if not await asyncio.to_thread(root.is_dir):
+        raise CoworkFileError(f"搜索根目录不存在: {root}")
+
+    # 这里**不**把 `pattern` 交给 `--glob`：ripgrep 的 include glob 是一层 override，
+    # 命中它的文件会连 `.gitignore` 一起绕过（`--glob '*'` 会把整个 `build/` 列回来），
+    # 而 gitignore 感知正是换 ripgrep 的主要收益。所以只用 `!` 形式的排除 glob，
+    # `pattern` 留给 Python 侧过滤——顺带保住了「相对路径或文件名任一命中」这条
+    # 与纯 Python 实现一致的语义（ripgrep 的 glob 不是这么匹配的）。
+    common = (
+        executable,
+        "--no-config",  # 用户的 RIPGREP_CONFIG_PATH 可能开了 --hidden 之类的开关
+        "--no-messages",
+        "--color=never",
+        *(f"--glob=!{name}/" for name in sorted(_SKIPPED_DIRECTORIES)),
+    )
+
+    def _matches_pattern(relative: str) -> bool:
+        name = relative.rpartition("/")[2]
+        return fnmatch.fnmatch(relative, pattern) or fnmatch.fnmatch(name, pattern)
+
+    # 第一趟只列文件：它同时给出「按文件名命中」的候选集和 files_scanned 口径。
+    listing = await _run_ripgrep(
+        (*common, "--files"), cwd=root, max_bytes=max_scan_entries * 4096
+    )
+    candidates = [line for line in listing.splitlines() if line]
+    scan_truncated = len(candidates) > max_scan_entries
+    relative_paths = sorted(
+        path for path in candidates[:max_scan_entries] if _matches_pattern(path)
+    )
+    scanned = len(relative_paths)
+
+    # 第二趟拿内容命中。`-F` 是字面匹配：模型给的是要找的字符串，不是正则，
+    # 不加这个开关一个 `.` 或 `(` 就会把语义改掉。
+    content = await _run_ripgrep(
+        (
+            *common,
+            "--fixed-strings",
+            "--with-filename",
+            "--line-number",
+            "--no-heading",
+            # 路径和行号之间用 NUL 分隔：文件名里带冒号时，按冒号切会把路径切错。
+            "--null",
+            f"--max-filesize={max_file_bytes}",
+            "--case-sensitive" if case_sensitive else "--ignore-case",
+            "--",
+            query,
+        ),
+        cwd=root,
+        # 单条命中最长 500 字符，再乘以结果上限就够；留两倍余量给路径前缀。
+        max_bytes=max_results * 2048 + 65_536,
+    )
+    hits: dict[str, list[tuple[int, str]]] = {}
+    for line in content.splitlines():
+        head, separator, rest = line.partition("\x00")
+        if not separator:
+            continue
+        number, separator, text = rest.partition(":")
+        if not separator or not number.isdigit():
+            continue
+        hits.setdefault(head, []).append((int(number), text))
+
+    needle = query if case_sensitive else query.casefold()
+    matches: list[FileSearchMatch] = []
+    truncated = scan_truncated
+    for relative in relative_paths:
+        path = root / relative
+        comparable_path = relative if case_sensitive else relative.casefold()
+        if needle in comparable_path:
+            matches.append(
+                FileSearchMatch(
+                    path=path,
+                    relative_path=relative,
+                    line=None,
+                    preview=relative,
+                    matched_in="path",
+                )
+            )
+            if len(matches) >= max_results:
+                return matches, True, scanned
+        for line_number, text in hits.get(relative, ()):
+            matches.append(
+                FileSearchMatch(
+                    path=path,
+                    relative_path=relative,
+                    line=line_number,
+                    preview=text.strip()[:500],
+                    matched_in="content",
+                )
+            )
+            if len(matches) >= max_results:
+                return matches, True, scanned
+    return matches, truncated, scanned
 
 
 def _search_files_sync(
@@ -332,6 +531,96 @@ def _search_files_sync(
                 if len(matches) >= max_results:
                     return matches, True, scanned
     return matches, False, scanned
+
+
+async def replace_in_file(
+    path: Path,
+    *,
+    old_text: str,
+    new_text: str,
+    baseline_sha256: str | None,
+    expected_count: int | None,
+    settings: Settings,
+) -> TextFileReplaceResult:
+    """按精确文本替换改写文件的一部分。
+
+    存在的理由是正确性，不是省 token：全量覆盖要求模型手上有完整的当前内容，而它常常
+    只读了前几百行就重写整个文件——后面的内容会被静默丢掉，`baseline_sha256` 一样能校验
+    通过（它挡的是并发写，不是"你没读全"）。局部替换让没被匹配到的字节原样保留。
+    """
+
+    return await asyncio.to_thread(
+        _replace_in_file_sync,
+        path,
+        old_text=old_text,
+        new_text=new_text,
+        baseline_sha256=baseline_sha256,
+        expected_count=expected_count,
+        max_bytes=settings.cowork_file_write_max_bytes,
+        backup_versions=settings.workspace_backup_versions_per_file,
+    )
+
+
+def _replace_in_file_sync(
+    path: Path,
+    *,
+    old_text: str,
+    new_text: str,
+    baseline_sha256: str | None,
+    expected_count: int | None,
+    max_bytes: int,
+    backup_versions: int,
+) -> TextFileReplaceResult:
+    if path.suffix.casefold() in _KNOWN_BINARY_SUFFIXES:
+        raise CoworkFileError(f"通用文本工具不能写入 {path.suffix} 二进制文档，请使用对应专用工具")
+    if not old_text:
+        raise CoworkFileError("old_text 不能为空；新建文件请使用 write_text_file")
+    if old_text == new_text:
+        raise CoworkFileError("old_text 与 new_text 相同，这次替换不会产生任何改动")
+    if path.is_symlink() or not path.is_file():
+        raise CoworkFileError("目标必须是已存在的普通文件，不能是符号链接或目录")
+    previous = _read_bounded(path, max_bytes)
+    actual_sha256 = _sha256_bytes(previous)
+    if baseline_sha256 is None:
+        raise CoworkFileError("修改现有文件必须提供 read_text_file 返回的 baseline_sha256")
+    if actual_sha256 != baseline_sha256:
+        raise CoworkFileError("文件已在读取后发生变化，请重新读取后再修改")
+    try:
+        text = previous.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise CoworkFileError("目标文件不是 UTF-8 文本，无法做文本替换") from error
+
+    found = text.count(old_text)
+    if found == 0:
+        raise CoworkFileError(
+            "old_text 在文件中不存在。请先用 read_text_file 取回原文，"
+            "逐字复制要替换的片段（包括缩进与换行），不要凭记忆书写"
+        )
+    # 默认要求唯一命中：改错位置比报错贵得多，而模型看不出自己改的是第几处。
+    wanted = 1 if expected_count is None else expected_count
+    if found != wanted:
+        raise CoworkFileError(
+            f"old_text 在文件中出现 {found} 次，与 expected_count={wanted} 不符。"
+            "请扩大 old_text 的上下文使其唯一，或把 expected_count 设为实际次数"
+        )
+    updated = text.replace(old_text, new_text)
+    # 落盘走同一条原子写路径：临时文件 + 替换前重新校验 baseline + 备份 + 保留权限位。
+    # 这里只负责算出新内容，不再复制一份写文件的逻辑。
+    written = _write_text_file_sync(
+        path,
+        content=updated,
+        baseline_sha256=baseline_sha256,
+        create_parents=False,
+        max_bytes=max_bytes,
+        backup_versions=backup_versions,
+    )
+    return TextFileReplaceResult(
+        path=written.path,
+        sha256=written.sha256,
+        size_bytes=written.size_bytes,
+        backup_path=written.backup_path,
+        replacements=found,
+    )
 
 
 async def write_text_file(

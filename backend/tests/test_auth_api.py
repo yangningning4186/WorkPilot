@@ -1,4 +1,3 @@
-from uuid import uuid4
 
 import httpx
 
@@ -12,8 +11,7 @@ class MemoryAdminSessionStore:
     def __init__(self) -> None:
         self.tokens: set[str] = set()
 
-    async def issue(self, *, ttl_s: int) -> str:
-        assert ttl_s > 0
+    async def issue(self) -> str:
         token = "admin-test-token"
         self.tokens.add(token)
         return token
@@ -77,19 +75,3 @@ async def test_admin_login_rejects_bad_password_and_missing_configuration() -> N
         assert (
             await client.post("/api/v1/auth/admin/login", json={"password": "anything"})
         ).status_code == 503
-
-
-async def test_maintenance_and_debug_surfaces_require_admin_session() -> None:
-    store = MemoryAdminSessionStore()
-    transport = httpx.ASGITransport(app=_app(store))
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        checks = [
-            await client.get("/annotation"),
-            await client.get("/api/v1/annotation/datasets"),
-            await client.get(f"/api/v1/sources/{uuid4()}"),
-            await client.post("/api/v1/documents/ingest-markdown", json={"path": "note.md"}),
-            await client.post("/api/v1/search/dense", json={"query": "test"}),
-            await client.post("/api/v1/answer", json={"query": "test"}),
-        ]
-
-    assert {response.status_code for response in checks} == {401}

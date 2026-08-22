@@ -657,6 +657,7 @@ def register_browser_tools(
             parallel_safe=False,
             handler=upload_handler,
             approval_required=True,
+            approval_target_fields=("path",),
             exclusive=True,
             search_aliases=("上传", "upload"),
         ),

@@ -11,25 +11,6 @@ export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "").replace(/\/$/, 
 export type AnswerMode = "grounded" | "general";
 export type WorkflowType = "answer" | "literature_review" | "cowork";
 
-export interface CreateRunRequest {
-  query: string;
-  conversation_id?: string;
-  top_k?: number;
-  mode?: AnswerMode;
-}
-
-export interface CreateReviewRunRequest {
-  goal: string;
-  document_ids: string[];
-  output_path: string;
-  conversation_id?: string;
-}
-
-export interface ResumeRunRequest {
-  resume_token: string;
-  approved: boolean;
-}
-
 export interface CreateRunResponse {
   run_id: string;
   conversation_id: string;
@@ -48,6 +29,7 @@ export interface ConversationSummary {
   provider: string | null;
   selected_model: string | null;
   unattended: boolean;
+  approval_mode: "interactive" | "auto";
   archived_at: string | null;
   created_at: string;
   updated_at: string;
@@ -57,6 +39,31 @@ export interface ConversationRuntimeUpdate {
   provider_profile_id: string | null;
   model_override: string | null;
   unattended: boolean;
+  /** 自主权上限。默认必须是 interactive：漏传这个字段不该把会话悄悄升级成免审批。 */
+  approval_mode: "interactive" | "auto";
+}
+
+/** 一条常驻审批规则。只能在审批卡片上产生，没有创建接口。 */
+export interface ApprovalRule {
+  id: string;
+  conversation_id: string;
+  scope: "conversation" | "schedule";
+  schedule_id: string | null;
+  tool: string;
+  match_kind: "tool" | "target" | "command_prefix";
+  target: string | null;
+  created_by: string;
+  revoked_at: string | null;
+  active: boolean;
+  created_at: string;
+}
+
+export interface WorkspaceTrustEntry {
+  canonical_path: string;
+  trusted: boolean;
+  declared: string[];
+  rejected: string[];
+  config_error: string | null;
 }
 
 export interface ConversationListResponse {
@@ -199,13 +206,6 @@ export function logoutAdmin(): Promise<void> {
   return requestVoid("/api/v1/auth/admin/logout", { method: "POST" });
 }
 
-export function createRun(body: CreateRunRequest): Promise<CreateRunResponse> {
-  return request<CreateRunResponse>("/api/v1/runs", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-}
-
 export function fetchConversations(archived = false): Promise<ConversationListResponse> {
   return request<ConversationListResponse>(
     `/api/v1/conversations?archived=${archived ? "true" : "false"}`,
@@ -260,27 +260,6 @@ export function fetchConversationContextUsage(
   );
 }
 
-export function createReviewRun(body: CreateReviewRunRequest): Promise<CreateRunResponse> {
-  return request<CreateRunResponse>("/api/v1/runs/reviews", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-}
-
-export function resumeRun(
-  runId: string,
-  body: ResumeRunRequest,
-): Promise<RunStatusResponse> {
-  return request<RunStatusResponse>(`/api/v1/runs/${runId}/resume`, {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-}
-
-export function getRun(runId: string): Promise<RunStatusResponse> {
-  return request<RunStatusResponse>(`/api/v1/runs/${runId}`);
-}
-
 export function cancelRun(runId: string): Promise<RunStatusResponse> {
   return request<RunStatusResponse>(`/api/v1/runs/${runId}/cancel`, { method: "POST" });
 }
@@ -296,6 +275,43 @@ export interface CoworkInteractionResponse {
   approved?: boolean;
   answer?: string;
   path?: string;
+  /**
+   * 记住这次批准的粒度。默认 once：漏传这个字段只授权这一次，不会留下常驻规则。
+   * command 只对没有 shell 操作符的命令有效；target 只对声明了目标字段的工具有效。
+   */
+  remember?: "once" | "tool" | "command" | "target";
+}
+
+export function fetchApprovalRules(conversationId: string): Promise<{ items: ApprovalRule[] }> {
+  return request<{ items: ApprovalRule[] }>(
+    `/api/v1/cowork/sessions/${conversationId}/approval-rules`,
+  );
+}
+
+export function revokeApprovalRule(conversationId: string, ruleId: string): Promise<void> {
+  return request<void>(
+    `/api/v1/cowork/sessions/${conversationId}/approval-rules/${ruleId}`,
+    { method: "DELETE" },
+  );
+}
+
+export function fetchWorkspaceTrust(
+  conversationId: string,
+): Promise<{ items: WorkspaceTrustEntry[] }> {
+  return request<{ items: WorkspaceTrustEntry[] }>(
+    `/api/v1/cowork/sessions/${conversationId}/workspace-trust`,
+  );
+}
+
+export function setWorkspaceTrust(
+  conversationId: string,
+  canonicalPath: string,
+  trusted: boolean,
+): Promise<{ items: WorkspaceTrustEntry[] }> {
+  return request<{ items: WorkspaceTrustEntry[] }>(
+    `/api/v1/cowork/sessions/${conversationId}/workspace-trust`,
+    { method: "PUT", body: JSON.stringify({ canonical_path: canonicalPath, trusted }) },
+  );
 }
 
 export function respondToCoworkInteraction(
@@ -327,7 +343,14 @@ export interface CreateCoworkRunRequest {
   attachment_ids?: string[];
   /** 计划模式：只放行只读工具，先出方案等你批准再动手。 */
   plan_mode?: boolean;
+  /** 开场界面选的玩法。与 plan_mode 正交：论文阅读也可以先出计划。 */
+  work_mode?: CoworkWorkMode;
+  /** 论文阅读模式下打开的文档路径；边界仍由每次工具调用的目录授权把关。 */
+  reading_path?: string | null;
 }
+
+/** 用户在开场界面选的那一档。后端 `app/cowork_contracts.py` 是同一份定义。 */
+export type CoworkWorkMode = "office" | "reading";
 
 export interface CoworkAttachment {
   id: string;
@@ -639,7 +662,7 @@ export interface ManagedSkill {
 }
 
 export interface SkillCandidate {
-  id: string;
+  // 候选的身份就是它的目录名；后端不再发 UUID。
   capability_key: string;
   suggested_name: string;
   description: string;
@@ -659,6 +682,7 @@ export interface SkillCandidatesResponse {
   auto_promotion_enabled: boolean;
   min_evidence: number;
   min_confidence: number;
+  source_path: string;
   items: SkillCandidate[];
 }
 
@@ -737,16 +761,16 @@ export function fetchSkillCandidates(): Promise<SkillCandidatesResponse> {
   return request<SkillCandidatesResponse>("/api/v1/integrations/skills/candidates");
 }
 
-export function promoteSkillCandidate(candidateId: string): Promise<SkillCandidate> {
+export function promoteSkillCandidate(capabilityKey: string): Promise<SkillCandidate> {
   return request<SkillCandidate>(
-    `/api/v1/integrations/skills/candidates/${encodeURIComponent(candidateId)}/promote`,
+    `/api/v1/integrations/skills/candidates/${encodeURIComponent(capabilityKey)}/promote`,
     { method: "POST" },
   );
 }
 
-export function rejectSkillCandidate(candidateId: string): Promise<SkillCandidate> {
+export function rejectSkillCandidate(capabilityKey: string): Promise<SkillCandidate> {
   return request<SkillCandidate>(
-    `/api/v1/integrations/skills/candidates/${encodeURIComponent(candidateId)}/reject`,
+    `/api/v1/integrations/skills/candidates/${encodeURIComponent(capabilityKey)}/reject`,
     { method: "POST" },
   );
 }
@@ -955,56 +979,6 @@ export function startConnectorOAuth(
   });
 }
 
-/** 资料库读模型，字段与后端 app/schemas/library.py 一一对应。 */
-export type DocumentState = "ready" | "parsing" | "failed" | "stale";
-
-export interface LibraryDocument {
-  document_id: string;
-  version_id: string | null;
-  title: string;
-  source_uri: string;
-  doc_type: string;
-  source_name: string;
-  source_kind: string;
-  source_editable: boolean;
-  state: DocumentState;
-  parser: string | null;
-  parse_error: string | null;
-  page_count: number | null;
-  block_count: number;
-  chunk_count: number;
-  searchable_chunk_count: number;
-  locatable: boolean;
-  version_no: number | null;
-  updated_at: string;
-}
-
-export interface LibrarySource {
-  id: string;
-  name: string;
-  kind: string;
-  sync_status: string;
-  sync_error: string | null;
-  document_count: number;
-  last_sync_at: string | null;
-}
-
-export interface LibraryResponse {
-  sources: LibrarySource[];
-  documents: LibraryDocument[];
-  totals: {
-    documents: number;
-    chunks: number;
-    searchable_chunks: number;
-    parsing: number;
-    failed: number;
-  };
-}
-
-export function fetchLibrary(query: string): Promise<LibraryResponse> {
-  const search = query.trim() === "" ? "" : `?query=${encodeURIComponent(query.trim())}`;
-  return request<LibraryResponse>(`/api/v1/library${search}`);
-}
 
 /** 办公工作台：权限按 owner session 限时授予，文件范围固定在已注册本地资料目录。 */
 export interface EditorPermission {
@@ -1172,33 +1146,6 @@ export interface CostTaskTypeUsage {
   prompt_cache_write_tokens: number;
 }
 
-export interface CostBatchSummary {
-  batch_id: string;
-  label: string;
-  tier: string;
-  model: string;
-  gpu_model: string | null;
-  node_count: number;
-  task_count: number;
-  total_tokens: number;
-  output_tokens: number;
-  wall_s: string;
-  gpu_s: string;
-  gpu_s_per_task: string;
-  tokens_per_task: number;
-  tasks_per_s: string;
-  tokens_per_s: string;
-  mean_concurrency: string;
-  client_occupancy: string;
-  price_usd_per_hour: string | null;
-  price_source: string | null;
-  cost_usd: string | null;
-  cost_per_task_usd: string | null;
-  cost_per_ktok_usd: string | null;
-  cost_status: string;
-  cost_reason: string | null;
-}
-
 export interface CostOverviewResponse {
   totals: {
     call_count: number;
@@ -1210,9 +1157,9 @@ export interface CostOverviewResponse {
     total_tokens: number;
     failed_count: number;
     fallback_count: number;
-    batch_count: number;
-    priced_batch_count: number;
-    unpriced_batch_count: number;
+    /** 有单价的调用条数与没单价的条数分列，避免把"缺价"读成"免费"。 */
+    priced_count: number;
+    unpriced_count: number;
     cost_usd: string | null;
     cost_status: string;
     window_from: string | null;
@@ -1220,7 +1167,6 @@ export interface CostOverviewResponse {
   };
   by_tier: CostTierUsage[];
   by_task_type: CostTaskTypeUsage[];
-  batches: CostBatchSummary[];
   undeployed_tiers: string[];
 }
 
@@ -1237,10 +1183,254 @@ export function syncSource(sourceId: string): Promise<unknown> {
   });
 }
 
-export function sourceFileUrl(versionId: string): string {
-  return `${API_BASE}/api/v1/documents/${encodeURIComponent(versionId)}/file`;
+/* ---- 阅读器面板 ---------------------------------------------------------- */
+
+export interface ReadingOutlineEntry {
+  locator: number;
+  title: string;
+  level: number;
+  /** 用每个 unit 首行凑的，不是文档自带的章节结构——只能当线索。 */
+  synthesised: boolean;
 }
 
-export function sourcePageUrl(versionId: string, pageNo: number): string {
-  return `${API_BASE}/api/v1/documents/${encodeURIComponent(versionId)}/pages/${pageNo}.png`;
+export interface ReadingMaterial {
+  path: string;
+  material_id: string;
+  filename: string;
+  title: string;
+  unit: "page" | "section";
+  unit_count: number;
+  parser: string;
+  /** 只有 PDF 能忠实渲染原页；其余格式显示抽取出来的文本。 */
+  has_page_image: boolean;
+  outline: ReadingOutlineEntry[];
+}
+
+export interface ReadingUnit {
+  locator: number;
+  unit: "page" | "section";
+  text: string;
+}
+
+export function fetchReadingMaterial(
+  conversationId: string,
+  path: string,
+): Promise<ReadingMaterial> {
+  return request<ReadingMaterial>(
+    `/api/v1/cowork/sessions/${conversationId}/reading/material?path=${encodeURIComponent(path)}`,
+  );
+}
+
+export function fetchReadingUnit(
+  conversationId: string,
+  path: string,
+  locator: number,
+): Promise<ReadingUnit> {
+  return request<ReadingUnit>(
+    `/api/v1/cowork/sessions/${conversationId}/reading/units/${locator}`
+      + `?path=${encodeURIComponent(path)}`,
+  );
+}
+
+/**
+ * 页面图地址。
+ *
+ * 带上 material_id 只为让 URL 随文件内容变化：它是内容哈希，文件一改 URL 就变，
+ * 浏览器缓存自然失效，后端才敢给这个响应挂长缓存。
+ */
+export function readingPageUrl(
+  conversationId: string,
+  path: string,
+  locator: number,
+  materialId: string,
+): string {
+  return `${API_BASE}/api/v1/cowork/sessions/${conversationId}/reading/pages/${locator}.png`
+    + `?path=${encodeURIComponent(path)}&v=${encodeURIComponent(materialId)}`;
+}
+
+
+/* ---- 消息面 ------------------------------------------------------------- */
+
+export interface InboxBinding {
+  id: string;
+  name: string;
+  platform: "feishu" | null;
+  chat_id: string | null;
+  connector_account_id: string | null;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface ChannelSubscription {
+  id: string;
+  conversation_id: string;
+  platform: "feishu";
+  chat_id: string;
+  connector_account_id: string | null;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+export interface UnroutedEntry {
+  id: string;
+  kind: "inbound" | "background_turn";
+  platform: "feishu" | null;
+  chat_id: string | null;
+  summary: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export function fetchInboxBindings(): Promise<{ items: InboxBinding[] }> {
+  return request<{ items: InboxBinding[] }>("/api/v1/messaging/inboxes");
+}
+
+export function upsertInboxBinding(
+  name: string,
+  body: {
+    platform: "feishu" | null;
+    chat_id: string | null;
+    connector_account_id?: string | null;
+    enabled?: boolean;
+  },
+): Promise<InboxBinding> {
+  return request<InboxBinding>(`/api/v1/messaging/inboxes/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: JSON.stringify({ enabled: true, connector_account_id: null, ...body }),
+  });
+}
+
+export function deleteInboxBinding(name: string): Promise<void> {
+  return request<void>(`/api/v1/messaging/inboxes/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+export function fetchChannelSubscriptions(
+  conversationId: string,
+): Promise<{ items: ChannelSubscription[] }> {
+  return request<{ items: ChannelSubscription[] }>(
+    `/api/v1/messaging/sessions/${conversationId}/subscriptions`,
+  );
+}
+
+export function subscribeChannel(
+  conversationId: string,
+  body: { platform: "feishu"; chat_id: string },
+): Promise<ChannelSubscription> {
+  return request<ChannelSubscription>(
+    `/api/v1/messaging/sessions/${conversationId}/subscriptions`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function unsubscribeChannel(conversationId: string, subscriptionId: string): Promise<void> {
+  return request<void>(
+    `/api/v1/messaging/sessions/${conversationId}/subscriptions/${subscriptionId}`,
+    { method: "DELETE" },
+  );
+}
+
+export function fetchUnrouted(limit = 50): Promise<{ items: UnroutedEntry[] }> {
+  return request<{ items: UnroutedEntry[] }>(`/api/v1/messaging/unrouted?limit=${limit}`);
+}
+
+/* ── 本地知识库 ─────────────────────────────────────────────────────────── */
+
+export interface KnowledgeBaseDocument {
+  doc_id: string;
+  filename: string;
+  title: string;
+  parser: string;
+  char_count: number;
+}
+
+export interface KnowledgeBase {
+  slug: string;
+  name: string;
+  description: string;
+  document_count: number;
+  /** 没建过索引、或建到一半失败的库都是 false。挂载允许，但检索会要求先重建。 */
+  is_indexed: boolean;
+  /** 用哪个 embedding 建的。换模型后会和当前配置对不上，检索随即拒绝服务。 */
+  embedding: string | null;
+  documents: KnowledgeBaseDocument[];
+}
+
+export interface KnowledgeBaseIndexingJob {
+  slug: string;
+  status: "running" | "done" | "failed";
+  /** 正在做什么：「解析 attention.pdf」「建立索引」。 */
+  stage: string;
+  done: number;
+  total: number;
+  added: number;
+  error: string | null;
+  skipped: Array<{ filename: string; reason: string }>;
+}
+
+export function fetchKnowledgeBases(): Promise<{ items: KnowledgeBase[] }> {
+  return request<{ items: KnowledgeBase[] }>("/api/v1/cowork/knowledge-bases");
+}
+
+export function createKnowledgeBase(body: {
+  slug: string;
+  name: string;
+  description: string;
+}): Promise<KnowledgeBase> {
+  return request<KnowledgeBase>("/api/v1/cowork/knowledge-bases", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteKnowledgeBase(slug: string): Promise<void> {
+  return requestVoid(`/api/v1/cowork/knowledge-bases/${encodeURIComponent(slug)}`, {
+    method: "DELETE",
+  });
+}
+
+/** 立刻返回作业状态；解析与 embedding 在后台跑，用 fetchKnowledgeBaseIndexing 轮询。 */
+export function addKnowledgeBaseDocuments(
+  slug: string,
+  paths: string[],
+): Promise<KnowledgeBaseIndexingJob> {
+  return request<KnowledgeBaseIndexingJob>(
+    `/api/v1/cowork/knowledge-bases/${encodeURIComponent(slug)}/documents`,
+    { method: "POST", body: JSON.stringify({ paths }) },
+  );
+}
+
+export function rebuildKnowledgeBase(slug: string): Promise<KnowledgeBaseIndexingJob> {
+  return request<KnowledgeBaseIndexingJob>(
+    `/api/v1/cowork/knowledge-bases/${encodeURIComponent(slug)}/rebuild`,
+    { method: "POST" },
+  );
+}
+
+export function fetchKnowledgeBaseIndexing(
+  slug: string,
+): Promise<KnowledgeBaseIndexingJob | null> {
+  return request<KnowledgeBaseIndexingJob | null>(
+    `/api/v1/cowork/knowledge-bases/${encodeURIComponent(slug)}/indexing`,
+  );
+}
+
+export function fetchSessionKnowledgeBase(
+  conversationId: string,
+): Promise<{ slug: string | null }> {
+  return request<{ slug: string | null }>(
+    `/api/v1/cowork/sessions/${conversationId}/knowledge-base`,
+  );
+}
+
+/** `slug: null` 卸载。 */
+export function setSessionKnowledgeBase(
+  conversationId: string,
+  slug: string | null,
+): Promise<{ slug: string | null }> {
+  return request<{ slug: string | null }>(
+    `/api/v1/cowork/sessions/${conversationId}/knowledge-base`,
+    { method: "PUT", body: JSON.stringify({ slug }) },
+  );
 }

@@ -178,6 +178,31 @@ def test_retained_tools_survive_even_beyond_max_tools() -> None:
     assert retained <= names
 
 
+def test_tool_catalog_order_does_not_depend_on_retained_set_iteration_order() -> None:
+    """同一组工具必须排出同一个顺序。
+
+    `retained_tools` 常常是 frozenset，而字符串哈希逐进程随机化——不排序的话，同一个
+    会话在不同 worker 进程里会拿到顺序不同的 tool schema 数组。provider 的 prompt
+    cache 按前缀命中，数组一变前缀就作废，`prompt_cache_key` 也会落到另一个分区。
+    """
+
+    registry = build_default_cowork_registry()
+    register_browser_tools(registry)
+    register_connector_tools(registry)
+    retained = ["browser_click", "act_connector_api", "edit_excel", "browser_type"]
+
+    forward = [
+        item.name for item in registry.tool_definitions_for("继续任务", retained_tools=retained)
+    ]
+    backward = [
+        item.name
+        for item in registry.tool_definitions_for("继续任务", retained_tools=list(reversed(retained)))
+    ]
+
+    assert forward == backward
+    assert set(retained) <= set(forward)
+
+
 def test_runtime_snapshot_ignores_activated_tools_missing_from_new_registry() -> None:
     registry = build_default_cowork_registry()
     registry.restore_runtime_snapshot(

@@ -12,14 +12,22 @@ from uuid import UUID
 from app.agent_core.contracts import InvocationLease, RunEvent, RunRecord, WorkflowType
 from app.cowork_contracts import (
     AccessMode,
+    ApprovalMatchKind,
+    ApprovalMode,
+    ApprovalRuleRecord,
+    ApprovalRuleScope,
     ArtifactKind,
     ArtifactRecord,
     Capability,
     CapabilityGrantRecord,
+    ChannelSubscriptionRecord,
     CoworkAttachmentRecord,
     CoworkMemoryRecord,
+    InboxBindingRecord,
     InboxRecord,
     InteractionKind,
+    MemoryCategory,
+    MemoryExtractionJob,
     MemoryScope,
     PathAuthorization,
     ScheduleKind,
@@ -27,6 +35,8 @@ from app.cowork_contracts import (
     ScheduleView,
     SessionRootRecord,
     SteeringRecord,
+    ThreadSessionRecord,
+    UnroutedRecord,
 )
 
 
@@ -60,6 +70,8 @@ class CoworkStore(Protocol):
         title_source: str,
     ) -> int: ...
 
+    async def list_streaming_message_ids(self, *, run_id: UUID) -> list[UUID]: ...
+
     async def update_message_status(self, *, record_id: UUID, status: str) -> None: ...
 
     async def get_message_conversation_id(self, *, record_id: UUID) -> UUID | None: ...
@@ -83,6 +95,7 @@ class CoworkStore(Protocol):
         provider_profile_id: UUID | None,
         model_override: str | None,
         unattended: bool,
+        approval_mode: ApprovalMode,
     ) -> bool: ...
 
     async def delete_conversation(self, *, conversation_id: UUID) -> bool: ...
@@ -192,6 +205,108 @@ class CoworkStore(Protocol):
 
     async def revoke_capability_grant(self, *, conversation_id: UUID, grant_id: UUID) -> bool: ...
 
+    async def upsert_inbox_binding(
+        self,
+        *,
+        name: str,
+        platform: str | None,
+        chat_id: str | None,
+        connector_account_id: UUID | None,
+        enabled: bool,
+    ) -> InboxBindingRecord: ...
+
+    async def get_inbox_binding(self, *, name: str) -> InboxBindingRecord | None: ...
+
+    async def list_inbox_bindings(self) -> list[InboxBindingRecord]: ...
+
+    async def delete_inbox_binding(self, *, name: str) -> bool: ...
+
+    async def set_conversation_inbox(
+        self, *, conversation_id: UUID, inbox_name: str | None
+    ) -> bool: ...
+
+    async def get_conversation_inbox(self, *, conversation_id: UUID) -> str | None: ...
+
+    async def set_conversation_kb(
+        self, *, conversation_id: UUID, kb_slug: str | None
+    ) -> bool: ...
+
+    async def get_conversation_kb(self, *, conversation_id: UUID) -> str | None: ...
+
+    async def set_inbox_delivery_ref(self, *, item_id: UUID, delivery_ref: str) -> None: ...
+
+    async def get_inbox_item_by_id(self, *, item_id: UUID) -> InboxRecord | None: ...
+
+    async def create_channel_subscription(
+        self,
+        *,
+        conversation_id: UUID,
+        platform: str,
+        chat_id: str,
+        connector_account_id: UUID | None,
+    ) -> ChannelSubscriptionRecord: ...
+
+    async def list_channel_subscriptions(
+        self, *, conversation_id: UUID | None = None, channel: tuple[str, str] | None = None
+    ) -> list[ChannelSubscriptionRecord]: ...
+
+    async def revoke_channel_subscription(
+        self, *, conversation_id: UUID, subscription_id: UUID
+    ) -> bool: ...
+
+    async def upsert_thread_session(
+        self,
+        *,
+        target: str,
+        conversation_id: UUID,
+        platform: str,
+        chat_id: str,
+        thread_id: str,
+    ) -> ThreadSessionRecord: ...
+
+    async def get_thread_session(self, *, target: str) -> ThreadSessionRecord | None: ...
+
+    async def list_thread_sessions(
+        self, *, conversation_id: UUID
+    ) -> list[ThreadSessionRecord]: ...
+
+    async def record_unrouted(
+        self,
+        *,
+        kind: str,
+        platform: str | None,
+        chat_id: str | None,
+        summary: str,
+        payload: dict[str, Any],
+        keep: int,
+    ) -> UnroutedRecord: ...
+
+    async def list_unrouted(self, *, limit: int) -> list[UnroutedRecord]: ...
+
+    async def set_workspace_trust(self, *, canonical_path: str, trusted: bool) -> bool: ...
+
+    async def is_workspace_trusted(self, *, canonical_path: str) -> bool: ...
+
+    async def list_workspace_trust(self) -> list[str]: ...
+
+    async def create_approval_rule(
+        self,
+        *,
+        conversation_id: UUID,
+        tool: str,
+        match_kind: ApprovalMatchKind,
+        target: str | None,
+        scope: ApprovalRuleScope,
+        schedule_id: UUID | None,
+        created_by: str,
+    ) -> ApprovalRuleRecord: ...
+
+    async def list_approval_rules(
+        self, *, conversation_id: UUID, include_revoked: bool = False
+    ) -> list[ApprovalRuleRecord]: ...
+
+    async def revoke_approval_rule(self, *, conversation_id: UUID, rule_id: UUID) -> bool: ...
+
     async def authorize_capability(
         self, *, conversation_id: UUID, capability: Capability
     ) -> CapabilityGrantRecord: ...
@@ -215,6 +330,8 @@ class CoworkStore(Protocol):
     ) -> ArtifactRecord: ...
 
     async def list_artifacts(self, *, conversation_id: UUID) -> list[ArtifactRecord]: ...
+
+    async def list_run_artifacts(self, *, run_id: UUID) -> list[ArtifactRecord]: ...
 
     async def resolve_artifact_file(
         self, *, artifact_id: UUID
@@ -285,6 +402,12 @@ class CoworkStore(Protocol):
         key: str | None,
         content: str,
         source: Literal["agent", "user"],
+        category: MemoryCategory = "fact",
+        confidence: float = 1.0,
+        pinned: bool = False,
+        valid_from: datetime | None = None,
+        source_message_id: UUID | None = None,
+        run_id: UUID | None = None,
     ) -> tuple[CoworkMemoryRecord, CoworkMemoryRecord | None]: ...
 
     async def update_cowork_memory(
@@ -303,6 +426,51 @@ class CoworkStore(Protocol):
         include_forgotten: bool,
         limit: int,
     ) -> list[CoworkMemoryRecord]: ...
+
+    async def supersede_cowork_memory(
+        self, *, memory_id: UUID, successor_id: UUID | None, invalid_at: datetime
+    ) -> CoworkMemoryRecord | None: ...
+
+    async def set_cowork_memory_pinned(
+        self, *, memory_id: UUID, pinned: bool
+    ) -> CoworkMemoryRecord | None: ...
+
+    async def touch_cowork_memories(self, *, memory_ids: list[UUID]) -> None: ...
+
+    async def list_cowork_memories_by_validity(
+        self, *, active: bool, limit: int
+    ) -> list[CoworkMemoryRecord]: ...
+
+    # 记忆抽取作业
+    async def schedule_memory_extraction(
+        self,
+        *,
+        run_id: UUID,
+        conversation_id: UUID | None,
+        source_message_id: UUID | None,
+        content: str,
+        source_created_at: datetime,
+    ) -> MemoryExtractionJob | None: ...
+
+    async def claim_memory_job(
+        self, *, job_id: UUID, worker_id: str, lease_s: int, max_attempts: int
+    ) -> MemoryExtractionJob | None: ...
+
+    async def complete_memory_job(self, *, job_id: UUID, worker_id: str) -> bool: ...
+
+    async def retry_or_fail_memory_job(
+        self,
+        *,
+        job_id: UUID,
+        worker_id: str,
+        error: str,
+        max_attempts: int,
+        retry_delay_s: int,
+    ) -> str | None: ...
+
+    async def list_dispatchable_memory_jobs(
+        self, *, max_attempts: int, limit: int = 100
+    ) -> list[tuple[UUID, int]]: ...
 
     # scheduler
     async def create_schedule(
@@ -340,6 +508,8 @@ class CoworkStore(Protocol):
         status: str,
     ) -> None: ...
 
+    async def list_plan_steps(self, *, run_id: UUID) -> list[dict[str, Any]]: ...
+
     async def update_plan_step_status(
         self, *, run_id: UUID, step_id: UUID, status: str
     ) -> None: ...
@@ -364,6 +534,12 @@ class CoworkStore(Protocol):
     ) -> UUID: ...
 
     async def set_run_waiting_human(self, *, run_id: UUID, worker_id: str) -> bool: ...
+
+    async def set_run_sleeping(
+        self, *, run_id: UUID, worker_id: str, wake_at: datetime
+    ) -> bool: ...
+
+    async def claim_due_sleeping_runs(self, *, now: datetime, limit: int) -> list[UUID]: ...
 
     async def requeue_waiting_run(self, *, run_id: UUID) -> bool: ...
 

@@ -23,7 +23,9 @@ async def test_valid_incoming_trace_id_is_preserved() -> None:
 
 
 @pytest.mark.integration
-async def test_ready_checks_postgres_and_redis() -> None:
+async def test_ready_checks_the_database() -> None:
+    """Redis 已退役，就绪探针只剩数据库一个依赖。"""
+
     transport = httpx.ASGITransport(app=create_app())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/health/ready")

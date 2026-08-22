@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { fetchRunEventLog } from "./api";
 import {
+  type ApprovalWaivedPayload,
   type ArtifactPayload,
   type CoworkToolCatalogEntry,
   type ErrorPayload,
@@ -13,8 +14,10 @@ import {
   type MessageDeltaPayload,
   type PlanPayload,
   type RunDonePayload,
+  type RunSleepingPayload,
   type StepUpdatePayload,
   type StreamEnvelope,
+  type ReadingGotoPayload,
   type TodoItem,
   type TodoUpdatePayload,
   type ToolEventPayload,
@@ -26,6 +29,7 @@ export type CoworkRunPhase =
   | "connecting"
   | "executing"
   | "waiting_human"
+  | "sleeping"
   | "done"
   | "budget_exceeded"
   | "cancelled"
@@ -60,7 +64,21 @@ export interface CoworkRunView {
    * 同一条记忆被反复改写时只保留最后一次——撤销要还原到运行开始前的状态。
    */
   memoryWrites: MemorySavedPayload[];
+  /**
+   * 模型最近一次把阅读器带到哪里。只保留最后一次而不是累积成列表：面板同一时刻只能
+   * 显示一个位置，攒一串历史只会让"现在该显示哪一个"变成一个需要额外规则的问题。
+   * `seq` 让面板能区分"同一处又跳了一次"和"没有新跳转"——两次跳到同一页时对象内容
+   * 完全相同，没有它 useEffect 不会重跑。
+   */
+  readerJump: (ReadingGotoPayload & { seq: number }) | null;
   interrupt: InterruptPayload | null;
+  /**
+   * 本次运行里被免审批放行的调用。要在时间线上看得见——否则用户只会看到一条命令
+   * 凭空执行了，也无从判断该去撤销哪条规则。
+   */
+  waivedApprovals: ApprovalWaivedPayload[];
+  /** 休眠到期时间；非 null 表示 run 已挂起，到点会自己继续，用户无需操作。 */
+  sleepingUntil: string | null;
   error: string | null;
 }
 
@@ -74,7 +92,10 @@ const EMPTY: CoworkRunView = {
   artifactEvents: [],
   todos: [],
   memoryWrites: [],
+  readerJump: null,
   interrupt: null,
+  waivedApprovals: [],
+  sleepingUntil: null,
   error: null,
 };
 
@@ -172,6 +193,22 @@ function applyEvent(state: CoworkRunView, envelope: StreamEnvelope): CoworkRunVi
           data.status === "rejected"
             ? "用户未批准这项请求，Cowork 正在调整方案。"
             : state.progressSummary ?? "",
+      };
+    }
+    case "approval.waived": {
+      const data = envelope.data as ApprovalWaivedPayload;
+      return { ...next, waivedApprovals: [...state.waivedApprovals, data] };
+    }
+    case "run.sleeping": {
+      const data = envelope.data as RunSleepingPayload;
+      return { ...next, phase: "sleeping", sleepingUntil: data.wake_at };
+    }
+    case "reading.goto": {
+      const data = envelope.data as ReadingGotoPayload;
+      return {
+        ...next,
+        phase: "executing",
+        readerJump: { ...data, seq: (state.readerJump?.seq ?? 0) + 1 },
       };
     }
     case "memory.saved": {

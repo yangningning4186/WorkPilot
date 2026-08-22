@@ -1,8 +1,13 @@
 """精确缓存（docs/07 §6 第一层）。
 
 命中率注定不高——同一个人不会逐字重复提问。但它的成本是**零**：命中就省下一整次
-推理，没命中只多一次 Redis GET。§6 里真正危险的是语义缓存（相似 query 不等于
+推理，没命中只多一次进程内字典查找。§6 里真正危险的是语义缓存（相似 query 不等于
 相同意图，`"A 的优点"` 和 `"A 的缺点"` 向量相似度很高），那一层在 Backlog，这里不做。
+
+实现是**进程内 LRU + TTL**，不是 Redis。原来那句"成本是零"建立在 Redis 反正已经
+为队列跑着的前提上；队列改成进程内之后，为一个明知命中率低的优化项单养一个外部
+依赖（或者一个 SQLite 库文件）就不再是零成本了。代价是重启即失效——对一个每天用
+几十次的本机工具，这跟 24 小时 TTL 的实际差别很小。
 
 四条不缓存的硬规则：
 
@@ -20,15 +25,12 @@
 
 import hashlib
 import json
+import threading
+from collections import OrderedDict
+from time import monotonic
 from typing import Protocol
 
-import structlog
-from redis.asyncio import Redis
-from redis.exceptions import RedisError
-
-from workpilot_ai.types import CompletionResult, Message, Usage
-
-logger = structlog.get_logger(__name__)
+from workpilot_ai.types import CompletionResult, Message
 
 
 class CompletionCache(Protocol):
@@ -81,62 +83,61 @@ def is_cacheable(*, temperature: float, mode: str) -> bool:
     return temperature == 0.0 and mode != "evaluation"
 
 
-class RedisCompletionCache:
-    """Redis 实现。缓存不可用时一律降级成"未命中"，绝不让它挡住主链路。"""
+class InProcessCompletionCache:
+    """进程内 LRU + TTL。
 
-    def __init__(self, client: Redis, *, prefix: str = "workpilot:llm-cache") -> None:
-        self._client = client
-        self._prefix = prefix
+    **必须是进程级单例**（见 `shared_completion_cache`）。每次建网关都新建一个，
+    等于每次都是空缓存——那不是"命中率低"，是恒不命中，而调用方无从察觉。
 
-    def _key(self, key: str) -> str:
-        return f"{self._prefix}:{key}"
+    存 `CompletionResult` 对象本身，不做 JSON 往返：它是 frozen dataclass，取出来
+    改不动，序列化只是白花开销。顺带没有了"换了序列化格式的旧条目"那类脏数据——
+    进程重启就没有旧条目。
+
+    LRU 上限是必须的：Redis 有 maxmemory 策略兜底，进程内没有，不封顶就是一条
+    随运行时长单调增长的内存曲线。
+    """
+
+    def __init__(self, *, max_entries: int = 512) -> None:
+        if max_entries < 1:
+            raise ValueError("max_entries 必须为正")
+        self._max_entries = max_entries
+        self._entries: OrderedDict[str, tuple[float, CompletionResult]] = OrderedDict()
+        self._lock = threading.Lock()
 
     async def get(self, key: str) -> CompletionResult | None:
-        try:
-            raw = await self._client.get(self._key(key))
-        except RedisError as error:
-            # 缓存是纯优化。Redis 抖一下就让问答失败, 是把可用性押在优化项上。
-            logger.warning("精确缓存读取失败, 按未命中继续", error=str(error))
-            return None
-        if raw is None:
-            return None
-        try:
-            payload = json.loads(raw)
-            return CompletionResult(
-                text=payload["text"],
-                model=payload["model"],
-                provider=payload["provider"],
-                usage=Usage(
-                    input_tokens=int(payload["input_tokens"]),
-                    output_tokens=int(payload["output_tokens"]),
-                    prompt_cache_read_tokens=int(
-                        payload.get("prompt_cache_read_tokens", 0)
-                    ),
-                    prompt_cache_write_tokens=int(
-                        payload.get("prompt_cache_write_tokens", 0)
-                    ),
-                ),
-            )
-        except (ValueError, KeyError, TypeError) as error:
-            # 换了序列化格式的旧条目: 当作未命中, 不要让脏数据传染到答案里。
-            logger.warning("精确缓存条目无法解析, 按未命中继续", error=str(error))
-            return None
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            expires_at, result = entry
+            if expires_at <= monotonic():
+                # 过期条目顺手删掉：这是唯一的清扫时机，没有后台线程扫它。
+                del self._entries[key]
+                return None
+            self._entries.move_to_end(key)
+            return result
 
     async def set(self, key: str, result: CompletionResult, *, ttl_s: int) -> None:
-        payload = json.dumps(
-            {
-                "text": result.text,
-                "model": result.model,
-                "provider": result.provider,
-                "input_tokens": result.usage.input_tokens,
-                "output_tokens": result.usage.output_tokens,
-                "prompt_cache_read_tokens": result.usage.prompt_cache_read_tokens,
-                "prompt_cache_write_tokens": result.usage.prompt_cache_write_tokens,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        try:
-            await self._client.set(self._key(key), payload, ex=ttl_s)
-        except RedisError as error:
-            logger.warning("精确缓存写入失败, 忽略", error=str(error))
+        with self._lock:
+            self._entries[key] = (monotonic() + ttl_s, result)
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+
+_shared: InProcessCompletionCache | None = None
+_shared_lock = threading.Lock()
+
+
+def shared_completion_cache(*, max_entries: int = 512) -> InProcessCompletionCache:
+    """进程内唯一实例。首次调用决定容量，之后的 max_entries 被忽略。"""
+
+    global _shared
+    with _shared_lock:
+        if _shared is None:
+            _shared = InProcessCompletionCache(max_entries=max_entries)
+    return _shared

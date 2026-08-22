@@ -5,7 +5,6 @@ from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.cowork import require_cowork_enabled
 from app.api.dependencies import (
@@ -14,6 +13,7 @@ from app.api.dependencies import (
     require_owner_identity,
 )
 from app.core.config import Settings, get_settings
+from app.core.db import DbSession as AsyncSession
 from app.core.db import get_db_session
 from app.core.queue import RunQueue
 from app.core.run_bus import RunBus
@@ -37,7 +37,6 @@ from app.cowork.schedules import (
     run_schedule_now,
     update_schedule,
 )
-from app.platform.request_identity import RequestIdentity
 from app.runstore.runs import ensure_conversation, get_run
 from app.schemas.automations import (
     ScheduleCreate,
@@ -55,7 +54,7 @@ router = APIRouter(
     dependencies=[Depends(require_owner_identity), Depends(require_cowork_enabled)],
 )
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
-Owner = Annotated[RequestIdentity, Depends(require_owner_identity)]
+Owner = Annotated[None, Depends(require_owner_identity)]
 logger = structlog.get_logger(__name__)
 
 
@@ -102,15 +101,13 @@ async def get_automations(
 async def post_automation(
     request: ScheduleCreate,
     session: DbSession,
-    owner: Owner,
+    _: Owner,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ScheduleResponse:
     try:
         conversation_id = await ensure_conversation(
             session,
             conversation_id=request.conversation_id,
-            scope=owner.scope,
-            demo_session_id=owner.demo_session_id,
             title=request.title if request.conversation_id is None else None,
         )
         workspace: SessionRootRecord | None

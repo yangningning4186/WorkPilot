@@ -5,13 +5,11 @@ from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import require_owner_identity
 from app.core.config import Settings, get_settings
-from app.core.db import get_db_session
 from app.cowork.connectors import (
+    ConnectorNameTakenError,
     create_connector_account,
     delete_connector_account,
     get_connector_account,
@@ -35,7 +33,6 @@ router = APIRouter(
     dependencies=[Depends(require_owner_identity)],
 )
 callback_router = APIRouter(prefix="/api/v1/connectors", tags=["connectors"])
-DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 RuntimeSettings = Annotated[Settings, Depends(get_settings)]
 
 
@@ -51,58 +48,51 @@ def _store(settings: Settings) -> LocalSecretStore:
 
 
 @router.get("", response_model=ConnectorAccountListResponse)
-async def get_connectors(session: DbSession) -> ConnectorAccountListResponse:
-    items = await list_connector_accounts(session)
+def get_connectors(settings: RuntimeSettings) -> ConnectorAccountListResponse:
+    items = list_connector_accounts(settings)
     return ConnectorAccountListResponse(items=[_response(item.public()) for item in items])
 
 
 @router.post("", response_model=ConnectorAccountResponse, status_code=status.HTTP_201_CREATED)
-async def post_connector(
+def post_connector(
     request: ConnectorAccountCreate,
-    session: DbSession,
     settings: RuntimeSettings,
 ) -> ConnectorAccountResponse:
     try:
-        created = await create_connector_account(
-            session,
+        created = create_connector_account(
+            settings,
             **request.model_dump(),
             secret_store=_store(settings),
         )
-        await session.commit()
-    except IntegrityError as error:
-        await session.rollback()
+    except ConnectorNameTakenError as error:
         raise HTTPException(status_code=409, detail="同类连接器名称已存在") from error
     return _response(created.public())
 
 
 @router.patch("/{account_id}", response_model=ConnectorAccountResponse)
-async def patch_connector(
+def patch_connector(
     account_id: UUID,
     request: ConnectorAccountUpdate,
-    session: DbSession,
     settings: RuntimeSettings,
 ) -> ConnectorAccountResponse:
     try:
-        updated = await update_connector_account(
-            session,
+        updated = update_connector_account(
+            settings,
             account_id=account_id,
             changes=request.model_dump(exclude_unset=True),
             secret_store=_store(settings),
         )
-        if updated is None:
-            raise HTTPException(status_code=404, detail="连接器不存在")
-        await session.commit()
-    except IntegrityError as error:
-        await session.rollback()
+    except ConnectorNameTakenError as error:
         raise HTTPException(status_code=409, detail="同类连接器名称已存在") from error
+    if updated is None:
+        raise HTTPException(status_code=404, detail="连接器不存在")
     return _response(updated.public())
 
 
 @router.delete("/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_connector_route(account_id: UUID, session: DbSession) -> Response:
-    if not await delete_connector_account(session, account_id):
+def delete_connector_route(account_id: UUID, settings: RuntimeSettings) -> Response:
+    if not delete_connector_account(settings, account_id):
         raise HTTPException(status_code=404, detail="连接器不存在")
-    await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -110,22 +100,22 @@ async def delete_connector_route(account_id: UUID, session: DbSession) -> Respon
 async def post_oauth_start(
     account_id: UUID,
     request: OAuthStartRequest,
-    session: DbSession,
+    settings: RuntimeSettings,
 ) -> OAuthStartResponse:
-    account = await get_connector_account(session, account_id)
+    account = get_connector_account(settings, account_id)
     if account is None or not account.enabled:
         raise HTTPException(status_code=404, detail="连接器不存在或已停用")
     try:
-        result = await begin_oauth(session, account=account, redirect_uri=request.redirect_uri)
+        result = await begin_oauth(
+            settings=settings, account=account, redirect_uri=request.redirect_uri
+        )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    await session.commit()
     return OAuthStartResponse.model_validate(result, from_attributes=True)
 
 
 @callback_router.get("/oauth/callback", response_model=ConnectorAccountResponse)
 async def get_oauth_callback(
-    session: DbSession,
     settings: RuntimeSettings,
     state_value: Annotated[str, Query(alias="state", min_length=32, max_length=256)],
     code: Annotated[str | None, Query(max_length=4096)] = None,
@@ -137,19 +127,16 @@ async def get_oauth_callback(
         raise HTTPException(status_code=422, detail="OAuth 回调缺少 code")
     try:
         account = await complete_oauth(
-            session,
+            settings=settings,
             state=state_value,
             code=code,
             secret_store=_store(settings),
             timeout_s=settings.cowork_web_timeout_s,
             trust_env=False,
         )
-        await session.commit()
     except ValueError as exchange_error:
-        await session.commit()
         raise HTTPException(status_code=422, detail=str(exchange_error)) from exchange_error
     except httpx.HTTPError as exchange_error:
-        await session.commit()
         raise HTTPException(
             status_code=502, detail="OAuth 服务请求失败，请检查网络后重试"
         ) from exchange_error

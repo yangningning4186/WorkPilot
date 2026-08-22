@@ -17,16 +17,9 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.agent_core.contracts import InvocationLease
-from app.agent_core.idempotency import (
-    InvocationInFlightError,
-    canonical_json,
-    invocation_identity,
-)
-from app.cowork_store.routing import configured_cowork_store
+from app.core.db import DbSession as AsyncSession
+from app.cowork_store.routing import cowork_store
 
 
 async def acquire_invocation(
@@ -43,105 +36,15 @@ async def acquire_invocation(
 
     if lease_s <= 0:
         raise ValueError("副作用租约必须大于 0 秒")
-    store = configured_cowork_store()
-    if store is not None and await store.get_run(run_id) is not None:
-        return await store.acquire_invocation(
-            run_id=run_id,
-            plan_step_id=plan_step_id,
-            tool_name=tool_name,
-            args=args,
-            worker_id=worker_id,
-            lease_s=lease_s,
-        )
-    key, args_hash = invocation_identity(
+    store = cowork_store()
+    return await store.acquire_invocation(
         run_id=run_id,
         plan_step_id=plan_step_id,
         tool_name=tool_name,
         args=args,
+        worker_id=worker_id,
+        lease_s=lease_s,
     )
-    inserted = (
-        await session.execute(
-            text(
-                """
-                INSERT INTO tool_invocations
-                    (idempotency_key, run_id, tool_name, args_hash, status,
-                     lease_owner, lease_until)
-                VALUES
-                    (:key, :run_id, :tool_name, :args_hash, 'in_flight',
-                     :worker_id, now() + make_interval(secs => :lease_s))
-                ON CONFLICT (idempotency_key) DO NOTHING
-                RETURNING idempotency_key
-                """
-            ),
-            {
-                "key": key,
-                "run_id": run_id,
-                "tool_name": tool_name,
-                "args_hash": args_hash,
-                "worker_id": worker_id,
-                "lease_s": lease_s,
-            },
-        )
-    ).scalar_one_or_none()
-    if inserted is not None:
-        return InvocationLease(key, acquired=True)
-
-    recovered = (
-        (
-            await session.execute(
-                text(
-                    """
-                    UPDATE tool_invocations
-                    SET status = 'in_flight', lease_owner = :worker_id,
-                        lease_until = now() + make_interval(secs => :lease_s),
-                        retry_count = retry_count + 1, result = NULL,
-                        completed_at = NULL, updated_at = now()
-                    WHERE idempotency_key = :key AND args_hash = :args_hash
-                      AND (status = 'failed'
-                           OR (status = 'in_flight' AND lease_until < now()))
-                    RETURNING idempotency_key
-                    """
-                ),
-                {
-                    "key": key,
-                    "args_hash": args_hash,
-                    "worker_id": worker_id,
-                    "lease_s": lease_s,
-                },
-            )
-        )
-        .mappings()
-        .one_or_none()
-    )
-    if recovered is not None:
-        return InvocationLease(key, acquired=True)
-
-    existing = (
-        (
-            await session.execute(
-                text(
-                    """
-                    SELECT args_hash, status, result, effect_ref
-                    FROM tool_invocations WHERE idempotency_key = :key
-                    """
-                ),
-                {"key": key},
-            )
-        )
-        .mappings()
-        .one()
-    )
-    if str(existing["args_hash"]) != args_hash:  # pragma: no cover - SHA-256 collision
-        raise RuntimeError("幂等键碰撞：已有调用的参数摘要不同")
-    if existing["status"] == "succeeded":
-        result = existing["result"]
-        return InvocationLease(
-            key,
-            acquired=False,
-            result=result if isinstance(result, dict) else None,
-            effect_ref=None if existing["effect_ref"] is None else str(existing["effect_ref"]),
-        )
-    raise InvocationInFlightError("相同工具调用正在执行，请稍后重试")
 
 
 async def complete_invocation(
@@ -152,57 +55,16 @@ async def complete_invocation(
     result: dict[str, Any],
     effect_ref: str,
 ) -> None:
-    store = configured_cowork_store()
-    if store is not None and await store.has_invocation(key=key):
-        await store.complete_invocation(
-            key=key, worker_id=worker_id, result=result, effect_ref=effect_ref
-        )
-        return
-    completed = (
-        await session.execute(
-            text(
-                """
-                UPDATE tool_invocations
-                SET status = 'succeeded', result = CAST(:result AS jsonb),
-                    effect_ref = :effect_ref, lease_owner = NULL, lease_until = NULL,
-                    completed_at = now(), updated_at = now()
-                WHERE idempotency_key = :key AND status = 'in_flight'
-                  AND lease_owner = :worker_id
-                RETURNING idempotency_key
-                """
-            ),
-            {
-                "key": key,
-                "worker_id": worker_id,
-                "result": canonical_json(result),
-                "effect_ref": effect_ref,
-            },
-        )
-    ).scalar_one_or_none()
-    if completed is None:
-        raise InvocationInFlightError("工具调用租约已被其他 worker 接管")
+    store = cowork_store()
+    await store.complete_invocation(
+        key=key, worker_id=worker_id, result=result, effect_ref=effect_ref
+    )
+    return
 
 
 async def fail_invocation(session: AsyncSession, *, key: str, worker_id: str, error: str) -> None:
-    store = configured_cowork_store()
-    if store is not None and await store.has_invocation(key=key):
-        await store.fail_invocation(key=key, worker_id=worker_id, error=error)
-        return
-    await session.execute(
-        text(
-            """
-            UPDATE tool_invocations
-            SET status = 'failed', result = CAST(:result AS jsonb),
-                lease_owner = NULL, lease_until = NULL, updated_at = now()
-            WHERE idempotency_key = :key AND status = 'in_flight'
-              AND lease_owner = :worker_id
-            """
-        ),
-        {
-            "key": key,
-            "worker_id": worker_id,
-            "result": canonical_json({"error": error}),
-        },
-    )
+    store = cowork_store()
+    await store.fail_invocation(key=key, worker_id=worker_id, error=error)
+    return
 
 

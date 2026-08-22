@@ -13,7 +13,7 @@ from uuid import UUID
 import structlog
 
 from app.core.config import Settings
-from workpilot_ai.cache import CompletionCache
+from workpilot_ai.cache import CompletionCache, shared_completion_cache
 from workpilot_ai.gateway import ModelGateway, TierProviderPool
 from workpilot_ai.pricing import GatewayPricing, ModelPricing
 from workpilot_ai.providers.openai_compatible import OpenAICompatibleProvider
@@ -136,11 +136,10 @@ def build_model_gateway(
         trust_env=settings.model_trust_env,
     )
     if completion_cache is None and settings.llm_cache_enabled and mode != "evaluation":
-        # 延迟到这里 import: eval 与 CLI 不该因为建个网关就被拖上 Redis 依赖。
-        from app.core.redis import redis_client
-        from workpilot_ai.cache import RedisCompletionCache
-
-        completion_cache = RedisCompletionCache(redis_client)
+        # 进程级单例：每建一个网关就新建一个缓存等于恒不命中。
+        completion_cache = shared_completion_cache(
+            max_entries=settings.llm_cache_max_entries
+        )
     table = load_settings_routing_table(settings)
     pool = (
         None
@@ -200,10 +199,9 @@ def build_custom_model_gateway(
         trust_env=settings.model_trust_env,
     )
     if completion_cache is None and settings.llm_cache_enabled:
-        from app.core.redis import redis_client
-        from workpilot_ai.cache import RedisCompletionCache
-
-        completion_cache = RedisCompletionCache(redis_client)
+        completion_cache = shared_completion_cache(
+            max_entries=settings.llm_cache_max_entries
+        )
     return ModelGateway(
         chat_provider,
         embedding_dimensions=settings.embedding_dim,

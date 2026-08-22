@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any, Literal, TypedDict
 from uuid import UUID
 
+# answer / literature_review 已退役，保留取值只为读得出历史行，见 schemas/runs.py。
 WorkflowType = Literal["answer", "literature_review", "cowork"]
 RunTrigger = Literal["manual", "schedule", "catchup"]
 AnswerMode = Literal["grounded", "general"]
@@ -69,7 +70,9 @@ class RunRecord:
     schedule_id: UUID | None
     unattended: bool
     run_trigger: RunTrigger
-    workflow_type: WorkflowType = "answer"
+    # 没有默认值：这一层是产品中立的框架层，写死任何一档都是把产品词汇漏进 agent_core
+    # （tests/test_architecture_boundaries.py 会抓）。由构造方显式给。
+    workflow_type: WorkflowType
     answer_mode: AnswerMode = "grounded"
     retrieval_top_k: int = 5
 

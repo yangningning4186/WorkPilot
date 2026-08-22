@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-from uuid6 import uuid7
-
+from app.core.db import DbSession as AsyncSession
+from app.cowork.approvals import create_approval_rule
 from app.cowork.permissions import (
     AccessMode,
     Capability,
     create_session_root,
     grant_capability,
+)
+from app.cowork_contracts import (
+    ApprovalRememberScope as ApprovalRememberScope,
+)
+from app.cowork_contracts import (
+    ApprovalRuleRecord,
 )
 from app.cowork_contracts import (
     InboxRecord as InboxRecord,
@@ -31,7 +34,7 @@ from app.cowork_contracts import (
 from app.cowork_contracts import (
     UnattendedInboxRecord as UnattendedInboxRecord,
 )
-from app.cowork_store.routing import configured_cowork_store
+from app.cowork_store.routing import cowork_store
 
 _STEERING_COLUMNS = """
     id, run_id, conversation_id, content, status, created_at, consumed_at
@@ -54,76 +57,17 @@ async def enqueue_steering(
     conversation_id: UUID,
     content: str,
 ) -> SteeringRecord:
-    store = configured_cowork_store()
-    if store is not None:
-        return await store.enqueue_steering(
-            run_id=run_id, conversation_id=conversation_id, content=content
-        )
-    normalized = content.strip()
-    if not 1 <= len(normalized) <= 4000:
-        raise ValueError("steering 内容长度必须位于 1 到 4000")
-    row = (
-        (
-            await session.execute(
-                text(
-                    f"""
-                    INSERT INTO cowork_steering_messages
-                        (id, run_id, conversation_id, content)
-                    VALUES (:id, :run_id, :conversation_id, :content)
-                    RETURNING {_STEERING_COLUMNS}
-                    """
-                ),
-                {
-                    "id": uuid7(),
-                    "run_id": run_id,
-                    "conversation_id": conversation_id,
-                    "content": normalized,
-                },
-            )
-        )
-        .mappings()
-        .one()
+    store = cowork_store()
+    return await store.enqueue_steering(
+        run_id=run_id, conversation_id=conversation_id, content=content
     )
-    return SteeringRecord(**row)
 
 
 async def consume_pending_steering(session: AsyncSession, *, run_id: UUID) -> list[SteeringRecord]:
     """锁住并消费当前已排队 steering；调用方必须和 checkpoint 一起提交。"""
 
-    store = configured_cowork_store()
-    if store is not None:
-        return await store.consume_pending_steering(run_id=run_id)
-
-    rows = (
-        (
-            await session.execute(
-                text(
-                    """
-                    WITH selected AS (
-                        SELECT id
-                        FROM cowork_steering_messages
-                        WHERE run_id = :run_id AND status = 'pending'
-                        ORDER BY created_at, id
-                        FOR UPDATE SKIP LOCKED
-                    )
-                    UPDATE cowork_steering_messages AS steering
-                    SET status = 'consumed', consumed_at = now()
-                    FROM selected
-                    WHERE steering.id = selected.id
-                    RETURNING steering.id, steering.run_id, steering.conversation_id,
-                              steering.content, steering.status, steering.created_at,
-                              steering.consumed_at
-                    """
-                ),
-                {"run_id": run_id},
-            )
-        )
-        .mappings()
-        .all()
-    )
-    return sorted(
-        (SteeringRecord(**row) for row in rows), key=lambda item: (item.created_at, item.id)
-    )
+    store = cowork_store()
+    return await store.consume_pending_steering(run_id=run_id)
 
 
 async def create_inbox_item(
@@ -136,48 +80,15 @@ async def create_inbox_item(
     plan_step_id: UUID,
     request: dict[str, Any],
 ) -> InboxRecord:
-    store = configured_cowork_store()
-    if store is not None:
-        return await store.create_inbox_item(
-            run_id=run_id,
-            conversation_id=conversation_id,
-            kind=kind,
-            tool_call_id=tool_call_id,
-            plan_step_id=plan_step_id,
-            request=request,
-        )
-    row = (
-        (
-            await session.execute(
-                text(
-                    f"""
-                    INSERT INTO cowork_inbox_items
-                        (id, run_id, conversation_id, kind, resume_token, tool_call_id,
-                         plan_step_id, request, unattended)
-                    SELECT
-                        :id, :run_id, :conversation_id, :kind, :resume_token, :tool_call_id,
-                        :plan_step_id, CAST(:request AS jsonb), runs.unattended
-                    FROM agent_runs AS runs
-                    WHERE runs.id = :run_id
-                    RETURNING {_INBOX_COLUMNS}
-                    """
-                ),
-                {
-                    "id": uuid7(),
-                    "run_id": run_id,
-                    "conversation_id": conversation_id,
-                    "kind": kind,
-                    "resume_token": uuid7(),
-                    "tool_call_id": tool_call_id,
-                    "plan_step_id": plan_step_id,
-                    "request": json.dumps(request, ensure_ascii=False, separators=(",", ":")),
-                },
-            )
-        )
-        .mappings()
-        .one()
+    store = cowork_store()
+    return await store.create_inbox_item(
+        run_id=run_id,
+        conversation_id=conversation_id,
+        kind=kind,
+        tool_call_id=tool_call_id,
+        plan_step_id=plan_step_id,
+        request=request,
     )
-    return _inbox_record(row)
 
 
 async def list_unattended_inbox(
@@ -186,51 +97,8 @@ async def list_unattended_inbox(
     include_resolved: bool = False,
     limit: int = 100,
 ) -> list[UnattendedInboxRecord]:
-    store = configured_cowork_store()
-    if store is not None:
-        return await store.list_unattended_inbox(include_resolved=include_resolved, limit=limit)
-    if not 1 <= limit <= 200:
-        raise ValueError("inbox limit 必须位于 1 到 200")
-    status_clause = "" if include_resolved else "AND inbox.status = 'pending'"
-    qualified = ", ".join(f"inbox.{column}" for column in _INBOX_COLUMN_NAMES)
-    rows = (
-        (
-            await session.execute(
-                text(
-                    f"""
-                    SELECT {qualified}, runs.goal AS run_goal, runs.status AS run_status,
-                           runs.schedule_id, schedules.title AS schedule_title
-                    FROM cowork_inbox_items AS inbox
-                    JOIN agent_runs AS runs ON runs.id = inbox.run_id
-                    JOIN conversations AS conversations ON conversations.id = inbox.conversation_id
-                    LEFT JOIN cowork_schedules AS schedules ON schedules.id = runs.schedule_id
-                    WHERE inbox.unattended = true
-                      AND conversations.scope = 'local_owner'
-                      AND conversations.demo_session_id IS NULL
-                      {status_clause}
-                    ORDER BY (inbox.status = 'pending') DESC, inbox.created_at DESC, inbox.id DESC
-                    LIMIT :limit
-                    """
-                ),
-                {"limit": limit},
-            )
-        )
-        .mappings()
-        .all()
-    )
-    records: list[UnattendedInboxRecord] = []
-    for row in rows:
-        item_values = {column: row[column] for column in _INBOX_COLUMN_NAMES}
-        records.append(
-            UnattendedInboxRecord(
-                item=InboxRecord(**item_values),
-                run_goal=str(row["run_goal"]),
-                run_status=str(row["run_status"]),
-                schedule_id=row["schedule_id"],
-                schedule_title=row["schedule_title"],
-            )
-        )
-    return records
+    store = cowork_store()
+    return await store.list_unattended_inbox(include_resolved=include_resolved, limit=limit)
 
 
 async def get_pending_inbox_item(
@@ -240,28 +108,8 @@ async def get_pending_inbox_item(
     resume_token: UUID,
     for_update: bool = False,
 ) -> InboxRecord | None:
-    store = configured_cowork_store()
-    if store is not None:
-        return await store.get_inbox_item(run_id=run_id, resume_token=resume_token)
-    suffix = " FOR UPDATE" if for_update else ""
-    row = (
-        (
-            await session.execute(
-                text(
-                    f"""
-                    SELECT {_INBOX_COLUMNS}
-                    FROM cowork_inbox_items
-                    WHERE run_id = :run_id AND resume_token = :resume_token
-                    {suffix}
-                    """
-                ),
-                {"run_id": run_id, "resume_token": resume_token},
-            )
-        )
-        .mappings()
-        .one_or_none()
-    )
-    return None if row is None else _inbox_record(row)
+    store = cowork_store()
+    return await store.get_inbox_item(run_id=run_id, resume_token=resume_token)
 
 
 async def resolve_inbox_item(
@@ -271,8 +119,14 @@ async def resolve_inbox_item(
     approved: bool,
     answer: str | None = None,
     path: str | None = None,
+    remember: ApprovalRememberScope = "once",
 ) -> tuple[InboxRecord, dict[str, Any]]:
-    """应用用户答复或授权，并产出要写入 canonical tool history 的结果。"""
+    """应用用户答复或授权，并产出要写入 canonical tool history 的结果。
+
+    `remember` 不是 `once` 时，会顺带落一条常驻审批规则。规则**只能从这条 inbox 已经
+    记下的请求里派生**——那份 payload 正是用户在卡片上看到的内容。若改成事后从模型输入
+    重算，用户点的和最终生效的就可能不是同一条规则。
+    """
 
     if item.status != "pending":
         raise ValueError("这条运行中请求已经处理")
@@ -359,65 +213,72 @@ async def resolve_inbox_item(
     else:
         status = "approved" if approved else "rejected"
         response["command_sha256"] = item.request.get("command_sha256")
+        if approved and remember != "once":
+            rule = await _remember_approval(session, item=item, remember=remember)
+            response["standing_rule_id"] = str(rule.id)
+            response["standing_rule"] = {
+                "tool": rule.tool,
+                "match_kind": rule.match_kind,
+                "target": rule.target,
+            }
 
     response["status"] = status
-    store = configured_cowork_store()
-    if store is not None:
-        updated = await store.update_inbox_item(item_id=item.id, status=status, response=response)
-        if updated is None:
-            raise ValueError("这条运行中请求已经处理")
-        return updated, response
-
-    row = (
-        (
-            await session.execute(
-                text(
-                    f"""
-                    UPDATE cowork_inbox_items
-                    SET status = :status, response = CAST(:response AS jsonb), responded_at = now()
-                    WHERE id = :id AND status = 'pending'
-                    RETURNING {_INBOX_COLUMNS}
-                    """
-                ),
-                {
-                    "id": item.id,
-                    "status": status,
-                    "response": json.dumps(response, ensure_ascii=False, separators=(",", ":")),
-                },
-            )
-        )
-        .mappings()
-        .one_or_none()
-    )
-    if row is None:
+    store = cowork_store()
+    updated = await store.update_inbox_item(item_id=item.id, status=status, response=response)
+    if updated is None:
         raise ValueError("这条运行中请求已经处理")
-    return _inbox_record(row), response
+    return updated, response
 
+
+async def _remember_approval(
+    session: AsyncSession,
+    *,
+    item: InboxRecord,
+    remember: ApprovalRememberScope,
+) -> ApprovalRuleRecord:
+    """把这次批准固化成一条常驻规则。
+
+    只认 shell 与外部动作两种 inbox：目录、能力、提问、计划批准各自有自己的持久化
+    形态（session_roots / capability_grants / 计划状态），再叠一层规则只会出现两处
+    真相。
+    """
+
+    if item.kind not in {"shell_approval", "external_approval"}:
+        raise ValueError("这类请求不支持常驻授权")
+    if remember == "command":
+        prefix = item.request.get("standing_command_prefix")
+        if not isinstance(prefix, str) or not prefix:
+            raise ValueError("这条命令不能常驻授权：它带 shell 操作符，放行前缀会连带放行后面的命令")
+        return await create_approval_rule(
+            session,
+            conversation_id=item.conversation_id,
+            tool="run_shell",
+            match_kind="command_prefix",
+            target=prefix,
+        )
+    tool = item.request.get("tool") if item.kind == "external_approval" else "run_shell"
+    if not isinstance(tool, str) or not tool:
+        raise ValueError("这条请求没有记录工具名，无法常驻授权")
+    if remember == "tool":
+        return await create_approval_rule(
+            session,
+            conversation_id=item.conversation_id,
+            tool=tool,
+            match_kind="tool",
+            target=None,
+        )
+    target = item.request.get("standing_target")
+    if not isinstance(target, str) or not target:
+        raise ValueError("这只工具没有声明可复用的目标，只能逐次批准或整只授权")
+    return await create_approval_rule(
+        session,
+        conversation_id=item.conversation_id,
+        tool=tool,
+        match_kind="target",
+        target=target,
+    )
 
 async def cancel_pending_interaction(session: AsyncSession, *, run_id: UUID) -> None:
-    store = configured_cowork_store()
-    if store is not None:
-        await store.cancel_pending_interaction(run_id=run_id)
-        return
-    await session.execute(
-        text(
-            """
-            UPDATE cowork_inbox_items
-            SET status = 'cancelled',
-                response = '{"approved":false,"status":"cancelled"}'::jsonb,
-                responded_at = now()
-            WHERE run_id = :run_id AND status = 'pending'
-            """
-        ),
-        {"run_id": run_id},
-    )
-    await session.execute(
-        text(
-            """
-            UPDATE cowork_steering_messages
-            SET status = 'cancelled'
-            WHERE run_id = :run_id AND status = 'pending'
-            """
-        ),
-        {"run_id": run_id},
-    )
+    store = cowork_store()
+    await store.cancel_pending_interaction(run_id=run_id)
+    return

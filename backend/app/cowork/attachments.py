@@ -10,11 +10,10 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
 from app.core.config import Settings
+from app.core.db import DbSession as AsyncSession
 from app.cowork.files import CoworkFileError, read_pdf_file
 from app.cowork_contracts import (
     AttachmentKind as AttachmentKind,
@@ -25,7 +24,7 @@ from app.cowork_contracts import (
 from app.cowork_contracts import (
     CoworkAttachmentRecord as CoworkAttachmentRecord,
 )
-from app.cowork_store.routing import configured_cowork_store
+from app.cowork_store.routing import cowork_store
 
 _TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml"}
 _IMAGE_MEDIA = {"image/png", "image/jpeg", "image/webp"}
@@ -72,20 +71,8 @@ async def store_attachment(
         raise CoworkAttachmentError("附件为空")
     if len(raw) > settings.cowork_attachment_max_bytes:
         raise CoworkAttachmentError(f"附件超过 {settings.cowork_attachment_max_bytes} bytes 上限")
-    store = configured_cowork_store()
-    owns = (
-        await store.conversation_exists(conversation_id)
-        if store is not None
-        else (
-            await session.execute(
-                text(
-                    "SELECT EXISTS (SELECT 1 FROM conversations WHERE id = :id AND scope = 'local_owner')"
-                ),
-                {"id": conversation_id},
-            )
-        ).scalar_one()
-    )
-    if not owns:
+    store = cowork_store()
+    if not await store.conversation_exists(conversation_id):
         raise CoworkAttachmentError("Cowork 会话不存在")
 
     safe_name = _safe_filename(filename)
@@ -131,53 +118,20 @@ async def store_attachment(
             except CoworkFileError as error:
                 raise CoworkAttachmentError(f"PDF 无法解析：{error}") from error
             extracted_text = snapshot.content[: settings.cowork_attachment_text_max_chars]
-        if store is not None:
-            return await store.create_attachment(
-                attachment_id=attachment_id,
-                conversation_id=conversation_id,
-                kind=kind,
-                filename=safe_name,
-                media_type=media_type,
-                storage_path=str(storage_path),
-                size_bytes=len(raw),
-                sha256=hashlib.sha256(raw).hexdigest(),
-                extracted_text=extracted_text,
-            )
-        row = (
-            (
-                await session.execute(
-                    text(
-                        """
-                        INSERT INTO cowork_attachments
-                            (id, conversation_id, kind, filename, media_type, storage_path,
-                             size_bytes, sha256, extracted_text)
-                        VALUES
-                            (:id, :conversation_id, :kind, :filename, :media_type, :storage_path,
-                             :size_bytes, :sha256, :extracted_text)
-                        RETURNING id, conversation_id, message_id, run_id, kind, filename,
-                                  media_type, storage_path, size_bytes, sha256, extracted_text
-                        """
-                    ),
-                    {
-                        "id": attachment_id,
-                        "conversation_id": conversation_id,
-                        "kind": kind,
-                        "filename": safe_name,
-                        "media_type": media_type,
-                        "storage_path": str(storage_path),
-                        "size_bytes": len(raw),
-                        "sha256": hashlib.sha256(raw).hexdigest(),
-                        "extracted_text": extracted_text,
-                    },
-                )
-            )
-            .mappings()
-            .one()
+        return await store.create_attachment(
+            attachment_id=attachment_id,
+            conversation_id=conversation_id,
+            kind=kind,
+            filename=safe_name,
+            media_type=media_type,
+            storage_path=str(storage_path),
+            size_bytes=len(raw),
+            sha256=hashlib.sha256(raw).hexdigest(),
+            extracted_text=extracted_text,
         )
     except Exception:
         await asyncio.to_thread(storage_path.unlink, missing_ok=True)
         raise
-    return CoworkAttachmentRecord(**dict(row))
 
 
 async def bind_attachments(
@@ -195,92 +149,42 @@ async def bind_attachments(
         raise CoworkAttachmentError("attachment_ids 不能重复")
     if not attachment_ids:
         return []
-    store = configured_cowork_store()
-    if store is not None and await store.get_run(run_id) is not None:
-        records = await store.bind_attachments(
-            conversation_id=conversation_id,
-            attachment_ids=attachment_ids,
-            message_id=message_id,
-            run_id=run_id,
-        )
-        from app.cowork_store.factory import local_cowork_stores
-
-        messages = local_cowork_stores().conversations
-        current = await messages.find(message_id, conversation_id=conversation_id)
-        if current is not None:
-            await messages.append(
-                replace(
-                    current,
-                    attachments=tuple(
-                        {
-                            "id": str(item.id),
-                            "conversation_id": str(item.conversation_id),
-                            "message_id": str(item.message_id),
-                            "run_id": str(item.run_id),
-                            "kind": item.kind,
-                            "filename": item.filename,
-                            "media_type": item.media_type,
-                            "size_bytes": item.size_bytes,
-                            "sha256": item.sha256,
-                        }
-                        for item in records
-                    ),
-                )
-            )
-        return records
-    rows = (
-        (
-            await session.execute(
-                text(
-                    """
-                    UPDATE cowork_attachments
-                    SET message_id = :message_id, run_id = :run_id
-                    WHERE conversation_id = :conversation_id
-                      AND id = ANY(:attachment_ids)
-                      AND message_id IS NULL AND run_id IS NULL
-                    RETURNING id, conversation_id, message_id, run_id, kind, filename,
-                              media_type, storage_path, size_bytes, sha256, extracted_text
-                    """
-                ),
-                {
-                    "conversation_id": conversation_id,
-                    "attachment_ids": attachment_ids,
-                    "message_id": message_id,
-                    "run_id": run_id,
-                },
-            )
-        )
-        .mappings()
-        .all()
+    store = cowork_store()
+    records = await store.bind_attachments(
+        conversation_id=conversation_id,
+        attachment_ids=attachment_ids,
+        message_id=message_id,
+        run_id=run_id,
     )
-    if len(rows) != len(attachment_ids):
-        raise CoworkAttachmentError("附件不存在、已被使用，或不属于当前会话")
-    by_id = {UUID(str(row["id"])): CoworkAttachmentRecord(**dict(row)) for row in rows}
-    return [by_id[item] for item in attachment_ids]
+    from app.cowork_store.factory import local_cowork_stores
+
+    messages = local_cowork_stores().conversations
+    current = await messages.find(message_id, conversation_id=conversation_id)
+    if current is not None:
+        await messages.append(
+            replace(
+                current,
+                attachments=tuple(
+                    {
+                        "id": str(item.id),
+                        "conversation_id": str(item.conversation_id),
+                        "message_id": str(item.message_id),
+                        "run_id": str(item.run_id),
+                        "kind": item.kind,
+                        "filename": item.filename,
+                        "media_type": item.media_type,
+                        "size_bytes": item.size_bytes,
+                        "sha256": item.sha256,
+                    }
+                    for item in records
+                ),
+            )
+        )
+    return records
 
 
 async def list_run_attachments(
     session: AsyncSession, *, run_id: UUID
 ) -> list[CoworkAttachmentRecord]:
-    store = configured_cowork_store()
-    if store is not None and await store.get_run(run_id) is not None:
-        return await store.list_run_attachments(run_id=run_id)
-    rows = (
-        (
-            await session.execute(
-                text(
-                    """
-                    SELECT id, conversation_id, message_id, run_id, kind, filename,
-                           media_type, storage_path, size_bytes, sha256, extracted_text
-                    FROM cowork_attachments
-                    WHERE run_id = :run_id
-                    ORDER BY created_at, id
-                    """
-                ),
-                {"run_id": run_id},
-            )
-        )
-        .mappings()
-        .all()
-    )
-    return [CoworkAttachmentRecord(**dict(row)) for row in rows]
+    store = cowork_store()
+    return await store.list_run_attachments(run_id=run_id)

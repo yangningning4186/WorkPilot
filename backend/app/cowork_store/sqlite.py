@@ -32,24 +32,34 @@ from app.agent_core.idempotency import (
     invocation_identity,
 )
 from app.cowork_contracts import (
+    ApprovalMatchKind,
+    ApprovalMode,
+    ApprovalRuleRecord,
+    ApprovalRuleScope,
     ArtifactRecord,
     ArtifactRegistrationError,
     CapabilityDeniedError,
     CapabilityGrantRecord,
+    ChannelSubscriptionRecord,
     ConversationBusyError,
     ConversationNotFoundError,
     CoworkAttachmentError,
     CoworkAttachmentRecord,
     CoworkMemoryRecord,
+    InboxBindingRecord,
     InboxRecord,
+    MemoryExtractionJob,
     MemoryNotFoundError,
     PathAuthorization,
+    PinnedMemoryError,
     ScheduleRecord,
     ScheduleView,
     SessionRootNotFoundError,
     SessionRootRecord,
     SteeringRecord,
+    ThreadSessionRecord,
     UnattendedInboxRecord,
+    UnroutedRecord,
 )
 from app.cowork_policy import (
     ALL_CAPABILITIES,
@@ -71,6 +81,12 @@ CREATE TABLE IF NOT EXISTS conversations (
     provider_profile_id TEXT,
     model_override TEXT,
     unattended INTEGER NOT NULL DEFAULT 0 CHECK (unattended IN (0, 1)),
+    approval_mode TEXT NOT NULL DEFAULT 'interactive'
+        CHECK (approval_mode IN ('interactive', 'auto')),
+    -- 路由到哪个命名 Inbox；空表示 "default"。
+    inbox_name TEXT,
+    -- 这个会话挂载了哪个本地知识库（KB slug）；空表示没挂。
+    kb_slug TEXT,
     archived_at TEXT,
     summary TEXT,
     summary_upto INTEGER NOT NULL DEFAULT 0,
@@ -100,6 +116,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     lease_until TEXT,
     heartbeat_at TEXT,
     cancel_requested_at TEXT,
+    -- 自唤醒：status='sleeping' 时到点由调度 tick 重新入队。
+    wake_at TEXT,
     budget_tokens INTEGER NOT NULL,
     budget_calls INTEGER NOT NULL,
     budget_wall_ms INTEGER NOT NULL,
@@ -275,6 +293,77 @@ CREATE TABLE IF NOT EXISTS cowork_schedules (
 CREATE INDEX IF NOT EXISTS idx_local_schedules_due
 ON cowork_schedules(enabled, next_run_at, id);
 
+CREATE TABLE IF NOT EXISTS cowork_inbox_bindings (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    -- 要么两个字段都有（有投递绑定），要么都没有（只有应用内 Inbox）。
+    platform TEXT,
+    chat_id TEXT,
+    connector_account_id TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    created_at TEXT NOT NULL,
+    CHECK ((platform IS NULL) = (chat_id IS NULL))
+);
+
+CREATE TABLE IF NOT EXISTS cowork_channel_subscriptions (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    connector_account_id TEXT,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_local_channel_subscriptions
+ON cowork_channel_subscriptions(platform, chat_id)
+WHERE revoked_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS cowork_thread_sessions (
+    -- 主键就是 thread 地址串：发消息、查会话、判定授权用的是同一个字符串。
+    target TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cowork_unrouted (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('inbound', 'background_turn')),
+    platform TEXT,
+    chat_id TEXT,
+    summary TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_local_unrouted_recent ON cowork_unrouted(created_at);
+
+CREATE TABLE IF NOT EXISTS cowork_workspace_trust (
+    -- 主键是规范化路径而不是会话：用户信任的是"这个目录"，不是"这一次对话里的这个目录"。
+    canonical_path TEXT PRIMARY KEY,
+    trusted_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS cowork_approval_rules (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    scope TEXT NOT NULL DEFAULT 'conversation',
+    -- 计划派生的规则跟着计划一起消失：删掉计划却留下它攒下的免审批授权，
+    -- 是那种"以为已经收回了"的权限。
+    schedule_id TEXT REFERENCES cowork_schedules(id) ON DELETE CASCADE,
+    tool TEXT NOT NULL,
+    match_kind TEXT NOT NULL,
+    target TEXT,
+    created_by TEXT NOT NULL DEFAULT 'user',
+    revoked_at TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_local_approval_rules
+ON cowork_approval_rules(conversation_id, tool)
+WHERE revoked_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS cowork_inbox_items (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
@@ -287,6 +376,9 @@ CREATE TABLE IF NOT EXISTS cowork_inbox_items (
     request TEXT NOT NULL,
     response TEXT,
     unattended INTEGER NOT NULL DEFAULT 0,
+    -- 这条 item 被镜像到哪里去了。相关靠编在按钮 value 里的 item id，这一列只用于
+    -- 「别重复投递」和界面上显示「已发到某个群」。
+    delivery_ref TEXT,
     created_at TEXT NOT NULL,
     responded_at TEXT,
     UNIQUE (run_id, tool_call_id)
@@ -315,6 +407,19 @@ CREATE TABLE IF NOT EXISTS cowork_memories (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     forgotten_at TEXT,
+    -- 下面这些是原 PostgreSQL `memories` 表并进来的时序有效性与人工策展字段。
+    category TEXT NOT NULL DEFAULT 'fact'
+        CHECK (category IN ('preference','profile','interest','fact')),
+    confidence REAL NOT NULL DEFAULT 1.0 CHECK (confidence >= 0 AND confidence <= 1),
+    pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0,1)),
+    -- valid_from 与 created_at 分开：模型可以在今天写下"从上个月起改用表格"。
+    valid_from TEXT NOT NULL,
+    invalid_at TEXT,
+    superseded_by TEXT REFERENCES cowork_memories(id) ON DELETE SET NULL,
+    access_count INTEGER NOT NULL DEFAULT 0 CHECK (access_count >= 0),
+    last_used_at TEXT,
+    source_message_id TEXT,
+    run_id TEXT,
     CHECK (
         (scope = 'global' AND conversation_id IS NULL AND workspace_path IS NULL)
         OR (scope = 'workspace' AND conversation_id IS NULL AND workspace_path IS NOT NULL)
@@ -322,12 +427,39 @@ CREATE TABLE IF NOT EXISTS cowork_memories (
     )
 );
 CREATE INDEX IF NOT EXISTS ix_local_cowork_memories_active
-ON cowork_memories(scope, updated_at) WHERE forgotten_at IS NULL;
+ON cowork_memories(scope, updated_at) WHERE forgotten_at IS NULL AND invalid_at IS NULL;
+CREATE INDEX IF NOT EXISTS ix_local_cowork_memories_history
+ON cowork_memories(invalid_at DESC) WHERE invalid_at IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_local_cowork_memories_key
 ON cowork_memories(scope, IFNULL(conversation_id, ''), IFNULL(workspace_path, ''), key)
-WHERE key IS NOT NULL AND forgotten_at IS NULL;
+WHERE key IS NOT NULL AND forgotten_at IS NULL AND invalid_at IS NULL;
 
-PRAGMA user_version = 5;
+-- 记忆抽取作业。和记忆写在同一个库里，所以"提炼出一条记忆"与"把作业标记完成"
+-- 可以在同一个事务里，不会出现记了却没结算、或结算了没记的半截状态。
+-- 来源快照（消息内容、会话、时间）随作业一起存：claim 时不必回查会话，
+-- 也就没有了"作业还在、来源消息已被删除"这一类失败。
+CREATE TABLE IF NOT EXISTS memory_extraction_jobs (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL UNIQUE,
+    conversation_id TEXT,
+    source_message_id TEXT,
+    content TEXT NOT NULL,
+    source_created_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued'
+        CHECK (status IN ('queued','running','done','failed')),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    worker_id TEXT,
+    lease_until TEXT,
+    available_at TEXT NOT NULL,
+    error TEXT,
+    finished_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_local_memory_jobs_dispatch
+ON memory_extraction_jobs(available_at, id) WHERE status IN ('queued','running');
+
+PRAGMA user_version = 8;
 """
 
 
@@ -369,6 +501,26 @@ class SqliteCoworkStore:
             }
             if "archived_at" not in conversation_columns:
                 connection.execute("ALTER TABLE conversations ADD COLUMN archived_at TEXT")
+            inbox_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(cowork_inbox_items)"
+                ).fetchall()
+            }
+            if "delivery_ref" not in inbox_columns:
+                connection.execute(
+                    "ALTER TABLE cowork_inbox_items ADD COLUMN delivery_ref TEXT"
+                )
+            if "inbox_name" not in conversation_columns:
+                connection.execute("ALTER TABLE conversations ADD COLUMN inbox_name TEXT")
+            if "approval_mode" not in conversation_columns:
+                # ALTER 加不上 CHECK；旧库靠写入路径的取值校验兜住，新库由 _SCHEMA 约束。
+                connection.execute(
+                    "ALTER TABLE conversations ADD COLUMN approval_mode TEXT "
+                    "NOT NULL DEFAULT 'interactive'"
+                )
+            if "kb_slug" not in conversation_columns:
+                connection.execute("ALTER TABLE conversations ADD COLUMN kb_slug TEXT")
             run_columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(agent_runs)").fetchall()
@@ -377,7 +529,35 @@ class SqliteCoworkStore:
                 connection.execute(
                     "ALTER TABLE agent_runs ADD COLUMN retrieval_top_k INTEGER NOT NULL DEFAULT 5"
                 )
-            connection.execute("PRAGMA user_version = 5")
+            if "wake_at" not in run_columns:
+                connection.execute("ALTER TABLE agent_runs ADD COLUMN wake_at TEXT")
+            memory_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(cowork_memories)").fetchall()
+            }
+            # 两套记忆合并带来的新列。ALTER 加不上 CHECK 也加不上 NOT NULL 无默认值，
+            # 所以 valid_from 先给空默认、再用 created_at 回填——已有记忆的生效时刻
+            # 就是它被记下的时刻，这是唯一说得通的推断。
+            for column, ddl in (
+                ("category", "TEXT NOT NULL DEFAULT 'fact'"),
+                ("confidence", "REAL NOT NULL DEFAULT 1.0"),
+                ("pinned", "INTEGER NOT NULL DEFAULT 0"),
+                ("valid_from", "TEXT"),
+                ("invalid_at", "TEXT"),
+                ("superseded_by", "TEXT"),
+                ("access_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("last_used_at", "TEXT"),
+                ("source_message_id", "TEXT"),
+                ("run_id", "TEXT"),
+            ):
+                if column not in memory_columns:
+                    connection.execute(
+                        f"ALTER TABLE cowork_memories ADD COLUMN {column} {ddl}"
+                    )
+            connection.execute(
+                "UPDATE cowork_memories SET valid_from = created_at WHERE valid_from IS NULL"
+            )
+            connection.execute("PRAGMA user_version = 8")
         finally:
             connection.close()
         try:
@@ -611,6 +791,18 @@ class SqliteCoworkStore:
 
         return await self._write(operation)
 
+    async def list_streaming_message_ids(self, *, run_id: UUID) -> list[UUID]:
+        return await self._read(
+            lambda connection: [
+                UUID(row["record_id"])
+                for row in connection.execute(
+                    """SELECT record_id FROM conversation_message_index
+                       WHERE run_id = ? AND status = 'streaming' ORDER BY seq""",
+                    (str(run_id),),
+                ).fetchall()
+            ]
+        )
+
     async def update_message_status(self, *, record_id: UUID, status: str) -> None:
         await self._write(
             lambda connection: connection.execute(
@@ -694,16 +886,18 @@ class SqliteCoworkStore:
         provider_profile_id: UUID | None,
         model_override: str | None,
         unattended: bool,
+        approval_mode: ApprovalMode,
     ) -> bool:
         return await self._write(
             lambda connection: (
                 connection.execute(
                     """UPDATE conversations SET provider_profile_id = ?, model_override = ?,
-                          unattended = ?, updated_at = ? WHERE id = ?""",
+                          unattended = ?, approval_mode = ?, updated_at = ? WHERE id = ?""",
                     (
                         None if provider_profile_id is None else str(provider_profile_id),
                         model_override,
                         int(unattended),
+                        approval_mode,
                         _iso(),
                         str(conversation_id),
                     ),
@@ -827,7 +1021,7 @@ class SqliteCoworkStore:
             lambda connection: (
                 connection.execute(
                     """SELECT 1 FROM agent_runs WHERE conversation_id = ?
-                   AND status IN ('queued','executing','waiting_human') LIMIT 1""",
+                   AND status IN ('queued','executing','waiting_human','sleeping') LIMIT 1""",
                     (str(conversation_id),),
                 ).fetchone()
                 is not None
@@ -1445,6 +1639,439 @@ class SqliteCoworkStore:
 
         return await self._read(operation)
 
+    # ---- 消息面 -------------------------------------------------------------
+    async def upsert_inbox_binding(
+        self,
+        *,
+        name: str,
+        platform: str | None,
+        chat_id: str | None,
+        connector_account_id: UUID | None,
+        enabled: bool,
+    ) -> InboxBindingRecord:
+        def operation(connection: sqlite3.Connection) -> InboxBindingRecord:
+            connection.execute(
+                """INSERT INTO cowork_inbox_bindings(
+                       id, name, platform, chat_id, connector_account_id, enabled, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(name) DO UPDATE SET
+                       platform = excluded.platform,
+                       chat_id = excluded.chat_id,
+                       connector_account_id = excluded.connector_account_id,
+                       enabled = excluded.enabled""",
+                (
+                    str(uuid7()),
+                    name,
+                    platform,
+                    chat_id,
+                    None if connector_account_id is None else str(connector_account_id),
+                    int(enabled),
+                    _iso(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM cowork_inbox_bindings WHERE name = ?", (name,)
+            ).fetchone()
+            return self._inbox_binding_record(row)
+
+        return await self._write(operation)
+
+    async def get_inbox_binding(self, *, name: str) -> InboxBindingRecord | None:
+        def operation(connection: sqlite3.Connection) -> InboxBindingRecord | None:
+            row = connection.execute(
+                "SELECT * FROM cowork_inbox_bindings WHERE name = ?", (name,)
+            ).fetchone()
+            return None if row is None else self._inbox_binding_record(row)
+
+        return await self._read(operation)
+
+    async def list_inbox_bindings(self) -> list[InboxBindingRecord]:
+        return await self._read(
+            lambda connection: [
+                self._inbox_binding_record(row)
+                for row in connection.execute(
+                    "SELECT * FROM cowork_inbox_bindings ORDER BY name"
+                ).fetchall()
+            ]
+        )
+
+    async def delete_inbox_binding(self, *, name: str) -> bool:
+        return await self._write(
+            lambda connection: (
+                connection.execute(
+                    "DELETE FROM cowork_inbox_bindings WHERE name = ?", (name,)
+                ).rowcount
+                == 1
+            )
+        )
+
+    async def set_conversation_inbox(
+        self, *, conversation_id: UUID, inbox_name: str | None
+    ) -> bool:
+        return await self._write(
+            lambda connection: (
+                connection.execute(
+                    "UPDATE conversations SET inbox_name = ?, updated_at = ? WHERE id = ?",
+                    (inbox_name, _iso(), str(conversation_id)),
+                ).rowcount
+                == 1
+            )
+        )
+
+    async def get_conversation_inbox(self, *, conversation_id: UUID) -> str | None:
+        return await self._read(
+            lambda connection: (
+                lambda row: None if row is None else row[0]
+            )(
+                connection.execute(
+                    "SELECT inbox_name FROM conversations WHERE id = ?",
+                    (str(conversation_id),),
+                ).fetchone()
+            )
+        )
+
+    async def set_conversation_kb(self, *, conversation_id: UUID, kb_slug: str | None) -> bool:
+        return await self._write(
+            lambda connection: (
+                connection.execute(
+                    "UPDATE conversations SET kb_slug = ?, updated_at = ? WHERE id = ?",
+                    (kb_slug, _iso(), str(conversation_id)),
+                ).rowcount
+                == 1
+            )
+        )
+
+    async def get_conversation_kb(self, *, conversation_id: UUID) -> str | None:
+        return await self._read(
+            lambda connection: (
+                lambda row: None if row is None else row[0]
+            )(
+                connection.execute(
+                    "SELECT kb_slug FROM conversations WHERE id = ?",
+                    (str(conversation_id),),
+                ).fetchone()
+            )
+        )
+
+    async def set_inbox_delivery_ref(self, *, item_id: UUID, delivery_ref: str) -> None:
+        await self._write(
+            lambda connection: connection.execute(
+                "UPDATE cowork_inbox_items SET delivery_ref = ? WHERE id = ?",
+                (delivery_ref, str(item_id)),
+            )
+        )
+
+    async def get_inbox_item_by_id(self, *, item_id: UUID) -> InboxRecord | None:
+        def operation(connection: sqlite3.Connection) -> InboxRecord | None:
+            row = connection.execute(
+                "SELECT * FROM cowork_inbox_items WHERE id = ?", (str(item_id),)
+            ).fetchone()
+            return None if row is None else self._inbox_record(row, InboxRecord)
+
+        return await self._read(operation)
+
+    async def create_channel_subscription(
+        self,
+        *,
+        conversation_id: UUID,
+        platform: str,
+        chat_id: str,
+        connector_account_id: UUID | None,
+    ) -> ChannelSubscriptionRecord:
+        def operation(connection: sqlite3.Connection) -> ChannelSubscriptionRecord:
+            existing = connection.execute(
+                """SELECT * FROM cowork_channel_subscriptions
+                   WHERE conversation_id = ? AND platform = ? AND chat_id = ?
+                     AND revoked_at IS NULL""",
+                (str(conversation_id), platform, chat_id),
+            ).fetchone()
+            if existing is not None:
+                return self._channel_subscription_record(existing)
+            subscription_id = uuid7()
+            connection.execute(
+                """INSERT INTO cowork_channel_subscriptions(
+                       id, conversation_id, platform, chat_id, connector_account_id, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    str(subscription_id),
+                    str(conversation_id),
+                    platform,
+                    chat_id,
+                    None if connector_account_id is None else str(connector_account_id),
+                    _iso(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM cowork_channel_subscriptions WHERE id = ?",
+                (str(subscription_id),),
+            ).fetchone()
+            return self._channel_subscription_record(row)
+
+        return await self._write(operation)
+
+    async def list_channel_subscriptions(
+        self, *, conversation_id: UUID | None = None, channel: tuple[str, str] | None = None
+    ) -> list[ChannelSubscriptionRecord]:
+        def operation(connection: sqlite3.Connection) -> list[ChannelSubscriptionRecord]:
+            clauses = ["revoked_at IS NULL"]
+            parameters: list[Any] = []
+            if conversation_id is not None:
+                clauses.append("conversation_id = ?")
+                parameters.append(str(conversation_id))
+            if channel is not None:
+                clauses.append("platform = ? AND chat_id = ?")
+                parameters.extend(channel)
+            rows = connection.execute(
+                f"""SELECT * FROM cowork_channel_subscriptions
+                    WHERE {" AND ".join(clauses)} ORDER BY created_at""",
+                tuple(parameters),
+            ).fetchall()
+            return [self._channel_subscription_record(row) for row in rows]
+
+        return await self._read(operation)
+
+    async def revoke_channel_subscription(
+        self, *, conversation_id: UUID, subscription_id: UUID
+    ) -> bool:
+        return await self._write(
+            lambda connection: (
+                connection.execute(
+                    """UPDATE cowork_channel_subscriptions SET revoked_at = ?
+                       WHERE id = ? AND conversation_id = ? AND revoked_at IS NULL""",
+                    (_iso(), str(subscription_id), str(conversation_id)),
+                ).rowcount
+                == 1
+            )
+        )
+
+    async def upsert_thread_session(
+        self,
+        *,
+        target: str,
+        conversation_id: UUID,
+        platform: str,
+        chat_id: str,
+        thread_id: str,
+    ) -> ThreadSessionRecord:
+        def operation(connection: sqlite3.Connection) -> ThreadSessionRecord:
+            connection.execute(
+                """INSERT INTO cowork_thread_sessions(
+                       target, conversation_id, platform, chat_id, thread_id, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(target) DO NOTHING""",
+                (
+                    target,
+                    str(conversation_id),
+                    platform,
+                    chat_id,
+                    thread_id,
+                    _iso(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM cowork_thread_sessions WHERE target = ?", (target,)
+            ).fetchone()
+            return self._thread_session_record(row)
+
+        return await self._write(operation)
+
+    async def get_thread_session(self, *, target: str) -> ThreadSessionRecord | None:
+        def operation(connection: sqlite3.Connection) -> ThreadSessionRecord | None:
+            row = connection.execute(
+                "SELECT * FROM cowork_thread_sessions WHERE target = ?", (target,)
+            ).fetchone()
+            return None if row is None else self._thread_session_record(row)
+
+        return await self._read(operation)
+
+    async def list_thread_sessions(
+        self, *, conversation_id: UUID
+    ) -> list[ThreadSessionRecord]:
+        return await self._read(
+            lambda connection: [
+                self._thread_session_record(row)
+                for row in connection.execute(
+                    """SELECT * FROM cowork_thread_sessions WHERE conversation_id = ?
+                       ORDER BY created_at""",
+                    (str(conversation_id),),
+                ).fetchall()
+            ]
+        )
+
+    async def record_unrouted(
+        self,
+        *,
+        kind: str,
+        platform: str | None,
+        chat_id: str | None,
+        summary: str,
+        payload: dict[str, Any],
+        keep: int,
+    ) -> UnroutedRecord:
+        def operation(connection: sqlite3.Connection) -> UnroutedRecord:
+            record_id = uuid7()
+            connection.execute(
+                """INSERT INTO cowork_unrouted(
+                       id, kind, platform, chat_id, summary, payload, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(record_id),
+                    kind,
+                    platform,
+                    chat_id,
+                    summary,
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    _iso(),
+                ),
+            )
+            # 死信是可见性设施，不是队列：留最近的一批就够，无上限地攒下去只会让
+            # 本地库慢慢变大而没人看。
+            connection.execute(
+                """DELETE FROM cowork_unrouted WHERE id NOT IN (
+                       SELECT id FROM cowork_unrouted ORDER BY created_at DESC LIMIT ?
+                   )""",
+                (keep,),
+            )
+            row = connection.execute(
+                "SELECT * FROM cowork_unrouted WHERE id = ?", (str(record_id),)
+            ).fetchone()
+            return self._unrouted_record(row)
+
+        return await self._write(operation)
+
+    async def list_unrouted(self, *, limit: int) -> list[UnroutedRecord]:
+        return await self._read(
+            lambda connection: [
+                self._unrouted_record(row)
+                for row in connection.execute(
+                    "SELECT * FROM cowork_unrouted ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            ]
+        )
+
+    async def set_workspace_trust(self, *, canonical_path: str, trusted: bool) -> bool:
+        def operation(connection: sqlite3.Connection) -> bool:
+            if trusted:
+                connection.execute(
+                    """INSERT INTO cowork_workspace_trust(canonical_path, trusted_at, revoked_at)
+                       VALUES (?, ?, NULL)
+                       ON CONFLICT(canonical_path) DO UPDATE
+                       SET trusted_at = excluded.trusted_at, revoked_at = NULL""",
+                    (canonical_path, _iso()),
+                )
+                return True
+            return (
+                connection.execute(
+                    """UPDATE cowork_workspace_trust SET revoked_at = ?
+                       WHERE canonical_path = ? AND revoked_at IS NULL""",
+                    (_iso(), canonical_path),
+                ).rowcount
+                == 1
+            )
+
+        return await self._write(operation)
+
+    async def is_workspace_trusted(self, *, canonical_path: str) -> bool:
+        return await self._read(
+            lambda connection: connection.execute(
+                """SELECT 1 FROM cowork_workspace_trust
+                   WHERE canonical_path = ? AND revoked_at IS NULL""",
+                (canonical_path,),
+            ).fetchone()
+            is not None
+        )
+
+    async def list_workspace_trust(self) -> list[str]:
+        return await self._read(
+            lambda connection: [
+                str(row[0])
+                for row in connection.execute(
+                    """SELECT canonical_path FROM cowork_workspace_trust
+                       WHERE revoked_at IS NULL ORDER BY canonical_path"""
+                ).fetchall()
+            ]
+        )
+
+    async def create_approval_rule(
+        self,
+        *,
+        conversation_id: UUID,
+        tool: str,
+        match_kind: ApprovalMatchKind,
+        target: str | None,
+        scope: ApprovalRuleScope,
+        schedule_id: UUID | None,
+        created_by: str,
+    ) -> ApprovalRuleRecord:
+        def operation(connection: sqlite3.Connection) -> ApprovalRuleRecord:
+            existing = connection.execute(
+                """SELECT * FROM cowork_approval_rules
+                   WHERE conversation_id = ? AND tool = ? AND match_kind = ?
+                     AND IFNULL(target, '') = IFNULL(?, '')
+                     AND IFNULL(schedule_id, '') = IFNULL(?, '')
+                     AND revoked_at IS NULL""",
+                (
+                    str(conversation_id),
+                    tool,
+                    match_kind,
+                    target,
+                    None if schedule_id is None else str(schedule_id),
+                ),
+            ).fetchone()
+            if existing is not None:
+                return self._approval_rule_record(existing)
+            rule_id = uuid7()
+            connection.execute(
+                """INSERT INTO cowork_approval_rules(
+                       id, conversation_id, scope, schedule_id, tool, match_kind,
+                       target, created_by, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(rule_id),
+                    str(conversation_id),
+                    scope,
+                    None if schedule_id is None else str(schedule_id),
+                    tool,
+                    match_kind,
+                    target,
+                    created_by,
+                    _iso(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM cowork_approval_rules WHERE id = ?", (str(rule_id),)
+            ).fetchone()
+            return self._approval_rule_record(row)
+
+        return await self._write(operation)
+
+    async def list_approval_rules(
+        self, *, conversation_id: UUID, include_revoked: bool = False
+    ) -> list[ApprovalRuleRecord]:
+        def operation(connection: sqlite3.Connection) -> list[ApprovalRuleRecord]:
+            rows = connection.execute(
+                """SELECT * FROM cowork_approval_rules
+                   WHERE conversation_id = ? AND (? OR revoked_at IS NULL)
+                   ORDER BY created_at DESC""",
+                (str(conversation_id), 1 if include_revoked else 0),
+            ).fetchall()
+            return [self._approval_rule_record(row) for row in rows]
+
+        return await self._read(operation)
+
+    async def revoke_approval_rule(self, *, conversation_id: UUID, rule_id: UUID) -> bool:
+        return await self._write(
+            lambda connection: (
+                connection.execute(
+                    """UPDATE cowork_approval_rules SET revoked_at = ?
+                       WHERE id = ? AND conversation_id = ? AND revoked_at IS NULL""",
+                    (_iso(), str(rule_id), str(conversation_id)),
+                ).rowcount
+                == 1
+            )
+        )
+
     async def revoke_capability_grant(self, *, conversation_id: UUID, grant_id: UUID) -> bool:
         timestamp = _iso()
         return await self._write(
@@ -1613,6 +2240,17 @@ class SqliteCoworkStore:
             return [self._artifact_record(row, ArtifactRecord) for row in rows]
 
         return await self._read(operation)
+
+    async def list_run_artifacts(self, *, run_id: UUID) -> list[Any]:
+        return await self._read(
+            lambda connection: [
+                self._artifact_record(row, ArtifactRecord)
+                for row in connection.execute(
+                    "SELECT * FROM artifacts WHERE run_id = ? ORDER BY created_at, id",
+                    (str(run_id),),
+                ).fetchall()
+            ]
+        )
 
     async def create_attachment(
         self,
@@ -2102,6 +2740,18 @@ class SqliteCoworkStore:
             )
         )
 
+    async def list_plan_steps(self, *, run_id: UUID) -> list[Any]:
+        return await self._read(
+            lambda connection: [
+                dict(row)
+                for row in connection.execute(
+                    """SELECT id, step_idx, description, tool, status
+                       FROM agent_plan_steps WHERE run_id = ? ORDER BY step_idx""",
+                    (str(run_id),),
+                ).fetchall()
+            ]
+        )
+
     async def update_plan_step_status(self, *, run_id: UUID, step_id: UUID, status: str) -> None:
         await self._write(
             lambda connection: connection.execute(
@@ -2181,6 +2831,41 @@ class SqliteCoworkStore:
             )
         )
 
+    async def set_run_sleeping(self, *, run_id: UUID, worker_id: str, wake_at: datetime) -> bool:
+        return await self._write(
+            lambda connection: (
+                connection.execute(
+                    """UPDATE agent_runs SET status = 'sleeping', worker_id = NULL,
+                          lease_until = NULL, heartbeat_at = NULL, wake_at = ?, updated_at = ?
+                   WHERE id = ? AND worker_id = ? AND status = 'executing'""",
+                    (_iso(wake_at), _iso(), str(run_id), worker_id),
+                ).rowcount
+                == 1
+            )
+        )
+
+    async def claim_due_sleeping_runs(self, *, now: datetime, limit: int) -> list[UUID]:
+        """把到期的 sleeping run 转成 queued 并返回它们。
+
+        状态翻转和取出在同一条 UPDATE 里完成，tick 重复执行不会把同一个 run 入队两次。
+        """
+
+        def _claim(connection: Any) -> list[UUID]:
+            rows = connection.execute(
+                """UPDATE agent_runs SET status = 'queued', wake_at = NULL, updated_at = ?
+                   WHERE id IN (
+                       SELECT id FROM agent_runs
+                       WHERE status = 'sleeping' AND wake_at IS NOT NULL AND wake_at <= ?
+                         AND cancel_requested_at IS NULL
+                       ORDER BY wake_at LIMIT ?
+                   )
+                   RETURNING id""",
+                (_iso(), _iso(now), limit),
+            ).fetchall()
+            return [UUID(row[0]) for row in rows]
+
+        return await self._write(_claim)
+
     async def requeue_waiting_run(self, *, run_id: UUID) -> bool:
         return await self._write(
             lambda connection: (
@@ -2254,9 +2939,9 @@ class SqliteCoworkStore:
             changed = connection.execute(
                 """UPDATE agent_runs
                    SET cancel_requested_at = COALESCE(cancel_requested_at, ?),
-                       status = CASE WHEN status IN ('queued','waiting_human')
+                       status = CASE WHEN status IN ('queued','waiting_human','sleeping')
                                      THEN 'cancelled' ELSE status END,
-                       finished_at = CASE WHEN status IN ('queued','waiting_human')
+                       finished_at = CASE WHEN status IN ('queued','waiting_human','sleeping')
                                           THEN ? ELSE finished_at END,
                        updated_at = ?
                    WHERE id = ?""",
@@ -2280,7 +2965,7 @@ class SqliteCoworkStore:
                 """SELECT id FROM agent_runs
                    WHERE cancel_requested_at IS NOT NULL
                      AND status NOT IN ('done','failed','cancelled','budget_exceeded')
-                     AND (status IN ('queued','waiting_human')
+                     AND (status IN ('queued','waiting_human','sleeping')
                           OR (status = 'executing' AND (lease_until IS NULL OR lease_until < ?)))
                    ORDER BY updated_at LIMIT ?""",
                 (now, limit),
@@ -2337,6 +3022,76 @@ class SqliteCoworkStore:
             return {"cancelled": cancelled, "recovered": recovered, "failed": failed}
 
         return await self._write(operation)
+
+    @staticmethod
+    def _inbox_binding_record(row: sqlite3.Row) -> InboxBindingRecord:
+        return InboxBindingRecord(
+            id=UUID(row["id"]),
+            name=str(row["name"]),
+            platform=row["platform"],
+            chat_id=row["chat_id"],
+            connector_account_id=(
+                None
+                if row["connector_account_id"] is None
+                else UUID(row["connector_account_id"])
+            ),
+            enabled=bool(row["enabled"]),
+            created_at=cast(datetime, _datetime(row["created_at"])),
+        )
+
+    @staticmethod
+    def _channel_subscription_record(row: sqlite3.Row) -> ChannelSubscriptionRecord:
+        return ChannelSubscriptionRecord(
+            id=UUID(row["id"]),
+            conversation_id=UUID(row["conversation_id"]),
+            platform=row["platform"],
+            chat_id=str(row["chat_id"]),
+            connector_account_id=(
+                None
+                if row["connector_account_id"] is None
+                else UUID(row["connector_account_id"])
+            ),
+            created_at=cast(datetime, _datetime(row["created_at"])),
+            revoked_at=_datetime(row["revoked_at"]),
+        )
+
+    @staticmethod
+    def _thread_session_record(row: sqlite3.Row) -> ThreadSessionRecord:
+        return ThreadSessionRecord(
+            target=str(row["target"]),
+            conversation_id=UUID(row["conversation_id"]),
+            platform=row["platform"],
+            chat_id=str(row["chat_id"]),
+            thread_id=str(row["thread_id"]),
+            created_at=cast(datetime, _datetime(row["created_at"])),
+        )
+
+    @staticmethod
+    def _unrouted_record(row: sqlite3.Row) -> UnroutedRecord:
+        return UnroutedRecord(
+            id=UUID(row["id"]),
+            kind=row["kind"],
+            platform=row["platform"],
+            chat_id=row["chat_id"],
+            summary=str(row["summary"]),
+            payload=json.loads(row["payload"]),
+            created_at=cast(datetime, _datetime(row["created_at"])),
+        )
+
+    @staticmethod
+    def _approval_rule_record(row: sqlite3.Row) -> ApprovalRuleRecord:
+        return ApprovalRuleRecord(
+            id=UUID(row["id"]),
+            conversation_id=UUID(row["conversation_id"]),
+            scope=row["scope"],
+            schedule_id=None if row["schedule_id"] is None else UUID(row["schedule_id"]),
+            tool=str(row["tool"]),
+            match_kind=row["match_kind"],
+            target=row["target"],
+            created_by=str(row["created_by"]),
+            revoked_at=_datetime(row["revoked_at"]),
+            created_at=cast(datetime, _datetime(row["created_at"])),
+        )
 
     @staticmethod
     def _grant_record(row: sqlite3.Row, record_type: Any) -> Any:
@@ -2399,9 +3154,16 @@ class SqliteCoworkStore:
         key: str | None,
         content: str,
         source: str,
+        category: str = "fact",
+        confidence: float = 1.0,
+        pinned: bool = False,
+        valid_from: datetime | None = None,
+        source_message_id: UUID | None = None,
+        run_id: UUID | None = None,
     ) -> tuple[Any, Any]:
         memory_id = uuid7()
         timestamp = _iso()
+        effective_from = _iso(valid_from)
 
         def operation(connection: sqlite3.Connection) -> tuple[Any, Any]:
             previous: Any = None
@@ -2421,10 +3183,26 @@ class SqliteCoworkStore:
                 ).fetchone()
                 if row is not None:
                     previous = self._memory_record(row)
+                    if previous.pinned:
+                        # 置顶记忆是用户明确按住的那几条，模型的同 key 覆盖不能动它。
+                        raise PinnedMemoryError(str(previous.id))
                     connection.execute(
                         """UPDATE cowork_memories
-                           SET content = ?, source = ?, updated_at = ? WHERE id = ?""",
-                        (content, source, timestamp, str(previous.id)),
+                           SET content = ?, source = ?, category = ?, confidence = ?,
+                               valid_from = ?, source_message_id = ?, run_id = ?,
+                               updated_at = ?
+                           WHERE id = ?""",
+                        (
+                            content,
+                            source,
+                            category,
+                            confidence,
+                            effective_from,
+                            None if source_message_id is None else str(source_message_id),
+                            None if run_id is None else str(run_id),
+                            timestamp,
+                            str(previous.id),
+                        ),
                     )
                     updated = connection.execute(
                         "SELECT * FROM cowork_memories WHERE id = ?", (str(previous.id),)
@@ -2433,8 +3211,9 @@ class SqliteCoworkStore:
             connection.execute(
                 """INSERT INTO cowork_memories(
                        id, scope, conversation_id, workspace_path, key, content, source,
-                       created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       created_at, updated_at, category, confidence, pinned, valid_from,
+                       source_message_id, run_id
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     str(memory_id),
                     scope,
@@ -2445,6 +3224,12 @@ class SqliteCoworkStore:
                     source,
                     timestamp,
                     timestamp,
+                    category,
+                    confidence,
+                    int(pinned),
+                    effective_from,
+                    None if source_message_id is None else str(source_message_id),
+                    None if run_id is None else str(run_id),
                 ),
             )
             row = connection.execute(
@@ -2546,6 +3331,274 @@ class SqliteCoworkStore:
 
         return await self._read(operation)
 
+    async def supersede_cowork_memory(
+        self,
+        *,
+        memory_id: UUID,
+        successor_id: UUID | None,
+        invalid_at: datetime,
+    ) -> Any | None:
+        """让一条记忆失效，而不是覆盖它。
+
+        ADR-0005 的时序有效性：`invalid_at` 记的是"从这一刻起不再成立"，不是"这一刻
+        被删掉"。乱序到达的抽取结果（模型今天才提炼出上个月的偏好）也靠它落位——
+        新的 invalid_at 只有比现有的更早才写，否则会把一条已经失效的记忆"复活"到
+        更晚的时刻。
+        """
+
+        timestamp = _iso()
+        moment = _iso(invalid_at)
+
+        def operation(connection: sqlite3.Connection) -> Any | None:
+            row = connection.execute(
+                "SELECT * FROM cowork_memories WHERE id = ?", (str(memory_id),)
+            ).fetchone()
+            if row is None:
+                return None
+            if row["pinned"]:
+                raise PinnedMemoryError(str(memory_id))
+            existing = row["invalid_at"]
+            if existing is not None and existing <= moment:
+                return self._memory_record(row)
+            connection.execute(
+                """UPDATE cowork_memories
+                   SET invalid_at = ?, superseded_by = ?, updated_at = ?
+                   WHERE id = ?""",
+                (
+                    moment,
+                    None if successor_id is None else str(successor_id),
+                    timestamp,
+                    str(memory_id),
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM cowork_memories WHERE id = ?", (str(memory_id),)
+            ).fetchone()
+            return self._memory_record(updated)
+
+        return await self._write(operation)
+
+    async def set_cowork_memory_pinned(self, *, memory_id: UUID, pinned: bool) -> Any | None:
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> Any | None:
+            changed = connection.execute(
+                "UPDATE cowork_memories SET pinned = ?, updated_at = ? WHERE id = ?",
+                (int(pinned), timestamp, str(memory_id)),
+            ).rowcount
+            if not changed:
+                return None
+            row = connection.execute(
+                "SELECT * FROM cowork_memories WHERE id = ?", (str(memory_id),)
+            ).fetchone()
+            return self._memory_record(row)
+
+        return await self._write(operation)
+
+    async def touch_cowork_memories(self, *, memory_ids: list[UUID]) -> None:
+        """记一次命中。看板按 access_count 排"哪些记忆真的在起作用"。"""
+
+        if not memory_ids:
+            return
+        timestamp = _iso()
+        placeholders = ",".join("?" for _ in memory_ids)
+
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                f"""UPDATE cowork_memories
+                    SET access_count = access_count + 1, last_used_at = ?
+                    WHERE id IN ({placeholders})""",
+                (timestamp, *(str(item) for item in memory_ids)),
+            )
+
+        await self._write(operation)
+
+    async def list_cowork_memories_by_validity(
+        self, *, active: bool, limit: int
+    ) -> list[Any]:
+        """记忆面板的两个视图：当前生效 / 已失效的历史。"""
+
+        clause = (
+            "forgotten_at IS NULL AND invalid_at IS NULL"
+            if active
+            else "invalid_at IS NOT NULL"
+        )
+        order = "pinned DESC, valid_from DESC, id DESC" if active else "invalid_at DESC, id DESC"
+
+        def operation(connection: sqlite3.Connection) -> list[Any]:
+            rows = connection.execute(
+                f"SELECT * FROM cowork_memories WHERE {clause} ORDER BY {order} LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [self._memory_record(row) for row in rows]
+
+        return await self._read(operation)
+
+    # ---- 记忆抽取作业 ----------------------------------------------------------
+
+    async def schedule_memory_extraction(
+        self,
+        *,
+        run_id: UUID,
+        conversation_id: UUID | None,
+        source_message_id: UUID | None,
+        content: str,
+        source_created_at: datetime,
+    ) -> Any | None:
+        """按 run 幂等入队；已存在时返回既有作业，不重置重试计数。"""
+
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> Any | None:
+            connection.execute(
+                """INSERT INTO memory_extraction_jobs(
+                       id, run_id, conversation_id, source_message_id, content,
+                       source_created_at, available_at, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(run_id) DO NOTHING""",
+                (
+                    str(uuid7()),
+                    str(run_id),
+                    None if conversation_id is None else str(conversation_id),
+                    None if source_message_id is None else str(source_message_id),
+                    content,
+                    _iso(source_created_at),
+                    timestamp,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM memory_extraction_jobs WHERE run_id = ?", (str(run_id),)
+            ).fetchone()
+            return None if row is None else self._memory_job_record(row)
+
+        return await self._write(operation)
+
+    async def claim_memory_job(
+        self, *, job_id: UUID, worker_id: str, lease_s: int, max_attempts: int
+    ) -> Any | None:
+        now = _iso()
+        lease_until = _iso(_now() + timedelta(seconds=lease_s))
+
+        def operation(connection: sqlite3.Connection) -> Any | None:
+            changed = connection.execute(
+                """UPDATE memory_extraction_jobs
+                   SET status = 'running', worker_id = ?, lease_until = ?,
+                       attempts = attempts + 1, error = NULL, updated_at = ?
+                   WHERE id = ?
+                     AND attempts < ?
+                     AND available_at <= ?
+                     AND (status = 'queued' OR (status = 'running' AND lease_until < ?))""",
+                (worker_id, lease_until, now, str(job_id), max_attempts, now, now),
+            ).rowcount
+            if not changed:
+                return None
+            row = connection.execute(
+                "SELECT * FROM memory_extraction_jobs WHERE id = ?", (str(job_id),)
+            ).fetchone()
+            return self._memory_job_record(row)
+
+        return await self._write(operation)
+
+    async def complete_memory_job(self, *, job_id: UUID, worker_id: str) -> bool:
+        now = _iso()
+
+        def operation(connection: sqlite3.Connection) -> bool:
+            return bool(
+                connection.execute(
+                    """UPDATE memory_extraction_jobs
+                       SET status = 'done', worker_id = NULL, lease_until = NULL,
+                           finished_at = ?, error = NULL, updated_at = ?
+                       WHERE id = ? AND status = 'running' AND worker_id = ?""",
+                    (now, now, str(job_id), worker_id),
+                ).rowcount
+            )
+
+        return await self._write(operation)
+
+    async def retry_or_fail_memory_job(
+        self, *, job_id: UUID, worker_id: str, error: str, max_attempts: int, retry_delay_s: int
+    ) -> str | None:
+        now = _now()
+
+        def operation(connection: sqlite3.Connection) -> str | None:
+            row = connection.execute(
+                "SELECT attempts FROM memory_extraction_jobs WHERE id = ? AND worker_id = ?",
+                (str(job_id), worker_id),
+            ).fetchone()
+            if row is None:
+                return None
+            exhausted = int(row["attempts"]) >= max_attempts
+            connection.execute(
+                """UPDATE memory_extraction_jobs
+                   SET status = ?, worker_id = NULL, lease_until = NULL, error = ?,
+                       available_at = ?, finished_at = ?, updated_at = ?
+                   WHERE id = ? AND worker_id = ?""",
+                (
+                    "failed" if exhausted else "queued",
+                    error[:2_000],
+                    _iso(now if exhausted else now + timedelta(seconds=retry_delay_s)),
+                    _iso(now) if exhausted else None,
+                    _iso(now),
+                    str(job_id),
+                    worker_id,
+                ),
+            )
+            return "failed" if exhausted else "queued"
+
+        return await self._write(operation)
+
+    async def list_dispatchable_memory_jobs(
+        self, *, max_attempts: int, limit: int = 100
+    ) -> list[tuple[UUID, int]]:
+        """扫出可派发作业，并把重试耗尽的收敛成 failed。
+
+        没有这一步，attempts 打满的作业会永远留在 running 里既不跑也不失败——
+        对着一个"看起来还在进行"的作业没人会去查。
+        """
+
+        now = _iso()
+
+        def operation(connection: sqlite3.Connection) -> list[tuple[UUID, int]]:
+            connection.execute(
+                """UPDATE memory_extraction_jobs
+                   SET status = 'failed', worker_id = NULL, lease_until = NULL,
+                       finished_at = ?, updated_at = ?
+                   WHERE attempts >= ? AND status IN ('queued','running')
+                     AND (lease_until IS NULL OR lease_until < ?)""",
+                (now, now, max_attempts, now),
+            )
+            rows = connection.execute(
+                """SELECT id, attempts FROM memory_extraction_jobs
+                   WHERE attempts < ? AND available_at <= ?
+                     AND (status = 'queued' OR (status = 'running' AND lease_until < ?))
+                   ORDER BY available_at, id LIMIT ?""",
+                (max_attempts, now, now, limit),
+            ).fetchall()
+            return [(UUID(row["id"]), int(row["attempts"])) for row in rows]
+
+        return await self._write(operation)
+
+    @staticmethod
+    def _memory_job_record(row: sqlite3.Row) -> Any:
+        return MemoryExtractionJob(
+            id=UUID(row["id"]),
+            run_id=UUID(row["run_id"]),
+            conversation_id=(
+                None if row["conversation_id"] is None else UUID(row["conversation_id"])
+            ),
+            source_message_id=(
+                None if row["source_message_id"] is None else UUID(row["source_message_id"])
+            ),
+            content=str(row["content"]),
+            source_created_at=cast(datetime, _datetime(row["source_created_at"])),
+            status=row["status"],
+            attempts=int(row["attempts"]),
+            error=row["error"],
+            created_at=cast(datetime, _datetime(row["created_at"])),
+        )
+
     @staticmethod
     def _memory_record(row: sqlite3.Row) -> Any:
         return CoworkMemoryRecord(
@@ -2561,6 +3614,20 @@ class SqliteCoworkStore:
             created_at=cast(datetime, _datetime(row["created_at"])),
             updated_at=cast(datetime, _datetime(row["updated_at"])),
             forgotten_at=_datetime(row["forgotten_at"]),
+            category=row["category"],
+            confidence=float(row["confidence"]),
+            pinned=bool(row["pinned"]),
+            valid_from=_datetime(row["valid_from"]) or _datetime(row["created_at"]),
+            invalid_at=_datetime(row["invalid_at"]),
+            superseded_by=(
+                None if row["superseded_by"] is None else UUID(row["superseded_by"])
+            ),
+            access_count=int(row["access_count"]),
+            last_used_at=_datetime(row["last_used_at"]),
+            source_message_id=(
+                None if row["source_message_id"] is None else UUID(row["source_message_id"])
+            ),
+            run_id=None if row["run_id"] is None else UUID(row["run_id"]),
         )
 
     @staticmethod

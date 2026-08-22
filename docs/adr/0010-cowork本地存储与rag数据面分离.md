@@ -1,7 +1,16 @@
 # ADR-0010：Cowork 本地存储与 RAG 数据面分离
 
-- 状态：Accepted（桌面切换完成，服务端保留兼容后端）
+- 状态：Accepted，但**"分离"这一半已被 [ADR-0012](0012-退役postgres与redis改用本机文件.md) 吸收**（2026-08-22）
 - 日期：2026-08-19
+
+> 这条 ADR 决定的是"控制面下本地、数据面留 Postgres"这条分界。2026-08-22 起数据面
+> 也下了本地（`~/.workpilot/kb/<slug>/` 的 FAISS + BM25），分界线因此消失——不是被推翻，
+> 是两边合到了同一侧。**仍然有效的是下面那些不依赖分界线的部分**：JSONL 只承担
+> append-only 消息、SQLite 的 WAL/busy_timeout/短事务纪律、"任何模型或子进程调用期间
+> 不得持有事务"、以及 `knowledge.read` 是独立全局授权这一条。
+>
+> 已经失效的：表格最后一行（`documents / versions / blocks / chunks / embedding`
+> 那一整套 PostgreSQL 数据面）、"Web/集群部署保留 PostgreSQL + Redis/Arq 适配器"。
 
 ## 决策
 
@@ -13,7 +22,7 @@
 | run、event、checkpoint、plan、HITL、工具幂等租约、Scheduler | `cowork.db` |
 | 规范 user/assistant/tool 消息 | `conversations/<id>.jsonl` |
 | Skills、MCP 配置、附件、交付物、预览 | 应用数据目录文件系统 |
-| documents、versions、blocks、chunks、embedding、引用与检索评测 | PostgreSQL + pgvector |
+| ~~documents、versions、blocks、chunks、embedding、引用与检索评测~~ | ~~PostgreSQL + pgvector~~ → `~/.workpilot/kb/<slug>/`（ADR-0012） |
 
 `knowledge.read` 是独立的全局授权；资料库检索不得借用 `filesystem.read`，撤销该
 grant 后 `search_knowledge` 必须在进入 RAG 数据面前失败关闭。

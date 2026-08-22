@@ -3,6 +3,10 @@
 只负责"有新事件了, 去查库", 不传输事件内容。通知可以丢: 订阅方每次醒来和心跳
 超时都会重新查库, 数据库才是真相源(ADR-0007)。把事件内容塞进 pub/sub 会让在线
 推送和历史回放变成两条路径, 那正是要避免的不一致来源。
+
+**只有进程内一种实现。** Redis pub/sub 那条路是给"worker 与 SSE 分进程"准备的;
+API 与 worker 同进程之后没有跨进程可唤醒, 而"通知可以丢"这条前提让它删起来没有
+代价——真被丢了, 心跳超时那一轮照样查得到库里的新事件。
 """
 
 import asyncio
@@ -10,9 +14,6 @@ from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Protocol
 from uuid import UUID
-
-from redis.asyncio import Redis
-from redis.asyncio.client import PubSub
 
 
 class RunSubscription(Protocol):
@@ -29,34 +30,6 @@ class RunBus(Protocol):
 
 def run_channel(run_id: UUID) -> str:
     return f"run-events:{run_id}"
-
-
-class _RedisSubscription:
-    def __init__(self, pubsub: PubSub) -> None:
-        self._pubsub = pubsub
-
-    async def wait(self, timeout_s: float) -> bool:
-        message = await self._pubsub.get_message(ignore_subscribe_messages=True, timeout=timeout_s)
-        return message is not None
-
-
-class RedisRunBus:
-    """跨进程唤醒: worker 在 worker 进程, SSE 在 web 进程。"""
-
-    def __init__(self, redis: Redis) -> None:
-        self._redis = redis
-
-    async def publish(self, run_id: UUID) -> None:
-        await self._redis.publish(run_channel(run_id), "1")
-
-    @asynccontextmanager
-    async def subscribe(self, run_id: UUID) -> AsyncIterator[RunSubscription]:
-        pubsub = self._redis.pubsub()
-        await pubsub.subscribe(run_channel(run_id))
-        try:
-            yield _RedisSubscription(pubsub)
-        finally:
-            await pubsub.aclose()  # type: ignore[no-untyped-call]
 
 
 class _InMemorySubscription:

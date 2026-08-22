@@ -123,7 +123,7 @@ async def _connector_request(
     method: str,
     body: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    account = await get_connector_account(context.session, args.account_id)
+    account = get_connector_account(context.settings, args.account_id)
     if account is None:
         raise LookupError("连接器不存在")
     url, headers, query = _runtime_request(
@@ -164,7 +164,7 @@ async def _connector_request(
 
 def register_connector_tools(registry: CoworkToolRegistry) -> None:
     async def list_handler(context: CoworkToolContext, _: BaseModel) -> CoworkToolResult:
-        accounts = await list_connector_accounts(context.session)
+        accounts = list_connector_accounts(context.settings)
         return CoworkToolResult(output={"connectors": [_public_account(item) for item in accounts]})
 
     async def read_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
@@ -227,6 +227,9 @@ def register_connector_tools(registry: CoworkToolRegistry) -> None:
             parallel_safe=False,
             handler=action_handler,
             approval_required=True,
+            # 目标 = 哪个账户、什么方法、打到哪个 path。body 不在其中：同一个
+            # "给这个仓库建 issue"每次正文都不同，把正文算进目标就等于没有规则。
+            approval_target_fields=("account_id", "method", "path"),
         )
     )
     registry.add_system_instructions(

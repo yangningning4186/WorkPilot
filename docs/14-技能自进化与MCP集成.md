@@ -138,7 +138,14 @@ class Skill(TypedDict):
     stats: SkillStats              # uses / successes / last_used_at
 ```
 
-存 `skills` 表,embedding 建独立部分索引(不与 chunk/memory 混索引)。
+> **实现与本节不同(2026-08-21)**:没有 `skills` 表,也没有 skill embedding。
+> 已安装 Skill 是 `<skills_root>/<name>/SKILL.md`,蒸馏候选是
+> `<skills_candidates_root>/<capability_key>/{SKILL.md,meta.json,evidence/<run_id>}`,
+> 作业队列是同目录下的 `.queue/<run_id>.json`——目录即真相,参照 openworker
+> `coworker/skills/store.py` 的 folder-is-truth。检索靠 prompt 里的一行摘要 +
+> `load_skill` 按需读取,不靠向量召回;`provenance` 对应 `evidence/` 下的空文件。
+> 本节其余内容(时序有效性、`superseded_by`)尚未实现。
+
 
 ### 3.2 生命周期:抽取 → 合并 → 晋升 → 注入 → 退化
 

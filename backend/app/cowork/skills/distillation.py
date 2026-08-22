@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from typing import Any
 
 import yaml
 
-from app.cowork.skills.distillation_store import SkillJobSource
+from app.cowork.skills.candidate_store import SkillDistillationJob
 from workpilot_ai.gateway import ModelGateway
 from workpilot_ai.types import Message
 
@@ -59,7 +60,7 @@ class DistilledSkill:
 async def distill_skill_candidate(
     gateway: ModelGateway,
     *,
-    source: SkillJobSource,
+    source: SkillDistillationJob,
     max_tokens: int = 900,
 ) -> DistilledSkill | None:
     usable_tools = [
@@ -99,6 +100,38 @@ async def distill_skill_candidate(
                 )
             )
     raise SkillDistillationError("Skill 蒸馏没有返回结果")  # pragma: no cover
+
+
+def successful_tool_names(state: dict[str, Any]) -> list[str]:
+    pending: dict[str, str] = {}
+    successful: list[str] = []
+    messages = state.get("messages")
+    if not isinstance(messages, list):
+        return successful
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "assistant":
+            calls = message.get("tool_calls")
+            if not isinstance(calls, list):
+                continue
+            for call in calls:
+                if not isinstance(call, dict) or not isinstance(call.get("id"), str):
+                    continue
+                function = call.get("function")
+                if isinstance(function, dict) and isinstance(function.get("name"), str):
+                    pending[call["id"]] = function["name"]
+        elif message.get("role") == "tool":
+            call_id = message.get("tool_call_id")
+            if not isinstance(call_id, str) or call_id not in pending:
+                continue
+            try:
+                payload = json.loads(str(message.get("content") or ""))
+            except ValueError:
+                continue
+            if isinstance(payload, dict) and payload.get("ok") is True:
+                successful.append(pending[call_id])
+    return list(dict.fromkeys(successful))
 
 
 def parse_distilled_skill(raw: str, *, successful_tools: set[str]) -> DistilledSkill | None:

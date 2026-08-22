@@ -4,10 +4,10 @@ from uuid import UUID
 
 import httpx
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import require_owner_identity
 from app.core.config import Settings, get_settings
+from app.core.db import DbSession as AsyncSession
 from app.core.db import get_db_session
 from app.cowork.artifacts import register_artifact
 from app.cowork.permissions import (
@@ -23,7 +23,6 @@ from app.cowork.permissions import (
     revoke_session_root,
 )
 from app.main import create_app
-from app.platform.request_identity import RequestIdentity
 from app.runstore.runs import create_run, ensure_conversation
 
 pytestmark = pytest.mark.integration
@@ -31,7 +30,7 @@ pytestmark = pytest.mark.integration
 
 async def _owner_conversation(session: AsyncSession) -> UUID:
     conversation_id = await ensure_conversation(
-        session, scope="local_owner", title="Cowork 测试"
+        session, title="Cowork 测试"
     )
     await session.commit()
     return conversation_id
@@ -254,9 +253,7 @@ async def test_cowork_api_grants_root_once_and_lists_artifacts(
     app.dependency_overrides[get_settings] = lambda: Settings(
         app_env="test", cowork_enabled=True
     )
-    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(
-        scope="local_owner"
-    )
+    app.dependency_overrides[require_owner_identity] = lambda: None
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         created = await client.post(
@@ -327,9 +324,7 @@ async def test_artifact_preview_ignores_model_mime_and_sandboxes_text(
     app.dependency_overrides[get_settings] = lambda: Settings(
         app_env="test", cowork_enabled=True
     )
-    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(
-        scope="local_owner"
-    )
+    app.dependency_overrides[require_owner_identity] = lambda: None
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

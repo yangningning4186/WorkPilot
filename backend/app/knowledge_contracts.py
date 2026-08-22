@@ -14,7 +14,7 @@ ORM 或 SQLAlchemy——它是两个包共同的下游，一旦长出实现就�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
 from workpilot_ai.gateway import ModelGateway
@@ -26,6 +26,16 @@ class LibraryPathError(ValueError):
     """路径越出了资料库根目录，或文件类型不被允许。
 
     两个产品都要用：RAG 入库时校验来源路径，Cowork 编辑器校验授权目录边界。
+    """
+
+
+class KnowledgeUnavailableError(RuntimeError):
+    """检索这次做不了：库不存在、还没建索引、或索引与当前 embedding 对不上。
+
+    存在的理由是 Cowork 需要 catch 它，而 Cowork 不能 import `app.rag`。各后端的具体
+    异常（`KbNotFoundError` / `KbIndexError`）继承这个类，Cowork 侧只认这一个类型。
+
+    消息按约束 4 写成可执行指令，可以原样递给模型或用户。
     """
 
 
@@ -57,6 +67,14 @@ class RagSearchRequest:
     candidate_k: int = 20
     strategy: ChunkStrategy = "heading"
     max_evidence_chars: int = 12_000
+    # 在哪个命名知识库里搜。None = 由后端自己决定（本地 KB 在只有一个库时用那一个，
+    # 有多个则报错而不是随便挑）。
+    #
+    # 放在请求里而不是加进 `RagService.search` 的签名，是为了让不支持命名库的后端不必
+    # 长出一个它兑现不了的参数。但**不支持不等于可以忽略**：拿到非空 slug 却当没看见，
+    # 回答会带着看起来很正经的出处，而那些出处来自另一份资料。这类后端必须显式抛
+    # `KnowledgeUnavailableError`。
+    kb_slug: str | None = None
 
 
 @dataclass(frozen=True)
@@ -68,7 +86,12 @@ class EvidenceBundle:
     backend: str
 
 
+@runtime_checkable
 class RagService(Protocol):
+    """`runtime_checkable` 是给组装根用的：worker 要判断 ctx 里注入的那个对象是不是
+    一个 rag。只查方法名存不存在，不查签名——够用，且不需要为此在 ctx 里另立一个标记。
+    """
+
     async def search(
         self,
         gateway: ModelGateway,

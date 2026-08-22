@@ -1,9 +1,12 @@
 import copy
+import json
 
 from app.agent_core.budget import BudgetedGateway, BudgetMeter
 from app.agent_core.compaction import (
     OutboundCompactor,
+    build_outbound_messages,
     default_compaction_state,
+    normalize_compaction_state,
 )
 from app.cowork.runtime import COWORK_COMPACTION_PROMPTS
 from tests.fakes import DeterministicProvider, review_budget
@@ -62,6 +65,69 @@ def _compactor(
         decision_max_tokens=200,
     )
     return compactor, meter
+
+
+def test_ephemeral_suffix_rides_at_the_tail_and_never_touches_canonical() -> None:
+    """临时上下文必须落在视图末尾，且不写回 canonical。
+
+    位置就是全部代价：provider 的 prompt cache 按前缀命中，块放得越靠前，它一变就作废
+    得越多。放末尾时，前面所有轮次照旧复用；放 system（第 0 条）则等于全废。
+    """
+
+    canonical = [
+        {"role": "user", "content": "整理这些表"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "list_files", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "content": '{"ok":true}'},
+    ]
+    compaction = normalize_compaction_state(None, message_count=len(canonical))
+
+    view = build_outbound_messages(
+        canonical,
+        compaction,
+        system_prompt="SYS",
+        prompts=COWORK_COMPACTION_PROMPTS,
+        ephemeral_suffix="<session_state>TAIL</session_state>",
+    )
+
+    assert view[0].role == "system" and view[0].content == "SYS"
+    assert view[-1].role == "user" and "TAIL" in view[-1].content
+    # 工具链原样保留，末尾块不插在 assistant 与它的 tool result 之间。
+    assert [item.role for item in view] == ["system", "user", "assistant", "tool", "user"]
+    assert all("TAIL" not in json.dumps(item, ensure_ascii=False) for item in canonical)
+    # 不传就不该凭空多出一条消息。
+    plain = build_outbound_messages(
+        canonical, compaction, system_prompt="SYS", prompts=COWORK_COMPACTION_PROMPTS
+    )
+    assert len(plain) == len(view) - 1
+
+
+def test_summary_prompt_mandates_the_sections_that_get_dropped_first() -> None:
+    """摘要是这些轮次的唯一记忆，自由格式最先丢的就是最贵的两样东西。
+
+    一是早先提出的长期约束——它的效力超出被提出的那一轮，丢了模型就会违反它；二是
+    用户消息原文，转述会丢掉他真正在意的措辞。所以两者必须是强制小节，而不是"尽量保留"。
+    """
+
+    prompt = COWORK_COMPACTION_PROMPTS.system_prompt
+
+    for section in (
+        "原始目标与长期约束",
+        "关键决定与理由",
+        "文件与产物",
+        "错误与修正",
+        "全部用户消息",
+        "未完成事项",
+        "当前进行到哪一步",
+        "下一步",
+    ):
+        assert section in prompt, section
+    assert "约束的效力超出提出它的那一轮" in prompt
+    # `_parse_summary` 按这个契约解析，换措辞可以，换输出格式不行。
+    assert '{"summary"' in prompt
+    # 不可信数据边界不能因为改措辞被删掉。
+    assert "不可信数据" in prompt
 
 
 async def test_compaction_only_changes_outbound_view_and_keeps_canonical_suffix() -> None:

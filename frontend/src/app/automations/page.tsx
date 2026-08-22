@@ -9,12 +9,18 @@ import {
   createCoworkSchedule,
   deleteCoworkSchedule,
   fetchCoworkSchedules,
+  fetchInboxBindings,
   fetchUnattendedInbox,
+  fetchUnrouted,
   respondToCoworkInteraction,
   runCoworkSchedule,
   updateCoworkSchedule,
+  upsertInboxBinding,
+  deleteInboxBinding,
   type CoworkSchedule,
+  type InboxBinding,
   type UnattendedInboxItem,
+  type UnroutedEntry,
 } from "@/lib/api";
 import { pickCoworkDirectory } from "@/lib/desktop";
 
@@ -70,6 +76,9 @@ export default function AutomationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [bindings, setBindings] = useState<InboxBinding[]>([]);
+  const [unrouted, setUnrouted] = useState<UnroutedEntry[]>([]);
+  const [chatId, setChatId] = useState("");
   const [title, setTitle] = useState("");
   const [goal, setGoal] = useState("");
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
@@ -90,12 +99,16 @@ export default function AutomationsPage() {
   const reload = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
     try {
-      const [scheduleData, inboxData] = await Promise.all([
+      const [scheduleData, inboxData, bindingData, unroutedData] = await Promise.all([
         fetchCoworkSchedules(),
         fetchUnattendedInbox(),
+        fetchInboxBindings().catch(() => ({ items: [] })),
+        fetchUnrouted(20).catch(() => ({ items: [] })),
       ]);
       setSchedules(scheduleData.items);
       setInbox(inboxData.items);
+      setBindings(bindingData.items);
+      setUnrouted(unroutedData.items);
       setError(null);
     } catch (reason) {
       setError(readableError(reason));
@@ -111,6 +124,33 @@ export default function AutomationsPage() {
       window.clearTimeout(initial);
       window.clearInterval(timer);
     };
+  }, [reload]);
+
+  const bindDefaultInbox = useCallback(async () => {
+    const normalized = chatId.trim();
+    if (normalized === "") return;
+    setBusy("bind");
+    try {
+      await upsertInboxBinding("default", { platform: "feishu", chat_id: normalized });
+      setChatId("");
+      await reload(true);
+    } catch (reason) {
+      setError(readableError(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, [chatId, reload]);
+
+  const unbindInbox = useCallback(async (name: string) => {
+    setBusy("bind");
+    try {
+      await deleteInboxBinding(name);
+      await reload(true);
+    } catch (reason) {
+      setError(readableError(reason));
+    } finally {
+      setBusy(null);
+    }
   }, [reload]);
 
   async function submitSchedule() {
@@ -245,6 +285,34 @@ export default function AutomationsPage() {
         <aside className="automation-inbox-column">
           <header className="automation-section-title"><div><span>UNATTENDED INBOX</span><h2>等待你的决定</h2></div><small className={pendingCount > 0 ? "badge" : ""}>{pendingCount}</small></header>
           {inbox.length === 0 ? <div className="automation-inbox-empty"><span>✓</span><strong>收件箱已清空</strong><p>无人值守任务需要你时，会安全暂停并出现在这里。</p></div> : <div className="automation-inbox-list">{inbox.map((item) => <article className="automation-inbox-item" key={item.id}><header><span>{kindLabel(item.kind)}</span><time>{formatDate(item.created_at)}</time></header><h3>{item.schedule_title ?? "无人值守任务"}</h3><p>{requestText(item)}</p>{item.kind === "shell_approval" && typeof item.request.command === "string" && <code>{item.request.command}</code>}{item.kind === "external_approval" && <code>{JSON.stringify(item.request.arguments ?? {})}</code>}{item.kind === "ask_user" && <textarea onChange={(event) => setAnswers((value) => ({ ...value, [item.id]: event.target.value }))} placeholder="输入答复后继续运行…" value={answers[item.id] ?? ""} />}<footer><button disabled={busy !== null} onClick={() => void resolveInbox(item, false)} type="button">{item.kind === "ask_user" ? "跳过，由 Cowork 判断" : "拒绝"}</button><button className={item.kind === "shell_approval" || item.kind === "external_approval" ? "approve danger" : "approve"} disabled={busy !== null || (item.kind === "ask_user" && !(answers[item.id] ?? "").trim())} onClick={() => void resolveInbox(item, true)} type="button">{item.kind === "ask_user" ? "回复并继续" : item.kind === "directory_request" ? "选择目录并允许" : "允许一次"}</button></footer></article>)}</div>}
+          <section className="automation-messaging">
+            <h3>把审批送到飞书</h3>
+            <p>绑定之后，这些请求会同时以卡片形式发到指定群，点按钮就能批准或拒绝。应用内收件箱仍然是准的那一份——发不出去只是没镜像出去，请求不会丢。</p>
+            {bindings.filter((item) => item.chat_id !== null).map((binding) => (
+              <div className="automation-messaging-row" key={binding.id}>
+                <div><strong>{binding.name}</strong><small>{binding.platform} · {binding.chat_id}</small></div>
+                <button disabled={busy !== null} onClick={() => void unbindInbox(binding.name)} type="button">解绑</button>
+              </div>
+            ))}
+            <div className="automation-messaging-form">
+              <input onChange={(event) => setChatId(event.target.value)} placeholder="飞书群 chat_id，例如 oc_xxx" value={chatId} />
+              <button disabled={busy !== null || chatId.trim() === ""} onClick={() => void bindDefaultInbox()} type="button">绑定</button>
+            </div>
+            <small>开放式提问不会做成按钮：那种要打字的答复请回应用里给。</small>
+          </section>
+
+          {unrouted.length > 0 && (
+            <section className="automation-messaging">
+              <h3>没能投递的消息</h3>
+              <p>这些入站消息没有找到该由谁处理。留在这里是为了让「我说了一句什么都没发生」能查得到原因；它们不会被重投。</p>
+              {unrouted.slice(0, 6).map((entry) => (
+                <div className="automation-messaging-row" key={entry.id}>
+                  <div><strong>{entry.summary}</strong><small>{entry.chat_id ?? entry.kind} · {formatDate(entry.created_at)}</small></div>
+                </div>
+              ))}
+            </section>
+          )}
+
           <Link className="automation-open-cowork" href="/cowork">打开 Cowork 运行记录 →</Link>
         </aside>
       </section>

@@ -41,6 +41,7 @@ eval/outputs/
 eval/snapshots/*.json
 !eval/snapshots/retrieval.json
 !eval/snapshots/generation.json
+!eval/snapshots/cowork.json
 
 # 系统
 .DS_Store
@@ -60,3 +61,6 @@ logs/
 
 # 实验跑批产物（体积大且可复现，台账里记结论即可）
 eval/outputs/pareto/
+
+# 自动蒸馏的 Skill 候选：模型对着本机运行历史提的建议，随机器走，不进仓库
+skills-candidates/

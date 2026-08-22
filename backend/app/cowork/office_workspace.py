@@ -17,18 +17,23 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from docx import Document
 from docx.text.paragraph import Paragraph
 from openpyxl import load_workbook  # type: ignore[import-untyped]
 from openpyxl.utils.cell import coordinate_to_tuple  # type: ignore[import-untyped]
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_core.budget import CompletionClient
 from app.core.config import Settings
-from app.cowork.permissions import Capability, PathAuthorization, authorize_path
+from app.core.db import DbSession as AsyncSession
+from app.cowork.permissions import (
+    Capability,
+    PathAuthorization,
+    authorize_path,
+    list_capability_grants,
+    list_session_roots,
+)
 from app.docedit import (
     DocumentConflictError,
     DocumentNotEditableError,
@@ -36,7 +41,6 @@ from app.docedit import (
     generate_text_replacement,
 )
 from app.knowledge_contracts import LibraryPathError
-from app.rag.markdown_ingestion import ingest_markdown_file
 from app.schemas.editor import (
     WorkspaceFileResponse,
     WorkspaceFileSummary,
@@ -197,10 +201,8 @@ class CoworkOfficeFile:
     updated_at_ns: int
 
 
-async def list_workspace_files(
-    session: AsyncSession, *, settings: Settings
-) -> list[WorkspaceFileSummary]:
-    sources = await _load_sources(session, settings.local_library_path)
+async def list_workspace_files(*, settings: Settings) -> list[WorkspaceFileSummary]:
+    sources = _workspace_sources(settings)
     scanned = await asyncio.gather(
         *(
             asyncio.to_thread(
@@ -224,12 +226,8 @@ async def list_workspace_files(
     )
 
 
-async def get_workspace_file(
-    session: AsyncSession, *, file_id: str, settings: Settings
-) -> WorkspaceFileResponse:
-    record = await _resolve_workspace_record(
-        session, file_id=file_id, allowed_root=settings.local_library_path
-    )
+async def get_workspace_file(*, file_id: str, settings: Settings) -> WorkspaceFileResponse:
+    record = _resolve_workspace_record(settings, file_id=file_id)
     snapshot = await asyncio.to_thread(
         _read_raw_snapshot, record.path, settings.workspace_max_file_bytes
     )
@@ -243,43 +241,33 @@ async def list_cowork_office_files(
     conversation_id: UUID,
     settings: Settings,
 ) -> list[CoworkOfficeFile]:
-    """只枚举当前会话实际拥有 filesystem.read grant 的 Office 文件。"""
+    """只枚举当前会话实际拥有 filesystem.read grant 的 Office 文件。
 
-    rows = (
-        (
-            await session.execute(
-                text(
-                    """
-                    SELECT DISTINCT sr.id, sr.label, sr.canonical_path
-                    FROM session_roots sr
-                    JOIN capability_grants cg
-                      ON cg.session_root_id = sr.id
-                     AND cg.conversation_id = sr.conversation_id
-                    WHERE sr.conversation_id = :conversation_id
-                      AND sr.enabled = true
-                      AND cg.capability = 'filesystem.read'
-                      AND cg.revoked_at IS NULL
-                      AND (cg.expires_at IS NULL OR cg.expires_at > now())
-                    ORDER BY sr.canonical_path
-                    """
-                ),
-                {"conversation_id": conversation_id},
-            )
-        )
-        .mappings()
-        .all()
+    走 permissions 里那两个已有的读函数，而不是自己拼一条 JOIN：它们各自带着
+    SQLite/PostgreSQL 双路，绕过去就等于在 SQLite 后端下永远返回空列表。
+    """
+
+    roots = await list_session_roots(session, conversation_id=conversation_id)
+    readable = {
+        grant.session_root_id
+        for grant in await list_capability_grants(session, conversation_id=conversation_id)
+        if grant.capability == "filesystem.read" and grant.active
+    }
+    granted = sorted(
+        (root for root in roots if root.enabled and root.id in readable),
+        key=lambda root: root.canonical_path,
     )
     scanned = await asyncio.gather(
         *(
             asyncio.to_thread(
                 _scan_cowork_office_root,
-                UUID(str(row["id"])),
-                str(row["label"]),
-                Path(str(row["canonical_path"])),
+                root.id,
+                root.label,
+                Path(root.canonical_path),
                 settings.workspace_max_files,
                 settings.workspace_max_scan_entries,
             )
-            for row in rows
+            for root in granted
         )
     )
     items = [item for root_items in scanned for item in root_items]
@@ -353,7 +341,6 @@ async def execute_cowork_office_instruction(
 
 
 async def execute_workspace_instruction(
-    session: AsyncSession,
     gateway: ModelGateway,
     *,
     file_id: str,
@@ -364,9 +351,7 @@ async def execute_workspace_instruction(
     selection_end: int,
     settings: Settings,
 ) -> WorkspaceInstructionResponse:
-    record = await _resolve_workspace_record(
-        session, file_id=file_id, allowed_root=settings.local_library_path
-    )
+    record = _resolve_workspace_record(settings, file_id=file_id)
     snapshot = await asyncio.to_thread(
         _read_raw_snapshot, record.path, settings.workspace_max_file_bytes
     )
@@ -384,11 +369,9 @@ async def execute_workspace_instruction(
             selection_end=selection_end,
             settings=settings,
         )
-        await session.commit()
-        await _maybe_reindex_markdown(session, gateway, record=record)
     else:
         return await _execute_office_record_instruction(
-            session,
+            None,
             gateway,
             record=record,
             snapshot=snapshot,
@@ -408,7 +391,7 @@ async def execute_workspace_instruction(
 
 
 async def _execute_office_record_instruction(
-    session: AsyncSession,
+    session: AsyncSession | None,
     gateway: CompletionClient,
     *,
     record: _WorkspaceRecord,
@@ -427,7 +410,8 @@ async def _execute_office_record_instruction(
             document=document_model,
             settings=settings,
         )
-        await session.commit()
+        if session is not None:
+            await session.commit()
         applied = await asyncio.to_thread(
             _apply_word_plan,
             record,
@@ -447,7 +431,8 @@ async def _execute_office_record_instruction(
             document=workbook_model,
             settings=settings,
         )
-        await session.commit()
+        if session is not None:
+            await session.commit()
         applied = await asyncio.to_thread(
             _apply_excel_plan,
             record,
@@ -847,32 +832,31 @@ def _scan_cowork_office_root(
     return items
 
 
-async def _load_sources(session: AsyncSession, allowed_root: Path) -> list[_SourceRecord]:
-    rows = (
-        (
-            await session.execute(
-                text(
-                    """
-                    SELECT id, name, config
-                    FROM sources
-                    WHERE kind='local_dir' AND enabled=true
-                    ORDER BY created_at
-                    """
-                )
-            )
+_WORKSPACE_NAMESPACE = UUID("6f9a3a0e-52c4-4f6b-9c2e-1f0d5a7b8c31")
+
+
+def _workspace_sources(settings: Settings) -> list[_SourceRecord]:
+    """本机办公工作台的扫描根。
+
+    原来读 `sources` 表里 `kind='local_dir'` 的行——那张表由已经退役的 RAG 资料库
+    页面维护，现在没有任何代码往里写，于是这个列表恒为空，`/workspace` 页面永远
+    是空的。改成直接扫桌面工作区根目录，和 Cowork 用的是同一个位置。
+
+    source_id 由路径推导成稳定 UUID5：`file_id` 是 `<source_id>:<相对路径>`，
+    随机 id 会让上一次列表里的 file_id 在下次刷新后全部失效。
+    """
+
+    root_value = settings.cowork_default_workspace_path.expanduser()
+    if not root_value.is_dir():
+        return []
+    root = _validate_root(root_value, root_value)
+    return [
+        _SourceRecord(
+            id=uuid5(_WORKSPACE_NAMESPACE, str(root)),
+            name=root.name or str(root),
+            root=root,
         )
-        .mappings()
-        .all()
-    )
-    await session.rollback()
-    sources: list[_SourceRecord] = []
-    for row in rows:
-        root_value = row["config"].get("root") if isinstance(row["config"], dict) else None
-        if not isinstance(root_value, str) or not root_value:
-            continue
-        root = _validate_root(Path(root_value), allowed_root)
-        sources.append(_SourceRecord(id=row["id"], name=str(row["name"]), root=root))
-    return sources
+    ]
 
 
 def _scan_source(
@@ -953,38 +937,19 @@ def _iter_scanned_files(
                 return
 
 
-async def _resolve_workspace_record(
-    session: AsyncSession, *, file_id: str, allowed_root: Path
-) -> _WorkspaceRecord:
+def _resolve_workspace_record(settings: Settings, *, file_id: str) -> _WorkspaceRecord:
     source_id, source_uri = _decode_file_id(file_id)
-    row = (
-        (
-            await session.execute(
-                text(
-                    """
-                    SELECT id, name, config
-                    FROM sources
-                    WHERE id=:source_id AND kind='local_dir' AND enabled=true
-                    """
-                ),
-                {"source_id": source_id},
-            )
-        )
-        .mappings()
-        .one_or_none()
+    source = next(
+        (item for item in _workspace_sources(settings) if item.id == source_id), None
     )
-    await session.rollback()
-    if row is None:
+    if source is None:
         raise WorkspaceFileNotFoundError(file_id)
-    root_value = row["config"].get("root") if isinstance(row["config"], dict) else None
-    if not isinstance(root_value, str) or not root_value:
-        raise WorkspaceFileNotFoundError(file_id)
-    root = _validate_root(Path(root_value), allowed_root)
+    root = source.root
     path, kind = _resolve_file(root, source_uri)
     return _WorkspaceRecord(
         file_id=file_id,
         source_id=source_id,
-        source_name=str(row["name"]),
+        source_name=source.name,
         source_uri=source_uri,
         root=root,
         path=path,
@@ -1316,33 +1281,3 @@ def _json_value(value: object) -> object:
     if isinstance(value, str | int | float | bool) or value is None:
         return value
     return str(value)
-
-
-async def _maybe_reindex_markdown(
-    session: AsyncSession, gateway: ModelGateway, *, record: _WorkspaceRecord
-) -> None:
-    document_id = (
-        await session.execute(
-            text(
-                """
-                SELECT id FROM documents
-                WHERE source_id=:source_id AND source_uri=:source_uri AND deleted_at IS NULL
-                """
-            ),
-            {"source_id": record.source_id, "source_uri": record.source_uri},
-        )
-    ).scalar_one_or_none()
-    await session.rollback()
-    if document_id is None:
-        return
-    try:
-        await ingest_markdown_file(
-            session,
-            gateway,
-            path=record.path,
-            library_root=record.root,
-            source_id=record.source_id,
-        )
-    except Exception:
-        # 文件已经按授权成功写回且有备份；索引候选失败时旧版本继续服务，后续同步重试。
-        await session.rollback()

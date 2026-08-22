@@ -12,8 +12,7 @@ import httpx
 import pytest
 from docx import Document
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.api.dependencies import (
     get_run_bus,
@@ -21,7 +20,8 @@ from app.api.dependencies import (
     require_owner_identity,
 )
 from app.core.config import get_settings
-from app.core.db import get_db_session
+from app.core.db import DbSession as AsyncSession
+from app.core.db import SessionFactory, get_db_session, session_factory
 from app.core.run_bus import InMemoryRunBus
 from app.cowork.browser_tools import register_browser_tools
 from app.cowork.context_usage import get_cowork_context_usage
@@ -50,7 +50,6 @@ from app.cowork.tools import (
     build_default_cowork_registry,
 )
 from app.main import create_app
-from app.platform.request_identity import RequestIdentity
 from app.runstore.runs import (
     append_message,
     create_run,
@@ -61,6 +60,7 @@ from app.runstore.runs import (
     request_cancel,
 )
 from app.worker.cowork_run import _cowork_error_detail, _cowork_failure_message, cowork_run
+from tests.conftest import iso_ago
 from tests.fakes import DeterministicProvider
 from workpilot_ai.gateway import ModelGateway
 from workpilot_ai.providers.openai_compatible import ProviderContextOverflowError
@@ -101,13 +101,23 @@ def test_ppt_goal_exposes_native_artifact_without_word_edit_route() -> None:
     assert "edit_word" not in names
 
 
+def latest_checkpoint_state(store_sql, run_id) -> dict:
+    """SQLite 里 checkpoint 的 state 是 TEXT，取出来要自己反序列化。"""
+
+    rows = store_sql(
+        """SELECT state FROM agent_checkpoints
+           WHERE run_id = ? ORDER BY checkpoint_id DESC LIMIT 1""",
+        (str(run_id),),
+    )
+    return json.loads(rows[0]["state"])
+
+
 async def test_new_cowork_run_inherits_assistant_and_tool_history(
     db_session: AsyncSession,
-    tmp_path: Path,
+    tmp_path: Path, store_sql,
 ) -> None:
     conversation_id = await ensure_conversation(
         db_session,
-        scope="local_owner",
         title="Cowork 跨 run 上下文",
     )
     await create_session_root(
@@ -161,24 +171,16 @@ async def test_new_cowork_run_inherits_assistant_and_tool_history(
         ]
     )
     checkpoint.state["status"] = "done"
-    await db_session.execute(
-        text(
-            """
-            UPDATE agent_checkpoints
-            SET state = CAST(:state AS jsonb)
-            WHERE run_id = :run_id AND checkpoint_id = :checkpoint_id
-            """
+    store_sql(
+        """UPDATE agent_checkpoints SET state = ?
+           WHERE run_id = ? AND checkpoint_id = ?""",
+        (
+            json.dumps(checkpoint.state, ensure_ascii=False),
+            str(first.id),
+            checkpoint.checkpoint_id,
         ),
-        {
-            "state": json.dumps(checkpoint.state, ensure_ascii=False),
-            "run_id": first.id,
-            "checkpoint_id": checkpoint.checkpoint_id,
-        },
     )
-    await db_session.execute(
-        text("UPDATE agent_runs SET status = 'done' WHERE id = :run_id"),
-        {"run_id": first.id},
-    )
+    store_sql("UPDATE agent_runs SET status = 'done' WHERE id = ?", (str(first.id),))
     await append_message(
         db_session,
         conversation_id=conversation_id,
@@ -266,7 +268,7 @@ async def test_shell_rejects_read_only_cwd(
     tmp_path: Path,
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Read-only shell cwd"
+        db_session, title="Read-only shell cwd"
     )
     await create_session_root(
         db_session,
@@ -314,7 +316,7 @@ async def test_browser_open_requires_network_read_on_top_of_browser_control(
     """browser_open 的返回值就是完整页面快照，不能成为 network.read 的绕过路径。"""
 
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Browser capability split"
+        db_session, title="Browser capability split"
     )
     await create_session_root(
         db_session,
@@ -362,7 +364,7 @@ async def test_shell_requires_executor_approval_and_reuses_completed_invocation(
     db_session: AsyncSession, tmp_path: Path
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Shell executor guard"
+        db_session, title="Shell executor guard"
     )
     await create_session_root(
         db_session,
@@ -492,7 +494,7 @@ class CancellingCoworkProvider(NativeToolProvider):
 
     def __init__(
         self,
-        session_factory: async_sessionmaker[AsyncSession],
+        session_factory: SessionFactory,
         run_id: UUID,
     ) -> None:
         super().__init__(
@@ -620,7 +622,7 @@ async def test_granted_browser_control_clicks_without_inbox_round_trip(
     db_engine: AsyncEngine, db_session: AsyncSession
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork browser control"
+        db_session, title="Cowork browser control"
     )
     await grant_capability(
         db_session,
@@ -670,7 +672,7 @@ async def test_granted_browser_control_clicks_without_inbox_round_trip(
             "settings": get_settings().model_copy(
                 update={"cowork_max_steps": 4, "run_heartbeat_s": 60.0}
             ),
-            "session_factory": async_sessionmaker(db_engine, expire_on_commit=False),
+            "session_factory": session_factory,
             "bus": bus,
             "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
             "cowork_registry": registry,
@@ -689,7 +691,7 @@ async def test_batched_exclusive_browser_actions_are_rejected_without_execution(
     db_engine: AsyncEngine, db_session: AsyncSession
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork exclusive browser control"
+        db_session, title="Cowork exclusive browser control"
     )
     await grant_capability(
         db_session,
@@ -744,7 +746,7 @@ async def test_batched_exclusive_browser_actions_are_rejected_without_execution(
             "settings": get_settings().model_copy(
                 update={"cowork_max_steps": 4, "run_heartbeat_s": 60.0}
             ),
-            "session_factory": async_sessionmaker(db_engine, expire_on_commit=False),
+            "session_factory": session_factory,
             "bus": bus,
             "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
             "cowork_registry": registry,
@@ -768,7 +770,7 @@ async def test_batched_exclusive_browser_actions_are_rejected_without_execution(
 
 
 async def test_cowork_runner_lists_inspects_edits_word_and_registers_artifact(
-    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
+    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path, store_sql
 ) -> None:
     workspace = tmp_path / "cowork"
     workspace.mkdir()
@@ -779,7 +781,7 @@ async def test_cowork_runner_lists_inspects_edits_word_and_registers_artifact(
     baseline = hashlib.sha256(word_path.read_bytes()).hexdigest()
 
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork Runner"
+        db_session, title="Cowork Runner"
     )
     await create_session_root(
         db_session,
@@ -842,7 +844,7 @@ async def test_cowork_runner_lists_inspects_edits_word_and_registers_artifact(
     settings = get_settings().model_copy(update={"cowork_max_steps": 8, "run_heartbeat_s": 60.0})
     ctx = {
         "settings": settings,
-        "session_factory": async_sessionmaker(db_engine, expire_on_commit=False),
+        "session_factory": session_factory,
         "bus": bus,
         "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
         "cowork_registry": registry,
@@ -861,36 +863,18 @@ async def test_cowork_runner_lists_inspects_edits_word_and_registers_artifact(
     assert event_types.count("tool.result") == 3
     assert "artifact" in event_types
     assert "interrupt" not in event_types
-    artifact = (
-        (
-            await db_session.execute(
-                text(
-                    """
-                    SELECT uri, meta FROM artifacts
-                    WHERE run_id = :run_id
-                    """
-                ),
-                {"run_id": run.id},
-            )
-        )
-        .mappings()
-        .one()
-    )
+    artifact = store_sql(
+        "SELECT uri, meta FROM artifacts WHERE run_id = ?", (str(run.id),)
+    )[0]
     assert artifact["uri"] == str(word_path)
-    assert artifact["meta"]["change_count"] == 1
-    invocation = (
-        await db_session.execute(
-            text(
-                """
-                SELECT status, effect_ref FROM tool_invocations
-                WHERE run_id = :run_id AND tool_name = 'edit_word'
-                """
-            ),
-            {"run_id": run.id},
-        )
-    ).one()
-    assert invocation.status == "succeeded"
-    assert invocation.effect_ref.startswith(f"file:{word_path}#sha256=")
+    assert json.loads(artifact["meta"])["change_count"] == 1
+    invocation = store_sql(
+        """SELECT status, effect_ref FROM tool_invocations
+           WHERE run_id = ? AND tool_name = 'edit_word'""",
+        (str(run.id),),
+    )[0]
+    assert invocation["status"] == "succeeded"
+    assert invocation["effect_ref"].startswith(f"file:{word_path}#sha256=")
     assert provider.parallel_flags == [True, True, True, True]
     final_history = provider.tool_histories[-1]
     assistant_calls = [message for message in final_history if message.tool_calls]
@@ -920,7 +904,7 @@ async def test_cowork_repairs_invalid_edit_baseline_from_latest_structured_inspe
     baseline = hashlib.sha256(word_path.read_bytes()).hexdigest()
 
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork baseline repair"
+        db_session, title="Cowork baseline repair"
     )
     await create_session_root(
         db_session,
@@ -989,7 +973,7 @@ async def test_cowork_repairs_invalid_edit_baseline_from_latest_structured_inspe
     await cowork_run(
         {
             "settings": settings,
-            "session_factory": async_sessionmaker(db_engine, expire_on_commit=False),
+            "session_factory": session_factory,
             "bus": bus,
             "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
             "cowork_registry": registry,
@@ -1024,10 +1008,10 @@ async def test_cowork_repairs_invalid_edit_baseline_from_latest_structured_inspe
 
 
 async def test_cowork_runner_consumes_cancel_before_pending_tool(
-    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
+    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path, store_sql, message_status
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork cancel"
+        db_session, title="Cowork cancel"
     )
     await create_session_root(
         db_session,
@@ -1054,8 +1038,6 @@ async def test_cowork_runner_consumes_cancel_before_pending_tool(
     bus = InMemoryRunBus()
     registry = build_default_cowork_registry()
     await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
-
-    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     provider = CancellingCoworkProvider(session_factory, run.id)
     settings = get_settings().model_copy(update={"cowork_max_steps": 4, "run_heartbeat_s": 60.0})
     await cowork_run(
@@ -1084,37 +1066,16 @@ async def test_cowork_runner_consumes_cancel_before_pending_tool(
     assert any(
         event.type == "run.done" and event.payload.get("status") == "cancelled" for event in events
     )
-    assistant_status = (
-        await db_session.execute(
-            text(
-                """
-                SELECT status FROM messages
-                WHERE run_id = :run_id AND role = 'assistant'
-                """
-            ),
-            {"run_id": run.id},
-        )
-    ).scalar_one()
+    assistant_status = (await message_status(run.conversation_id, run.id, "assistant"))[0]
     assert assistant_status == "cancelled"
-    latest_state = (
-        await db_session.execute(
-            text(
-                """
-                SELECT state FROM agent_checkpoints
-                WHERE run_id = :run_id
-                ORDER BY created_at DESC, checkpoint_id DESC LIMIT 1
-                """
-            ),
-            {"run_id": run.id},
-        )
-    ).scalar_one()
+    latest_state = latest_checkpoint_state(store_sql, run.id)
     assert latest_state["messages"][-2]["tool_calls"][0]["id"] == "cancel-call"
     assert latest_state["messages"][-1]["role"] == "tool"
     assert latest_state["messages"][-1]["tool_call_id"] == "cancel-call"
 
 
 async def test_cowork_runner_executes_parallel_safe_read_batch_concurrently(
-    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
+    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path, store_sql
 ) -> None:
     active = 0
     max_active = 0
@@ -1149,7 +1110,7 @@ async def test_cowork_runner_executes_parallel_safe_read_batch_concurrently(
         )
 
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork parallel reads"
+        db_session, title="Cowork parallel reads"
     )
     await create_session_root(
         db_session,
@@ -1184,7 +1145,6 @@ async def test_cowork_runner_executes_parallel_safe_read_batch_concurrently(
             _final_completion("两个来源均已读取。"),
         ]
     )
-    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     await cowork_run(
         {
             "settings": get_settings().model_copy(
@@ -1209,18 +1169,7 @@ async def test_cowork_runner_executes_parallel_safe_read_batch_concurrently(
     events = await list_events(db_session, run_id=run.id, limit=200)
     assert [event.type for event in events].count("tool.start") == 2
     assert [event.type for event in events].count("tool.result") == 2
-    latest_state = (
-        await db_session.execute(
-            text(
-                """
-                SELECT state FROM agent_checkpoints
-                WHERE run_id = :run_id
-                ORDER BY created_at DESC, checkpoint_id DESC LIMIT 1
-                """
-            ),
-            {"run_id": run.id},
-        )
-    ).scalar_one()
+    latest_state = latest_checkpoint_state(store_sql, run.id)
     canonical = [message for message in latest_state["messages"] if message["role"] != "user"]
     assert canonical[0]["role"] == "assistant"
     assert [call["id"] for call in canonical[0]["tool_calls"]] == [
@@ -1235,12 +1184,12 @@ async def test_cowork_runner_executes_parallel_safe_read_batch_concurrently(
 
 
 async def test_cowork_todo_list_lands_in_state_and_is_pinned_for_the_next_turn(
-    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
+    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path, store_sql
 ) -> None:
     """清单要进 checkpoint 并钉进下一轮 system prompt，而不是只留在历史里。"""
 
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork todo list"
+        db_session, title="Cowork todo list"
     )
     await create_session_root(
         db_session,
@@ -1290,7 +1239,6 @@ async def test_cowork_todo_list_lands_in_state_and_is_pinned_for_the_next_turn(
             _final_completion("两步都已完成。"),
         ]
     )
-    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     await cowork_run(
         {
             "settings": get_settings().model_copy(
@@ -1312,18 +1260,7 @@ async def test_cowork_todo_list_lands_in_state_and_is_pinned_for_the_next_turn(
     assert refreshed is not None
     assert refreshed.status == "done"
 
-    latest_state = (
-        await db_session.execute(
-            text(
-                """
-                SELECT state FROM agent_checkpoints
-                WHERE run_id = :run_id
-                ORDER BY created_at DESC, checkpoint_id DESC LIMIT 1
-                """
-            ),
-            {"run_id": run.id},
-        )
-    ).scalar_one()
+    latest_state = latest_checkpoint_state(store_sql, run.id)
     # 整份替换而不是追加，且 completed 在入口就被归一成 done。
     assert latest_state["todos"] == [
         {"content": "读取源文件", "status": "done"},
@@ -1335,24 +1272,32 @@ async def test_cowork_todo_list_lands_in_state_and_is_pinned_for_the_next_turn(
     assert [item.payload["done"] for item in updates] == [0, 1]
     assert updates[-1].payload["todos"] == latest_state["todos"]
 
-    # 第一轮还没有清单；第二轮起 system prompt 必须带上它，压缩也不会把它冲掉。
-    first_system, second_system = (
-        provider.tool_histories[0][0].content,
-        provider.tool_histories[1][0].content,
-    )
-    assert "<current_todos>" not in first_system
-    assert "[>] 读取源文件" in second_system
-    assert "[ ] 生成报告" in second_system
-    assert "[x] 读取源文件" in provider.tool_histories[2][0].content
+    # 第一轮还没有清单；第二轮起它出现在 outbound 末尾的临时块里，压缩不会把它冲掉。
+    assert "<current_todos>" not in provider.tool_histories[0][-1].content
+    second_tail = provider.tool_histories[1][-1]
+    assert second_tail.role == "user"
+    assert "[>] 读取源文件" in second_tail.content
+    assert "[ ] 生成报告" in second_tail.content
+    assert "[x] 读取源文件" in provider.tool_histories[2][-1].content
+    # 清单每轮都在变，所以它必须留在 system prompt 之外：整个 run 里 system 逐字不变，
+    # provider 的前缀缓存才有意义。
+    systems = {history[0].content for history in provider.tool_histories}
+    assert len(systems) == 1
+    assert "<current_todos>" not in systems.pop()
 
 
-async def test_cowork_memory_is_injected_next_turn_and_emits_an_undoable_event(
+async def test_cowork_memory_snapshot_holds_for_a_run_and_refreshes_on_the_next_one(
     db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
 ) -> None:
-    """记住的事实要在下一轮就出现在 system prompt 里，并留下可撤销的事件。"""
+    """记忆在 run 起始快照一次，run 内不再变，下一条消息才刷新。
+
+    记忆进的是 system prompt，也就是 provider 前缀缓存的那一段。若每轮重新读库，模型
+    自己调一次 remember 就会让这一轮之后的每次调用都重新计费；而且它在一次 run 里
+    "知道什么"会在脚下变。代价是用户在记忆面板里的改动延后到下一条消息生效。
+    """
 
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork memory"
+        db_session, title="Cowork memory"
     )
     await create_session_root(
         db_session,
@@ -1408,7 +1353,6 @@ async def test_cowork_memory_is_injected_next_turn_and_emits_an_undoable_event(
             _final_completion("已经记住你偏好 Markdown 报告。"),
         ]
     )
-    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     await cowork_run(
         {
             "settings": get_settings().model_copy(
@@ -1430,12 +1374,12 @@ async def test_cowork_memory_is_injected_next_turn_and_emits_an_undoable_event(
     assert refreshed is not None
     assert refreshed.status == "done"
 
-    # 第一轮就带上了已有记忆；第二轮换成被覆盖后的新文本，不是两条并存。
-    first_system = provider.tool_histories[0][0].content
-    second_system = provider.tool_histories[1][0].content
-    assert "用户偏好 PDF 报告" in first_system
-    assert "用户偏好 Markdown 报告" in second_system
-    assert "用户偏好 PDF 报告" not in second_system
+    # 本 run 的每一轮拿到的都是同一份 system prompt，逐字不变。
+    systems = {history[0].content for history in provider.tool_histories}
+    assert len(systems) == 1
+    only_system = systems.pop()
+    assert "用户偏好 PDF 报告" in only_system
+    assert "用户偏好 Markdown 报告" not in only_system
 
     events = await list_events(db_session, run_id=run.id, limit=200)
     saved = [event for event in events if event.type == "memory.saved"]
@@ -1448,14 +1392,59 @@ async def test_cowork_memory_is_injected_next_turn_and_emits_an_undoable_event(
     visible = await load_visible_memories(db_session, conversation_id=conversation_id)
     assert [item.content for item in visible] == ["用户偏好 Markdown 报告"]
 
+    # 下一条消息（新 run）重新快照：覆盖后的新文本进来，旧的不再并存。
+    followup = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="按我的偏好出一份报告",
+        budget_tokens=20_000,
+        budget_calls=20,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=followup.goal,
+        run_id=followup.id,
+    )
+    await db_session.commit()
+    followup_registry = build_default_cowork_registry()
+    register_memory_tools(followup_registry)
+    await initialize_cowork_state(
+        db_session, run_id=followup.id, registry=followup_registry, bus=bus
+    )
+    followup_provider = NativeToolProvider([_final_completion("好的。")])
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(
+                update={
+                    "cowork_max_steps": 6,
+                    "cowork_decision_max_tokens": 2048,
+                    "run_heartbeat_s": 60.0,
+                }
+            ),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(followup_provider, embedding_dimensions=1024),
+            "cowork_registry": followup_registry,
+        },
+        str(followup.id),
+    )
+
+    followup_system = followup_provider.tool_histories[0][0].content
+    assert "用户偏好 Markdown 报告" in followup_system
+    assert "用户偏好 PDF 报告" not in followup_system
+
 
 async def test_cowork_recovers_provider_context_overflow_without_mutating_canonical_history(
-    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
+    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path, store_sql
 ) -> None:
     for index in range(100):
         (tmp_path / f"{index:03d}-{'x' * 80}.docx").write_bytes(b"x")
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork overflow recovery"
+        db_session, title="Cowork overflow recovery"
     )
     await create_session_root(
         db_session,
@@ -1492,26 +1481,29 @@ async def test_cowork_recovers_provider_context_overflow_without_mutating_canoni
         overflow_calls={2},
         regular_completions=['{"summary":"已经调用 list_office_files 并取得文件清单。"}'],
     )
-    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     await cowork_run(
         {
             "settings": get_settings().model_copy(
                 update={
                         "cowork_max_steps": 4,
-                        # 本用例只验证 provider overflow 恢复。输出预算固定得较小有两个
-                        # 作用：一是避免全局原生交付物 token 上限变化把测试转成 run token
-                        # 熔断用例；二是把 max_input_tokens 抬高，让首次决策稳稳落在
-                        # trigger_ratio=1.0 的阈值之下——否则阈值压缩会先于 provider 400
-                        # 发生，强制恢复路径就没有可压缩的历史了，本用例也就测不到东西。
-                        # 往 core 工具目录里加工具会抬高这个下限，改动后要重新确认。
-                        "cowork_decision_max_tokens": 1024,
+                        # 本用例只验证 provider overflow 恢复：首次决策必须**不**触发阈值
+                        # 压缩，否则强制恢复路径没有可归档的历史，测的就不是这条路了。
+                        # 余量由下面 ModelGateway 的 context window 提供，不再靠压榨输出
+                        # 预算来腾——那个办法有下限（ge=128），迟早会被固定前缀顶穿。
+                        "cowork_decision_max_tokens": 2048,
                         "cowork_compaction_trigger_ratio": 1.0,
                     "run_heartbeat_s": 60.0,
                 }
             ),
             "session_factory": session_factory,
             "bus": bus,
-            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_gateway": ModelGateway(
+                provider,
+                embedding_dimensions=1024,
+                # 溢出用例靠 provider 主动抛 400 触发恢复，本地阈值不能先动手；
+                # 窗口留足余量，测试就不必随固定前缀的大小反复调参。
+                default_context_window_tokens=128_000,
+            ),
             "cowork_registry": registry,
         },
         str(run.id),
@@ -1522,18 +1514,7 @@ async def test_cowork_recovers_provider_context_overflow_without_mutating_canoni
     assert refreshed.status == "done"
     assert refreshed.used_calls == 4  # 决策、已发出的 400、摘要、恢复后的决策
     assert provider.tool_calls == 3
-    latest_state = (
-        await db_session.execute(
-            text(
-                """
-                SELECT state FROM agent_checkpoints
-                WHERE run_id = :run_id
-                ORDER BY created_at DESC, checkpoint_id DESC LIMIT 1
-                """
-            ),
-            {"run_id": run.id},
-        )
-    ).scalar_one()
+    latest_state = latest_checkpoint_state(store_sql, run.id)
     canonical = latest_state["messages"]
     assert [item["role"] for item in canonical] == ["user", "assistant", "tool", "assistant"]
     assert canonical[1]["tool_calls"][0]["id"] == "list-before-overflow"
@@ -1554,7 +1535,7 @@ async def test_cowork_context_overflow_progress_guard_stops_recovery_loop(
     for index in range(100):
         (tmp_path / f"{index:03d}-{'x' * 80}.docx").write_bytes(b"x")
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork overflow guard"
+        db_session, title="Cowork overflow guard"
     )
     await create_session_root(
         db_session,
@@ -1590,14 +1571,13 @@ async def test_cowork_context_overflow_progress_guard_stops_recovery_loop(
         overflow_calls={2, 3},
         regular_completions=['{"summary":"已经取得文件清单。"}'],
     )
-    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     await cowork_run(
         {
             "settings": get_settings().model_copy(
                 update={
                         "cowork_max_steps": 4,
                         # 同上：首次决策必须不触发阈值压缩，强制恢复才有历史可归档。
-                        "cowork_decision_max_tokens": 1024,
+                        "cowork_decision_max_tokens": 2048,
                         "cowork_compaction_trigger_ratio": 1.0,
                     "cowork_context_overflow_max_recoveries": 2,
                     "run_heartbeat_s": 60.0,
@@ -1605,7 +1585,13 @@ async def test_cowork_context_overflow_progress_guard_stops_recovery_loop(
             ),
             "session_factory": session_factory,
             "bus": bus,
-            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_gateway": ModelGateway(
+                provider,
+                embedding_dimensions=1024,
+                # 溢出用例靠 provider 主动抛 400 触发恢复，本地阈值不能先动手；
+                # 窗口留足余量，测试就不必随固定前缀的大小反复调参。
+                default_context_window_tokens=128_000,
+            ),
             "cowork_registry": registry,
         },
         str(run.id),
@@ -1665,7 +1651,7 @@ async def test_cowork_steering_and_ask_user_pause_resume_with_canonical_tool_his
     tmp_path: Path,
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork interaction"
+        db_session, title="Cowork interaction"
     )
     await create_session_root(
         db_session,
@@ -1702,7 +1688,7 @@ async def test_cowork_steering_and_ask_user_pause_resume_with_canonical_tool_his
     app.dependency_overrides[get_db_session] = override_session
     app.dependency_overrides[get_run_queue_dependency] = lambda: queue
     app.dependency_overrides[get_run_bus] = lambda: bus
-    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(scope="local_owner")
+    app.dependency_overrides[require_owner_identity] = lambda: None
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         steering_response = await client.post(
@@ -1725,7 +1711,6 @@ async def test_cowork_steering_and_ask_user_pause_resume_with_canonical_tool_his
             _final_completion("已按部门完成整理。"),
         ]
     )
-    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     context = {
         "settings": get_settings().model_copy(
             update={"cowork_max_steps": 4, "run_heartbeat_s": 60.0}
@@ -1757,25 +1742,16 @@ async def test_cowork_steering_and_ask_user_pause_resume_with_canonical_tool_his
     assert queue.run_ids == [run.id]
     assert queue.attempts[0] > 0
     if isinstance(interaction_body.get("answer"), str):
-        leaked_interaction_messages = (
-            await db_session.execute(
-                text(
-                    """
-                    SELECT COUNT(*) FROM messages
-                    WHERE conversation_id = :conversation_id
-                      AND run_id = :run_id
-                      AND role = 'user'
-                      AND content = :answer
-                    """
-                ),
-                {
-                    "conversation_id": conversation_id,
-                    "run_id": run.id,
-                    "answer": interaction_body["answer"],
-                },
-            )
-        ).scalar_one()
-        assert leaked_interaction_messages == 0
+        from app.cowork_store.factory import local_cowork_stores
+
+        records = await local_cowork_stores().conversations.read(conversation_id)
+        assert not [
+            item
+            for item in records
+            if item.role == "user"
+            and str(item.run_id) == str(run.id)
+            and item.content == interaction_body["answer"]
+        ]
 
     await cowork_run(context, str(run.id))
     completed = await get_run(db_session, run.id)
@@ -1794,14 +1770,14 @@ async def test_cowork_steering_and_ask_user_pause_resume_with_canonical_tool_his
 
 @pytest.mark.parametrize("tool_name", ["request_directory", "request_capability"])
 async def test_cowork_runtime_permission_requests_apply_only_after_user_approval(
-    tool_name: str, db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
+    tool_name: str, db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path, store_sql
 ) -> None:
     initial_root = tmp_path / f"initial-{tool_name}"
     initial_root.mkdir()
     extra_root = tmp_path / f"extra-{tool_name}"
     extra_root.mkdir()
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title=f"Cowork {tool_name}"
+        db_session, title=f"Cowork {tool_name}"
     )
     await create_session_root(
         db_session,
@@ -1849,7 +1825,7 @@ async def test_cowork_runtime_permission_requests_apply_only_after_user_approval
             "settings": get_settings().model_copy(
                 update={"cowork_max_steps": 4, "run_heartbeat_s": 60.0}
             ),
-            "session_factory": async_sessionmaker(db_engine, expire_on_commit=False),
+            "session_factory": session_factory,
             "bus": bus,
             "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
             "cowork_registry": registry,
@@ -1871,7 +1847,7 @@ async def test_cowork_runtime_permission_requests_apply_only_after_user_approval
     app.dependency_overrides[get_db_session] = override_session
     app.dependency_overrides[get_run_queue_dependency] = lambda: queue
     app.dependency_overrides[get_run_bus] = lambda: bus
-    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(scope="local_owner")
+    app.dependency_overrides[require_owner_identity] = lambda: None
     body: dict[str, object] = {"approved": True}
     if tool_name == "request_directory":
         body["path"] = str(extra_root)
@@ -1884,31 +1860,19 @@ async def test_cowork_runtime_permission_requests_apply_only_after_user_approval
     assert response.status_code == 202
     assert response.json()["status"] == "queued"
     if tool_name == "request_directory":
-        granted = (
-            await db_session.execute(
-                text(
-                    """
-                    SELECT access_mode FROM session_roots
-                    WHERE conversation_id = :conversation_id AND canonical_path = :path
-                    """
-                ),
-                {"conversation_id": conversation_id, "path": str(extra_root.resolve())},
-            )
-        ).scalar_one()
+        granted = store_sql(
+            """SELECT access_mode FROM session_roots
+               WHERE conversation_id = ? AND canonical_path = ?""",
+            (str(conversation_id), str(extra_root.resolve())),
+        )[0]["access_mode"]
         assert granted == "read_only"
     else:
-        granted = (
-            await db_session.execute(
-                text(
-                    """
-                    SELECT capability FROM capability_grants
-                    WHERE conversation_id = :conversation_id
-                      AND capability = 'external.action' AND revoked_at IS NULL
-                    """
-                ),
-                {"conversation_id": conversation_id},
-            )
-        ).scalar_one()
+        granted = store_sql(
+            """SELECT capability FROM capability_grants
+               WHERE conversation_id = ?
+                 AND capability = 'external.action' AND revoked_at IS NULL""",
+            (str(conversation_id),),
+        )[0]["capability"]
         assert granted == "external.action"
 
 
@@ -1916,7 +1880,7 @@ async def test_cowork_invalid_shell_arguments_are_returned_to_model_for_correcti
     db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork shell argument recovery"
+        db_session, title="Cowork shell argument recovery"
     )
     await create_session_root(
         db_session,
@@ -1955,7 +1919,6 @@ async def test_cowork_invalid_shell_arguments_are_returned_to_model_for_correcti
             _final_completion("参数不完整，已改用现有工具完成分析。"),
         ]
     )
-    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     context = {
         "settings": get_settings().model_copy(
             update={"cowork_max_steps": 4, "run_heartbeat_s": 60.0}
@@ -1993,7 +1956,7 @@ async def test_cowork_office_flow_hides_and_rejects_shell(
     db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork Office shell boundary"
+        db_session, title="Cowork Office shell boundary"
     )
     await create_session_root(
         db_session,
@@ -2037,7 +2000,7 @@ async def test_cowork_office_flow_hides_and_rejects_shell(
             "settings": get_settings().model_copy(
                 update={"cowork_max_steps": 4, "run_heartbeat_s": 60.0}
             ),
-            "session_factory": async_sessionmaker(db_engine, expire_on_commit=False),
+            "session_factory": session_factory,
             "bus": bus,
             "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
             "cowork_registry": registry,
@@ -2066,7 +2029,7 @@ async def test_cowork_shell_requires_once_approval_then_executes_exact_pending_c
     db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork shell approval"
+        db_session, title="Cowork shell approval"
     )
     await create_session_root(
         db_session,
@@ -2116,7 +2079,6 @@ async def test_cowork_shell_requires_once_approval_then_executes_exact_pending_c
             _final_completion("诊断命令已完成。"),
         ]
     )
-    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     context = {
         "settings": get_settings().model_copy(
             update={
@@ -2148,7 +2110,7 @@ async def test_cowork_shell_requires_once_approval_then_executes_exact_pending_c
     app.dependency_overrides[get_db_session] = override_session
     app.dependency_overrides[get_run_queue_dependency] = lambda: queue
     app.dependency_overrides[get_run_bus] = lambda: bus
-    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(scope="local_owner")
+    app.dependency_overrides[require_owner_identity] = lambda: None
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
@@ -2175,7 +2137,7 @@ async def test_cowork_cancel_terminates_running_allowlisted_shell_process(
     db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork shell cancel"
+        db_session, title="Cowork shell cancel"
     )
     await create_session_root(
         db_session,
@@ -2222,7 +2184,6 @@ async def test_cowork_cancel_terminates_running_allowlisted_shell_process(
             _final_completion("不应执行到这里"),
         ]
     )
-    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     context = {
         "settings": get_settings().model_copy(
             update={
@@ -2267,9 +2228,9 @@ async def test_cowork_cancel_terminates_running_allowlisted_shell_process(
 
 
 async def test_cowork_run_api_initializes_checkpoint_and_enqueues(
-    db_session: AsyncSession, tmp_path: Path
+    db_session: AsyncSession, tmp_path: Path, store_sql
 ) -> None:
-    conversation_id = await ensure_conversation(db_session, scope="local_owner", title="Cowork API")
+    conversation_id = await ensure_conversation(db_session, title="Cowork API")
     await create_session_root(
         db_session,
         conversation_id=conversation_id,
@@ -2291,7 +2252,7 @@ async def test_cowork_run_api_initializes_checkpoint_and_enqueues(
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_run_queue_dependency] = lambda: queue
     app.dependency_overrides[get_run_bus] = lambda: bus
-    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(scope="local_owner")
+    app.dependency_overrides[require_owner_identity] = lambda: None
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
@@ -2306,24 +2267,13 @@ async def test_cowork_run_api_initializes_checkpoint_and_enqueues(
     run_id = UUID(response.json()["run_id"])
     assert response.json()["workflow_type"] == "cowork"
     assert queue.run_ids == [run_id]
-    checkpoint_schema = (
-        await db_session.execute(
-            text(
-                """
-                SELECT state->>'schema_version' FROM agent_checkpoints
-                WHERE run_id = :run_id ORDER BY created_at DESC LIMIT 1
-                """
-            ),
-            {"run_id": run_id},
-        )
-    ).scalar_one()
-    assert checkpoint_schema == "cowork.v2"
+    assert latest_checkpoint_state(store_sql, run_id)["schema_version"] == "cowork.v2"
 
 
 async def test_cowork_run_api_does_not_require_workspace_for_default_permissions(
     db_session: AsyncSession, tmp_path: Path
 ) -> None:
-    conversation_id = await ensure_conversation(db_session, scope="local_owner", title="默认权限")
+    conversation_id = await ensure_conversation(db_session, title="默认权限")
     await db_session.commit()
     queue = RecordingCoworkQueue()
     bus = InMemoryRunBus()
@@ -2340,7 +2290,7 @@ async def test_cowork_run_api_does_not_require_workspace_for_default_permissions
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_run_queue_dependency] = lambda: queue
     app.dependency_overrides[get_run_bus] = lambda: bus
-    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(scope="local_owner")
+    app.dependency_overrides[require_owner_identity] = lambda: None
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
@@ -2360,10 +2310,10 @@ async def test_cowork_run_api_does_not_require_workspace_for_default_permissions
 
 
 async def test_expired_cowork_run_is_recovered_to_cowork_queue_class(
-    db_session: AsyncSession, tmp_path: Path
+    db_session: AsyncSession, tmp_path: Path, store_sql
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Cowork recovery"
+        db_session, title="Cowork recovery"
     )
     await create_session_root(
         db_session,
@@ -2385,16 +2335,11 @@ async def test_expired_cowork_run_is_recovered_to_cowork_queue_class(
         run_id=run.id,
         registry=build_default_cowork_registry(),
     )
-    await db_session.execute(
-        text(
-            """
-            UPDATE agent_runs
-            SET status = 'executing', worker_id = 'lost-worker',
-                lease_until = now() - interval '1 second'
-            WHERE id = :run_id
-            """
-        ),
-        {"run_id": run.id},
+    store_sql(
+        """UPDATE agent_runs
+           SET status = 'executing', worker_id = 'lost-worker', lease_until = ?
+           WHERE id = ?""",
+        (iso_ago(1), str(run.id)),
     )
     await db_session.commit()
 
@@ -2402,5 +2347,5 @@ async def test_expired_cowork_run_is_recovered_to_cowork_queue_class(
     await db_session.commit()
 
     assert reaped.failed == []
-    assert reaped.recovered == []
+    # answer / literature_review 退役后只剩这一个恢复类目。
     assert reaped.recovered_cowork == [(run.id, 1)]

@@ -5,16 +5,17 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.agent_core.budget import CompletionClient
 from app.agent_core.tools import ToolRegistry, ToolRegistryError
 from app.core.config import Settings
+from app.core.db import DbSession as AsyncSession
 from app.cowork.artifact_formats import (
     TEXT_ARTIFACT_MIME_BY_SUFFIX,
     TEXT_ARTIFACT_SUFFIXES,
@@ -24,9 +25,11 @@ from app.cowork.files import (
     list_files,
     read_pdf_file,
     read_text_file,
+    replace_in_file,
     search_files,
     write_text_file,
 )
+from app.cowork.git_tools import git_diff, git_log, git_status
 from app.cowork.native_artifacts import create_native_artifact
 from app.cowork.office_workspace import (
     execute_cowork_office_instruction,
@@ -43,6 +46,7 @@ from app.cowork.permissions import (
 )
 from app.cowork.plans import PLAN_TOOL_NAME, ProposePlanArgs
 from app.cowork.shell import assess_shell_command, execute_shell_command
+from app.cowork.shell_tasks import CoworkShellTaskManager, ShellTaskError, ShellTaskSnapshot
 from app.cowork.todos import TodoWriteArgs, todo_items, todo_summary
 from app.cowork.web import fetch_url, search_web
 from app.runstore.invocations import (
@@ -113,6 +117,39 @@ class RunShellArgs(_StrictArgs):
     command: str = Field(min_length=1, max_length=4000)
     cwd: str = Field(min_length=1, max_length=4096)
     reason: str = Field(min_length=1, max_length=1000)
+    run_in_background: bool = Field(
+        default=False,
+        description="长时间运行的命令（dev server、构建、watch）设为 true，立即返回 task_id",
+    )
+
+
+class SleepArgs(_StrictArgs):
+    seconds: int | None = Field(default=None, ge=1, le=86_400)
+    until: datetime | None = None
+    reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def exactly_one_deadline(self) -> SleepArgs:
+        if (self.seconds is None) == (self.until is None):
+            raise ValueError("seconds 与 until 必须且只能提供一个")
+        return self
+
+
+class ShellTaskArgs(_StrictArgs):
+    task_id: str = Field(min_length=1, max_length=64)
+
+
+class WakeOnArgs(ShellTaskArgs):
+    timeout_seconds: int = Field(
+        default=600,
+        ge=1,
+        le=86_400,
+        description="最多等多久。到点即使任务还在跑也会返回，由你决定继续等还是改做别的",
+    )
+
+
+class ShellTaskOutputArgs(ShellTaskArgs):
+    full: bool = Field(default=False, description="true 返回全部输出，默认只返回上次读取之后的增量")
 
 
 class ListFilesArgs(_StrictArgs):
@@ -138,12 +175,40 @@ class WriteTextFileArgs(_StrictArgs):
     )
 
 
+class ReplaceInFileArgs(_StrictArgs):
+    path: str = Field(min_length=1, max_length=4096)
+    old_text: str = Field(min_length=1, max_length=200_000)
+    new_text: str = Field(max_length=200_000)
+    baseline_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_count: int | None = Field(
+        default=None,
+        ge=1,
+        le=1000,
+        description="预期命中次数；省略表示要求唯一命中",
+    )
+
+
 class SearchFilesArgs(_StrictArgs):
     path: str = Field(min_length=1, max_length=4096)
     query: str = Field(min_length=1, max_length=1000)
     pattern: str = Field(default="*", min_length=1, max_length=500)
     case_sensitive: bool = False
     max_results: int = Field(default=100, ge=1, le=2000)
+
+
+class GitStatusArgs(_StrictArgs):
+    path: str = Field(min_length=1, max_length=4096)
+
+
+class GitDiffArgs(_StrictArgs):
+    path: str = Field(min_length=1, max_length=4096)
+    staged: bool = Field(default=False, description="看已 git add 的暂存差异而不是工作区差异")
+    stat_only: bool = Field(default=False, description="只回改动文件与增删行数，不回具体补丁")
+
+
+class GitLogArgs(_StrictArgs):
+    path: str = Field(min_length=1, max_length=4096)
+    max_count: int = Field(default=20, ge=1, le=200)
 
 
 class ReadPdfArgs(_StrictArgs):
@@ -179,6 +244,10 @@ class CreateNativeArtifactArgs(_StrictArgs):
     content: str = Field(default="", max_length=2_000_000)
     sheets: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
     slides: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    cover: bool = Field(
+        default=False,
+        description="PPTX 是否额外生成一页封面；开启后总页数 = slides 项数 + 1",
+    )
     baseline_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
@@ -199,6 +268,12 @@ class CoworkToolContext:
     tool_call_id: str
     approved_call_ids: frozenset[str] = frozenset()
     cancel_event: asyncio.Event | None = None
+    # 后台任务表由 worker 持有；缺席时后台模式直接拒绝，而不是退化成同步执行——
+    # 模型以为自己把 dev server 挂后台了，实际却在等它超时，是最糟的失败方式。
+    shell_tasks: CoworkShellTaskManager | None = None
+    # 会话挂载的本地知识库。从 state 带下来而不是让工具自己查绑定：预检索和
+    # search_knowledge 必须搜同一个库，各查各的迟早会在中途改绑定时对不上。
+    kb_slug: str | None = None
 
 
 @dataclass(frozen=True)
@@ -234,6 +309,10 @@ class CoworkToolSpec:
     approval_required: bool = False
     # 必须独占一批模型调用：不需要逐次审批，但同批的后续调用会拿到失效的控件编号。
     exclusive: bool = False
+    # 生成常驻审批规则时，哪几个参数决定了"后果落在哪里"。用户勾"以后同样的目标不用再问"
+    # 时匹配的就是这些字段。正文（body、文件内容）刻意不在其中：把它算进去等于每次调用
+    # 都是新目标，规则永远匹配不上。空元组表示这只工具只能整只授权或逐次审批。
+    approval_target_fields: tuple[str, ...] = ()
     search_aliases: tuple[str, ...] = ()
 
     def resolved_input_schema(self) -> dict[str, Any]:
@@ -316,6 +395,7 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
             "read_text_file",
             "search_files",
             "write_text_file",
+            "replace_in_file",
             "create_artifact",
             "create_native_artifact",
             "run_shell",
@@ -353,6 +433,10 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
                 ("web", "url", "browser"),
             ),
             (("shell", "命令", "终端", "脚本"), ("shell",)),
+            (
+                ("git", "仓库", "提交", "分支", "commit", "diff", "改动", "版本"),
+                ("git",),
+            ),
             (
                 ("schedule", "scheduler", "自动化", "定时", "无人值守", "收件箱"),
                 ("schedule", "automation"),
@@ -399,7 +483,10 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
         # 保留集可能超出 max_tools。宁可超也不能丢：这些 schema 对应的 tool_call
         # 已经在模型上下文里，缺一个就可能让 provider 拒绝整个请求。它的规模由
         # 本 run 实际用过多少种工具决定，不会自增长到整个 registry。
-        pinned = take((*retained_tools, *sorted(self._activated_tools)))
+        # 两个来源都排序：retained_tools 是 frozenset，字符串哈希逐进程随机，不排序
+        # 会让同一组工具在不同 worker 进程里排出不同顺序——tool schema 数组一变，
+        # provider 的 prompt cache 前缀和 `prompt_cache_key` 就都不再命中。
+        pinned = take((*sorted(retained_tools), *sorted(self._activated_tools)))
         budget = max(0, max_tools - len(head) - len(pinned))
         discretionary = take(derived)[:budget]
         return [
@@ -677,6 +764,21 @@ async def _list_files(context: CoworkToolContext, raw: BaseModel) -> CoworkToolR
     )
 
 
+def _number_lines(content: str, *, start_line: int) -> str:
+    """把读到的片段渲染成 ``   12\ttext``。
+
+    行号是给引用用的：没有它，模型要引某一行只能自己数，而它数不准；`replace_in_file`
+    命中多处时也说不清"改的是哪一处"。代价是模型可能把行号前缀连着抄进 `old_text`，
+    所以工具描述里必须显式写清楚前缀不属于文件内容——这是这套渲染的已知税。
+    """
+
+    lines = content.split("\n")
+    # `split` 会在末尾换行处多切出一个空串；那不是一行，不该占一个行号。
+    if lines and lines[-1] == "":
+        lines.pop()
+    return "\n".join(f"{start_line + offset:>6}\t{text}" for offset, text in enumerate(lines))
+
+
 async def _read_text_file(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
     args = ReadTextFileArgs.model_validate(raw.model_dump())
     result = await read_text_file(
@@ -685,18 +787,23 @@ async def _read_text_file(context: CoworkToolContext, raw: BaseModel) -> CoworkT
         max_lines=min(args.max_lines, context.settings.cowork_file_max_lines),
         max_bytes=context.settings.cowork_file_read_max_bytes,
     )
-    return CoworkToolResult(
-        output={
-            "path": str(result.path),
-            "baseline_sha256": result.sha256,
-            "content": result.content,
-            "size_bytes": result.size_bytes,
-            "total_lines": result.total_lines,
-            "start_line": result.start_line,
-            "end_line": result.end_line,
-            "truncated": result.truncated,
-        }
-    )
+    output: dict[str, Any] = {
+        "path": str(result.path),
+        "baseline_sha256": result.sha256,
+        "content": _number_lines(result.content, start_line=result.start_line),
+        "size_bytes": result.size_bytes,
+        "total_lines": result.total_lines,
+        "start_line": result.start_line,
+        "end_line": result.end_line,
+        "truncated": result.truncated,
+    }
+    if result.truncated:
+        output["note"] = (
+            f"只显示了第 {result.start_line}-{result.end_line} 行，共 {result.total_lines} 行；"
+            f"要继续读就再调一次并传 start_line={result.end_line + 1}。"
+            "在读完之前不要用 write_text_file 整份覆盖这个文件。"
+        )
+    return CoworkToolResult(output=output)
 
 
 async def _write_text_file(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
@@ -717,6 +824,31 @@ async def _write_text_file(context: CoworkToolContext, raw: BaseModel) -> Cowork
                 "size_bytes": result.size_bytes,
             },
             "created": result.created,
+            "backup_uri": str(result.backup_path) if result.backup_path is not None else None,
+        },
+        effect_ref=f"file:{result.path}#sha256={result.sha256}",
+    )
+
+
+async def _replace_in_file(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+    args = ReplaceInFileArgs.model_validate(raw.model_dump())
+    result = await replace_in_file(
+        Path(args.path),
+        old_text=args.old_text,
+        new_text=args.new_text,
+        baseline_sha256=args.baseline_sha256,
+        expected_count=args.expected_count,
+        settings=context.settings,
+    )
+    return CoworkToolResult(
+        output={
+            "file": {
+                "name": result.path.name,
+                "path": str(result.path),
+                "sha256": result.sha256,
+                "size_bytes": result.size_bytes,
+            },
+            "replacements": result.replacements,
             "backup_uri": str(result.backup_path) if result.backup_path is not None else None,
         },
         effect_ref=f"file:{result.path}#sha256={result.sha256}",
@@ -749,6 +881,38 @@ async def _search_files(context: CoworkToolContext, raw: BaseModel) -> CoworkToo
             "files_scanned": scanned,
             "truncated": truncated,
         }
+    )
+
+
+async def _git_status(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+    args = GitStatusArgs.model_validate(raw.model_dump())
+    return CoworkToolResult(
+        output=await git_status(
+            Path(args.path), max_bytes=context.settings.cowork_git_output_max_bytes
+        )
+    )
+
+
+async def _git_diff(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+    args = GitDiffArgs.model_validate(raw.model_dump())
+    return CoworkToolResult(
+        output=await git_diff(
+            Path(args.path),
+            staged=args.staged,
+            stat_only=args.stat_only,
+            max_bytes=context.settings.cowork_git_output_max_bytes,
+        )
+    )
+
+
+async def _git_log(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+    args = GitLogArgs.model_validate(raw.model_dump())
+    return CoworkToolResult(
+        output=await git_log(
+            Path(args.path),
+            max_count=args.max_count,
+            max_bytes=context.settings.cowork_git_output_max_bytes,
+        )
     )
 
 
@@ -869,6 +1033,7 @@ async def _create_native_artifact(context: CoworkToolContext, raw: BaseModel) ->
         content=args.content,
         sheets=args.sheets,
         slides=args.slides,
+        cover=args.cover,
         baseline_sha256=args.baseline_sha256,
         backup_versions=context.settings.workspace_backup_versions_per_file,
         max_existing_bytes=context.settings.workspace_max_file_bytes,
@@ -997,6 +1162,28 @@ async def _run_shell(context: CoworkToolContext, raw: BaseModel) -> CoworkToolRe
     decision = assess_shell_command(args.command, context.settings.cowork_shell_allowlist)
     if decision.approval_required and context.tool_call_id not in context.approved_call_ids:
         raise CoworkToolError("shell 命令未获得当前 tool call 的用户批准，已拒绝执行")
+    if args.run_in_background:
+        # 后台与同步走同一套授权和审批：唯一的差别是谁来等它结束。
+        if context.shell_tasks is None:
+            raise CoworkToolError(
+                "本次运行没有后台任务表，run_in_background 不可用；"
+                "请去掉该参数改为同步执行，必要时缩短命令的运行时间"
+            )
+        try:
+            started = await context.shell_tasks.start(
+                conversation_id=context.conversation_id,
+                command=decision.command,
+                cwd=authorization.target_path,
+            )
+        except ShellTaskError as error:
+            raise CoworkToolError(str(error)) from error
+        return CoworkToolResult(
+            output={
+                **_shell_task_json(started),
+                "hint": "用 shell_task_output 轮询输出，用 shell_task_kill 结束它",
+            },
+            effect_ref=f"shell_task:{started.task_id}",
+        )
     result = await execute_shell_command(
         decision.command,
         cwd=authorization.target_path,
@@ -1019,6 +1206,74 @@ async def _run_shell(context: CoworkToolContext, raw: BaseModel) -> CoworkToolRe
             ),
         },
         effect_ref=f"shell:{result.command_sha256}",
+    )
+
+
+def _shell_task_json(snapshot: ShellTaskSnapshot) -> dict[str, Any]:
+    return {
+        "task_id": snapshot.task_id,
+        "command": snapshot.command,
+        "cwd": snapshot.cwd,
+        "running": snapshot.running,
+        "exit_code": snapshot.exit_code,
+        "output": snapshot.output,
+        "output_truncated": snapshot.output_truncated,
+        "elapsed_s": snapshot.elapsed_s,
+    }
+
+
+def _require_shell_tasks(context: CoworkToolContext) -> CoworkShellTaskManager:
+    if context.shell_tasks is None:
+        raise CoworkToolError("本次运行没有后台任务表，无法查询或结束后台任务")
+    return context.shell_tasks
+
+
+async def _shell_task_output(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+    args = ShellTaskOutputArgs.model_validate(raw.model_dump())
+    try:
+        snapshot = await _require_shell_tasks(context).read(
+            conversation_id=context.conversation_id,
+            task_id=args.task_id,
+            full=args.full,
+        )
+    except ShellTaskError as error:
+        raise CoworkToolError(str(error)) from error
+    return CoworkToolResult(output=_shell_task_json(snapshot))
+
+
+async def _wake_on(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+    args = WakeOnArgs.model_validate(raw.model_dump())
+    timeout_s = min(float(args.timeout_seconds), context.settings.cowork_wake_on_max_s)
+    try:
+        snapshot = await _require_shell_tasks(context).wait(
+            conversation_id=context.conversation_id,
+            task_id=args.task_id,
+            timeout_s=timeout_s,
+            cancel_event=context.cancel_event,
+        )
+    except ShellTaskError as error:
+        raise CoworkToolError(str(error)) from error
+    output = _shell_task_json(snapshot)
+    output["waited_s"] = round(timeout_s, 3) if snapshot.running else snapshot.elapsed_s
+    output["note"] = (
+        f"等到 {timeout_s:.0f}s 上限时任务仍在运行。可以再调一次 wake_on 继续等，"
+        "或者用 shell_task_kill 收掉它。"
+        if snapshot.running
+        else "任务已经结束，上面是它自上次读取以来的全部输出。"
+    )
+    return CoworkToolResult(output=output)
+
+
+async def _shell_task_kill(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+    args = ShellTaskArgs.model_validate(raw.model_dump())
+    try:
+        snapshot = await _require_shell_tasks(context).kill(
+            conversation_id=context.conversation_id, task_id=args.task_id
+        )
+    except ShellTaskError as error:
+        raise CoworkToolError(str(error)) from error
+    return CoworkToolResult(
+        output=_shell_task_json(snapshot), effect_ref=f"shell_task:{snapshot.task_id}:killed"
     )
 
 
@@ -1083,6 +1338,72 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             effect="external",
             parallel_safe=False,
             handler=_run_shell,
+        )
+    )
+    registry.register(
+        CoworkToolSpec(
+            name="sleep",
+            description=(
+                "挂起本次运行，到点自动从这里继续，上下文完整保留。"
+                "等对方回复、按固定间隔轮询外部状态时用它，不要用循环空转，"
+                "也不要结束运行让用户自己再开一轮——那会丢掉已经做过的一切。"
+                "**等后台 shell 任务请用 wake_on，不要用 sleep**：sleep 会释放当前 worker，"
+                "换一个 worker 恢复之后就读不到那个任务的输出了。"
+                "给 seconds（相对秒数）或 until（绝对时间）其中一个。必须单独调用。"
+            ),
+            args_model=SleepArgs,
+            risk="read",
+            effect="none",
+            parallel_safe=False,
+            handler=None,
+            execution="interaction",
+            search_aliases=("sleep", "等待", "轮询", "稍后", "定时"),
+        )
+    )
+    registry.register(
+        CoworkToolSpec(
+            name="shell_task_output",
+            description=(
+                "读取后台 shell 任务的新增输出并查看它是否已结束。"
+                "默认只返回上次读取之后的增量；需要从头看时设置 full=true。"
+                "任务不存在通常意味着 worker 重启过——后台任务不跨重启存活。"
+            ),
+            args_model=ShellTaskOutputArgs,
+            risk="read",
+            effect="none",
+            parallel_safe=True,
+            handler=_shell_task_output,
+            search_aliases=("shell", "后台", "任务", "日志"),
+        )
+    )
+    registry.register(
+        CoworkToolSpec(
+            name="wake_on",
+            description=(
+                "挂在一个后台 shell 任务上，等它结束再继续，期间不消耗任何模型调用。"
+                "等构建、等测试、等长脚本时用它，不要用 sleep + shell_task_output 轮询——"
+                "那样每转一圈都要花一次模型调用，而且醒来的时刻和任务结束的时刻对不齐。"
+                "返回时会带上任务自上次读取以来的全部输出。"
+            ),
+            args_model=WakeOnArgs,
+            risk="read",
+            effect="none",
+            parallel_safe=False,
+            handler=_wake_on,
+            search_aliases=("wake", "等待", "后台", "轮询", "构建"),
+        )
+    )
+    registry.register(
+        CoworkToolSpec(
+            name="shell_task_kill",
+            description="结束一个后台 shell 任务，连同它派生的子进程一起收掉。",
+            args_model=ShellTaskArgs,
+            capability="shell.execute",
+            risk="external",
+            effect="external",
+            parallel_safe=False,
+            handler=_shell_task_kill,
+            search_aliases=("shell", "后台", "停止", "kill"),
         )
     )
     registry.register(
@@ -1182,8 +1503,11 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
         CoworkToolSpec(
             name="read_text_file",
             description=(
-                "按行读取已授权的 UTF-8 文本文件。返回 baseline_sha256；"
-                "覆盖文件时必须把它原样传给 write_text_file/create_artifact。"
+                "按行读取已授权的 UTF-8 文本文件。返回的每行前面带 `行号<TAB>` 前缀，"
+                "方便你按 path:line 引用——**这个前缀不是文件内容**，"
+                "传给 replace_in_file 的 old_text 必须去掉它，只保留制表符之后的原文。"
+                "同时返回 baseline_sha256；覆盖文件时必须把它原样传给 "
+                "write_text_file/create_artifact。文件被截断时按提示传 start_line 继续读。"
             ),
             args_model=ReadTextFileArgs,
             capability="filesystem.read",
@@ -1213,10 +1537,32 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
     )
     registry.register(
         CoworkToolSpec(
+            name="replace_in_file",
+            description=(
+                "把文件里的一段精确文本换成另一段，其余字节原样保留。"
+                "只改文件的一部分时用它，不要用 write_text_file 重写整个文件——"
+                "你手上往往只有读过的那一段，整份覆盖会把没读到的内容丢掉。"
+                "先 read_text_file 拿 baseline_sha256；old_text 要逐字复制原文（含缩进换行），"
+                "默认要求全文唯一命中，命中多处时扩大上下文或显式给出 expected_count。"
+            ),
+            args_model=ReplaceInFileArgs,
+            capability="filesystem.write",
+            risk="write",
+            effect="filesystem",
+            parallel_safe=False,
+            handler=_replace_in_file,
+            path_argument="path",
+            search_aliases=("edit", "replace", "修改", "编辑", "替换"),
+        )
+    )
+    registry.register(
+        CoworkToolSpec(
             name="search_files",
             description=(
-                "在已授权目录中按文件名和 UTF-8 文本内容搜索字面字符串。"
+                "在已授权目录中按文件名和 UTF-8 文本内容搜索字面字符串（不是正则）。"
                 "支持 glob，结果、扫描文件数和单文件大小均有上限。"
+                "装了 ripgrep 时会尊重 .gitignore 并跳过二进制文件与 node_modules 一类目录，"
+                "所以被忽略的构建产物不会出现在结果里。"
             ),
             args_model=SearchFilesArgs,
             capability="filesystem.read",
@@ -1225,6 +1571,58 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             parallel_safe=True,
             handler=_search_files,
             path_argument="path",
+        )
+    )
+    registry.register(
+        CoworkToolSpec(
+            name="git_status",
+            description=(
+                "读取已授权目录所在 Git 仓库的工作区状态：当前分支、以及该目录范围内"
+                "被改动/新增/删除的文件。只读，不需要 shell 授权。"
+            ),
+            args_model=GitStatusArgs,
+            capability="filesystem.read",
+            risk="read",
+            effect="none",
+            parallel_safe=True,
+            handler=_git_status,
+            path_argument="path",
+            search_aliases=("git", "版本", "仓库", "改动", "未提交"),
+        )
+    )
+    registry.register(
+        CoworkToolSpec(
+            name="git_diff",
+            description=(
+                "读取已授权目录范围内尚未提交的改动。默认给完整补丁；"
+                "改动很大时先用 stat_only=true 看清改了哪些文件，再决定读哪一份。"
+                "staged=true 看的是已经 git add 的那部分。只读，不需要 shell 授权。"
+            ),
+            args_model=GitDiffArgs,
+            capability="filesystem.read",
+            risk="read",
+            effect="none",
+            parallel_safe=True,
+            handler=_git_diff,
+            path_argument="path",
+            search_aliases=("git", "diff", "差异", "补丁", "改了什么"),
+        )
+    )
+    registry.register(
+        CoworkToolSpec(
+            name="git_log",
+            description=(
+                "读取已授权目录范围内的提交历史（sha / 作者 / 时间 / 标题）。"
+                "只读，不需要 shell 授权。"
+            ),
+            args_model=GitLogArgs,
+            capability="filesystem.read",
+            risk="read",
+            effect="none",
+            parallel_safe=True,
+            handler=_git_log,
+            path_argument="path",
+            search_aliases=("git", "log", "历史", "提交", "commit"),
         )
     )
     registry.register(
@@ -1319,7 +1717,8 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             description=(
                 "在当前工作目录生成可直接交付和预览的原生 PPTX、DOCX、XLSX 或 PDF。"
                 "DOCX/PDF 的 content 支持简单 Markdown；XLSX 使用 sheets 二维行数组；"
-                "PPTX 使用 slides 数组，每页支持 title、subtitle、body、bullets。"
+                "PPTX 使用 slides 数组，每页支持 title、subtitle、body、bullets，"
+                "slides 有几项就是几页；需要额外封面页时显式传 cover=true。"
                 "覆盖已有文件必须提供 baseline_sha256。"
             ),
             args_model=CreateNativeArtifactArgs,
@@ -1397,4 +1796,13 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             path_argument="path",
         )
     )
+
+    # 阅读工具和文件工具一样只依赖 settings，没有需要注入的服务，所以属于默认注册表
+    # 而不是组装根——评测 runner 与套件校验器照的都是这面镜子，漏在这里就等于让评测
+    # 用一份和产品不一致的工具目录跑分。
+    # 在函数体内 import：`reading_tools` 反过来要 import 本模块的 CoworkToolSpec，
+    # 放到模块顶端会在解释器启动时闭合成环。
+    from app.cowork.reading_tools import register_reading_tools
+
+    register_reading_tools(registry)
     return registry

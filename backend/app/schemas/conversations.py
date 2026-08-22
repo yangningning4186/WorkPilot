@@ -30,6 +30,7 @@ class ConversationResponse(BaseModel):
     provider: str | None
     selected_model: str | None
     unattended: bool
+    approval_mode: Literal["interactive", "auto"] = "interactive"
     archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -44,6 +45,8 @@ class ConversationRuntimeUpdate(BaseModel):
     provider_profile_id: UUID | None = None
     model_override: str | None = Field(default=None, max_length=200)
     unattended: bool = False
+    # 自主权上限。默认必须是 interactive：一个漏传字段的客户端不该把会话悄悄升级成免审批。
+    approval_mode: Literal["interactive", "auto"] = "interactive"
 
     @field_validator("model_override")
     @classmethod

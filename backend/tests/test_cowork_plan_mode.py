@@ -9,11 +9,12 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid6 import uuid7
 
 from app.core.config import get_settings
+from app.core.db import DbSession as AsyncSession
+from app.core.db import session_factory
 from app.core.run_bus import InMemoryRunBus
 from app.cowork.interactions import (
     create_inbox_item,
@@ -29,12 +30,14 @@ from app.cowork.plans import (
     plan_todos,
 )
 from app.cowork.runtime import (
+    _ephemeral_context,
     _system_prompt,
     initialize_cowork_state,
     load_cowork_checkpoint,
     resume_cowork_after_human,
 )
 from app.cowork.tools import build_default_cowork_registry
+from app.runstore.checkpoints import ensure_plan
 from app.runstore.runs import append_message, create_run, ensure_conversation, get_run, list_events
 from app.worker.cowork_run import cowork_run
 from tests.test_cowork_runner import (
@@ -109,9 +112,13 @@ def test_unknown_mode_falls_back_to_execute() -> None:
     assert normalize_mode("execute") == "execute"
 
 
-def test_plan_block_is_pinned_only_while_planning() -> None:
-    assert "<plan_mode>" in _system_prompt("", mode="plan")
-    assert "propose_plan" in _system_prompt("", mode="plan")
+def test_plan_reminder_is_per_turn_because_the_mode_flips_mid_run() -> None:
+    """批准会在 run 中途把 plan 翻成 execute，所以这段提醒不能烤进 system prompt。"""
+
+    planning = _ephemeral_context(mode="plan", todos=[])
+    assert "<plan_mode>" in planning
+    assert "propose_plan" in planning
+    assert "<plan_mode>" not in _ephemeral_context(mode="execute", todos=[])
     assert "<plan_mode>" not in _system_prompt("")
 
 
@@ -138,7 +145,7 @@ async def test_rejected_plan_carries_the_users_edits_back_to_the_model(
     """只回一个"被拒绝"，模型会原样再提一遍同一个计划。"""
 
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="计划退回"
+        db_session, title="计划退回"
     )
     run = await create_run(
         db_session,
@@ -150,15 +157,19 @@ async def test_rejected_plan_carries_the_users_edits_back_to_the_model(
         workflow_type="cowork",
     )
     step_id = uuid7()
-    await db_session.execute(
-        text(
-            """
-            INSERT INTO agent_plan_steps
-                (id, run_id, step_idx, description, tool, depends_on, status)
-            VALUES (:id, :run_id, 0, '等待批准计划', 'propose_plan', '{}', 'running')
-            """
-        ),
-        {"id": step_id, "run_id": run.id},
+    await ensure_plan(
+        db_session,
+        run_id=run.id,
+        steps=[
+            {
+                "id": str(step_id),
+                "idx": 0,
+                "description": "等待批准计划",
+                "tool": "propose_plan",
+                "depends_on": [],
+                "status": "running",
+            }
+        ],
     )
     item = await create_inbox_item(
         db_session,
@@ -184,7 +195,7 @@ async def test_plan_mode_refuses_writes_then_executes_the_approved_plan(
     """一条完整路径：越权被拦 → 提计划暂停 → 批准 → 解锁并落盘。"""
 
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="计划模式"
+        db_session, title="计划模式"
     )
     await create_session_root(
         db_session,
@@ -248,7 +259,6 @@ async def test_plan_mode_refuses_writes_then_executes_the_approved_plan(
             _final_completion("已经写好 notes.md。"),
         ]
     )
-    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     context = {
         "settings": get_settings().model_copy(
             update={
@@ -306,6 +316,13 @@ async def test_plan_mode_refuses_writes_then_executes_the_approved_plan(
 
     checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
     assert checkpoint is not None and checkpoint.state["mode"] == "execute"
-    resumed_system = provider.tool_histories[-1][0].content
-    assert "<plan_mode>" not in resumed_system
-    assert "写入 notes.md" in resumed_system
+    # 批准后的那一轮：计划提醒消失，批准的步骤作为清单出现在末尾的临时块里。
+    # 两者都不在 system prompt 里——它在一次 run 内必须逐字不变。
+    resumed = provider.tool_histories[-1]
+    assert "<plan_mode>" not in resumed[0].content
+    assert "写入 notes.md" not in resumed[0].content
+    assert resumed[-1].role == "user"
+    assert "<plan_mode>" not in resumed[-1].content
+    assert "写入 notes.md" in resumed[-1].content
+    # 计划阶段那一轮的末尾块里应当有提醒。
+    assert "<plan_mode>" in provider.tool_histories[1][-1].content

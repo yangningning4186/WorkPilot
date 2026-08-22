@@ -5,9 +5,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 
 import { AdminSessionControl, useAdminSession } from "@/components/admin-session";
 import { AnswerMarkdown } from "@/components/answer-markdown";
+import { ReaderPane } from "@/components/reader-pane";
 import { WorkdeskIcon, WorkdeskNavigation } from "@/components/workdesk-shell";
 import {
   ApiError,
+  type CoworkWorkMode,
   cancelRun,
   createConversation,
   createCoworkRun,
@@ -16,19 +18,29 @@ import {
   fetchConversationContextUsage,
   fetchConversations,
   fetchCoworkArtifacts,
+  fetchKnowledgeBases,
+  fetchSessionKnowledgeBase,
+  setSessionKnowledgeBase,
+  type KnowledgeBase,
   fetchArtifactPreview,
   fetchCoworkGrants,
   fetchCoworkMemories,
+  fetchApprovalRules,
   fetchCoworkRoots,
+  fetchWorkspaceTrust,
   forgetCoworkMemory,
   patchCoworkMemory,
   fetchProviders,
   revokeCoworkRoot,
   respondToCoworkInteraction,
+  revokeApprovalRule,
+  setWorkspaceTrust,
   setConversationArchived,
   steerCoworkRun,
   updateConversationRuntime,
   uploadCoworkAttachment,
+  type ApprovalRule,
+  type WorkspaceTrustEntry,
   type ConversationSummary,
   type ConversationContextUsage,
   type ConversationMessage,
@@ -98,10 +110,17 @@ const OFFICE_PROMPTS = [
   { label: "批量整理", prompt: "扫描工作空间里的 Word 和 Excel，按内容归类并给出整理方案。" },
 ];
 
-const RESEARCH_PROMPTS = [
-  { label: "资料综述", prompt: "阅读工作空间里的文档，整理主题脉络、关键结论和待验证问题。" },
-  { label: "深度研究", prompt: "对工作空间中的材料做交叉分析，输出一份有依据的研究摘要。" },
-  { label: "观点提取", prompt: "提取所有文档中的核心观点、证据与分歧，并按主题归纳。" },
+/**
+ * 论文阅读的快捷任务。
+ *
+ * 每一条都刻意要求"标出处"：这一档的产品承诺是每个论断都能落回原文的具体位置，
+ * 快捷任务如果自己不提，用户第一次用到的就是一个没有出处的普通摘要。
+ */
+const READING_PROMPTS = [
+  { label: "读懂全文", prompt: "通读这篇论文，讲清它要解决什么问题、方法是什么、结论有多强，每个论断标出处。" },
+  { label: "方法细节", prompt: "这篇论文的方法部分具体怎么做的？按步骤讲，并引用原文标出处。" },
+  { label: "结论与局限", prompt: "这篇论文的主要结论和作者自己承认的局限分别是什么？引用原文标出处。" },
+  { label: "找一段", prompt: "帮我找到论文里讨论实验设置的那一段，定位过去并解释它。" },
 ];
 
 function readableError(reason: unknown): string {
@@ -190,6 +209,19 @@ export default function CoworkPage() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [roots, setRoots] = useState<CoworkRoot[]>([]);
   const [grants, setGrants] = useState<CoworkGrant[]>([]);
+  const [approvalRules, setApprovalRules] = useState<ApprovalRule[]>([]);
+  const [workspaceTrust, setWorkspaceTrustState] = useState<WorkspaceTrustEntry[]>([]);
+  /**
+   * 这次批准要记多久。默认 once——一个漏改的界面不该悄悄留下常驻规则。
+   *
+   * 把 resume_token 一起存进 state，是为了让"换一条请求就重置"成为读取时的推导，
+   * 而不是一个 effect：上一条勾过的"以后同类不用再问"绝不能静默套用到下一条
+   * 完全不同的请求上，而 effect 至少要晚一帧才生效。
+   */
+  const [remember, setRemember] = useState<{
+    token: string;
+    scope: "once" | "command" | "target" | "tool";
+  }>({ token: "", scope: "once" });
   const [artifacts, setArtifacts] = useState<CoworkArtifact[]>([]);
   const [memories, setMemories] = useState<CoworkMemory[]>([]);
   const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
@@ -208,7 +240,17 @@ export default function CoworkPage() {
   const [interactionAnswer, setInteractionAnswer] = useState("");
   const [planMode, setPlanMode] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [workMode, setWorkMode] = useState<"office" | "research">("office");
+  const [workMode, setWorkMode] = useState<CoworkWorkMode>("office");
+  // 论文阅读模式下打开的文档。只写进提示词告诉模型读哪一份；能不能读仍由每次工具调用
+  // 上的 filesystem.read 授权决定，这里填一个未授权路径也越不过去。
+  const [readingPath, setReadingPath] = useState("");
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [mountedKb, setMountedKb] = useState<string | null>(null);
+  const [readerOpen, setReaderOpen] = useState(true);
+  // 用户点回答里 `[p.12]` 的请求。nonce 让"再点一次同一页"也能被面板识别出来。
+  const [locatorRequest, setLocatorRequest] = useState<{ locator: number; nonce: number } | null>(
+    null,
+  );
   const [providers, setProviders] = useState<ProviderProfile[]>([]);
   const [contextUsage, setContextUsage] = useState<ConversationContextUsage | null>(null);
   const [artifactPreview, setArtifactPreview] = useState<{ title: string; url: string; mode: string } | null>(null);
@@ -233,16 +275,20 @@ export default function CoworkPage() {
   }, [openConversationMenuId]);
 
   const loadSession = useCallback(async (id: string) => {
-    const [rootResponse, grantResponse, artifactResponse, memoryResponse, messageResponse, contextResponse] = await Promise.all([
+    const [rootResponse, grantResponse, artifactResponse, memoryResponse, messageResponse, contextResponse, ruleResponse, trustResponse] = await Promise.all([
       fetchCoworkRoots(id),
       fetchCoworkGrants(id),
       fetchCoworkArtifacts(id),
       fetchCoworkMemories(id),
       fetchConversationMessages(id),
       fetchConversationContextUsage(id).catch(() => null),
+      fetchApprovalRules(id).catch(() => ({ items: [] })),
+      fetchWorkspaceTrust(id).catch(() => ({ items: [] })),
     ]);
     setRoots(rootResponse.items);
     setGrants(grantResponse.items);
+    setApprovalRules(ruleResponse.items);
+    setWorkspaceTrustState(trustResponse.items);
     setArtifacts(artifactResponse.items);
     setMemories(memoryResponse.items);
     setMessages(messageResponse.items);
@@ -275,7 +321,7 @@ export default function CoworkPage() {
       await patchCoworkMemory(memoryId, { content });
       setEditingMemoryId(null);
       await refreshMemories();
-      setNotice("记忆已更新，下一轮起对模型生效。");
+      setNotice("记忆已更新，从下一条消息起对模型生效。");
     } catch (reason) {
       setNotice(readableError(reason));
     } finally {
@@ -288,7 +334,7 @@ export default function CoworkPage() {
     try {
       await forgetCoworkMemory(memoryId);
       await refreshMemories();
-      setNotice("已忘记这条记忆，模型下一轮不会再看到它。");
+      setNotice("已忘记这条记忆，从下一条消息起模型不会再看到它。");
     } catch (reason) {
       setNotice(readableError(reason));
     } finally {
@@ -420,7 +466,7 @@ export default function CoworkPage() {
   }, [conversationId, run.phase]);
 
   const steering = run.phase === "connecting" || run.phase === "executing";
-  const running = steering || run.phase === "waiting_human";
+  const running = steering || run.phase === "waiting_human" || run.phase === "sleeping";
 
   const capabilitiesByRoot = useMemo(() => {
     const values = new Map<string, string[]>();
@@ -572,6 +618,8 @@ export default function CoworkPage() {
         goal: prompt,
         attachment_ids: uploaded.map((item) => item.id),
         plan_mode: planMode,
+        work_mode: workMode,
+        reading_path: workMode === "reading" && readingPath.trim() !== "" ? readingPath.trim() : null,
       });
       setStopping(false);
       setActivePrompt(prompt);
@@ -584,7 +632,7 @@ export default function CoworkPage() {
     } finally {
       setBusy(false);
     }
-  }, [attachments, conversationId, goal, loadSession, planMode]);
+  }, [attachments, conversationId, goal, loadSession, planMode, readingPath, workMode]);
 
   const addAttachments = useCallback((files: FileList | File[]) => {
     const accepted = Array.from(files).filter((file) => {
@@ -642,7 +690,12 @@ export default function CoworkPage() {
   }, [goal, runId]);
 
   const respondToInteraction = useCallback(
-    async (body: { approved?: boolean; answer?: string; path?: string }) => {
+    async (body: {
+      approved?: boolean;
+      answer?: string;
+      path?: string;
+      remember?: "once" | "tool" | "command" | "target";
+    }) => {
       if (runId === null || run.interrupt === null) return;
       setResponding(true);
       setNotice(null);
@@ -660,6 +713,32 @@ export default function CoworkPage() {
     [conversationId, loadSession, run.interrupt, runId],
   );
 
+  const dropApprovalRule = useCallback(async (ruleId: string) => {
+    if (conversationId === null) return;
+    setBusy(true);
+    try {
+      await revokeApprovalRule(conversationId, ruleId);
+      setApprovalRules((current) => current.filter((item) => item.id !== ruleId));
+    } catch (reason) {
+      setNotice(readableError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }, [conversationId]);
+
+  const toggleWorkspaceTrust = useCallback(async (canonicalPath: string, trusted: boolean) => {
+    if (conversationId === null) return;
+    setBusy(true);
+    try {
+      const response = await setWorkspaceTrust(conversationId, canonicalPath, trusted);
+      setWorkspaceTrustState(response.items);
+    } catch (reason) {
+      setNotice(readableError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }, [conversationId]);
+
   const approveDirectoryRequest = useCallback(async () => {
     const selected = await pickCoworkDirectory();
     if (selected === null) {
@@ -670,13 +749,64 @@ export default function CoworkPage() {
   }, [respondToInteraction]);
 
   const submitComposer = steering ? sendSteering : execute;
-  const prompts = workMode === "office" ? OFFICE_PROMPTS : RESEARCH_PROMPTS;
+  const requestLocator = useCallback((locator: number) => {
+    setLocatorRequest((current) => ({ locator, nonce: (current?.nonce ?? 0) + 1 }));
+    setReaderOpen(true);
+  }, []);
+
+  const prompts = workMode === "office" ? OFFICE_PROMPTS : READING_PROMPTS;
   const listedConversations = showArchived ? archivedConversations : conversations;
   const activeConversation = [...conversations, ...archivedConversations].find(
     (item) => item.id === conversationId,
   );
   const conversationArchived = activeConversation?.archived_at !== null
     && activeConversation?.archived_at !== undefined;
+
+  const toggleApprovalMode = useCallback(async () => {
+    if (conversationId === null || activeConversation === undefined || running) return;
+    setBusy(true);
+    try {
+      const updated = await updateConversationRuntime(conversationId, {
+        provider_profile_id: activeConversation.provider_profile_id,
+        model_override: activeConversation.selected_model,
+        unattended: activeConversation.unattended,
+        approval_mode: activeConversation.approval_mode === "auto" ? "interactive" : "auto",
+      });
+      setConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (reason) {
+      setNotice(readableError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeConversation, conversationId, running]);
+
+  // 库列表与本会话的挂载分开取：列表全局共用，挂载跟着会话走。
+  useEffect(() => {
+    if (authState !== "authenticated") return;
+    fetchKnowledgeBases()
+      .then((response) => setKnowledgeBases(response.items))
+      .catch(() => setKnowledgeBases([]));
+  }, [authState]);
+
+  useEffect(() => {
+    if (conversationId === null) return;
+    let cancelled = false;
+    fetchSessionKnowledgeBase(conversationId)
+      .then((response) => { if (!cancelled) setMountedKb(response.slug); })
+      .catch(() => { if (!cancelled) setMountedKb(null); });
+    return () => { cancelled = true; };
+  }, [conversationId]);
+
+  const selectKnowledgeBase = useCallback(async (slug: string) => {
+    if (conversationId === null) return;
+    const next = slug === "" ? null : slug;
+    try {
+      const updated = await setSessionKnowledgeBase(conversationId, next);
+      setMountedKb(updated.slug);
+    } catch (reason) {
+      setNotice(readableError(reason));
+    }
+  }, [conversationId]);
 
   const selectProvider = useCallback(async (providerId: string) => {
     if (conversationId === null || running) return;
@@ -687,6 +817,9 @@ export default function CoworkPage() {
         provider_profile_id: providerId || null,
         model_override: selected?.default_model ?? null,
         unattended: activeConversation?.unattended ?? false,
+        // 换 Provider 不该顺带改动自主权上限：这里必须原样带回当前值，
+        // 漏掉它就等于每次换模型都把免审批悄悄关掉。
+        approval_mode: activeConversation?.approval_mode ?? "interactive",
       });
       setConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
       fetchConversationContextUsage(conversationId).then(setContextUsage).catch(() => undefined);
@@ -712,6 +845,7 @@ export default function CoworkPage() {
         provider_profile_id: activeConversation.provider_profile_id,
         model_override: normalized,
         unattended: activeConversation.unattended,
+        approval_mode: activeConversation.approval_mode,
       });
       setConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
       fetchConversationContextUsage(conversationId).then(setContextUsage).catch(() => undefined);
@@ -722,6 +856,12 @@ export default function CoworkPage() {
     }
   }, [activeConversation, conversationId, running]);
   const interactionPayload = run.interrupt?.payload ?? {};
+  // token 对不上就当作 once：换了一条请求，上一条的选择立刻失效，不需要等一帧。
+  const rememberScope =
+    remember.token === (run.interrupt?.resume_token ?? "") ? remember.scope : "once";
+  const setRememberScope = (scope: "once" | "command" | "target" | "tool") => {
+    setRemember({ token: run.interrupt?.resume_token ?? "", scope });
+  };
   const interactionQuestion =
     typeof interactionPayload.question === "string" ? interactionPayload.question : "Cowork 需要你的答复";
   const interactionReason =
@@ -742,6 +882,9 @@ export default function CoworkPage() {
   const planNotes = typeof interactionPayload.notes === "string" ? interactionPayload.notes : "";
   const runAnswer = run.answer || run.progressSummary || "";
   const hasConversation = messages.length > 0 || runId !== null;
+  // 模型刚打开过的那份优先于输入框里填的：`reader_goto` 反映的是它此刻正在给你看什么。
+  const readerPath = run.readerJump?.path ?? readingPath.trim();
+  const readerVisible = readerOpen && hasConversation && workMode === "reading" && readerPath !== "";
   const visibleMessages =
     runId === null ? messages : messages.filter((message) => message.run_id !== runId);
   const currentPromptMessage = messages.find(
@@ -860,6 +1003,11 @@ export default function CoworkPage() {
           <div><span className={authState === "authenticated" ? "online" : ""} />{authState === "authenticated" ? "本地 Agent 已连接" : "正在连接本地 Agent"}</div>
           <span className="workdesk-default-scope"><WorkdeskIcon name="shield" />默认权限</span>
           <p>{activeConversation?.title ?? "新任务"}</p>
+          {workMode === "reading" && hasConversation && !readerVisible && readerPath !== "" && (
+            <button className="workdesk-reader-reopen" onClick={() => setReaderOpen(true)} type="button">
+              <WorkdeskIcon name="file" />打开阅读器
+            </button>
+          )}
         </header>
 
         {authState !== "authenticated" ? (
@@ -877,8 +1025,22 @@ export default function CoworkPage() {
                   <h1>WorkPilot，我帮你</h1>
                   <div className="workdesk-mode-switch" role="tablist" aria-label="任务模式">
                     <button aria-selected={workMode === "office"} onClick={() => setWorkMode("office")} role="tab" type="button">日常办公</button>
-                    <button aria-selected={workMode === "research"} onClick={() => setWorkMode("research")} role="tab" type="button">知识研究</button>
+                    <button aria-selected={workMode === "reading"} onClick={() => setWorkMode("reading")} role="tab" type="button">论文阅读</button>
                   </div>
+                  {workMode === "reading" && (
+                    <div className="workdesk-reading-picker">
+                      <WorkdeskIcon name="file" />
+                      <input
+                        aria-label="要阅读的文档路径"
+                        onChange={(event) => setReadingPath(event.target.value)}
+                        placeholder="要读的文档，例如 papers/attention.pdf"
+                        type="text"
+                        value={readingPath}
+                      />
+                      {/* 不填也能提问：模型会明确说"还没打开文档"，而不是凭对同名论文的印象作答。 */}
+                      <small>{readingPath.trim() === "" ? "还没选文档" : "按 locator 引用，答案可回溯到页"}</small>
+                    </div>
+                  )}
                 </section>
                 <div className="workdesk-prompt-chips" aria-label="快捷任务">
                   {prompts.map((item) => <button key={item.label} onClick={() => setGoal(item.prompt)} type="button"><WorkdeskIcon name="file" />{item.label}</button>)}
@@ -898,7 +1060,7 @@ export default function CoworkPage() {
                     {message.role === "assistant" && <span className="workdesk-agent-avatar"><WorkdeskIcon name="spark" /></span>}
                     <div className="workdesk-message-body">
                       {message.role === "assistant" && <small>WorkPilot</small>}
-                      {message.role === "assistant" ? <AnswerMarkdown text={message.content} /> : <p>{message.content}</p>}
+                      {message.role === "assistant" ? <AnswerMarkdown onSelectLocator={workMode === "reading" ? requestLocator : undefined} text={message.content} /> : <p>{message.content}</p>}
                       {message.attachments.length > 0 && <div className="workdesk-message-attachments">{message.attachments.map((item) => <span key={item.id}><WorkdeskIcon name="file" /><b>{item.filename}</b><small>{item.kind === "image" ? "图片" : item.kind === "pdf" ? "PDF" : "文本"}</small></span>)}</div>}
                     </div>
                   </article>
@@ -989,6 +1151,29 @@ export default function CoworkPage() {
                           )}
                         </details>
 
+                        {run.sleepingUntil !== null && run.phase === "sleeping" && (
+                          <section className="workdesk-inbox-card" aria-live="polite">
+                            <div className="workdesk-inbox-eyebrow"><WorkdeskIcon name="spark" /><span>休眠中</span></div>
+                            <h3>已挂起，{new Date(run.sleepingUntil).toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit", month: "numeric", day: "numeric" })} 自动继续</h3>
+                            <p>不需要你操作，到点会从这里接着做，上下文原样保留。想提前结束就停止这次运行。</p>
+                          </section>
+                        )}
+
+                        {run.waivedApprovals.map((waived, index) => (
+                          <div className="workdesk-waived-note" key={`${waived.tool}:${index}`}>
+                            <WorkdeskIcon name="shield" />
+                            <span>
+                              没有向你确认就执行了 <code>{waived.command ?? waived.tool}</code>：
+                              {waived.reason === "approval_mode=auto"
+                                ? "这个会话开着免审批。"
+                                : waived.reason === "workspace_trust"
+                                  ? `这个目录被你信任过，且它的白名单里有 ${waived.allowlist_entry ?? ""}。`
+                                  : "命中了一条你之前留下的“不再询问”规则。"}
+                              可以在“默认权限”里撤销。
+                            </span>
+                          </div>
+                        ))}
+
                         {run.interrupt !== null && run.interrupt.kind !== "write_confirm" && (
                           <section className="workdesk-inbox-card" aria-live="polite">
                             <div className="workdesk-inbox-eyebrow"><WorkdeskIcon name="shield" /><span>需要你的确认</span></div>
@@ -1019,7 +1204,13 @@ export default function CoworkPage() {
                                 <pre className="workdesk-shell-command"><code>{shellCommand}</code></pre>
                                 <small>工作目录：{shellCwd}</small>
                                 {interactionPayload.has_operators === true && <small className="risk">命令包含 shell 操作符，不能进入 allowlist，本次必须单独批准。</small>}
-                                <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">拒绝</button><button className="primary danger" disabled={responding} onClick={() => void respondToInteraction({ approved: true })} type="button">批准并运行一次</button></div>
+                                {typeof interactionPayload.standing_command_prefix === "string" && (
+                                  <label className="workdesk-remember-toggle">
+                                    <input checked={rememberScope === "command"} disabled={responding} onChange={(event) => setRememberScope(event.target.checked ? "command" : "once")} type="checkbox" />
+                                    <span>以后 <code>{interactionPayload.standing_command_prefix}</code> 开头的命令不用再问</span>
+                                  </label>
+                                )}
+                                <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">拒绝</button><button className="primary danger" disabled={responding} onClick={() => void respondToInteraction({ approved: true, remember: rememberScope })} type="button">{rememberScope === "command" ? "批准并记住" : "批准并运行一次"}</button></div>
                               </>
                             ) : run.interrupt.kind === "plan_approval" ? (
                               <>
@@ -1038,7 +1229,15 @@ export default function CoworkPage() {
                                 <p>{typeof interactionPayload.warning === "string" ? interactionPayload.warning : "该工具会修改外部系统。"}</p>
                                 <pre className="workdesk-shell-command"><code>{JSON.stringify(interactionPayload.arguments ?? {}, null, 2)}</code></pre>
                                 <small>工具：{typeof interactionPayload.tool === "string" ? interactionPayload.tool : "外部工具"}</small>
-                                <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">拒绝</button><button className="primary danger" disabled={responding} onClick={() => void respondToInteraction({ approved: true })} type="button">批准一次</button></div>
+                                <div className="workdesk-remember-choices" role="radiogroup" aria-label="记住这次批准的范围">
+                                  <label><input checked={rememberScope === "once"} disabled={responding} name="remember" onChange={() => setRememberScope("once")} type="radio" /><span>只这一次</span></label>
+                                  {typeof interactionPayload.standing_target === "string" && (
+                                    <label><input checked={rememberScope === "target"} disabled={responding} name="remember" onChange={() => setRememberScope("target")} type="radio" /><span>同样的目标不用再问</span></label>
+                                  )}
+                                  <label><input checked={rememberScope === "tool"} disabled={responding} name="remember" onChange={() => setRememberScope("tool")} type="radio" /><span>这只工具都不用再问</span></label>
+                                </div>
+                                <small>记住的范围只对当前会话有效，之后可以在“默认权限”里撤销。它省掉的是“再问一次”，不会放大这个会话已有的能力。</small>
+                                <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">拒绝</button><button className="primary danger" disabled={responding} onClick={() => void respondToInteraction({ approved: true, remember: rememberScope })} type="button">{rememberScope === "once" ? "批准一次" : "批准并记住"}</button></div>
                               </>
                             ) : (
                               <>
@@ -1053,7 +1252,7 @@ export default function CoworkPage() {
 
                         {(runAnswer !== "" || run.error !== null) && (
                           <div className={`workdesk-run-answer${run.phase === "budget_exceeded" ? " budget" : run.error !== null ? " error" : run.phase === "cancelled" ? " cancelled" : ""}`}>
-                            {run.error !== null ? <p>{run.error}</p> : <AnswerMarkdown text={runAnswer} />}
+                            {run.error !== null ? <p>{run.error}</p> : <AnswerMarkdown onSelectLocator={workMode === "reading" ? requestLocator : undefined} text={runAnswer} />}
                           </div>
                         )}
 
@@ -1131,6 +1330,24 @@ export default function CoworkPage() {
                     {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
                   </select>
                 </label>
+                {/* 挂载是会话级的，改了从下一轮开始生效——正在跑的这一轮已经把库冻在
+                    自己的提示词里了，中途换会让前半段和后半段引用两份不同的资料。 */}
+                <label className="workdesk-model-select" title="给这个会话挂一个知识库；提问时会先检索它">
+                  <WorkdeskIcon name="book" />
+                  <select disabled={busy || running || conversationArchived} onChange={(event) => void selectKnowledgeBase(event.target.value)} value={mountedKb ?? ""}>
+                    <option value="">不挂知识库</option>
+                    {knowledgeBases.map((item) => (
+                      <option key={item.slug} value={item.slug}>
+                        {item.name}{item.is_indexed ? "" : "（未建索引）"}
+                      </option>
+                    ))}
+                    {/* 挂着的库被删掉了：不补这一项，select 会静默回落到"不挂知识库"，
+                        用户会以为自己从来没挂过。 */}
+                    {mountedKb !== null && !knowledgeBases.some((item) => item.slug === mountedKb) && (
+                      <option value={mountedKb}>{mountedKb}（已失效）</option>
+                    )}
+                  </select>
+                </label>
                 <button aria-checked={planMode} aria-label="先出计划再执行" className={`workdesk-plan-toggle${planMode ? " is-on" : ""}`} disabled={busy || running || conversationArchived || steering} onClick={() => setPlanMode((current) => !current)} role="switch" title="打开后 Cowork 会先调研并提交计划，等你批准再动手" type="button"><WorkdeskIcon name="shield" /><span>先出计划</span></button>
                 <button aria-label={steering ? "追加运行指令" : "开始执行任务"} className="workdesk-send" disabled={busy || conversationArchived || run.phase === "waiting_human" || goal.trim() === ""} onClick={() => void submitComposer()} type="button"><WorkdeskIcon name="send" /></button>
               </div>
@@ -1144,13 +1361,71 @@ export default function CoworkPage() {
                     {roots.map((root) => (
                       <article key={root.id}><div><strong>{root.label}</strong><small title={root.canonical_path}>{shortPath(root.canonical_path)} · {(capabilitiesByRoot.get(root.id) ?? []).join(" · ")}</small></div><button disabled={busy || running} onClick={() => void removeRoot(root.id)} type="button">收回</button></article>
                     ))}
+
+                    <h4>自主权上限</h4>
+                    <p className="workdesk-permission-note">
+                      {activeConversation?.approval_mode === "auto"
+                        ? "这个会话当前不逐次询问写入与命令。目录与能力边界仍然生效——免审批省掉的是“再问一次”，不是权限本身。"
+                        : "写入文件和运行命令时会逐次问你。改成免审批可以让无人值守任务不中断，但那意味着你事后才会看到发生了什么。"}
+                    </p>
+                    <button
+                      aria-checked={activeConversation?.approval_mode === "auto"}
+                      className={`workdesk-approval-toggle${activeConversation?.approval_mode === "auto" ? " is-on" : ""}`}
+                      disabled={busy || running || conversationArchived}
+                      onClick={() => void toggleApprovalMode()}
+                      role="switch"
+                      type="button"
+                    >
+                      <WorkdeskIcon name="shield" />
+                      <span>{activeConversation?.approval_mode === "auto" ? "免审批已开启" : "逐次审批（推荐）"}</span>
+                    </button>
+
+                    {approvalRules.length > 0 && <h4>不再询问的动作</h4>}
+                    {approvalRules.map((rule) => (
+                      <article key={rule.id}>
+                        <div>
+                          <strong>
+                            {rule.match_kind === "command_prefix"
+                              ? `命令 ${rule.target}`
+                              : rule.match_kind === "target"
+                                ? `${rule.tool} · 指定目标`
+                                : `${rule.tool} · 全部调用`}
+                          </strong>
+                          <small>{rule.scope === "schedule" ? "只在这条定时计划的运行里生效" : "本会话内生效"}</small>
+                        </div>
+                        <button disabled={busy} onClick={() => void dropApprovalRule(rule.id)} type="button">撤销</button>
+                      </article>
+                    ))}
+
+                    {workspaceTrust.length > 0 && <h4>仓库自带的命令白名单</h4>}
+                    {workspaceTrust.map((entry) => (
+                      <article key={entry.canonical_path}>
+                        <div>
+                          <strong title={entry.canonical_path}>{shortPath(entry.canonical_path)}</strong>
+                          <small>
+                            {entry.config_error !== null
+                              ? `配置有问题：${entry.config_error}`
+                              : entry.declared.length === 0
+                                ? "这个目录没有声明 .workpilot/config.toml"
+                                : `声明了 ${entry.declared.join("、")}${entry.rejected.length > 0 ? `；已忽略 ${entry.rejected.length} 条` : ""}`}
+                          </small>
+                        </div>
+                        <button
+                          disabled={busy || entry.declared.length === 0}
+                          onClick={() => void toggleWorkspaceTrust(entry.canonical_path, !entry.trusted)}
+                          type="button"
+                        >
+                          {entry.trusted ? "撤销信任" : "信任这个目录"}
+                        </button>
+                      </article>
+                    ))}
                   </div>
                 </details>
                 <details className="workdesk-permission-menu workdesk-memory-menu">
                   <summary><WorkdeskIcon name="shield" /><span>记忆</span><b>{memories.length > 0 ? memories.length : "⌄"}</b></summary>
                   <div>
                     <h3>长期记忆</h3>
-                    <p>这些事实会在每一轮注入给模型，面板里看到的就是它看到的。global 对所有会话有效，workspace 只对当前工作目录有效，conversation 只在本次会话有效。</p>
+                    <p>这些事实会在每条消息开始时注入给模型，面板里看到的就是它看到的；改动从下一条消息起生效。global 对所有会话有效，workspace 只对当前工作目录有效，conversation 只在本次会话有效。</p>
                     {memories.length === 0 && <h4>还没有记忆。模型在你表达长期偏好时会自己记下来。</h4>}
                     {memories.map((memory) => (
                       <article key={memory.id}>
@@ -1184,6 +1459,19 @@ export default function CoworkPage() {
           </div>
         )}
       </section>
+
+      {readerVisible && conversationId !== null && (
+        // key 绑路径：换文档直接重挂载，而不是在 effect 里逐个字段复位——漏一个就会出现
+        // "新文档、旧高亮"这种没人会去测的组合。
+        <ReaderPane
+          conversationId={conversationId}
+          jump={run.readerJump}
+          key={readerPath}
+          onClose={() => setReaderOpen(false)}
+          path={readerPath}
+          requestedLocator={locatorRequest}
+        />
+      )}
       {pendingDelete !== null && (
         <div className="workdesk-conversation-dialog-backdrop" onMouseDown={(event) => {
           if (event.currentTarget === event.target && managingConversationId === null) setPendingDelete(null);

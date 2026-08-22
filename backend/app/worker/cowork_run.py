@@ -5,17 +5,18 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import socket
 from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
 import structlog
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent_core.budget import BudgetedGateway, BudgetMeter
 from app.agent_core.contracts import BudgetState
 from app.core.config import Settings, get_settings
+from app.core.db import SessionFactory
 from app.core.queue import get_run_queue
 from app.core.run_bus import RunBus
 from app.cowork.automation_tools import register_scheduler_tools
@@ -25,17 +26,19 @@ from app.cowork.extensions import register_mcp_tools, register_skill_tools
 from app.cowork.mcp.client import McpClientManager
 from app.cowork.mcp.config import McpConfiguration, load_mcp_configuration
 from app.cowork.mcp.credentials import hydrate_mcp_oauth_credentials
+from app.cowork.memory import schedule_memory_extraction
 from app.cowork.memory_tools import register_memory_tools
 from app.cowork.provider_profiles import build_conversation_gateway
 from app.cowork.rag_tools import register_rag_tools
 from app.cowork.runtime import run_cowork_graph
-from app.cowork.skills.distillation_store import schedule_skill_distillation, successful_tool_names
+from app.cowork.shell_tasks import CoworkShellTaskManager
+from app.cowork.skills.candidate_store import schedule_skill_distillation
+from app.cowork.skills.distillation import successful_tool_names
 from app.cowork.subagent import register_readonly_subagent
 from app.cowork.tools import CoworkToolRegistry, build_default_cowork_registry
 from app.cowork_store.factory import local_cowork_stores
-from app.cowork_store.routing import configured_cowork_store
-from app.rag.memory.store import schedule_memory_extraction
-from app.rag.service import PostgresRagService
+from app.knowledge_contracts import RagService
+from app.rag.kb import local_kb_service
 from app.runstore.runs import (
     append_events,
     append_message,
@@ -46,7 +49,6 @@ from app.runstore.runs import (
     renew_lease,
 )
 from app.security.secret_store import LocalSecretStore
-from app.worker.answer_run import worker_identity
 from workpilot_ai.gateway import ModelGateway
 
 logger = structlog.get_logger(__name__)
@@ -92,11 +94,20 @@ async def _cached_mcp_manager(
         return manager
 
 
+def worker_identity() -> str:
+    """`主机名:pid`。写进 run 的租约里，用来判断"这个 run 是不是我领的"。
+
+    原来住在 answer_run.py，那条 workflow 退役后搬到这里——它只剩 Cowork 一个使用者，
+    单独开一个模块只是把一行代码藏得更远。memory / skill 各有自己的同名实现。
+    """
+    return f"{socket.gethostname()}:{os.getpid()}"
+
+
 async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
     run_id = UUID(run_id_raw)
     settings: Settings = ctx.get("settings") or get_settings()
     bus: RunBus = ctx["bus"]
-    session_factory: async_sessionmaker[AsyncSession] = ctx["session_factory"]
+    session_factory: SessionFactory = ctx["session_factory"]
     worker_id = worker_identity()
 
     async with session_factory() as session:
@@ -120,41 +131,26 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
 
     local_user_message = None
     async with session_factory() as session:
-        store = configured_cowork_store()
-        if store is not None and await store.get_run(run_id) is not None:
-            conversation_messages = await local_cowork_stores().conversations.read(
-                run.conversation_id
-            )
-            existing_message = next(
-                (
-                    item
-                    for item in conversation_messages
-                    if item.run_id == run_id and item.role == "assistant"
-                ),
-                None,
-            )
-            local_user_message = next(
-                (
-                    item
-                    for item in reversed(conversation_messages)
-                    if item.run_id == run_id and item.role == "user"
-                ),
-                None,
-            )
-            existing = None if existing_message is None else existing_message.record_id
-        else:
-            existing = (
-                await session.execute(
-                    text(
-                        """
-                        SELECT id FROM messages
-                        WHERE run_id = :run_id AND role = 'assistant'
-                        ORDER BY seq LIMIT 1
-                        """
-                    ),
-                    {"run_id": run_id},
-                )
-            ).scalar_one_or_none()
+        conversation_messages = await local_cowork_stores().conversations.read(
+            run.conversation_id
+        )
+        existing_message = next(
+            (
+                item
+                for item in conversation_messages
+                if item.run_id == run_id and item.role == "assistant"
+            ),
+            None,
+        )
+        local_user_message = next(
+            (
+                item
+                for item in reversed(conversation_messages)
+                if item.run_id == run_id and item.role == "user"
+            ),
+            None,
+        )
+        existing = None if existing_message is None else existing_message.record_id
         message_id = (
             UUID(str(existing))
             if existing is not None
@@ -220,14 +216,26 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                 "started_at_ms": 0,
             }
             meter = BudgetMeter(budget, chars_per_token=settings.cost_estimate_chars_per_token)
+            # 本地 KB 而不是 pgvector：Cowork 是桌面产品，用户手建命名知识库，检索走磁盘上
+            # 的 FAISS + BM25，不需要起 Postgres。pgvector 那条路径仍服务 RAG 问答与评测
+            # ——两者都满足 `RagService`，在这里换一行就切。
+            #
+            # 在分支外面组装，因为注入了 registry 的调用方（评测跑批、测试）同样需要一个
+            # rag 给 KB 预检索用；ctx 里给了就用它们那份。
+            injected_rag = ctx.get("cowork_rag")
+            rag: RagService = (
+                injected_rag
+                if isinstance(injected_rag, RagService)
+                else local_kb_service(settings)
+            )
             configured_registry = ctx.get("cowork_registry")
             if configured_registry is None:
                 registry = build_default_cowork_registry()
                 register_skill_tools(registry, settings)
                 manager = ctx.get("mcp_manager")
                 if not isinstance(manager, McpClientManager):
-                    configuration = await hydrate_mcp_oauth_credentials(
-                        session,
+                    configuration = hydrate_mcp_oauth_credentials(
+                        settings,
                         load_mcp_configuration(settings.cowork_mcp_config_path),
                         LocalSecretStore(settings.secret_store_key_path),
                     )
@@ -245,19 +253,19 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                 register_scheduler_tools(registry)
                 register_memory_tools(registry)
                 register_readonly_subagent(registry)
-                register_rag_tools(
-                    registry,
-                    PostgresRagService(
-                        session_factory,
-                        lexical_enabled=settings.lexical_rrf_enabled,
-                        lexical_mode=settings.lexical_mode,
-                        rrf_k=settings.rrf_k,
-                        settings=settings,
-                    ),
-                )
+                register_rag_tools(registry, rag)
             else:
                 registry = configured_registry
             assert isinstance(registry, CoworkToolRegistry)
+            shell_tasks = ctx.get("shell_task_manager")
+            if not isinstance(shell_tasks, CoworkShellTaskManager):
+                shell_tasks = CoworkShellTaskManager(
+                    max_tasks_per_conversation=settings.cowork_shell_background_max_tasks,
+                    output_max_bytes=settings.cowork_shell_background_output_max_bytes,
+                    hard_ttl_s=settings.cowork_shell_background_ttl_s,
+                    terminate_grace_s=settings.cowork_shell_terminate_grace_s,
+                )
+                ctx["shell_task_manager"] = shell_tasks
             state = await run_cowork_graph(
                 session,
                 run_id=run_id,
@@ -269,8 +277,14 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                 bus=bus,
                 cancel_event=cancel_event,
                 session_factory=session_factory,
+                shell_tasks=shell_tasks,
+                rag=rag,
             )
 
+        if state["status"] == "sleeping":
+            # checkpoint 与 run.sleeping 已经原子提交；到点由调度 tick 重新入队。
+            logger.info("Cowork 进入休眠等待唤醒", run_id=str(run_id))
+            return
         if state["status"] == "waiting_human":
             # runtime 已把 checkpoint、interrupt 事件和 run.waiting_human 原子提交。
             # 保留同一条 streaming assistant message，答复后由新的队列作业继续写完。
@@ -321,56 +335,44 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                 worker_id=worker_id,
                 error=state["error"],
             )
-            if (
-                finished_run
-                and run_status == "done"
-                and settings.cowork_store_backend != "sqlite"
-            ):
-                if settings.memory_extraction_enabled:
-                    memory_job = await schedule_memory_extraction(session, run_id=run_id)
-                if settings.skill_distillation_enabled:
-                    skill_job = await schedule_skill_distillation(session, run_id=run_id)
             await session.commit()
         await bus.publish(run_id)
-        if (
-            finished_run
-            and run_status == "done"
-            and settings.cowork_store_backend == "sqlite"
-        ):
+        # Skill 蒸馏的入队与存储后端无关：作业连同来源快照一起落进候选目录，
+        # 不再需要 claim 时回查 agent_runs 和 checkpoint。写盘失败同样只能告警——
+        # Cowork 主运行已经是成功终态，不能因为后处理反向改它。
+        if finished_run and run_status == "done" and settings.skill_distillation_enabled:
             try:
-                async with session_factory() as post_session:
-                    if settings.memory_extraction_enabled:
-                        if local_user_message is None:
-                            raise LookupError("SQLite Cowork run 缺少用户来源消息")
-                        memory_job = await schedule_memory_extraction(
-                            post_session,
-                            run_id=run_id,
-                            local_source_message_id=local_user_message.record_id,
-                            local_conversation_id=run.conversation_id,
-                            local_content=local_user_message.content,
-                            local_created_at=datetime.fromisoformat(local_user_message.created_at),
-                        )
-                    if settings.skill_distillation_enabled:
-                        skill_job = await schedule_skill_distillation(
-                            post_session,
-                            run_id=run_id,
-                            local_goal=run.goal,
-                            local_final_message=final_text,
-                            local_successful_tools=successful_tool_names(
-                                cast("dict[str, Any]", state)
-                            ),
-                        )
-                    await post_session.commit()
+                skill_job = await asyncio.to_thread(
+                    schedule_skill_distillation,
+                    settings.cowork_skill_candidates_path,
+                    run_id=run_id,
+                    goal=run.goal,
+                    final_message=final_text,
+                    successful_tools=successful_tool_names(cast("dict[str, Any]", state)),
+                )
+            except Exception:
+                logger.exception("Skill 蒸馏作业写入失败", run_id=str(run_id))
+        if finished_run and run_status == "done" and settings.memory_extraction_enabled:
+            try:
+                if local_user_message is None:
+                    raise LookupError("Cowork run 缺少用户来源消息")
+                memory_job = await schedule_memory_extraction(
+                    run_id=run_id,
+                    conversation_id=run.conversation_id,
+                    source_message_id=local_user_message.record_id,
+                    content=local_user_message.content,
+                    source_created_at=datetime.fromisoformat(local_user_message.created_at),
+                )
             except Exception:
                 # Cowork 主运行已经持久化为成功；后处理失败只能告警，不能反向改终态。
-                logger.exception("SQLite Cowork 后处理作业创建失败", run_id=str(run_id))
+                logger.exception("记忆抽取作业创建失败", run_id=str(run_id))
         if memory_job is not None or skill_job is not None:
             try:
                 queue = ctx.get("run_queue") or await get_run_queue()
                 if memory_job is not None:
                     await queue.enqueue_memory_job(memory_job.id, attempt=memory_job.attempts)
                 if skill_job is not None:
-                    await queue.enqueue_skill_job(skill_job.id, attempt=skill_job.attempts)
+                    await queue.enqueue_skill_job(run_id, attempt=skill_job.attempts)
             except Exception:
                 # 作业已可靠落库，定时 dispatcher 会补偿；不能把已成功的 Cowork 改成失败。
                 logger.exception("Cowork 后处理作业首次入队失败", run_id=str(run_id))
@@ -402,7 +404,7 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
 
 
 async def _watch_cancel(
-    session_factory: async_sessionmaker[AsyncSession],
+    session_factory: SessionFactory,
     bus: RunBus,
     *,
     run_id: UUID,
@@ -422,7 +424,7 @@ async def _watch_cancel(
 
 
 async def _heartbeat(
-    session_factory: async_sessionmaker[AsyncSession],
+    session_factory: SessionFactory,
     *,
     run_id: UUID,
     worker_id: str,
@@ -449,7 +451,7 @@ async def _heartbeat(
 
 
 async def _fail_cowork(
-    session_factory: async_sessionmaker[AsyncSession],
+    session_factory: SessionFactory,
     bus: RunBus,
     *,
     run_id: UUID,

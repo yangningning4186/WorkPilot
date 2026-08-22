@@ -1,10 +1,15 @@
 # 15 · 桌面 Cowork 架构与开发基线
 
-> 存储迁移：桌面 Cowork 正按 [ADR-0010](adr/0010-cowork本地存储与rag数据面分离.md)
-> 迁移到 SQLite WAL + JSONL；论文/RAG 数据面继续使用 PostgreSQL + pgvector。
+> **存储迁移已完成**（2026-08-22）：控制面在 SQLite WAL + JSONL，数据面也下了本地
+> （`~/.workpilot/kb/<slug>/` 的 FAISS + BM25）。PostgreSQL / Redis / Arq / pgvector 全部退役，
+> 见 [ADR-0012](adr/0012-退役postgres与redis改用本机文件.md)。**"Cowork" 现在就是整个产品**，
+> 不再是与 RAG 并列的一条线：沉浸阅读并成它的一档工作模式
+> （[ADR-0013](adr/0013-沉浸阅读作为工作模式而非第二条产品线.md)）。
 
 > 状态：Cowork 工具循环、会话能力授权、桌面壳、Office、Provider/连接器、MCP/Skill、
-> Scheduler/Inbox 与隔离只读子 Agent 已实现。本文记录 OpenWorker 类本地 Cowork 的开发基线。
+> Scheduler/Inbox、隔离只读子 Agent、只读 git 视图、常驻审批规则、飞书消息面、
+> 计划模式、任务清单、长期记忆、自唤醒与沉浸阅读工具已实现。
+> **尚未落地：阅读器面板前端**——`reader_goto` 已经在发翻页指令，但没有地方显示。
 
 ## 1. 目标形态
 
@@ -17,12 +22,14 @@ Tauri desktop
   ├─ Next.js workbench (Chat / Progress / Artifacts / Access)
   └─ Python sidecar @ 127.0.0.1:random
        ├─ FastAPI + launch-token middleware
-       ├─ answer / literature_review / cowork runs
+       ├─ cowork runs（office / reading 两档工作模式）
        ├─ tool registry + capability policy
-       ├─ RAG / memory / evidence
+       ├─ 本地 KB / 沉浸阅读 / memory / evidence
        └─ Markdown / Word / Excel executors
               │
-              ├─ PostgreSQL: runs, grants, artifacts, audit
+              ├─ ~/.workpilot/cowork.db     runs, grants, artifacts, audit
+              ├─ ~/.workpilot/conversations/ 规范消息 JSONL
+              ├─ ~/.workpilot/kb/<slug>/     FAISS + BM25 索引
               └─ user-granted session roots: real files
 ```
 
@@ -36,7 +43,7 @@ Tauri desktop
 - 桌面模式支持每次启动令牌；未携带令牌的 localhost HTTP 请求统一拒绝。
 - capability 引擎对每个目标重新做 realpath/containment 检查，拒绝 `..` 和符号链接越界。
 - LangGraph `cowork.v2` runner 已实现 provider 原生 tool-calling、canonical
-  `assistant.tool_calls → tool(tool_call_id)` 历史、PostgreSQL checkpoint、run budget、
+  `assistant.tool_calls → tool(tool_call_id)` 历史、checkpoint、run budget、
   工具事件、失败回传、worker 心跳与失联重新入队；恢复时可升级仍在执行的 v1 checkpoint。
 - Cowork 会在首选模型输入预算的 85% 触发 outbound-only compaction：canonical `messages`
   永不裁剪，checkpoint 只额外保存滚动摘要、完整工具轮次边界和 outbound tool-result 上限。
@@ -53,6 +60,18 @@ Tauri desktop
 - MCP 管理支持服务 CRUD、OAuth 绑定、目录探测/固定和逐工具策略；Skill 支持人工完整生命周期。
 - `browser_open/click/back/find` 提供无脚本、无登录态的受控只读浏览会话，每次导航重新执行
   DNS 钉扎与 SSRF 校验；DOCX/XLSX/PDF 原生交付物可在 Artifacts 区预览和下载。
+- 只读版本视图 `git_status/git_diff/git_log` 走固定 argv，不经 `run_shell`，因此不需要 shell 授权；
+  每条命令都追加 `-- <已授权目录>` pathspec，仓库根在授权目录之外时不会泄漏其余部分的差异。
+- 审批分三档：计划模式（只读）· 逐次审批（默认）· 免审批（`conversations.approval_mode`，
+  只能由本机所有者在会话设置里显式打开，模型没有对应工具）。常驻规则
+  （`cowork_approval_rules`）提供整只工具 / 精确目标 / argv 前缀三种粒度，只能在审批卡片上
+  由用户勾选产生，并且**只省掉「再问一次」，不放大 capability**。
+- 仓库可以在 `.workpilot/config.toml` 的 `[shell].allow` 里声明命令前缀，但只有在用户信任过
+  那个规范化路径（`cowork_workspace_trust`）之后才生效。
+- 消息面按方向拆成四块：`messaging/routing`（出站，命名 Inbox + 绑定）、
+  `messaging/subscriptions`（入站，频道订阅）、`messaging/mentions`（入站，@提及拥有 thread）、
+  `messaging/unrouted`（死信）。传输由 `sender` 注入，目前只有 `messaging/feishu` 一个适配器；
+  事件回调没配 `encrypt_key` 就整个关闭，配了就逐条验签。
 - `run_shell` 需要独立 `shell.execute` grant。无 shell 操作符且 argv 精确前缀命中部署
   allowlist 的命令可直接执行；其余命令逐次进入 Inbox 审批。执行不使用 shell 字符串拼接
   （审批过的操作符命令除外），只继承最小环境，输出有上限，cancel/timeout 会终止进程组。
@@ -70,7 +89,7 @@ Tauri desktop
   目录扫描跳过依赖、隐藏目录与备份目录，并受遍历条目上限约束。
 - `cowork_schedules` 持久化单次和五段 cron 计划。worker 启动时对错过的计划最多补跑一次，
   周期计划直接推进到当前时间之后的下一个触发点；同一会话存在 queued/executing/
-  waiting_human run 时跳过本轮，且 DB 已创建、Redis 首次入队失败的窗口由 tick 补偿。
+  waiting_human run 时跳过本轮；「DB 已创建、进程内队列首次入队失败」的窗口由 tick 按持久化 `queued` 状态补偿。
 - 计划创建的 run 标记为 `unattended`。它们发出的提问、目录/能力申请和 Shell 审批仍复用
   原有 Inbox 与 resume token，只增加跨会话聚合视图；无人值守不授予 standing approval，
   不改变 capability 与副作用工具的执行闸门。
@@ -122,8 +141,9 @@ Shell 仅开放受 capability、argv allowlist、
 ### C. 现有 Office 工作台迁移（Cowork 路径已完成）
 
 当前 SHA-256 冲突检查、备份、原子替换和格式重开验证已复用到 Cowork session root。
-Cowork Word/Excel 执行器入口直接调用 capability 引擎，不依赖 Redis `local_office_write`，
-目录授权后不产生逐操作确认。旧 `/workspace` 流程仍保留 Redis 授权作为兼容入口。
+Cowork Word/Excel 执行器入口直接调用 capability 引擎，不依赖 `local_office_write`，
+目录授权后不产生逐操作确认。旧 `/workspace` 流程仍保留该限时授权作为兼容入口（载体已从
+Redis 换成进程内，[ADR-0008](adr/0008-限时授权后直接编辑本地办公文件.md)）。
 
 ### D. 前端四区
 
@@ -134,8 +154,10 @@ Cowork Word/Excel 执行器入口直接调用 capability 引擎，不依赖 Redi
 
 ## 4. Scheduler 与 Unattended Inbox（首版已完成）
 
-Scheduler 不依赖前端页面存活。Arq worker 周期扫描 `next_run_at`，用
-`FOR UPDATE SKIP LOCKED` 抢占到期计划；每次触发创建全新的 Cowork run 和 checkpoint，
+Scheduler 不依赖前端页面存活。嵌入式 worker 周期扫描 `next_run_at`，用
+`dispatch_lease_owner` / `dispatch_lease_until` 的条件 UPDATE 抢占到期计划（SQLite 没有
+`SKIP LOCKED`，但"条件 UPDATE 命中零行即抢占失败"是同一个语义，而且不需要行锁）；
+每次触发创建全新的 Cowork run 和 checkpoint，
 不会复用上一轮模型历史。单次计划触发或因重叠跳过后自动停用；周期计划不会逐个重放离线
 期间所有时间点，而是只补一次并计算当前时间之后的下一轮。
 

@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-
+from app.core.db import DbSession as AsyncSession
+from app.cowork_contracts import ApprovalMode
 from app.cowork_contracts import ConversationBusyError as ConversationBusyError
-from app.cowork_store.routing import configured_cowork_store
+from app.cowork_store.routing import cowork_store
 
 
 @dataclass(frozen=True)
@@ -22,10 +21,12 @@ class ConversationRecord:
     latest_message: str | None
     last_message_at: datetime | None
     provider_profile_id: UUID | None
-    provider_name: str | None
-    provider: str | None
-    selected_model: str | None
+    # 只记 id 和覆盖值。Provider 的名字、档位、默认模型属于 Cowork 产品层，
+    # runstore 认识它们就等于把存储层焊到某一个产品上——同 set_conversation_kb 里
+    # 那条注释。解引用由 API 层做。
+    model_override: str | None
     unattended: bool
+    approval_mode: str
     archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -45,16 +46,6 @@ class ConversationMessageRecord:
     created_at: datetime
 
 
-def _identity_clause() -> str:
-    return """
-        c.scope = :scope
-        AND (
-            (:scope = 'local_owner' AND c.demo_session_id IS NULL)
-            OR (:scope = 'demo' AND c.demo_session_id = :demo_session_id)
-        )
-    """
-
-
 async def _local_conversation_record(
     session: AsyncSession, row: dict[str, Any]
 ) -> ConversationRecord:
@@ -69,27 +60,6 @@ async def _local_conversation_record(
         if row["provider_profile_id"] is None
         else UUID(str(row["provider_profile_id"]))
     )
-    provider_name: str | None = None
-    provider: str | None = None
-    selected_model = row["model_override"]
-    if profile_id is not None:
-        profile = (
-            (
-                await session.execute(
-                    text(
-                        """SELECT name, provider, default_model
-                           FROM provider_profiles WHERE id = :id"""
-                    ),
-                    {"id": profile_id},
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
-        if profile is not None:
-            provider_name = str(profile["name"])
-            provider = str(profile["provider"])
-            selected_model = selected_model or profile["default_model"]
     return ConversationRecord(
         id=conversation_id,
         title=row["title"],
@@ -97,10 +67,9 @@ async def _local_conversation_record(
         latest_message=latest,
         last_message_at=None if not visible else datetime.fromisoformat(visible[-1].created_at),
         provider_profile_id=profile_id,
-        provider_name=provider_name,
-        provider=provider,
-        selected_model=selected_model,
+        model_override=row["model_override"],
         unattended=bool(row["unattended"]),
+        approval_mode=str(row.get("approval_mode") or "interactive"),
         archived_at=(
             None
             if row.get("archived_at") is None
@@ -114,245 +83,114 @@ async def _local_conversation_record(
 async def list_conversations(
     session: AsyncSession,
     *,
-    scope: str,
-    demo_session_id: UUID | None,
     archived: bool = False,
     limit: int = 100,
 ) -> list[ConversationRecord]:
     if not 1 <= limit <= 200:
         raise ValueError("conversation limit 必须位于 1 到 200")
-    store = configured_cowork_store() if scope == "local_owner" else None
-    if store is not None:
-        return [
-            await _local_conversation_record(session, row)
-            for row in await store.list_conversation_metadata(archived=archived, limit=limit)
-        ]
-    rows = (
-        (
-            await session.execute(
-                text(
-                    f"""
-                    SELECT c.id, c.title, c.created_at, c.updated_at,
-                           c.provider_profile_id, p.name AS provider_name,
-                           p.provider, COALESCE(c.model_override, p.default_model) AS selected_model,
-                           c.unattended,
-                           c.archived_at,
-                           COUNT(m.id) FILTER (WHERE m.role IN ('user', 'assistant')) AS message_count,
-                           (ARRAY_AGG(NULLIF(left(m.content, 160), '') ORDER BY m.seq DESC)
-                               FILTER (WHERE m.content <> ''))[1] AS latest_message,
-                           MAX(m.created_at) AS last_message_at
-                    FROM conversations c
-                    LEFT JOIN messages m ON m.conversation_id = c.id
-                    LEFT JOIN provider_profiles p ON p.id = c.provider_profile_id
-                    WHERE {_identity_clause()}
-                      AND c.archived_at IS {"NOT NULL" if archived else "NULL"}
-                    GROUP BY c.id, p.id
-                    ORDER BY COALESCE(MAX(m.created_at), c.updated_at) DESC, c.id DESC
-                    LIMIT :limit
-                    """
-                ),
-                {
-                    "scope": scope,
-                    "demo_session_id": demo_session_id,
-                    "limit": limit,
-                },
-            )
-        )
-        .mappings()
-        .all()
-    )
-    return [ConversationRecord(**dict(row)) for row in rows]
+    store = cowork_store()
+    return [
+        await _local_conversation_record(session, row)
+        for row in await store.list_conversation_metadata(archived=archived, limit=limit)
+    ]
 
 
 async def get_conversation(
     session: AsyncSession,
     *,
     conversation_id: UUID,
-    scope: str,
-    demo_session_id: UUID | None,
 ) -> ConversationRecord | None:
-    store = configured_cowork_store() if scope == "local_owner" else None
-    if store is not None:
-        rows = await store.list_conversation_metadata(
-            conversation_id=conversation_id,
-            archived=None,
-            limit=1,
-        )
-        if not rows:
-            return None
-        return await _local_conversation_record(session, rows[0])
-    row = (
-        (
-            await session.execute(
-                text(
-                    f"""
-                    SELECT c.id, c.title, c.created_at, c.updated_at,
-                           c.provider_profile_id, p.name AS provider_name,
-                           p.provider, COALESCE(c.model_override, p.default_model) AS selected_model,
-                           c.unattended,
-                           c.archived_at,
-                           COUNT(m.id) FILTER (WHERE m.role IN ('user', 'assistant')) AS message_count,
-                           (ARRAY_AGG(NULLIF(left(m.content, 160), '') ORDER BY m.seq DESC)
-                               FILTER (WHERE m.content <> ''))[1] AS latest_message,
-                           MAX(m.created_at) AS last_message_at
-                    FROM conversations c
-                    LEFT JOIN messages m ON m.conversation_id = c.id
-                    LEFT JOIN provider_profiles p ON p.id = c.provider_profile_id
-                    WHERE c.id = :conversation_id AND {_identity_clause()}
-                    GROUP BY c.id, p.id
-                    """
-                ),
-                {
-                    "conversation_id": conversation_id,
-                    "scope": scope,
-                    "demo_session_id": demo_session_id,
-                },
-            )
-        )
-        .mappings()
-        .one_or_none()
+    store = cowork_store()
+    rows = await store.list_conversation_metadata(
+        conversation_id=conversation_id,
+        archived=None,
+        limit=1,
     )
-    return None if row is None else ConversationRecord(**dict(row))
+    if not rows:
+        return None
+    return await _local_conversation_record(session, rows[0])
 
 
 async def update_conversation_runtime(
     session: AsyncSession,
     *,
     conversation_id: UUID,
-    scope: str,
-    demo_session_id: UUID | None,
     provider_profile_id: UUID | None,
     model_override: str | None,
     unattended: bool,
+    approval_mode: str = "interactive",
 ) -> ConversationRecord | None:
-    """更新会话运行时选择；demo 身份不能启用无人值守。"""
+    """更新会话运行时选择。
 
-    if scope != "local_owner" and unattended:
-        raise ValueError("演示会话不能启用无人值守")
-    if provider_profile_id is not None:
-        exists = (
-            await session.execute(
-                text("SELECT enabled FROM provider_profiles WHERE id = :id"),
-                {"id": provider_profile_id},
-            )
-        ).scalar_one_or_none()
-        if exists is None:
-            raise LookupError("Provider 不存在")
-        if not exists:
-            raise ValueError("Provider 已停用")
-    store = configured_cowork_store() if scope == "local_owner" else None
-    if store is not None:
-        changed = await store.update_conversation_runtime(
-            conversation_id=conversation_id,
-            provider_profile_id=provider_profile_id,
-            model_override=model_override.strip() if model_override else None,
-            unattended=unattended,
-        )
-        if not changed:
-            return None
-        return await get_conversation(
-            session,
-            conversation_id=conversation_id,
-            scope=scope,
-            demo_session_id=demo_session_id,
-        )
-    result = await session.execute(
-        text(
-            f"""
-            UPDATE conversations c
-            SET provider_profile_id = :provider_profile_id,
-                model_override = :model_override,
-                unattended = :unattended
-            WHERE c.id = :conversation_id AND {_identity_clause()}
-            RETURNING c.id
-            """
-        ),
-        {
-            "conversation_id": conversation_id,
-            "scope": scope,
-            "demo_session_id": demo_session_id,
-            "provider_profile_id": provider_profile_id,
-            "model_override": model_override.strip() if model_override else None,
-            "unattended": unattended,
-        },
+    `provider_profile_id` 存不存在、停没停用由 API 层校验——Profile 已经不在数据库里，
+    这里没有可 JOIN 的东西，也不该为此去 import Cowork 产品层。
+    """
+
+    if approval_mode not in {"interactive", "auto"}:
+        raise ValueError("approval_mode 只能是 interactive 或 auto")
+    store = cowork_store()
+    changed = await store.update_conversation_runtime(
+        conversation_id=conversation_id,
+        provider_profile_id=provider_profile_id,
+        model_override=model_override.strip() if model_override else None,
+        unattended=unattended,
+        approval_mode=cast("ApprovalMode", approval_mode),
     )
-    if result.scalar_one_or_none() is None:
+    if not changed:
         return None
     return await get_conversation(
         session,
         conversation_id=conversation_id,
-        scope=scope,
-        demo_session_id=demo_session_id,
     )
+
+
+async def set_conversation_kb(
+    session: AsyncSession,
+    *,
+    conversation_id: UUID,
+    kb_slug: str | None,
+) -> bool:
+    """把一个本地知识库挂到会话上；`kb_slug=None` 表示卸载。
+
+    **演示身份不能挂。** 知识库里是本机所有者的私人资料，挂到一个共享环境的会话上等于
+    把它们交出去。这与 `update_conversation_runtime` 拒绝演示身份开无人值守是同一条线。
+
+    这里只写 slug 存不存在的校验交给调用方（API 层持有 `LocalKbService`）：runstore
+    不认识知识库长什么样，让它去 import `app.rag` 会把存储层焊到某一个产品上。
+    """
+
+    store = cowork_store()
+    return await store.set_conversation_kb(
+        conversation_id=conversation_id, kb_slug=kb_slug
+    )
+
+
+async def get_conversation_kb(
+    session: AsyncSession,
+    *,
+    conversation_id: UUID,
+) -> str | None:
+    store = cowork_store()
+    return await store.get_conversation_kb(conversation_id=conversation_id)
 
 
 async def set_conversation_archived(
     session: AsyncSession,
     *,
     conversation_id: UUID,
-    scope: str,
-    demo_session_id: UUID | None,
     archived: bool,
 ) -> ConversationRecord | None:
     """归档或恢复会话；运行中的会话不能从列表隐藏。"""
 
-    store = configured_cowork_store() if scope == "local_owner" else None
-    if store is not None:
-        changed = await store.set_conversation_archived(
-            conversation_id=conversation_id, archived=archived
-        )
-        if not changed:
-            return None
-        return await get_conversation(
-            session,
-            conversation_id=conversation_id,
-            scope=scope,
-            demo_session_id=demo_session_id,
-        )
-
-    owned_id = (
-        await session.execute(
-            text(
-                f"""SELECT c.id FROM conversations c
-                    WHERE c.id = :conversation_id AND {_identity_clause()}
-                    FOR UPDATE"""
-            ),
-            {
-                "conversation_id": conversation_id,
-                "scope": scope,
-                "demo_session_id": demo_session_id,
-            },
-        )
-    ).scalar_one_or_none()
-    if owned_id is None:
-        return None
-    has_active_run = (
-        await session.execute(
-            text(
-                """SELECT EXISTS (
-                       SELECT 1 FROM agent_runs
-                       WHERE conversation_id = :conversation_id
-                         AND status NOT IN ('done','failed','cancelled','budget_exceeded')
-                   )"""
-            ),
-            {"conversation_id": conversation_id},
-        )
-    ).scalar_one()
-    if has_active_run:
-        raise ConversationBusyError("会话仍有任务在运行")
-    await session.execute(
-        text(
-            """UPDATE conversations
-               SET archived_at = CASE WHEN :archived THEN now() ELSE NULL END
-               WHERE id = :conversation_id"""
-        ),
-        {"conversation_id": conversation_id, "archived": archived},
+    store = cowork_store()
+    changed = await store.set_conversation_archived(
+        conversation_id=conversation_id, archived=archived
     )
+    if not changed:
+        return None
     return await get_conversation(
         session,
         conversation_id=conversation_id,
-        scope=scope,
-        demo_session_id=demo_session_id,
     )
 
 
@@ -360,8 +198,6 @@ async def delete_conversation(
     session: AsyncSession,
     *,
     conversation_id: UUID,
-    scope: str,
-    demo_session_id: UUID | None,
 ) -> bool:
     """删除归属当前身份的会话；数据库外键负责级联消息与运行记录。
 
@@ -370,168 +206,44 @@ async def delete_conversation(
     事实是独立数据，不随会话删除；其来源消息外键会置空。
     """
 
-    store = configured_cowork_store() if scope == "local_owner" else None
-    if store is not None:
-        deleted = await store.delete_conversation(conversation_id=conversation_id)
-        if deleted:
-            from app.cowork_store.factory import local_cowork_stores
+    store = cowork_store()
+    deleted = await store.delete_conversation(conversation_id=conversation_id)
+    if deleted:
+        from app.cowork_store.factory import local_cowork_stores
 
-            await local_cowork_stores().conversations.delete(conversation_id)
-        return deleted
-
-    owned_id = (
-        await session.execute(
-            text(
-                f"""
-                SELECT c.id
-                FROM conversations c
-                WHERE c.id = :conversation_id AND {_identity_clause()}
-                FOR UPDATE
-                """
-            ),
-            {
-                "conversation_id": conversation_id,
-                "scope": scope,
-                "demo_session_id": demo_session_id,
-            },
-        )
-    ).scalar_one_or_none()
-    if owned_id is None:
-        return False
-
-    has_leased_worker = (
-        await session.execute(
-            text(
-                """
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM agent_runs
-                    WHERE conversation_id = :conversation_id
-                      AND status NOT IN ('done', 'failed', 'cancelled', 'budget_exceeded')
-                      AND worker_id IS NOT NULL
-                      AND lease_until IS NOT NULL
-                      AND lease_until > now()
-                )
-                """
-            ),
-            {"conversation_id": conversation_id},
-        )
-    ).scalar_one()
-    if has_leased_worker:
-        raise ConversationBusyError("会话任务正在执行")
-
-    await session.execute(
-        text("DELETE FROM conversations WHERE id = :conversation_id"),
-        {"conversation_id": conversation_id},
-    )
-    return True
+        await local_cowork_stores().conversations.delete(conversation_id)
+    return deleted
 
 
 async def list_conversation_messages(
     session: AsyncSession,
     *,
     conversation_id: UUID,
-    scope: str,
-    demo_session_id: UUID | None,
     limit: int = 100,
 ) -> list[ConversationMessageRecord] | None:
     if not 1 <= limit <= 500:
         raise ValueError("message limit 必须位于 1 到 500")
-    store = configured_cowork_store() if scope == "local_owner" else None
-    if store is not None:
-        if not await store.conversation_exists(conversation_id):
-            return None
-        from app.cowork_store.factory import local_cowork_stores
-
-        messages = await local_cowork_stores().conversations.read(conversation_id)
-        output: list[ConversationMessageRecord] = []
-        for item in [value for value in messages if value.role in {"user", "assistant"}][-limit:]:
-            run = None if item.run_id is None else await store.get_run(item.run_id)
-            output.append(
-                ConversationMessageRecord(
-                    id=item.record_id,
-                    seq=item.seq,
-                    role=item.role,
-                    content=item.content,
-                    status=item.status,
-                    run_id=item.run_id,
-                    citations=list(item.citations),
-                    answer_mode=None if run is None else run.answer_mode,
-                    attachments=list(item.attachments),
-                    created_at=datetime.fromisoformat(item.created_at),
-                )
-            )
-        return output
-    owns = (
-        await session.execute(
-            text(
-                f"""
-                SELECT EXISTS (
-                    SELECT 1 FROM conversations c
-                    WHERE c.id = :conversation_id AND {_identity_clause()}
-                )
-                """
-            ),
-            {
-                "conversation_id": conversation_id,
-                "scope": scope,
-                "demo_session_id": demo_session_id,
-            },
-        )
-    ).scalar_one()
-    if not owns:
+    store = cowork_store()
+    if not await store.conversation_exists(conversation_id):
         return None
-    rows = (
-        (
-            await session.execute(
-                text(
-                    """
-                    SELECT * FROM (
-                        SELECT m.id, m.seq, m.role, m.content, m.status, m.run_id,
-                               m.citations, ar.answer_mode, m.created_at,
-                               COALESCE(
-                                   (
-                                       SELECT jsonb_agg(
-                                           jsonb_build_object(
-                                               'id', a.id,
-                                               'conversation_id', a.conversation_id,
-                                               'message_id', a.message_id,
-                                               'run_id', a.run_id,
-                                               'kind', a.kind,
-                                               'filename', a.filename,
-                                               'media_type', a.media_type,
-                                               'size_bytes', a.size_bytes,
-                                               'sha256', a.sha256
-                                           ) ORDER BY a.created_at, a.id
-                                       )
-                                       FROM cowork_attachments a
-                                       WHERE a.message_id = m.id
-                                   ),
-                                   '[]'::jsonb
-                               ) AS attachments
-                        FROM messages m
-                        LEFT JOIN agent_runs ar ON ar.id = m.run_id
-                        WHERE m.conversation_id = :conversation_id
-                          AND m.role IN ('user', 'assistant')
-                        ORDER BY m.seq DESC
-                        LIMIT :limit
-                    ) recent
-                    ORDER BY seq
-                    """
-                ),
-                {"conversation_id": conversation_id, "limit": limit},
+    from app.cowork_store.factory import local_cowork_stores
+
+    messages = await local_cowork_stores().conversations.read(conversation_id)
+    output: list[ConversationMessageRecord] = []
+    for item in [value for value in messages if value.role in {"user", "assistant"}][-limit:]:
+        run = None if item.run_id is None else await store.get_run(item.run_id)
+        output.append(
+            ConversationMessageRecord(
+                id=item.record_id,
+                seq=item.seq,
+                role=item.role,
+                content=item.content,
+                status=item.status,
+                run_id=item.run_id,
+                citations=list(item.citations),
+                answer_mode=None if run is None else run.answer_mode,
+                attachments=list(item.attachments),
+                created_at=datetime.fromisoformat(item.created_at),
             )
         )
-        .mappings()
-        .all()
-    )
-    return [
-        ConversationMessageRecord(
-            **{
-                **dict(row),
-                "citations": list(row["citations"] or []),
-                "attachments": list(row["attachments"] or []),
-            }
-        )
-        for row in rows
-    ]
+    return output

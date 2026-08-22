@@ -6,8 +6,6 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_core.idempotency import InvocationInFlightError
 from app.core.config import Settings
@@ -31,7 +29,6 @@ from app.runstore.runs import (
     create_run,
     ensure_conversation,
     finish_run,
-    reap_expired_runs,
 )
 
 
@@ -352,8 +349,6 @@ async def test_sqlite_backend_routes_new_cowork_run_without_postgres_writes(
         cowork_data_path=tmp_path / "data",
         cowork_default_workspace_path=tmp_path / "workspace",
     )
-    await initialize_local_cowork_stores(settings)
-    monkeypatch.setattr("app.cowork_store.routing.get_settings", lambda: settings)
     session = AsyncMock()
     try:
         conversation_id = await ensure_conversation(session, title="SQLite 会话")
@@ -402,79 +397,11 @@ async def test_sqlite_backend_routes_new_cowork_run_without_postgres_writes(
     finally:
         await close_local_cowork_stores()
 
-
-async def test_sqlite_watchdog_also_reaps_postgres_answer_runs(
-    db_session: AsyncSession,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = Settings(cowork_store_backend="sqlite", cowork_data_path=tmp_path / "data")
-    stores = await initialize_local_cowork_stores(settings)
-    monkeypatch.setattr("app.cowork_store.routing.get_settings", lambda: settings)
-    try:
-        local_conversation = await stores.state.create_conversation(title="local")
-        local_run = await stores.state.create_run(
-            conversation_id=local_conversation,
-            goal="恢复本地任务",
-            budget_tokens=1000,
-            budget_calls=10,
-            budget_wall_ms=30_000,
-        )
-        await stores.state.save_checkpoint(
-            run_id=local_run.id,
-            state={"status": "executing", "messages": []},
-            parent_id=None,
-        )
-        assert await stores.state.claim_run(
-            run_id=local_run.id, worker_id="lost-local", lease_s=30
-        )
-        await stores.state._write(  # 故障注入必须制造过期租约
-            lambda connection: connection.execute(
-                "UPDATE agent_runs SET lease_until = ? WHERE id = ?",
-                ((datetime.now(UTC) - timedelta(seconds=1)).isoformat(), str(local_run.id)),
-            )
-        )
-
-        pg_conversation = uuid4()
-        await db_session.execute(
-            text(
-                """INSERT INTO conversations(id, scope, title)
-                   VALUES (:id, 'local_owner', 'postgres answer')"""
-            ),
-            {"id": pg_conversation},
-        )
-        answer_run = await create_run(
-            db_session,
-            conversation_id=pg_conversation,
-            goal="回答旧问题",
-            budget_tokens=1000,
-            budget_calls=10,
-            budget_wall_ms=30_000,
-            workflow_type="answer",
-        )
-        await db_session.execute(
-            text(
-                """UPDATE agent_runs SET status = 'executing', worker_id = 'lost-pg',
-                          lease_until = now() - interval '1 second'
-                   WHERE id = :id"""
-            ),
-            {"id": answer_run.id},
-        )
-
-        reaped = await reap_expired_runs(db_session)
-
-        assert reaped.recovered_cowork == [(local_run.id, 1)]
-        assert answer_run.id in reaped.failed
-    finally:
-        await close_local_cowork_stores()
-
-
 async def test_sqlite_history_loaded_prevents_cross_turn_duplication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings = Settings(cowork_store_backend="sqlite", cowork_data_path=tmp_path / "data")
     stores = await initialize_local_cowork_stores(settings)
-    monkeypatch.setattr("app.cowork_store.routing.get_settings", lambda: settings)
     session = AsyncMock()
     registry = build_default_cowork_registry()
     try:
@@ -548,7 +475,6 @@ async def test_sqlite_get_conversation_is_not_limited_to_latest_200(
 ) -> None:
     settings = Settings(cowork_store_backend="sqlite", cowork_data_path=tmp_path / "data")
     stores = await initialize_local_cowork_stores(settings)
-    monkeypatch.setattr("app.cowork_store.routing.get_settings", lambda: settings)
     session = AsyncMock()
     try:
         oldest = await stores.state.create_conversation(title="最早会话")
@@ -558,8 +484,6 @@ async def test_sqlite_get_conversation_is_not_limited_to_latest_200(
         found = await get_conversation(
             session,
             conversation_id=oldest,
-            scope="local_owner",
-            demo_session_id=None,
         )
 
         assert found is not None
@@ -580,3 +504,34 @@ async def test_default_workspace_rejects_application_directory(
             conversation_id=uuid4(),
             workspace_path=tmp_path,
         )
+
+
+async def test_conversation_kb_binding_round_trips_and_survives_an_upgrade(
+    tmp_path: Path,
+) -> None:
+    """挂载是会话级的持久状态，不是请求参数。
+
+    顺带钉住旧库升级：`kb_slug` 是后加的列，`_initialize_sync` 必须能在已有库上补上它，
+    否则升级之后每次挂载都会撞 "no such column"。
+    """
+    path = tmp_path / "state" / "cowork.db"
+    store = SqliteCoworkStore(path)
+    await store.initialize()
+    conversation_id = await store.create_conversation(title="论文问答")
+
+    assert await store.get_conversation_kb(conversation_id=conversation_id) is None
+    assert await store.set_conversation_kb(conversation_id=conversation_id, kb_slug="papers")
+    assert await store.get_conversation_kb(conversation_id=conversation_id) == "papers"
+
+    # 卸载。
+    assert await store.set_conversation_kb(conversation_id=conversation_id, kb_slug=None)
+    assert await store.get_conversation_kb(conversation_id=conversation_id) is None
+
+    # 不存在的会话不该被当成"挂上了"。
+    assert not await store.set_conversation_kb(conversation_id=uuid4(), kb_slug="papers")
+
+    # 再次 initialize 等价于对一个已有库跑升级：不能重复 ALTER，也不能丢数据。
+    await store.set_conversation_kb(conversation_id=conversation_id, kb_slug="papers")
+    reopened = SqliteCoworkStore(path)
+    await reopened.initialize()
+    assert await reopened.get_conversation_kb(conversation_id=conversation_id) == "papers"

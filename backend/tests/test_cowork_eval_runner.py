@@ -5,10 +5,11 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.core.config import get_settings
-from app.rag.service import RagSearchRequest
+from app.core.db import session_factory
+from app.knowledge_contracts import RagSearchRequest
 from eval.cowork_runner import (
     FixtureRagService,
     _metric_slice,
@@ -323,7 +324,7 @@ async def test_run_case_executes_real_cowork_graph(db_engine: AsyncEngine, tmp_p
         case_root=tmp_path / "run-case",
         gateway=gateway,
         settings=settings,
-        db_sessions=async_sessionmaker(db_engine, expire_on_commit=False),
+        db_sessions=session_factory,
     )
 
     assert record["observation"]["status"] == "done"

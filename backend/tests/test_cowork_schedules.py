@@ -5,8 +5,6 @@ from uuid import UUID
 
 import httpx
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
 from app.api.dependencies import (
@@ -15,6 +13,7 @@ from app.api.dependencies import (
     require_owner_identity,
 )
 from app.core.config import Settings, get_settings
+from app.core.db import DbSession as AsyncSession
 from app.core.db import get_db_session
 from app.core.run_bus import InMemoryRunBus
 from app.cowork.interactions import create_inbox_item, list_unattended_inbox
@@ -29,7 +28,7 @@ from app.cowork.schedules import (
     update_schedule,
 )
 from app.main import create_app
-from app.platform.request_identity import RequestIdentity
+from app.runstore.checkpoints import ensure_plan
 from app.runstore.runs import create_run, ensure_conversation, get_run
 
 pytestmark = pytest.mark.integration
@@ -44,7 +43,7 @@ class RecordingQueue:
 
 
 async def _owner_workspace(db_session: AsyncSession, root: Path):
-    conversation_id = await ensure_conversation(db_session, scope="local_owner", title="自动化测试")
+    conversation_id = await ensure_conversation(db_session, title="自动化测试")
     await create_session_root(
         db_session,
         conversation_id=conversation_id,
@@ -113,15 +112,19 @@ async def test_due_schedule_creates_unattended_run_and_global_inbox(
     assert refreshed.run_count == 1
 
     step_id = uuid7()
-    await db_session.execute(
-        text(
-            """
-            INSERT INTO agent_plan_steps
-                (id, run_id, step_idx, description, tool, depends_on, status)
-            VALUES (:id, :run_id, 0, '等待回复', 'ask_user', '{}', 'running')
-            """
-        ),
-        {"id": step_id, "run_id": run.id},
+    await ensure_plan(
+        db_session,
+        run_id=run.id,
+        steps=[
+            {
+                "id": str(step_id),
+                "idx": 0,
+                "description": "等待回复",
+                "tool": "ask_user",
+                "depends_on": [],
+                "status": "running",
+            }
+        ],
     )
     item = await create_inbox_item(
         db_session,
@@ -236,7 +239,7 @@ async def test_automation_api_creates_lists_and_runs_unattended(
     app.dependency_overrides[get_run_queue_dependency] = lambda: queue
     app.dependency_overrides[get_run_bus] = lambda: bus
     app.dependency_overrides[get_settings] = lambda: settings
-    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(scope="local_owner")
+    app.dependency_overrides[require_owner_identity] = lambda: None
     transport = httpx.ASGITransport(app=app)
     run_at = datetime.now(UTC) + timedelta(days=1)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -279,7 +282,7 @@ async def test_automation_api_accepts_default_permissions_or_optional_workspace(
     app = create_app(settings)
     app.dependency_overrides[get_db_session] = override_session
     app.dependency_overrides[get_settings] = lambda: settings
-    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(scope="local_owner")
+    app.dependency_overrides[require_owner_identity] = lambda: None
     transport = httpx.ASGITransport(app=app)
     run_at = datetime.now(UTC) + timedelta(days=1)
     base = {

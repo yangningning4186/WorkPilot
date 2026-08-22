@@ -4,8 +4,7 @@ import json
 from collections.abc import AsyncIterator
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
+from app.core.db import SessionFactory
 from app.core.run_bus import RunBus
 from app.runstore.runs import RunEvent, get_run, list_events
 
@@ -42,7 +41,7 @@ def format_comment(text: str) -> str:
 
 
 async def stream_run_events(
-    session_factory: async_sessionmaker[AsyncSession],
+    session_factory: SessionFactory,
     bus: RunBus,
     *,
     run_id: UUID,

@@ -12,7 +12,9 @@ import csv
 import hashlib
 import json
 import math
+import os
 import re
+import subprocess
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, replace
@@ -27,7 +29,6 @@ from docx import Document
 from openpyxl import Workbook, load_workbook
 from pptx import Presentation
 from pydantic import BaseModel
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
@@ -38,7 +39,14 @@ from app.cowork.interactions import (
     get_pending_inbox_item,
     resolve_inbox_item,
 )
-from app.cowork.permissions import create_session_root, grant_capability
+from app.cowork.permissions import (
+    GLOBAL_CAPABILITIES,
+    PATH_CAPABILITIES,
+    create_session_root,
+    grant_capability,
+    list_capability_grants,
+    revoke_capability_grant,
+)
 from app.cowork.rag_tools import register_rag_tools
 from app.cowork.runtime import (
     CoworkState,
@@ -56,23 +64,20 @@ from app.cowork.tools import (
     WebSearchArgs,
     build_default_cowork_registry,
 )
+from app.cowork_store.routing import cowork_store
+from app.knowledge_contracts import EvidenceBundle, EvidenceSegment, RagSearchRequest
 from app.llm_bootstrap import build_model_gateway
-from app.rag.retrieval.citations import EvidenceSegment
-from app.rag.service import EvidenceBundle, RagSearchRequest
 from app.runstore.runs import append_message, create_run, ensure_conversation, get_run
 from app.worker.cowork_run import cowork_run
-from eval.cowork_task_suite import DEFAULT_SUITE, load_suite
+from eval.cowork_task_suite import DEFAULT_SUITE, load_suite, missing_capabilities_for
 from workpilot_ai.gateway import ModelGateway
 
 REPORT_SCHEMA_VERSION = "cowork-eval-report.v1"
 OBSERVATION_SCHEMA_VERSION = "cowork-observation.v1"
-_PATH_CAPABILITIES = {
-    "filesystem.read",
-    "filesystem.write",
-    "office.word.edit",
-    "office.excel.edit",
-}
-_GLOBAL_CAPABILITIES = {"network.read", "shell.execute"}
+# 直接用产品那一份。手抄的上一版少了 knowledge.read 和 browser.control, 于是
+# 题目声明了能力、runner 却从不发放, 九条任务在授权边界上原地失败了一整轮。
+_PATH_CAPABILITIES = PATH_CAPABILITIES
+_GLOBAL_CAPABILITIES = GLOBAL_CAPABILITIES
 
 
 class CoworkRunnerError(RuntimeError):
@@ -127,6 +132,10 @@ def _merge_fixtures(suite: dict[str, Any], item: dict[str, Any]) -> dict[str, An
             merged["workspace_roots"] = fixture["workspace_roots"]
         if "approval_decision" in fixture:
             merged["approval_decision"] = fixture["approval_decision"]
+        if fixture.get("git_repository"):
+            merged["git_repository"] = True
+        if "git_dirty" in fixture:
+            merged["git_dirty"] = fixture["git_dirty"]
     return merged
 
 
@@ -148,6 +157,8 @@ def materialize_case(
             path = _safe_path(workspace, relative)
             path.parent.mkdir(parents=True, exist_ok=True)
             _materialize_native_file(path, spec)
+        if fixtures.get("git_repository"):
+            _materialize_git_repository(workspace, fixtures.get("git_dirty") or {})
     document_ids = {
         str(document["id"]): str(
             uuid5(NAMESPACE_URL, f"workpilot-cowork-eval:document:{document['id']}")
@@ -160,6 +171,38 @@ def materialize_case(
         before_files=_snapshot_files(workspace),
         document_ids=document_ids,
     )
+
+
+def _materialize_git_repository(workspace: Path, dirty: dict[str, str]) -> None:
+    """把 fixture 目录变成一个真实仓库，再按 `git_dirty` 制造未提交改动。
+
+    不做假的 git：只读 git 工具跑的是真的 `git`，用假数据评测它等于什么都没评。
+    环境变量写死是为了可复现——用户全局 git 配置里的 name/email/hooks 一旦漏进来，
+    同一份 fixture 在两台机器上就会给出不同的 `git log`。
+    """
+
+    environment = {
+        "PATH": os.environ.get("PATH", os.defpath),
+        "HOME": str(workspace),
+        "GIT_AUTHOR_NAME": "eval",
+        "GIT_AUTHOR_EMAIL": "eval@example.com",
+        "GIT_COMMITTER_NAME": "eval",
+        "GIT_COMMITTER_EMAIL": "eval@example.com",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+    }
+    for args in (
+        ("init", "-q", "-b", "main"),
+        ("add", "-A"),
+        ("commit", "-qm", "fixture: 初始提交"),
+    ):
+        subprocess.run(
+            ["git", *args], cwd=workspace, env=environment, check=True, capture_output=True
+        )
+    for relative, content in dirty.items():
+        path = _safe_path(workspace, relative)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(content), encoding="utf-8")
 
 
 def _safe_path(workspace: Path, relative: str) -> Path:
@@ -595,6 +638,25 @@ def _tool_error_recovered(trace: list[dict[str, Any]], tool: str) -> bool:
     return False
 
 
+def _tools_taking_baseline() -> frozenset[str]:
+    """所有把 baseline_sha256 收进入参的工具。
+
+    从 args model 现取而不是列名单: 上一版漏了 replace_in_file, 于是模型明明带着
+    正确的 baseline 做了局部替换, 断言却判它没做防覆盖检查——评分在惩罚一个更好的
+    行为。名单会漏, schema 不会。
+    """
+
+    registry = build_default_cowork_registry()
+    return frozenset(
+        name
+        for name in registry.names()
+        if "baseline_sha256" in registry.get(name).args_model.model_fields
+    )
+
+
+_BASELINE_TOOLS = _tools_taking_baseline()
+
+
 def _baseline_used(trace: list[dict[str, Any]], relative_path: str) -> bool:
     known: set[str] = set()
     for call in trace:
@@ -607,12 +669,7 @@ def _baseline_used(trace: list[dict[str, Any]], relative_path: str) -> bool:
         if not isinstance(arguments, dict):
             continue
         path = str(arguments.get("path", ""))
-        if path.endswith(relative_path) and call["name"] in {
-            "write_text_file",
-            "create_artifact",
-            "edit_word",
-            "edit_excel",
-        }:
+        if path.endswith(relative_path) and call["name"] in _BASELINE_TOOLS:
             baseline = arguments.get("baseline_sha256")
             if isinstance(baseline, str) and baseline in known:
                 return True
@@ -972,28 +1029,19 @@ async def _configure_permissions(
             access_mode="read_write" if needs_write_root else "read_only",
             label="Cowork Eval Fixture",
         )
-        # create_session_root 会按 access_mode 给默认能力；评测必须收敛到题目声明的精确集合。
-        await session.execute(
-            text(
-                """
-                UPDATE capability_grants
-                SET revoked_at = now()
-                WHERE conversation_id = :conversation_id
-                  AND session_root_id = :root_id
-                  AND revoked_at IS NULL
-                  AND capability <> ALL(:capabilities)
-                """
-            ),
-            {
-                "conversation_id": conversation_id,
-                "root_id": root.id,
-                "capabilities": [
-                    capability
-                    for capability in capabilities
-                    if capability in _PATH_CAPABILITIES
-                ],
-            },
-        )
+        # create_session_root 会按 access_mode 给默认能力；评测必须收敛到题目声明的
+        # 精确集合，所以多给的那些要逐条撤掉。原来这里是一条 UPDATE，PostgreSQL
+        # 退役之后改成走仓储读写。
+        declared = {
+            capability
+            for capability in capabilities
+            if capability in _PATH_CAPABILITIES
+        }
+        for grant in await list_capability_grants(session, conversation_id=conversation_id):
+            if grant.session_root_id == root.id and grant.capability not in declared:
+                await revoke_capability_grant(
+                    session, conversation_id=conversation_id, grant_id=grant.id
+                )
         for capability in capabilities:
             if capability in _PATH_CAPABILITIES:
                 await grant_capability(
@@ -1014,24 +1062,17 @@ async def _configure_permissions(
 
 
 async def _load_artifacts(session: AsyncSession, run_id: UUID) -> list[dict[str, Any]]:
-    rows = (
-        (
-            await session.execute(
-                text(
-                    """
-                    SELECT kind, title, uri, mime_type, meta
-                    FROM artifacts
-                    WHERE run_id = :run_id
-                    ORDER BY created_at, id
-                    """
-                ),
-                {"run_id": run_id},
-            )
-        )
-        .mappings()
-        .all()
-    )
-    return [dict(row) for row in rows]
+    del session  # 制品表在本机 store 里
+    return [
+        {
+            "kind": item.kind,
+            "title": item.title,
+            "uri": item.uri,
+            "mime_type": item.mime_type,
+            "meta": item.meta,
+        }
+        for item in await cowork_store().list_run_artifacts(run_id=run_id)
+    ]
 
 
 async def _auto_approve_fixture_browser(
@@ -1062,6 +1103,38 @@ async def _auto_approve_fixture_browser(
     return True
 
 
+def _assert_item_is_solvable(item: dict[str, Any], registry: CoworkToolRegistry) -> None:
+    """在花掉模型调用之前, 拿真正要跑的那个 registry 核对题目自身是否可解。
+
+    静态校验照的是一份声明表, 声明表会过期; 这里照的是 fixture registry 本身,
+    按定义不可能和被测系统不一致。跑不通自己 gold 的题目必须让整批停下来——
+    它在成功率里是一个与被测系统无关的常数扣分, 比缺一条测试更坏, 因为它看起来
+    像是模型不行。
+    """
+
+    names = registry.names()
+    unknown = sorted(set(item["gold"]["required_tools"]) - names)
+    if unknown:
+        raise CoworkRunnerError(f"{item['id']}: fixture registry 里没有 {unknown}")
+    actual = {
+        name: frozenset(
+            ({registry.get(name).capability} - {None})
+            | set(registry.get(name).extra_capabilities)
+        )
+        for name in names
+    }
+    gaps = missing_capabilities_for(
+        item["gold"]["required_tools"],
+        item["granted_capabilities"],
+        tool_capabilities=actual,
+    )
+    if gaps:
+        detail = "; ".join(f"{name} 需要 {caps}" for name, caps in sorted(gaps.items()))
+        raise CoworkRunnerError(
+            f"{item['id']}: granted_capabilities 不足以跑通自己的 gold（{detail}）"
+        )
+
+
 async def run_case(
     suite: dict[str, Any],
     item: dict[str, Any],
@@ -1075,10 +1148,10 @@ async def run_case(
     materialized = materialize_case(suite, item, case_root=case_root)
     bus = InMemoryRunBus()
     registry = build_fixture_registry(materialized)
+    _assert_item_is_solvable(item, registry)
     async with db_sessions() as session:
         conversation_id = await ensure_conversation(
             session,
-            scope="local_owner",
             title=f"Cowork Eval {item['id']}",
         )
         await _configure_permissions(

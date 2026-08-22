@@ -67,6 +67,6 @@ Cowork 复用 `agent_runs`、`run_events`、checkpoint 与工具幂等表，新�
 3. 安全读工具可并行；任何 `effect != none` 的工具都必须走 `tool_invocations` 幂等租约，
    不得只按 `risk=write` 判断。Shell 执行器还必须按当前 `tool_call_id` 复核 allowlist 或一次性审批。
    同一文件必须有冲突摘要与幂等键。
-4. 现有 Redis `local_office_write` 是过渡兼容层；Cowork 编辑器接入会话 root 后应由
+4. 现有 `local_office_write` 限时授权（[ADR-0012](0012-退役postgres与redis改用本机文件.md) 之后落在进程内，不再是 Redis）是过渡兼容层；Cowork 编辑器接入会话 root 后应由
    `office.word.edit` / `office.excel.edit` 和路径检查替代，而非叠加第二次逐操作确认。
 5. 多 Agent 前必须补齐委派事件、子 Agent 独立预算/capability、Artifact 合并和并发冲突评测。

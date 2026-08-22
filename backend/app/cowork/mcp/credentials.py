@@ -1,14 +1,13 @@
-"""把数据库加密的 OAuth token 临时注入 MCP 内存配置。"""
+"""把加密存储的 OAuth token 临时注入 MCP 内存配置。"""
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
+from app.core.config import Settings
 from app.cowork.connectors import connector_secrets, get_connector_account
 from app.cowork.mcp.config import McpConfiguration
 from app.security.secret_store import LocalSecretStore
 
 
-async def hydrate_mcp_oauth_credentials(
-    session: AsyncSession,
+def hydrate_mcp_oauth_credentials(
+    settings: Settings,
     configuration: McpConfiguration,
     secret_store: LocalSecretStore,
 ) -> McpConfiguration:
@@ -19,7 +18,7 @@ async def hydrate_mcp_oauth_credentials(
             continue
         if server.transport == "stdio":
             raise ValueError(f"MCP 服务 {name} 的 OAuth connector 只适用于 HTTP transport")
-        account = await get_connector_account(session, connector_id)
+        account = get_connector_account(settings, connector_id)
         if account is None or not account.enabled or account.status != "connected":
             raise ValueError(f"MCP 服务 {name} 绑定的 OAuth connector 未连接")
         token = str(connector_secrets(account, secret_store).get("access_token") or "").strip()

@@ -4,19 +4,16 @@ from uuid import UUID
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.agent_core.idempotency import InvocationInFlightError
 from app.api.dependencies import (
-    get_request_identity,
     get_run_bus,
     get_run_queue_dependency,
     get_session_factory,
     require_owner_identity,
 )
 from app.core.config import Settings, get_settings
-from app.core.db import get_db_session
+from app.core.db import DbSession as AsyncSession
+from app.core.db import SessionFactory, get_db_session
 from app.core.queue import RunQueue
 from app.core.run_bus import RunBus
 from app.cowork.attachments import CoworkAttachmentError, bind_attachments
@@ -33,14 +30,8 @@ from app.cowork.permissions import (
 )
 from app.cowork.runtime import initialize_cowork_state, resume_cowork_after_human
 from app.cowork.tools import build_default_cowork_registry
-from app.cowork_store.routing import local_run_guard
-from app.platform.demo_sessions import consume_question_quota
-from app.platform.request_identity import RequestIdentity
-from app.rag.review.graph import initialize_review_state
-from app.rag.review.write_note import (
-    resolve_note_path,
-    resume_review_after_human,
-)
+from app.cowork_store.routing import cowork_store, local_run_guard
+from app.runstore.conversations import get_conversation_kb
 from app.runstore.run_stream import parse_last_event_id, stream_run_events
 from app.runstore.runs import (
     RunNotFoundError,
@@ -49,6 +40,7 @@ from app.runstore.runs import (
     append_message,
     create_run,
     ensure_conversation,
+    finalize_message,
     finish_run,
     get_run_for_identity,
     list_events,
@@ -58,10 +50,7 @@ from app.schemas.runs import (
     CoworkInteractionResponseRequest,
     CoworkSteeringRequest,
     CreateCoworkRunRequest,
-    CreateReviewRunRequest,
-    CreateRunRequest,
     CreateRunResponse,
-    ResumeRunRequest,
     RunEventListResponse,
     RunStatusResponse,
 )
@@ -98,105 +87,17 @@ def _run_status_response(run: RunRecord) -> RunStatusResponse:
     )
 
 
-@router.post("", response_model=CreateRunResponse, status_code=202)
-async def create_answer_run(
-    request: CreateRunRequest,
-    session: Annotated[AsyncSession, Depends(get_db_session)],
-    queue: Annotated[RunQueue, Depends(get_run_queue_dependency)],
-    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> CreateRunResponse:
-    """创建 run 并入队, 立即返回。执行在 worker 进程, 不依附本次 HTTP 连接。"""
-
-    try:
-        conversation_id = await ensure_conversation(
-            session,
-            conversation_id=request.conversation_id,
-            scope=identity.scope,
-            demo_session_id=identity.demo_session_id,
-            title=None if request.conversation_id is not None else request.query.strip()[:80],
-        )
-    except LookupError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    if not identity.is_owner:
-        assert identity.demo_session_id is not None
-        if not await consume_question_quota(
-            session,
-            demo_session_id=identity.demo_session_id,
-            limit=settings.demo_session_question_limit,
-        ):
-            raise HTTPException(status_code=429, detail="本 session 的提问额度已用尽")
-
-    run = await create_run(
-        session,
-        conversation_id=conversation_id,
-        goal=request.query,
-        budget_tokens=settings.run_budget_tokens,
-        budget_calls=settings.run_budget_calls,
-        budget_wall_ms=settings.run_budget_wall_ms,
-        answer_mode=request.mode,
-        retrieval_top_k=request.top_k,
-    )
-    trace_id = str(structlog.contextvars.get_contextvars().get("trace_id") or "local")
-    await append_message(
-        session,
-        conversation_id=conversation_id,
-        role="user",
-        content=request.query,
-        status="completed",
-        run_id=run.id,
-        trace_id=trace_id,
-    )
-    # 先提交再入队: 反过来的话 worker 可能比事务可见更早领到任务, 查不到 run。
-    await session.commit()
-
-    try:
-        await queue.enqueue_answer_run(run.id, top_k=request.top_k)
-    except Exception as error:
-        # 入队失败的 run 永远等不到 worker, 也没有租约让 watchdog 回收, 必须当场落终态。
-        logger.exception("run 入队失败", run_id=str(run.id))
-        await append_events(
-            session,
-            run_id=run.id,
-            events=[
-                (
-                    "error",
-                    {
-                        "user_message": "任务未能进入队列, 请稍后重试。",
-                        "retryable": True,
-                        "code": "enqueue_failed",
-                    },
-                )
-            ],
-        )
-        await finish_run(session, run_id=run.id, status="failed", error="入队失败")
-        await session.commit()
-        raise HTTPException(status_code=503, detail="任务队列不可用") from error
-
-    return CreateRunResponse(
-        run_id=run.id,
-        conversation_id=conversation_id,
-        status=run.status,
-        workflow_type=run.workflow_type,
-    )
-
-
 @router.post("/{run_id}/steering", response_model=RunStatusResponse, status_code=202)
 async def steer_cowork_run(
     run_id: UUID,
     request: CoworkSteeringRequest,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     bus: Annotated[RunBus, Depends(get_run_bus)],
-    identity: Annotated[RequestIdentity, Depends(require_owner_identity)],
+    _: Annotated[None, Depends(require_owner_identity)],
 ) -> RunStatusResponse:
-    await session.execute(
-        text("SELECT id FROM agent_runs WHERE id = :run_id FOR UPDATE"), {"run_id": run_id}
-    )
     run = await get_run_for_identity(
         session,
         run_id=run_id,
-        scope=identity.scope,
-        demo_session_id=identity.demo_session_id,
     )
     if run is None or run.workflow_type != "cowork":
         raise HTTPException(status_code=404, detail="Cowork run 不存在")
@@ -233,8 +134,6 @@ async def steer_cowork_run(
     refreshed = await get_run_for_identity(
         session,
         run_id=run_id,
-        scope=identity.scope,
-        demo_session_id=identity.demo_session_id,
     )
     assert refreshed is not None
     return _run_status_response(refreshed)
@@ -252,19 +151,12 @@ async def respond_to_cowork_interaction(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     queue: Annotated[RunQueue, Depends(get_run_queue_dependency)],
     bus: Annotated[RunBus, Depends(get_run_bus)],
-    identity: Annotated[RequestIdentity, Depends(require_owner_identity)],
+    _: Annotated[None, Depends(require_owner_identity)],
 ) -> RunStatusResponse:
     async with local_run_guard(run_id) as locally_locked:
-        if not locally_locked:
-            await session.execute(
-                text("SELECT id FROM agent_runs WHERE id = :run_id FOR UPDATE"),
-                {"run_id": run_id},
-            )
         run = await get_run_for_identity(
             session,
             run_id=run_id,
-            scope=identity.scope,
-            demo_session_id=identity.demo_session_id,
         )
         if run is None or run.workflow_type != "cowork":
             raise HTTPException(status_code=404, detail="Cowork run 不存在")
@@ -283,6 +175,7 @@ async def respond_to_cowork_interaction(
                     approved=request.approved,
                     answer=request.answer,
                     path=request.path,
+                    remember=request.remember,
                 )
                 await resume_cowork_after_human(
                     session, run_id=run_id, item=item, response=response
@@ -308,8 +201,6 @@ async def respond_to_cowork_interaction(
     refreshed = await get_run_for_identity(
         session,
         run_id=run_id,
-        scope=identity.scope,
-        demo_session_id=identity.demo_session_id,
     )
     assert refreshed is not None
     return _run_status_response(refreshed)
@@ -325,7 +216,7 @@ async def create_cowork_run(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     queue: Annotated[RunQueue, Depends(get_run_queue_dependency)],
     bus: Annotated[RunBus, Depends(get_run_bus)],
-    identity: Annotated[RequestIdentity, Depends(require_owner_identity)],
+    _: Annotated[None, Depends(require_owner_identity)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> CreateRunResponse:
     """创建已授权目录上的 Cowork 动态工具任务；执行期间不逐操作确认。"""
@@ -336,8 +227,6 @@ async def create_cowork_run(
         conversation_id = await ensure_conversation(
             session,
             conversation_id=request.conversation_id,
-            scope=identity.scope,
-            demo_session_id=identity.demo_session_id,
         )
     except LookupError as error:
         raise HTTPException(status_code=404, detail="Cowork 会话不存在") from error
@@ -390,6 +279,14 @@ async def create_cowork_run(
             registry=registry,
             bus=bus,
             plan_mode=request.plan_mode,
+            work_mode=request.work_mode,
+            reading_path=request.reading_path,
+            # 挂载在会话上、不在请求里：用户挂一次，之后每一轮都用同一个库。读到 state
+            # 里冻住，中途改绑定影响的是下一个 run，不会让这一个 run 换语料。
+            kb_slug=await get_conversation_kb(
+                session,
+                conversation_id=conversation_id,
+            ),
         )
     except ValueError as error:
         await session.rollback()
@@ -424,156 +321,15 @@ async def create_cowork_run(
     )
 
 
-@router.post(
-    "/reviews",
-    response_model=CreateRunResponse,
-    status_code=202,
-)
-async def create_review_run(
-    request: CreateReviewRunRequest,
-    session: Annotated[AsyncSession, Depends(get_db_session)],
-    queue: Annotated[RunQueue, Depends(get_run_queue_dependency)],
-    bus: Annotated[RunBus, Depends(get_run_bus)],
-    identity: Annotated[RequestIdentity, Depends(require_owner_identity)],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> CreateRunResponse:
-    """创建固定综述；只允许已登录的个人 owner 选择文档和写回目标。"""
-
-    if len(set(request.document_ids)) != len(request.document_ids):
-        raise HTTPException(status_code=422, detail="document_ids 不能重复")
-    try:
-        resolve_note_path(settings.agent_output_path, request.output_path)
-        conversation_id = await ensure_conversation(
-            session,
-            conversation_id=request.conversation_id,
-            scope=identity.scope,
-            demo_session_id=identity.demo_session_id,
-        )
-    except (LookupError, ValueError) as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    run = await create_run(
-        session,
-        conversation_id=conversation_id,
-        goal=request.goal,
-        budget_tokens=settings.run_budget_tokens,
-        budget_calls=settings.run_budget_calls,
-        budget_wall_ms=settings.run_budget_wall_ms,
-        workflow_type="literature_review",
-    )
-    trace_id = str(structlog.contextvars.get_contextvars().get("trace_id") or "local")
-    await append_message(
-        session,
-        conversation_id=conversation_id,
-        role="user",
-        content=request.goal,
-        status="completed",
-        run_id=run.id,
-        trace_id=trace_id,
-    )
-    await initialize_review_state(
-        session,
-        run_id=run.id,
-        document_ids=request.document_ids,
-        output_path=request.output_path,
-        bus=bus,
-    )
-    try:
-        await queue.enqueue_review_run(run.id)
-    except Exception as error:
-        logger.exception("固定综述 run 入队失败", run_id=str(run.id))
-        await append_events(
-            session,
-            run_id=run.id,
-            events=[
-                (
-                    "error",
-                    {
-                        "user_message": "固定综述未能进入队列，请稍后重试。",
-                        "retryable": True,
-                        "code": "enqueue_failed",
-                    },
-                )
-            ],
-        )
-        await finish_run(session, run_id=run.id, status="failed", error="入队失败")
-        await session.commit()
-        await bus.publish(run.id)
-        raise HTTPException(status_code=503, detail="任务队列不可用") from error
-    return CreateRunResponse(
-        run_id=run.id,
-        conversation_id=conversation_id,
-        status=run.status,
-        workflow_type=run.workflow_type,
-    )
-
-
-@router.post(
-    "/{run_id}/resume",
-    response_model=RunStatusResponse,
-)
-async def resume_review_run(
-    run_id: UUID,
-    request: ResumeRunRequest,
-    session: Annotated[AsyncSession, Depends(get_db_session)],
-    bus: Annotated[RunBus, Depends(get_run_bus)],
-    identity: Annotated[RequestIdentity, Depends(require_owner_identity)],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> RunStatusResponse:
-    run = await get_run_for_identity(
-        session,
-        run_id=run_id,
-        scope=identity.scope,
-        demo_session_id=identity.demo_session_id,
-    )
-    if run is None or run.workflow_type != "literature_review":
-        raise HTTPException(status_code=404, detail="固定综述 run 不存在")
-    trace_id = str(structlog.contextvars.get_contextvars().get("trace_id") or "local")
-    try:
-        await resume_review_after_human(
-            session,
-            run_id=run_id,
-            resume_token=request.resume_token,
-            approved=request.approved,
-            output_root=settings.agent_output_path,
-            worker_id=f"api:{trace_id}",
-            bus=bus,
-        )
-    except (InvocationInFlightError, LookupError, ValueError) as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    refreshed = await get_run_for_identity(
-        session,
-        run_id=run_id,
-        scope=identity.scope,
-        demo_session_id=identity.demo_session_id,
-    )
-    if refreshed is None:  # pragma: no cover - 同一事务内 run 不会消失
-        raise HTTPException(status_code=404, detail="固定综述 run 不存在")
-    return RunStatusResponse(
-        run_id=refreshed.id,
-        conversation_id=refreshed.conversation_id,
-        goal=refreshed.goal,
-        answer_mode=refreshed.answer_mode,
-        workflow_type=refreshed.workflow_type,
-        status=refreshed.status,
-        cancel_requested=refreshed.cancel_requested,
-        used_tokens=refreshed.used_tokens,
-        used_calls=refreshed.used_calls,
-        next_seq=refreshed.next_seq,
-        error=refreshed.error,
-    )
-
-
 @router.get("/{run_id}", response_model=RunStatusResponse)
 async def read_run(
     run_id: UUID,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    _: Annotated[None, Depends(require_owner_identity)],
 ) -> RunStatusResponse:
     run = await get_run_for_identity(
         session,
         run_id=run_id,
-        scope=identity.scope,
-        demo_session_id=identity.demo_session_id,
     )
     if run is None:
         raise HTTPException(status_code=404, detail="run 不存在")
@@ -597,8 +353,8 @@ async def stream_events(
     run_id: UUID,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     bus: Annotated[RunBus, Depends(get_run_bus)],
-    stream_sessions: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
-    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    stream_sessions: Annotated[SessionFactory, Depends(get_session_factory)],
+    _: Annotated[None, Depends(require_owner_identity)],
     after_seq: Annotated[int, Query(ge=0)] = 0,
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> StreamingResponse:
@@ -612,8 +368,6 @@ async def stream_events(
         await get_run_for_identity(
             session,
             run_id=run_id,
-            scope=identity.scope,
-            demo_session_id=identity.demo_session_id,
         )
         is None
     ):
@@ -637,7 +391,7 @@ async def stream_events(
 async def read_event_log(
     run_id: UUID,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    _: Annotated[None, Depends(require_owner_identity)],
     after_seq: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
 ) -> RunEventListResponse:
@@ -647,8 +401,6 @@ async def read_event_log(
         await get_run_for_identity(
             session,
             run_id=run_id,
-            scope=identity.scope,
-            demo_session_id=identity.demo_session_id,
         )
         is None
     ):
@@ -667,35 +419,26 @@ async def cancel_run(
     run_id: UUID,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     bus: Annotated[RunBus, Depends(get_run_bus)],
-    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    _: Annotated[None, Depends(require_owner_identity)],
 ) -> RunStatusResponse:
     """请求取消。已在执行的 run 由持有租约的 worker 在下一个检查点收尾。"""
 
     previous = await get_run_for_identity(
         session,
         run_id=run_id,
-        scope=identity.scope,
-        demo_session_id=identity.demo_session_id,
     )
     if previous is not None:
         # 串行化同一 run 的并发取消；拿锁后重读旧状态，确保只有真正完成
-        # queued -> cancelled 转换的请求写一次终态事件。
-        await session.execute(
-            text("SELECT id FROM agent_runs WHERE id = :run_id FOR UPDATE"),
-            {"run_id": run_id},
-        )
+        # queued -> cancelled 转换的请求写一次终态事件。锁现在是 local_run_guard，
+        # 不再是 PostgreSQL 的行锁。
         previous = await get_run_for_identity(
             session,
             run_id=run_id,
-            scope=identity.scope,
-            demo_session_id=identity.demo_session_id,
         )
     try:
         run = await request_cancel(
             session,
             run_id=run_id,
-            scope=identity.scope,
-            demo_session_id=identity.demo_session_id,
         )
     except RunNotFoundError as error:
         raise HTTPException(status_code=404, detail="run 不存在") from error
@@ -709,16 +452,13 @@ async def cancel_run(
     ):
         if previous.status == "waiting_human" and previous.workflow_type == "cowork":
             await cancel_pending_interaction(session, run_id=run_id)
-            await session.execute(
-                text(
-                    """
-                    UPDATE messages
-                    SET status = 'cancelled', content = 'Cowork 任务已停止。', updated_at = now()
-                    WHERE run_id = :run_id AND role = 'assistant' AND status = 'streaming'
-                    """
-                ),
-                {"run_id": run_id},
-            )
+            for message_id in await cowork_store().list_streaming_message_ids(run_id=run_id):
+                await finalize_message(
+                    session,
+                    message_id=message_id,
+                    status="cancelled",
+                    content="Cowork 任务已停止。",
+                )
         await append_events(
             session,
             run_id=run_id,
@@ -740,8 +480,6 @@ async def cancel_run(
         refreshed = await get_run_for_identity(
             session,
             run_id=run_id,
-            scope=identity.scope,
-            demo_session_id=identity.demo_session_id,
         )
         if refreshed is not None:
             run = refreshed

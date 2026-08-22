@@ -2,13 +2,12 @@
 
 import re
 from typing import Annotated, Any
-from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import require_owner_identity
 from app.core.config import Settings, get_settings
+from app.core.db import DbSession as AsyncSession
 from app.core.db import get_db_session
 from app.cowork.mcp.client import McpClientManager, McpRemoteTool
 from app.cowork.mcp.config import (
@@ -19,12 +18,13 @@ from app.cowork.mcp.config import (
     save_mcp_configuration,
 )
 from app.cowork.mcp.credentials import hydrate_mcp_oauth_credentials
-from app.cowork.skills.catalog import SkillCatalogError, load_skill_catalog
-from app.cowork.skills.distillation_store import (
+from app.cowork.skills.candidate_store import (
+    SkillCandidateStoreError,
     get_skill_candidate,
     list_skill_candidates,
     set_candidate_status,
 )
+from app.cowork.skills.catalog import SkillCatalogError, load_skill_catalog
 from app.cowork.skills.lifecycle import (
     import_skill_zip,
     install_auto_distilled_skill,
@@ -72,8 +72,8 @@ async def probe_mcp_server(
 ) -> dict[str, Any]:
     try:
         configuration = load_mcp_configuration(settings.cowork_mcp_config_path)
-        configuration = await hydrate_mcp_oauth_credentials(
-            session,
+        configuration = hydrate_mcp_oauth_credentials(
+            settings,
             configuration,
             LocalSecretStore(settings.secret_store_key_path),
         )
@@ -231,27 +231,37 @@ def get_skills_status(
 
 
 @router.get("/skills/candidates")
-async def get_skill_candidates(
-    session: DbSession,
+def get_skill_candidates(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict[str, Any]:
-    items = await list_skill_candidates(session)
     return {
         "enabled": settings.skill_distillation_enabled,
         "auto_promotion_enabled": settings.skill_auto_promotion_enabled,
         "min_evidence": settings.skill_promotion_min_evidence,
         "min_confidence": settings.skill_promotion_min_confidence,
-        "items": [item.public(include_skill_md=True) for item in items],
+        "source_path": str(settings.cowork_skill_candidates_path),
+        "items": [
+            item.public(include_skill_md=True)
+            for item in list_skill_candidates(settings.cowork_skill_candidates_path)
+        ],
     }
 
 
-@router.post("/skills/candidates/{candidate_id}/promote")
-async def promote_skill_candidate(
-    candidate_id: UUID,
-    session: DbSession,
+@router.post("/skills/candidates/{capability_key}/promote")
+def promote_skill_candidate(
+    capability_key: str,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict[str, Any]:
-    candidate = await get_skill_candidate(session, candidate_id)
+    """晋升 = 把候选目录里的 SKILL.md 装进已安装目录。
+
+    正文是现读现装的，所以用户可以先用编辑器改候选的 SKILL.md 再点晋升——
+    这是候选从数据库文本列搬到文件之后白拿的能力。
+    """
+
+    try:
+        candidate = get_skill_candidate(settings.cowork_skill_candidates_path, capability_key)
+    except SkillCandidateStoreError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     if candidate is None:
         raise HTTPException(status_code=404, detail="Skill 候选不存在")
     if candidate.status == "rejected":
@@ -266,33 +276,34 @@ async def promote_skill_candidate(
         )
     except (FileExistsError, OSError, UnicodeError, SkillCatalogError) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    updated = await set_candidate_status(
-        session,
-        candidate_id=candidate.id,
+    updated = set_candidate_status(
+        settings.cowork_skill_candidates_path,
+        capability_key=candidate.capability_key,
         status="promoted",
         promoted_name=candidate.suggested_name,
     )
-    await session.commit()
     return updated.public(include_skill_md=True)
 
 
-@router.post("/skills/candidates/{candidate_id}/reject")
-async def reject_skill_candidate(
-    candidate_id: UUID,
-    session: DbSession,
+@router.post("/skills/candidates/{capability_key}/reject")
+def reject_skill_candidate(
+    capability_key: str,
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict[str, Any]:
-    candidate = await get_skill_candidate(session, candidate_id)
+    try:
+        candidate = get_skill_candidate(settings.cowork_skill_candidates_path, capability_key)
+    except SkillCandidateStoreError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     if candidate is None:
         raise HTTPException(status_code=404, detail="Skill 候选不存在")
     if candidate.status == "promoted":
         raise HTTPException(status_code=409, detail="已晋升 Skill 请从已安装列表停用或卸载")
-    updated = await set_candidate_status(
-        session,
-        candidate_id=candidate.id,
+    updated = set_candidate_status(
+        settings.cowork_skill_candidates_path,
+        capability_key=candidate.capability_key,
         status="rejected",
         review_reason="用户已拒绝",
     )
-    await session.commit()
     return updated.public(include_skill_md=True)
 
 

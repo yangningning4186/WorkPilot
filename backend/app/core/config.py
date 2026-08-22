@@ -19,21 +19,11 @@ class Settings(BaseSettings):
     app_env: Literal["development", "test", "production"] = "development"
     annotation_tool_enabled: bool = True
     log_level: str = "INFO"
-    database_url: str = "postgresql+asyncpg://workpilot:workpilot@localhost:5432/workpilot"
-    redis_url: str = "redis://localhost:6379/0"
     # Web/集群部署继续使用 Arq + Redis；桌面 sidecar 使用同进程队列，任务真相仍在
     # 持久化 store 中，并由轮询 dispatcher 补偿进程退出时丢失的内存唤醒。
-    task_queue_backend: Literal["redis", "in_process"] = "redis"
-    run_bus_backend: Literal["redis", "in_process"] = "redis"
-    session_cookie_name: str = "workpilot_session"
-    session_ttl_s: int = Field(default=30 * 60, ge=300, le=90 * 24 * 60 * 60)
-    session_cookie_secure: bool | None = None
     admin_cookie_name: str = "workpilot_admin_session"
     admin_session_ttl_s: int = Field(default=8 * 60 * 60, ge=300, le=7 * 24 * 60 * 60)
     demo_admin_password_hash: str = ""
-    ip_rate_limit_enabled: bool | None = None
-    ip_rate_limit_per_minute: int = Field(default=20, ge=1, le=10_000)
-    ip_rate_limit_burst: int = Field(default=5, ge=1, le=1_000)
     demo_session_question_limit: int = Field(default=20, ge=1, le=10_000)
     daily_cost_limit_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
     cost_budget_timezone: str = "Asia/Shanghai"
@@ -85,6 +75,10 @@ class Settings(BaseSettings):
     # RAG 的 documents/chunks/pgvector 不受这个开关影响。
     cowork_store_backend: Literal["postgres", "sqlite"] = "sqlite"
     cowork_data_path: Path = Path("~/.workpilot")
+    # 本地知识库的根目录，一个 KB 一个子目录。放在 data/ 之外是刻意的：这里存的是
+    # 解析产物与 FAISS 索引（派生数据，可重建），不是约束 7 说的语料本身——语料仍留在
+    # 用户自己的目录里，清单只记它的绝对路径。
+    knowledge_base_path: Path = Path("~/.workpilot/kb")
     cowork_dispatch_poll_s: float = Field(default=1.0, gt=0, le=30)
     cowork_max_steps: int = Field(default=30, ge=1, le=50)
     cowork_decision_max_tokens: int = Field(default=8_192, ge=128, le=16_384)
@@ -124,6 +118,8 @@ class Settings(BaseSettings):
     cowork_mcp_call_timeout_s: float = Field(default=60.0, gt=0, le=600)
     cowork_mcp_result_max_chars: int = Field(default=20_000, ge=1_000, le=100_000)
     cowork_skills_path: Path = Path("../skills")
+    # 蒸馏候选与它的作业队列都是目录，和已安装 Skill 同构（openworker 的 folder-is-truth）。
+    cowork_skill_candidates_path: Path = Path("../skills-candidates")
     # 长期记忆：注入块整体有上限，单条超过 preview 就截断并让模型按需 memory_read，
     # 避免一条几千字的记忆吃掉整个上下文预算。
     cowork_memory_max_items: int = Field(default=200, ge=1, le=500)
@@ -158,6 +154,25 @@ class Settings(BaseSettings):
     cowork_shell_timeout_s: float = Field(default=120.0, gt=0, le=3_600)
     cowork_shell_terminate_grace_s: float = Field(default=2.0, ge=0, le=30)
     cowork_shell_max_output_bytes: int = Field(default=64 * 1024, ge=1_024, le=4 * 1024 * 1024)
+    # 后台 shell 任务。进程活在 worker 内存里，所以三个上限都是硬约束而不是建议：
+    # 没人来收的后台进程会一直占着这台机器。
+    cowork_shell_background_max_tasks: int = Field(default=4, ge=1, le=32)
+    cowork_shell_background_output_max_bytes: int = Field(
+        default=256 * 1024, ge=4_096, le=8 * 1024 * 1024
+    )
+    cowork_shell_background_ttl_s: float = Field(default=3_600.0, gt=0, le=86_400)
+    # 飞书事件回调。没有 encrypt_key 就没有验签能力，那个入口会直接关掉——
+    # 接受未验签的事件等于接受任何人伪造的"用户批准了那条命令"。
+    cowork_feishu_encrypt_key: str | None = None
+    # 机器人自己的 open_id。判断"这条消息 @了我吗"要用它；没配就等于永远没被 @到。
+    cowork_feishu_bot_open_id: str | None = None
+    # 只读 git 视图的单次输出上限。补丁很容易上兆，截断后由工具提示模型改用 stat_only。
+    cowork_git_output_max_bytes: int = Field(default=256 * 1024, ge=4 * 1024, le=4 * 1024 * 1024)
+    # wake_on 单次等待上限。它不释放 worker（进程活在这个 worker 里），所以上限的
+    # 意义是「一个卡住的后台任务最多霸占一个槽位多久」，不宜配得比后台任务 TTL 还长。
+    cowork_wake_on_max_s: float = Field(default=3_600.0, gt=0, le=86_400)
+    # 自唤醒单次上限。超过这个量级应该走 create_schedule：那条路不依赖某个 run 一直挂着。
+    cowork_sleep_max_s: float = Field(default=6 * 3_600.0, gt=0, le=86_400)
     cowork_cancel_poll_s: float = Field(default=0.5, ge=0.05, le=5.0)
     # 桌面壳启动 sidecar 时由父进程生成随机 token 并只通过进程环境传入。开启后，
     # 所有 HTTP 请求都必须携带固定 header，防止本机其他网页调用 localhost API。
@@ -191,6 +206,9 @@ class Settings(BaseSettings):
     # 根本没过模型, 却会被算进指标里。
     llm_cache_enabled: bool = True
     llm_cache_ttl_s: int = Field(default=24 * 60 * 60, ge=60, le=30 * 24 * 60 * 60)
+    # 精确缓存改成进程内 LRU（重启即失效），必须封顶：Redis 有 maxmemory 兜底，
+    # 进程内没有，不封顶就是一条随运行时长单调增长的内存曲线。
+    llm_cache_max_entries: int = Field(default=512, ge=1, le=100_000)
     # Provider 侧 Prompt Cache 只复用 KV 前缀，不复用模型输出。evaluation 仍强制关闭
     # 显式写入，确保跑批延迟与 token 台账不被历史缓存污染。
     provider_prompt_cache_enabled: bool = True
@@ -280,6 +298,7 @@ class Settings(BaseSettings):
     memory_extraction_enabled: bool = True
     memory_recall_enabled: bool = True
     memory_job_lease_s: int = Field(default=120, ge=10, le=1800)
+    memory_job_retry_delay_s: int = Field(default=30, ge=0, le=3600)
     memory_job_max_attempts: int = Field(default=3, ge=1, le=10)
     memory_recall_top_k: int = Field(default=5, ge=1, le=20)
     memory_pinned_limit: int = Field(default=3, ge=0, le=20)

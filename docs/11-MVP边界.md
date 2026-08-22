@@ -44,7 +44,7 @@ baseline 仍是明确欠账，不能因为后续功能已经写完就把它们�
 
 | 模块 | 具体到什么程度 |
 |---|---|
-| 基础设施 | OrbStack + compose（postgres+pgvector / redis）；Python 3.12 |
+| 基础设施 | **无外部服务**：SQLite + JSONL + 目录；Python 3.12（[ADR-0012](adr/0012-退役postgres与redis改用本机文件.md)） |
 | 数据模型 | [03](03-数据模型.md) 的知识层 + 评测层 + `llm_calls` + `agent_runs/run_events`（支撑普通问答 SSE）。候选版本成功后才事务激活；**其余 Agent 四表暂不建** |
 | 模型网关 | `complete/stream/embed` 统一入口 + 成本记账。**路由表只配 main + external 两档** |
 | 解析 | **PDF（MinerU）+ Markdown 两种**。含双栏重排序、表格转 MD、页眉页脚剔除 |
@@ -73,7 +73,7 @@ Agent 与工具 · 记忆系统 · 知识图谱 · 三档模型路由 · 任何�
 
 | 模块 | 说明 |
 |---|---|
-| 词法检索 + RRF 融合 | 注意：PG 原生是 `ts_rank_cd`，不是 BM25（[04 §4.1](04-RAG设计.md)） |
+| 词法检索 + RRF 融合 | 现在是**真的 BM25**（LlamaIndex `BM25Retriever`）；原来的 PG `ts_rank_cd` 是 cover-density 排名，叫 BM25 是术语错误（[04 §3.4](04-知识与阅读设计.md)） |
 | rerank | bge-reranker-v2-m3 |
 | 查询改写 | 指代消解 + 多查询扩展（引入 `light` 档） |
 | 拒答阈值 ROC 调优 | 用 dev 集画曲线取 F1 最优点 |
@@ -149,7 +149,7 @@ Judge 降档实验、GPU 批次成本口径和 admin 成本看板。这里的“
 | 7 | 更多 connector（Obsidian / Zotero / web_clip） | local_dir 稳定运行 | 各 1 天 |
 | 8 | 全局摘要（GraphRAG 式社区摘要） | `global` 类评测有足够样本 | 3 天 |
 | 9 | SFT 小模型做查询改写 / Judge | 一切主线完成 | 3 天 |
-| 10 | pgvector vs Qdrant 对照 | 语料规模 > 20 万 chunk | 2 天 |
+| 10 | ~~pgvector vs Qdrant 对照~~ → FAISS vs 服务化向量库 | 语料规模 > 100 万 chunk，或需要多进程 | 2 天 |
 
 > **Backlog 里的东西照样写进设计文档**，因为面试问的是"你怎么想的"，
 > 不全是"你写了多少行"。能说清一个没实现的设计的权衡，

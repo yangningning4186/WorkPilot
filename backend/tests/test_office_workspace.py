@@ -7,9 +7,9 @@ from docx import Document
 from openpyxl import Workbook, load_workbook  # type: ignore[import-untyped]
 from openpyxl.chart import BarChart, Reference  # type: ignore[import-untyped]
 from openpyxl.styles import Font  # type: ignore[import-untyped]
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.core.db import DbSession as AsyncSession
 from app.cowork.office_workspace import (
     DocumentNotEditableError,
     OfficePlanError,
@@ -25,7 +25,6 @@ from app.cowork.office_workspace import (
     list_workspace_files,
 )
 from app.cowork.permissions import CapabilityDeniedError, create_session_root
-from app.rag.local_dir import register_local_dir
 from app.runstore.runs import ensure_conversation
 from tests.fakes import DeterministicProvider
 from workpilot_ai.gateway import ModelGateway
@@ -107,9 +106,7 @@ def test_cowork_scan_is_bounded_and_skips_dependencies_and_backups(tmp_path: Pat
     assert [item.relative_path for item in items] == ["brief.docx"]
 
 
-async def _office_fixture(
-    session: AsyncSession, tmp_path: Path
-) -> tuple[Path, Settings, dict[str, str]]:
+async def _office_fixture(tmp_path: Path) -> tuple[Path, Settings, dict[str, str]]:
     library = tmp_path / "library"
     library.mkdir()
     (library / "note.md").write_text("# Note\n\n需要整理", encoding="utf-8")
@@ -132,22 +129,21 @@ async def _office_fixture(
     sheet["B2"] = 10
     workbook.save(library / "budget.xlsx")
 
-    settings = Settings.model_validate({"local_library_path": library})
-    await register_local_dir(
-        session, requested_root=Path("."), allowed_root=library, name="办公资料"
-    )
-    items = await list_workspace_files(session, settings=settings)
+    # 办公工作台扫的就是桌面工作区根目录。原来它读 `sources` 表，而那张表的写入者
+    # （资料库入库）早已退役——列表恒为空，这个夹具当时靠手插一行才让用例跑起来。
+    settings = Settings.model_validate({"cowork_default_workspace_path": library})
+    items = await list_workspace_files(settings=settings)
     return library, settings, {item.kind: item.file_id for item in items}
 
 
 async def test_workspace_lists_and_previews_markdown_word_and_excel(
     db_session: AsyncSession, tmp_path: Path
 ) -> None:
-    _, settings, file_ids = await _office_fixture(db_session, tmp_path)
+    _, settings, file_ids = await _office_fixture(tmp_path)
 
     assert set(file_ids) == {"markdown", "word", "excel"}
-    word = await get_workspace_file(db_session, file_id=file_ids["word"], settings=settings)
-    excel = await get_workspace_file(db_session, file_id=file_ids["excel"], settings=settings)
+    word = await get_workspace_file(file_id=file_ids["word"], settings=settings)
+    excel = await get_workspace_file(file_id=file_ids["excel"], settings=settings)
 
     assert "[段落 0 · 样式 Normal] 旧标题" in word.content
     assert "[表 0 · 0,0] 旧单元格" in word.content
@@ -158,11 +154,10 @@ async def test_workspace_lists_and_previews_markdown_word_and_excel(
 async def test_word_instruction_writes_directly_preserves_main_run_style_and_backs_up(
     db_session: AsyncSession, tmp_path: Path
 ) -> None:
-    library, settings, file_ids = await _office_fixture(db_session, tmp_path)
+    library, settings, file_ids = await _office_fixture(tmp_path)
     word_path = library / "brief.docx"
     word_path.chmod(0o640)
-    current = await get_workspace_file(
-        db_session, file_id=file_ids["word"], settings=settings
+    current = await get_workspace_file(file_id=file_ids["word"], settings=settings
     )
     provider = DeterministicProvider(
         completion_text=(
@@ -175,7 +170,6 @@ async def test_word_instruction_writes_directly_preserves_main_run_style_and_bac
     gateway = ModelGateway(provider, embedding_dimensions=1024)
 
     result = await execute_workspace_instruction(
-        db_session,
         gateway,
         file_id=file_ids["word"],
         baseline_sha256=current.baseline_sha256,
@@ -199,12 +193,11 @@ async def test_word_instruction_writes_directly_preserves_main_run_style_and_bac
 async def test_backups_keep_only_recent_versions_per_file(
     db_session: AsyncSession, tmp_path: Path
 ) -> None:
-    library, base_settings, file_ids = await _office_fixture(db_session, tmp_path)
+    library, base_settings, file_ids = await _office_fixture(tmp_path)
     settings = base_settings.model_copy(update={"workspace_backup_versions_per_file": 2})
 
     for index in range(3):
-        current = await get_workspace_file(
-            db_session, file_id=file_ids["word"], settings=settings
+        current = await get_workspace_file(file_id=file_ids["word"], settings=settings
         )
         gateway = ModelGateway(
             DeterministicProvider(
@@ -216,7 +209,6 @@ async def test_backups_keep_only_recent_versions_per_file(
             embedding_dimensions=1024,
         )
         await execute_workspace_instruction(
-            db_session,
             gateway,
             file_id=file_ids["word"],
             baseline_sha256=current.baseline_sha256,
@@ -257,11 +249,10 @@ async def test_invalid_office_plan_does_not_consume_backup_slot(
     db_session: AsyncSession,
     tmp_path: Path,
 ) -> None:
-    library, base_settings, file_ids = await _office_fixture(db_session, tmp_path)
+    library, base_settings, file_ids = await _office_fixture(tmp_path)
     settings = base_settings.model_copy(update={"workspace_backup_versions_per_file": 1})
-    current = await get_workspace_file(db_session, file_id=file_ids[kind], settings=settings)
+    current = await get_workspace_file(file_id=file_ids[kind], settings=settings)
     await execute_workspace_instruction(
-        db_session,
         ModelGateway(DeterministicProvider(completion_text=valid_plan), embedding_dimensions=1024),
         file_id=file_ids[kind],
         baseline_sha256=current.baseline_sha256,
@@ -278,11 +269,10 @@ async def test_invalid_office_plan_does_not_consume_backup_slot(
     }
     assert len(backups_before) == 1
     source_before = source.read_bytes()
-    latest = await get_workspace_file(db_session, file_id=file_ids[kind], settings=settings)
+    latest = await get_workspace_file(file_id=file_ids[kind], settings=settings)
 
     with pytest.raises(OfficePlanError):
         await execute_workspace_instruction(
-            db_session,
             ModelGateway(
                 DeterministicProvider(completion_text=invalid_plan), embedding_dimensions=1024
             ),
@@ -305,11 +295,10 @@ async def test_invalid_office_plan_does_not_consume_backup_slot(
 async def test_excel_instruction_updates_values_and_formulas_without_touching_style(
     db_session: AsyncSession, tmp_path: Path
 ) -> None:
-    library, settings, file_ids = await _office_fixture(db_session, tmp_path)
+    library, settings, file_ids = await _office_fixture(tmp_path)
     workbook_path = library / "budget.xlsx"
     workbook_path.chmod(0o640)
-    current = await get_workspace_file(
-        db_session, file_id=file_ids["excel"], settings=settings
+    current = await get_workspace_file(file_id=file_ids["excel"], settings=settings
     )
     provider = DeterministicProvider(
         completion_text=(
@@ -322,7 +311,6 @@ async def test_excel_instruction_updates_values_and_formulas_without_touching_st
     gateway = ModelGateway(provider, embedding_dimensions=1024)
 
     result = await execute_workspace_instruction(
-        db_session,
         gateway,
         file_id=file_ids["excel"],
         baseline_sha256=current.baseline_sha256,
@@ -348,10 +336,10 @@ async def test_excel_instruction_updates_values_and_formulas_without_touching_st
 async def test_cowork_office_entry_requires_session_root_capability_then_writes_directly(
     db_session: AsyncSession, tmp_path: Path
 ) -> None:
-    library, settings, _ = await _office_fixture(db_session, tmp_path)
+    library, settings, _ = await _office_fixture(tmp_path)
     word_path = library / "brief.docx"
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Office capability"
+        db_session, title="Office capability"
     )
     await db_session.commit()
 

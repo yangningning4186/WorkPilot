@@ -1,10 +1,10 @@
 import httpx
 import pytest
 from pydantic import ValidationError
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_request_identity, require_admin_session
+from app.api.dependencies import require_admin_session, require_owner_identity
 from app.core.config import Settings
+from app.core.db import DbSession as AsyncSession
 from app.core.db import get_db_session
 from app.core.desktop_security import DESKTOP_LAUNCH_TOKEN_HEADER
 from app.main import create_app
@@ -87,5 +87,5 @@ async def test_desktop_launch_token_is_the_local_owner_session(
     assert authenticated.status_code == 200
     assert conversations.status_code == 200
     app.dependency_overrides.pop(get_db_session, None)
-    app.dependency_overrides.pop(get_request_identity, None)
+    app.dependency_overrides.pop(require_owner_identity, None)
     app.dependency_overrides.pop(require_admin_session, None)

@@ -111,10 +111,14 @@ class OutboundCompactor:
         max_input_chars: int,
         max_tokens: int,
         decision_max_tokens: int,
+        ephemeral_suffix: str = "",
     ) -> None:
         self.gateway = gateway
         self.tools = tools
         self.system_prompt = system_prompt
+        # 每轮重算的临时上下文。它挂在视图末尾而不是 system prompt 里，见
+        # `build_outbound_messages` 的说明。
+        self.ephemeral_suffix = ephemeral_suffix
         self.prompts = prompts
         self.enabled = enabled
         self.trigger_ratio = trigger_ratio
@@ -139,6 +143,7 @@ class OutboundCompactor:
             compaction,
             system_prompt=self.system_prompt,
             prompts=self.prompts,
+            ephemeral_suffix=self.ephemeral_suffix,
         )
 
     async def prepare(
@@ -251,8 +256,22 @@ def build_outbound_messages(
     *,
     system_prompt: str,
     prompts: CompactionPrompts,
+    ephemeral_suffix: str = "",
 ) -> list[Message]:
-    """按 checkpoint 的压缩边界构造当前真实发送给模型的消息视图。"""
+    """按 checkpoint 的压缩边界构造当前真实发送给模型的消息视图。
+
+    `ephemeral_suffix` 是每轮重算的临时上下文（任务清单、当前目录、模式提醒）。它
+    **只能挂在视图末尾**，不能进 system prompt：provider 的 prompt cache 按前缀命中，
+    system 是第 0 条消息，改一个字就让整段前缀作废；挂在末尾则只有这一小块失效，
+    前面所有轮次仍然复用。挂到"最后一条 user 消息"也不行——工具循环里那条通常在很
+    靠前的位置，改它等于改掉后面所有内容。
+
+    它同样不进 canonical：canonical 是审计与恢复用的事实记录，临时上下文属于渲染，
+    和 outbound-only 的 tool result 截断是同一类处理。
+
+    末尾追加一条 user 消息在两类 provider 上都合法：OpenAI 兼容接口接受 tool 之后
+    直接跟 user；Anthropic 适配器会把相邻同角色消息合并进同一轮。
+    """
 
     messages = [Message(role="system", content=system_prompt)]
     boundary = compaction["summary_upto"]
@@ -280,7 +299,10 @@ def build_outbound_messages(
         raw_suffix = canonical
     messages.extend(_message_from_canonical(item) for item in raw_suffix)
     limit = compaction["tool_content_max_chars"]
-    return _limit_tool_contents(messages, limit) if limit > 0 else messages
+    view = _limit_tool_contents(messages, limit) if limit > 0 else messages
+    if ephemeral_suffix.strip():
+        view = [*view, Message(role="user", content=ephemeral_suffix.strip())]
+    return view
 
 
 def _message_from_canonical(raw: dict[str, Any]) -> Message:

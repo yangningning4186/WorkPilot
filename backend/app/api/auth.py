@@ -1,7 +1,6 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from redis.exceptions import RedisError
 
 from app.api.dependencies import get_admin_session_store, require_admin_session
 from app.core.config import Settings, get_settings
@@ -12,8 +11,8 @@ router = APIRouter(prefix="/api/v1/auth/admin", tags=["auth"])
 
 
 def _cookie_secure(settings: Settings) -> bool:
-    configured = settings.session_cookie_secure
-    return settings.app_env == "production" if configured is None else configured
+    """生产环境强制 Secure。本机开发走 http://localhost，标了 Secure 就发不出去。"""
+    return settings.app_env == "production"
 
 
 @router.post("/login", response_model=AdminSessionResponse)
@@ -27,10 +26,7 @@ async def login_admin(
         raise HTTPException(status_code=503, detail="demo admin 尚未配置")
     if not verify_admin_password(body.password, settings.demo_admin_password_hash):
         raise HTTPException(status_code=401, detail="密码错误")
-    try:
-        token = await store.issue(ttl_s=settings.admin_session_ttl_s)
-    except RedisError as error:
-        raise HTTPException(status_code=503, detail="admin 会话服务不可用") from error
+    token = await store.issue()
     response.set_cookie(
         key=settings.admin_cookie_name,
         value=token,
@@ -61,10 +57,7 @@ async def logout_admin(
 ) -> Response:
     token = request.cookies.get(settings.admin_cookie_name)
     if token is not None:
-        try:
-            await store.revoke(token)
-        except RedisError as error:
-            raise HTTPException(status_code=503, detail="admin 会话服务不可用") from error
+        await store.revoke(token)
     response.delete_cookie(
         settings.admin_cookie_name,
         httponly=True,

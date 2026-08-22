@@ -3,10 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useAdminSession } from "@/components/admin-session";
-import { Topbar } from "@/components/topbar";
+import { WorkdeskAppShell } from "@/components/workdesk-shell";
 import {
   ApiError,
-  type CostBatchSummary,
   type CostOverviewResponse,
   type CostTierUsage,
   fetchCostOverview,
@@ -84,34 +83,6 @@ function TierCard({ tier }: { tier: CostTierUsage }) {
   );
 }
 
-function BatchRow({ batch }: { batch: CostBatchSummary }) {
-  return (
-    <tr>
-      <td>
-        <div className="batch-label">{batch.label}</div>
-        <div className="batch-meta">
-          {batch.tier} · {batch.model}
-          {batch.gpu_model !== null && ` · ${batch.gpu_model}×${batch.node_count}`}
-        </div>
-      </td>
-      <td className="num">{count(batch.task_count)}</td>
-      <td className="num">{batch.wall_s}s</td>
-      <td className="num">{batch.gpu_s}</td>
-      <td className="num">{batch.gpu_s_per_task}</td>
-      <td className="num">{count(batch.tokens_per_task)}</td>
-      <td className="num">{batch.tasks_per_s}</td>
-      {/* 并发度与占用率是成本数字的解释变量：并发 1 和并发 16 能差一个数量级 */}
-      <td className="num">{batch.mean_concurrency}</td>
-      <td className="num" title="客户端观测的占用率，不是 GPU SM 利用率">
-        {batch.client_occupancy}
-      </td>
-      <td className="num" title={batch.cost_reason ?? batch.price_source ?? undefined}>
-        {money(batch.cost_per_task_usd)}
-      </td>
-    </tr>
-  );
-}
-
 export default function CostPage() {
   const { state: authState } = useAdminSession();
   const [days, setDays] = useState<number>(30);
@@ -145,9 +116,8 @@ export default function CostPage() {
   }, [days, load, authState]);
 
   return (
-    <main className="app-frame cost-frame">
-      <Topbar />
-      <div className="cost-body">
+    <WorkdeskAppShell icon="automation" sectionTitle="成本">
+      <div className="cost-body workdesk-route-surface">
         <div className="cost-head">
           <div>
             <h1>成本</h1>
@@ -201,8 +171,8 @@ export default function CostPage() {
                 <strong>{count(data.totals.total_tokens)}</strong>
               </div>
               <div>
-                <span>跑批</span>
-                <strong>{count(data.totals.batch_count)}</strong>
+                <span>有单价</span>
+                <strong>{count(data.totals.priced_count)}</strong>
               </div>
               <div>
                 <span>金额</span>
@@ -210,11 +180,12 @@ export default function CostPage() {
               </div>
             </section>
 
-            {data.totals.unpriced_batch_count > 0 && (
+            {data.totals.unpriced_count > 0 && (
               <p className="cost-notice">
-                {data.totals.unpriced_batch_count} 个批次没有配置 GPU 单价，
+                {data.totals.unpriced_count} 次调用没有可用单价（本机自部署模型），
                 金额口径为 <code>{data.totals.cost_status}</code>；
-                这些批次的成本以 <strong>GPU 秒与 token</strong> 计，不折算美元。
+                这部分成本以 <strong>token 用量</strong>计，不折算美元——
+                写成 $0.00 会让「免费」和「没测过」看起来一样。
               </p>
             )}
 
@@ -224,37 +195,6 @@ export default function CostPage() {
                 <TierCard key={tier.tier} tier={tier} />
               ))}
               {data.by_tier.length === 0 && <p className="cost-notice">窗口内没有调用记录。</p>}
-            </div>
-
-            <h2>跑批摊销</h2>
-            <p className="cost-hint">
-              成本按<strong>整批 GPU 墙钟</strong>摊销，不是逐条 latency 求和——
-              后者在并发下会把同一段 GPU 时间重复计费，并发越高错得越离谱。
-              并发度与占用率必须和成本一起看，否则单位成本无法解释。
-            </p>
-            <div className="cost-table-wrap">
-              <table className="cost-table">
-                <thead>
-                  <tr>
-                    <th>批次</th>
-                    <th className="num">任务</th>
-                    <th className="num">墙钟</th>
-                    <th className="num">GPU秒</th>
-                    <th className="num">GPU秒/任务</th>
-                    <th className="num">token/任务</th>
-                    <th className="num">任务/秒</th>
-                    <th className="num">并发度</th>
-                    <th className="num">占用率</th>
-                    <th className="num">成本/任务</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.batches.map((batch) => (
-                    <BatchRow key={batch.batch_id} batch={batch} />
-                  ))}
-                </tbody>
-              </table>
-              {data.batches.length === 0 && <p className="cost-notice">还没有收尾的跑批。</p>}
             </div>
 
             <h2>按任务类型</h2>
@@ -285,6 +225,6 @@ export default function CostPage() {
           </>
         )}
       </div>
-    </main>
+    </WorkdeskAppShell>
   );
 }

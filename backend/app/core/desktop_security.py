@@ -7,7 +7,14 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 DESKTOP_LAUNCH_TOKEN_HEADER = "x-workpilot-launch-token"
-_TOKEN_EXEMPT_PATHS = frozenset({"/api/v1/connectors/oauth/callback"})
+_TOKEN_EXEMPT_PATHS = frozenset(
+    {
+        "/api/v1/connectors/oauth/callback",
+        # 飞书事件回调来自飞书服务器，不可能携带 webview 内存里的启动令牌。
+        # 它自己有一道更强的闸门：没配 encrypt_key 就整个关闭，配了就逐条验签。
+        "/api/v1/messaging/feishu/events",
+    }
+)
 
 
 class DesktopLaunchTokenMiddleware:

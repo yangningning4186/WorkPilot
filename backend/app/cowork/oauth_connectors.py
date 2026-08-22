@@ -1,20 +1,32 @@
-"""受支持连接器的 OAuth 授权码流程。"""
+"""受支持连接器的 OAuth 授权码流程。
+
+**state 不落盘。** 它是一次性的、10 分钟就过期的 CSRF 令牌，只在"用户点了授权"和
+"浏览器带着 code 跳回来"之间活着——这段时间短于任何一次进程重启的间隔。参照
+openworker `coworker/mcp/oauth.py` 的单槽 pending future：那里更进一步，一次只允许
+一个交互式登录。这里保留按 state 索引的字典，因为多个连接器可以同时授权；但同一个
+账户重新发起授权会作废它上一条 state，对应原来那句
+`DELETE ... WHERE connector_account_id = :account_id`。
+
+落盘的代价不只是多一张表：state 一旦持久化，重启后那些悬着的授权流会一直留着，
+而它们对应的浏览器标签早就没了。
+"""
 
 from __future__ import annotations
 
 import secrets
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings
 from app.cowork.connectors import (
     ConnectorAccountRecord,
     connector_secrets,
+    get_connector_account,
     set_connector_status,
 )
 from app.security.secret_store import LocalSecretStore
@@ -26,6 +38,30 @@ _AUTHORIZE_URLS = {
     "wechat_official": "https://open.weixin.qq.com/connect/oauth2/authorize",
     "tencent_docs": "https://docs.qq.com/oauth/v2/authorize",
 }
+
+
+@dataclass(frozen=True)
+class _PendingAuthorization:
+    account_id: Any
+    redirect_uri: str
+    expires_at: datetime
+
+
+_pending: dict[str, _PendingAuthorization] = {}
+_pending_lock = threading.Lock()
+
+
+def _sweep(now: datetime) -> None:
+    for state, pending in list(_pending.items()):
+        if pending.expires_at <= now:
+            del _pending[state]
+
+
+def reset_pending_authorizations() -> None:
+    """测试用：清空进程内的授权流，避免用例之间互相看见对方的 state。"""
+
+    with _pending_lock:
+        _pending.clear()
 
 
 @dataclass(frozen=True)
@@ -44,8 +80,8 @@ class OAuthIdentity:
 
 
 async def begin_oauth(
-    session: AsyncSession,
     *,
+    settings: Settings,
     account: ConnectorAccountRecord,
     redirect_uri: str | None,
 ) -> OAuthStart:
@@ -56,31 +92,18 @@ async def begin_oauth(
     if not client_id or not callback:
         raise ValueError("连接器缺少 client_id 或 redirect_uri")
     state = secrets.token_urlsafe(48)
-    expires_at = datetime.now(UTC) + timedelta(minutes=10)
-    await session.execute(
-        text(
-            """
-            DELETE FROM oauth_states
-            WHERE connector_account_id = :account_id OR expires_at <= now()
-            """
-        ),
-        {"account_id": account.id},
-    )
-    await session.execute(
-        text(
-            """
-            INSERT INTO oauth_states (state, connector_account_id, redirect_uri, expires_at)
-            VALUES (:state, :account_id, :redirect_uri, :expires_at)
-            """
-        ),
-        {
-            "state": state,
-            "account_id": account.id,
-            "redirect_uri": callback,
-            "expires_at": expires_at,
-        },
-    )
-    await set_connector_status(session, account_id=account.id, status="authorizing")
+    now = datetime.now(UTC)
+    expires_at = now + timedelta(minutes=10)
+    with _pending_lock:
+        _sweep(now)
+        # 同一账户重新发起授权作废上一条：旧标签页再回来也换不到 token。
+        for existing, pending in list(_pending.items()):
+            if pending.account_id == account.id:
+                del _pending[existing]
+        _pending[state] = _PendingAuthorization(
+            account_id=account.id, redirect_uri=callback, expires_at=expires_at
+        )
+    set_connector_status(settings, account_id=account.id, status="authorizing")
     return OAuthStart(
         authorization_url=_authorization_url(account, callback, state),
         state=state,
@@ -89,8 +112,8 @@ async def begin_oauth(
 
 
 async def complete_oauth(
-    session: AsyncSession,
     *,
+    settings: Settings,
     state: str,
     code: str,
     secret_store: LocalSecretStore,
@@ -98,56 +121,37 @@ async def complete_oauth(
     trust_env: bool,
     client: httpx.AsyncClient | None = None,
 ) -> ConnectorAccountRecord:
-    row = (
-        (
-            await session.execute(
-                text(
-                    """
-                    SELECT connector_account_id, redirect_uri, expires_at
-                    FROM oauth_states WHERE state = :state FOR UPDATE
-                    """
-                ),
-                {"state": state},
-            )
-        )
-        .mappings()
-        .one_or_none()
-    )
-    if row is None:
+    now = datetime.now(UTC)
+    with _pending_lock:
+        _sweep(now)
+        # 弹出即作废：一条 state 只能换一次 token，重放拿到的是"无效或已使用"。
+        pending = _pending.pop(state, None)
+    if pending is None:
         raise ValueError("OAuth state 无效或已使用")
-    if row["expires_at"] <= datetime.now(UTC):
-        await session.execute(
-            text("DELETE FROM oauth_states WHERE state = :state"), {"state": state}
-        )
-        raise ValueError("OAuth state 已过期，请重新发起授权")
-
-    from app.cowork.connectors import get_connector_account
-
-    account = await get_connector_account(session, row["connector_account_id"])
+    account = get_connector_account(settings, pending.account_id)
     if account is None or not account.enabled:
         raise ValueError("连接器不存在或已停用")
-    await session.execute(text("DELETE FROM oauth_states WHERE state = :state"), {"state": state})
     try:
         identity = await _exchange_code(
             account,
             code=code,
-            redirect_uri=str(row["redirect_uri"]),
+            redirect_uri=pending.redirect_uri,
             existing=connector_secrets(account, secret_store),
             timeout_s=timeout_s,
             trust_env=trust_env,
             client=client,
         )
     except Exception as error:
-        await set_connector_status(
-            session,
+        set_connector_status(
+            settings,
             account_id=account.id,
             status="error",
             error=f"OAuth 交换失败：{error}"[:1000],
         )
         raise
     ciphertext = secret_store.encrypt(identity.secret_payload)
-    await set_connector_status(
-        session,
+    set_connector_status(
+        settings,
         account_id=account.id,
         status="connected",
         secret_ciphertext=ciphertext,
@@ -155,8 +159,8 @@ async def complete_oauth(
         external_account_name=identity.display_name,
         expires_at=identity.expires_at,
     )
-    updated = await get_connector_account(session, account.id)
-    if updated is None:  # pragma: no cover - 同一事务内不可达
+    updated = get_connector_account(settings, account.id)
+    if updated is None:  # pragma: no cover - 刚写完就读不到只可能是磁盘故障
         raise RuntimeError("OAuth 完成后连接器丢失")
     return updated
 

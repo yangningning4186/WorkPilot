@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import shlex
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.cowork.approvals import MAX_COMMAND_PREFIX_WORDS, create_approval_rule
 from app.cowork.permissions import list_session_roots
 from app.cowork.schedules import (
     ScheduleRecord,
@@ -33,6 +35,44 @@ class ListSchedulesArgs(_StrictArgs):
     pass
 
 
+class ScheduleStandingApproval(_StrictArgs):
+    """计划要长期免审批的一类动作。
+
+    这是无人值守能不能真正跑起来的关键：一条每天七点跑的计划，如果每天早上都停在
+    "允许 `npm test` 吗"上，它就不是无人值守。但免审批必须在**创建时**就摊开给用户看，
+    而不是让计划在运行中自己积累授权。
+    """
+
+    tool: str = Field(min_length=1, max_length=120)
+    command_prefix: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "仅 run_shell 使用：要长期放行的 argv 前缀，例如 `npm test`。"
+            f"最多 {MAX_COMMAND_PREFIX_WORDS} 个词；命令里出现 shell 操作符时一律不匹配。"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_prefix(self) -> ScheduleStandingApproval:
+        if self.command_prefix is None:
+            return self
+        if self.tool != "run_shell":
+            raise ValueError("command_prefix 只能用于 run_shell")
+        try:
+            words = shlex.split(self.command_prefix)
+        except ValueError as error:
+            raise ValueError(f"command_prefix 不是合法的命令片段：{error}") from error
+        if not words:
+            raise ValueError("command_prefix 不能为空")
+        if len(words) > MAX_COMMAND_PREFIX_WORDS:
+            raise ValueError(
+                f"command_prefix 最多 {MAX_COMMAND_PREFIX_WORDS} 个词，"
+                "再长就不是一类命令而是一条命令了，那种情况请逐次批准"
+            )
+        return self
+
+
 class CreateScheduleArgs(_StrictArgs):
     title: str = Field(min_length=1, max_length=200)
     goal: str = Field(min_length=1, max_length=4000)
@@ -40,6 +80,14 @@ class CreateScheduleArgs(_StrictArgs):
     cron_expression: str | None = Field(default=None, max_length=100)
     run_at: datetime | None = None
     timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=100)
+    standing_approvals: list[ScheduleStandingApproval] = Field(
+        default_factory=list,
+        max_length=10,
+        description=(
+            "这条计划运行时长期免审批的动作。只在这条计划的运行里生效，"
+            "用户手工发起的对话不会继承；删除计划会连同这些授权一起消失。"
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_kind_fields(self) -> CreateScheduleArgs:
@@ -109,8 +157,34 @@ def register_scheduler_tools(registry: CoworkToolRegistry) -> None:
             run_at=args.run_at,
             timezone=args.timezone,
         )
+        # 规则在这里才落库，不在参数校验时：只有走到这一步，`approval_required`
+        # 已经证明用户看过并批准了这份创建请求，其中就包含这批免审批动作。
+        rules = [
+            await create_approval_rule(
+                context.session,
+                conversation_id=context.conversation_id,
+                tool=item.tool,
+                match_kind="command_prefix" if item.command_prefix else "tool",
+                target=item.command_prefix,
+                schedule_id=created.id,
+                created_by="schedule",
+            )
+            for item in args.standing_approvals
+        ]
         return CoworkToolResult(
-            output={"schedule": _schedule_json(created), "unattended": True},
+            output={
+                "schedule": _schedule_json(created),
+                "unattended": True,
+                "standing_approvals": [
+                    {
+                        "id": str(rule.id),
+                        "tool": rule.tool,
+                        "match_kind": rule.match_kind,
+                        "target": rule.target,
+                    }
+                    for rule in rules
+                ],
+            },
             effect_ref=f"schedule:{created.id}",
         )
 
@@ -147,7 +221,9 @@ def register_scheduler_tools(registry: CoworkToolRegistry) -> None:
     for name, description, args_model, handler in (
         (
             "create_schedule",
-            "创建单次或五段 cron 无人值守计划；会复用当前会话目录和能力，执行前必须批准。",
+            "创建单次或五段 cron 无人值守计划；会复用当前会话目录和能力，执行前必须批准。"
+            "如果这条计划每次都要跑同样的命令，用 standing_approvals 把它们一次性列出来——"
+            "否则计划每次运行都会停在审批上，那就不是无人值守了。",
             CreateScheduleArgs,
             create_handler,
         ),

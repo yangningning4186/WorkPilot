@@ -1,55 +1,40 @@
 import json
+from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
 from app.core.config import get_settings
-from app.rag.memory.extraction import (
+from app.cowork.memory import (
+    claim_memory_job,
+    list_curated_memories,
+    schedule_memory_extraction,
+)
+from app.cowork.memory_extraction import (
     MemoryExtractionError,
     parse_memory_candidates,
     parse_memory_decision,
     process_memory_job_source,
 )
-from app.rag.memory.store import (
-    MemoryJobSource,
-    claim_memory_job,
-    list_memories,
-    schedule_memory_extraction,
-)
-from app.runstore.runs import append_message, create_run, ensure_conversation, finish_run
+from app.cowork_contracts import MemoryExtractionJob
 from app.worker.memory_run import memory_extraction_job
 from tests.fakes import DeterministicProvider
 from workpilot_ai.gateway import ModelGateway
 
+pytestmark = pytest.mark.usefixtures("local_cowork_store")
 
-async def _owner_job(db_session: AsyncSession, content: str) -> MemoryJobSource:
-    conversation_id = await ensure_conversation(db_session, scope="local_owner")
-    run = await create_run(
-        db_session,
-        conversation_id=conversation_id,
-        goal=content,
-        budget_tokens=1000,
-        budget_calls=5,
-        budget_wall_ms=30_000,
-    )
-    await append_message(
-        db_session,
-        conversation_id=conversation_id,
-        role="user",
+
+async def _claimed_job(content: str) -> MemoryExtractionJob:
+    job = await schedule_memory_extraction(
+        run_id=uuid7(),
+        conversation_id=uuid7(),
+        source_message_id=uuid7(),
         content=content,
-        status="completed",
-        run_id=run.id,
+        source_created_at=datetime.now(UTC),
     )
-    assert await finish_run(db_session, run_id=run.id, status="done")
-    job = await schedule_memory_extraction(db_session, run_id=run.id)
     assert job is not None
     source = await claim_memory_job(
-        db_session,
-        job_id=job.id,
-        worker_id="memory-test",
-        lease_s=30,
-        max_attempts=3,
+        job_id=job.id, worker_id="memory-test", lease_s=30, max_attempts=3
     )
     assert source is not None
     return source
@@ -99,7 +84,7 @@ def test_memory_parsers_fail_closed_and_reject_unknown_targets() -> None:
         )
 
 
-async def test_processing_same_fact_adds_once_then_noops(db_session: AsyncSession) -> None:
+async def test_processing_same_fact_adds_once_then_noops() -> None:
     provider = DeterministicProvider()
     gateway = ModelGateway(
         provider,
@@ -119,14 +104,14 @@ async def test_processing_same_fact_adds_once_then_noops(db_session: AsyncSessio
         ensure_ascii=False,
     )
 
-    first_source = await _owner_job(db_session, "我偏好简洁回答")
+    first_source = await _claimed_job("我偏好简洁回答")
     provider.queue_completions(candidate_payload)
-    first_operations = await process_memory_job_source(db_session, gateway, source=first_source)
+    first_operations = await process_memory_job_source(gateway, source=first_source)
     assert first_operations[0]["operation"] == "ADD"
-    active = await list_memories(db_session)
+    active = await list_curated_memories(active=True)
     assert len(active) == 1
 
-    second_source = await _owner_job(db_session, "还是请保持简洁")
+    second_source = await _claimed_job("还是请保持简洁")
     provider.queue_completions(
         candidate_payload,
         json.dumps(
@@ -138,10 +123,10 @@ async def test_processing_same_fact_adds_once_then_noops(db_session: AsyncSessio
             ensure_ascii=False,
         ),
     )
-    second_operations = await process_memory_job_source(db_session, gateway, source=second_source)
+    second_operations = await process_memory_job_source(gateway, source=second_source)
 
     assert second_operations[0]["operation"] == "NOOP"
-    refreshed = await list_memories(db_session)
+    refreshed = await list_curated_memories(active=True)
     assert len(refreshed) == 1
     assert refreshed[0].access_count == 1
 

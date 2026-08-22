@@ -3,15 +3,15 @@ from typing import cast
 from uuid import UUID
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
 from app.agent_core.budget import CompletionClient
 from app.core.config import Settings
+from app.core.db import DbSession as AsyncSession
 from app.cowork.artifacts import list_artifacts
 from app.cowork.permissions import create_session_root
 from app.cowork.tools import CoworkToolContext, build_default_cowork_registry
+from app.runstore.checkpoints import ensure_plan
 from app.runstore.runs import create_run, ensure_conversation
 
 pytestmark = pytest.mark.integration
@@ -19,15 +19,19 @@ pytestmark = pytest.mark.integration
 
 async def _plan_step(session: AsyncSession, run_id: UUID, index: int) -> UUID:
     step_id = uuid7()
-    await session.execute(
-        text(
-            """
-            INSERT INTO agent_plan_steps
-                (id, run_id, step_idx, description, tool, depends_on, status)
-            VALUES (:id, :run_id, :idx, 'test tool', 'create_artifact', '{}', 'running')
-            """
-        ),
-        {"id": step_id, "run_id": run_id, "idx": index},
+    await ensure_plan(
+        session,
+        run_id=run_id,
+        steps=[
+            {
+                "id": str(step_id),
+                "idx": index,
+                "description": "test tool",
+                "tool": "create_artifact",
+                "depends_on": [],
+                "status": "running",
+            }
+        ],
     )
     return step_id
 
@@ -37,7 +41,7 @@ async def test_general_tools_create_index_and_reuse_artifact_exactly_once(
     tmp_path: Path,
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="General tools"
+        db_session, title="General tools"
     )
     await create_session_root(
         db_session,
@@ -105,7 +109,8 @@ async def test_general_tools_create_index_and_reuse_artifact_exactly_once(
         {"path": str(tmp_path / "report.md"), "max_lines": 10},
         context=context,
     )
-    assert read_result.output["content"].startswith("# Report")
+    # 行号前缀是给模型引用 path:line 用的，不属于文件内容；这里同时锁住格式与起始行号。
+    assert read_result.output["content"].startswith("     1\t# Report")
     assert len(read_result.output["baseline_sha256"]) == 64
 
     search_result = await registry.execute(

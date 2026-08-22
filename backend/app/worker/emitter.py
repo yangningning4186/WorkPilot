@@ -4,8 +4,8 @@ from time import monotonic
 from typing import Any
 
 import structlog
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.db import SessionFactory
 from app.core.run_bus import RunBus
 from app.runstore.runs import RunEvent, append_events
 
@@ -22,7 +22,7 @@ class RunEventEmitter:
 
     def __init__(
         self,
-        session_factory: async_sessionmaker[AsyncSession],
+        session_factory: SessionFactory,
         bus: RunBus,
         *,
         run_id: Any,

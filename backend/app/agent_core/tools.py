@@ -99,6 +99,11 @@ class ToolRegistry[SpecT: RegistryToolSpec]:
         except KeyError as error:
             raise self._error(f"未知工具 {name!r}，请从工具目录中重新选择") from error
 
+    def names(self) -> frozenset[str]:
+        """已注册的全部工具名。评测套件用它校验 gold 里的工具名没有漂移。"""
+
+        return frozenset(self._tools)
+
     def catalog(self) -> list[dict[str, Any]]:
         return [self._tools[name].catalog_entry() for name in sorted(self._tools)]
 

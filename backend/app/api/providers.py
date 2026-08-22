@@ -5,14 +5,12 @@ from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import require_owner_identity
 from app.core.config import Settings, get_settings
-from app.core.db import get_db_session
 from app.cowork.provider_probe import probe_provider_profile
 from app.cowork.provider_profiles import (
+    ProviderNameTakenError,
     create_provider_profile,
     delete_provider_profile,
     get_provider_profile,
@@ -34,7 +32,6 @@ router = APIRouter(
     tags=["providers"],
     dependencies=[Depends(require_owner_identity)],
 )
-DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 RuntimeSettings = Annotated[Settings, Depends(get_settings)]
 
 
@@ -50,68 +47,60 @@ def _store(settings: Settings) -> LocalSecretStore:
 
 
 @router.get("", response_model=ProviderProfileListResponse)
-async def get_providers(session: DbSession) -> ProviderProfileListResponse:
-    items = await list_provider_profiles(session)
+def get_providers(settings: RuntimeSettings) -> ProviderProfileListResponse:
+    items = list_provider_profiles(settings)
     return ProviderProfileListResponse(items=[_response(item.public()) for item in items])
 
 
 @router.post("", response_model=ProviderProfileResponse, status_code=status.HTTP_201_CREATED)
-async def post_provider(
+def post_provider(
     request: ProviderProfileCreate,
-    session: DbSession,
     settings: RuntimeSettings,
 ) -> ProviderProfileResponse:
     try:
-        created = await create_provider_profile(
-            session,
+        created = create_provider_profile(
+            settings,
             **request.model_dump(),
             secret_store=_store(settings),
         )
-        await session.commit()
-    except IntegrityError as error:
-        await session.rollback()
+    except ProviderNameTakenError as error:
         raise HTTPException(status_code=409, detail="Provider 名称已存在") from error
     return _response(created.public())
 
 
 @router.patch("/{profile_id}", response_model=ProviderProfileResponse)
-async def patch_provider(
+def patch_provider(
     profile_id: UUID,
     request: ProviderProfileUpdate,
-    session: DbSession,
     settings: RuntimeSettings,
 ) -> ProviderProfileResponse:
     try:
-        updated = await update_provider_profile(
-            session,
+        updated = update_provider_profile(
+            settings,
             profile_id=profile_id,
             changes=request.model_dump(exclude_unset=True),
             secret_store=_store(settings),
         )
-        if updated is None:
-            raise HTTPException(status_code=404, detail="Provider 不存在")
-        await session.commit()
-    except IntegrityError as error:
-        await session.rollback()
+    except ProviderNameTakenError as error:
         raise HTTPException(status_code=409, detail="Provider 名称已存在") from error
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Provider 不存在")
     return _response(updated.public())
 
 
 @router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_provider_route(profile_id: UUID, session: DbSession) -> Response:
-    if not await delete_provider_profile(session, profile_id):
+def delete_provider_route(profile_id: UUID, settings: RuntimeSettings) -> Response:
+    if not delete_provider_profile(settings, profile_id):
         raise HTTPException(status_code=404, detail="Provider 不存在")
-    await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{profile_id}/probe", response_model=ProviderProbeResponse)
 async def post_provider_probe(
     profile_id: UUID,
-    session: DbSession,
     settings: RuntimeSettings,
 ) -> ProviderProbeResponse:
-    profile = await get_provider_profile(session, profile_id)
+    profile = get_provider_profile(settings, profile_id)
     if profile is None:
         raise HTTPException(status_code=404, detail="Provider 不存在")
     try:

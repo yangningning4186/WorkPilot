@@ -3,7 +3,7 @@
 #
 # 这一层刻意**不含任何评测跑批**：evaluation 门禁（smoke + regression 规则轨）
 # 需要随仓库版本化的公开 fixture 语料与预计算 embedding，未就绪前不挂进来，
-# 免得门禁一开始就是红的、然后所有人习惯性忽略（docs/06 §4.3）。
+# 免得门禁一开始就是红的、然后所有人习惯性忽略（docs/06 §4.5）。
 name: CI
 
 on:
@@ -25,40 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
-    services:
-      # 版本与 deploy/docker-compose.yml 对齐；migrations 里自己 CREATE EXTENSION vector，
-      # 所以只要基础镜像带 pgvector 即可。
-      postgres:
-        image: pgvector/pgvector:0.8.6-pg17-bookworm
-        env:
-          # conftest 拒绝名称不以 _test 结尾的库，这里直接把它建成默认库，
-          # 省掉 deploy/postgres/init 那份 initdb 脚本（service container 不挂载仓库文件）。
-          POSTGRES_DB: workpilot_test
-          POSTGRES_USER: workpilot
-          POSTGRES_PASSWORD: workpilot
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U workpilot -d workpilot_test"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 30
-
-      # 不是可选的：test_rate_limit 的原子 token bucket 和 /ready 健康检查都打真 Redis，
-      # 缺了这两条必挂（其余 redis 相关用例用的是注入的假客户端）。
-      redis:
-        image: redis:8.2.8-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 30
-
-    env:
-      TEST_DATABASE_URL: postgresql+asyncpg://workpilot:workpilot@localhost:5432/workpilot_test
-      REDIS_URL: redis://localhost:6379/0
+    # 没有 service 容器。PostgreSQL 与 Redis 已退役（docs/adr/0012），测试状态全在
+    # tmp_path 下的 SQLite / JSONL 里，`docker compose down` 之后 644 个用例照常跑。
 
     defaults:
       run:
@@ -80,17 +48,17 @@ jobs:
         run: uv sync --locked
 
       - name: Ruff
-        run: uv run ruff check app tests migrations ../eval packages --config pyproject.toml
+        run: uv run ruff check app tests ../eval packages --config pyproject.toml
 
       - name: mypy
         run: uv run mypy app packages/workpilot-ai/src/workpilot_ai packages/workpilot-telemetry/src/workpilot_telemetry
 
       # 层次契约（docs/adr/0011）。放在 mypy 之后、pytest 之前：它比 pytest 快两个量级,
-      # 层次违规没必要等跑完 670 个用例才被告知。
+      # 层次违规没必要等跑完 644 个用例才被告知。
       - name: import-linter
         run: uv run lint-imports
 
-      # conftest 会先跑 alembic upgrade head，再对 workpilot_test 建表。
+      # conftest 用 tmp_path_factory 建每个测试自己的本地 store，没有迁移步骤。
       - name: pytest
         run: uv run pytest
 

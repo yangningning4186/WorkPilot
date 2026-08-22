@@ -21,7 +21,7 @@
 
 - `AgentState` 是可 JSON 序列化的 `TypedDict`
 - 每个节点是 `state → state` 的纯函数
-- checkpointer 落 PostgreSQL，不用内存
+- checkpointer 落本机 SQLite（原为 PostgreSQL，见 [ADR-0012](0012-退役postgres与redis改用本机文件.md)），不用内存
 - 禁止把连接、客户端、闭包塞进 state
 
 ## 考虑过的替代方案
@@ -37,8 +37,8 @@
 
 - **学习曲线**：LangGraph 的 API 变动较频繁，需要锁版本
 - **抽象泄漏**：复杂控制流（动态分支、并行子图）的表达不够直观
-- **调试**：图执行的错误栈比线性代码难读，需要依赖 Langfuse trace 补齐可观测性
-- **性能开销**：每步都写 checkpoint 到 Postgres，增加 IO。已评估：单用户场景下可忽略，
+- **调试**：图执行的错误栈比线性代码难读；原计划靠 Langfuse trace 补齐，Langfuse 退役后只剩结构化日志的 `trace_id` 与 `llm_calls` 表
+- **性能开销**：每步都写 checkpoint，增加 IO。已评估：单用户场景下可忽略，
   但如果扩到多用户高并发，需要改为异步批量写或分级 checkpoint（只在关键节点写）
 
 ## 后续影响

@@ -21,13 +21,13 @@ from time import monotonic
 from typing import Any, Literal
 
 from app.core.config import Settings
-from app.llm_bootstrap import build_model_gateway
-from app.rag.memory.prompt import (
+from app.cowork.memory_prompt import (
     MEMORY_CONTEXT_PREFIX,
     MEMORY_CONTEXT_SUFFIX,
     MEMORY_USAGE_POLICY,
     escape_memory_fact,
 )
+from app.llm_bootstrap import build_model_gateway
 from eval.stats import MetricSamples, RatioPoint, paired_bootstrap
 from workpilot_ai.types import Message
 

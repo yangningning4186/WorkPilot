@@ -6,8 +6,9 @@
 
 ## 项目一句话
 
-个人 AI 知识副驾：基于个人资料库（论文 / 笔记 / 剪藏）的**可溯源问答**（RAG）
-+ **多步任务执行**（Agent）+ **长期记忆与关联发现**，
+**OpenWorker 的手 + DeepTutor 的眼睛**：一个跑在本机、能读懂你的文档并据此动手的
+桌面 Agent。沉浸阅读（locator 寻址 + 引文校验 + 阅读器联动）与本机工具循环（目录授权 /
+逐次审批 / 幂等 / Scheduler / Skills / MCP）是同一个 run 的两档工作模式，
 配套一套能量化效果的**评测体系**与**三档模型成本治理**。
 
 **单用户产品**，无权限系统与多租户——这是刻意简化，扩展点见 `docs/02-架构设计.md §7`。
@@ -25,17 +26,20 @@ workpilot/
 │   │   ├── workpilot-ai/        ★「只懂模型」：网关、路由、缓存、Provider 适配
 │   │   └── workpilot-telemetry/ ★「只懂度量」：调用 schema、成本口径、费用闸门契约
 │   ├── app/
-│   │   ├── rag/        RAG 产品：问答 / 综述 / 资料库 / 检索 / 记忆 / 编辑器
+│   │   ├── rag/        知识库产品：kb/（目录即 KB，FAISS+BM25）/ 编辑器授权
+│   │   │                （问答流水线与记忆已退役或并入 cowork）
 │   │   ├── cowork/     Cowork 产品：工作台 / 文件 / Office / 连接器 / Skill / MCP
+│   │   │                reading/  ★ 沉浸阅读：locator 寻址、三层匹配、引文校验
 │   │   ├── agent_core/ 框架层：循环、状态、事件契约、压缩、预算、幂等身份
 │   │   ├── runstore/   存储层：run / 事件 / checkpoint / 幂等租约 / 会话
-│   │   ├── telemetry/  上面那个包的 PostgreSQL 适配器
+│   │   ├── cowork_store/  本机 SQLite + JSONL 适配器（唯一后端）
+│   │   ├── telemetry/  上面那个包的 SQLite 适配器
 │   │   ├── platform/   鉴权会话、请求身份、限流
 │   │   ├── ingest/     文档解析（两个产品共用）
 │   │   ├── knowledge_contracts.py  RAG ↔ Cowork 的证据与检索契约
 │   │   ├── docedit.py  两个产品共用的文档编辑原语
 │   │   ├── llm_bootstrap.py  Settings → ModelGateway 的组装根
-│   │   ├── core/       配置、日志、DB / Redis / 队列、trace
+│   │   ├── core/       配置、日志、进程内队列 / 唤醒总线、0600 JSON 载体、trace
 │   │   ├── schemas/    Pydantic 契约
 │   │   └── api/ worker/ cli/   入口适配层
 │   └── tests/
@@ -51,11 +55,11 @@ workpilot/
 
 ## 环境与命令
 
-本机使用 OrbStack 运行容器。Python 用 uv 锁 **3.12**（3.14 上 ML 依赖无 wheel）。
+**没有容器**（`deploy/docker-compose.yml` 现在是 `services: {}`）。Python 用 uv 锁 **3.12**（3.14 上 ML 依赖无 wheel）。
 
 ```bash
-# 基础设施（M0 只需 postgres + redis；minio/langfuse 在 M1 引入）
-cd deploy && docker compose up -d
+# 不需要任何外部服务：PostgreSQL 与 Redis 都已退役，状态全在 ~/.workpilot 下的
+# SQLite / JSONL / JSON 文件里，队列和事件唤醒都在进程内（deploy/docker-compose.yml 现在是空的）
 
 # 后端
 # 依赖里是 fastapi 而不是 fastapi[standard]，没有 `fastapi dev` 这个 CLI
@@ -65,12 +69,14 @@ cd backend && uv sync && uv run uvicorn app.main:app --reload
 cd frontend && npm install && npm run dev
 
 # 评测（评测模式强制关闭 fallback，否则实验不可复现）
-uv run python -m eval.run --dataset core-dev --label exp-hybrid-rrf --no-fallback
-uv run python -m eval.compare baseline exp-hybrid-rrf    # 快照 diff + bootstrap 置信区间
-uv run python -m eval.gate --against main --dataset core-dev  # 夜间门禁，跑在本机
+# ⚠️ 检索轨当前是断的（docs/06 §4.5）：四层表随 Postgres 退役，span_recall 那组没有实现；
+#    eval/cowork_runner.py 还硬要求 COWORK_STORE_BACKEND=postgres，所以任务集也跑不起来。
+#    没有 eval.run / eval.calibrate 这两个入口——它们从未存在过。
+uv run python -m eval.compare <baseline-run> <candidate-run> --output-dir <dir>
+PYTHONPATH=backend backend/.venv/bin/python -m eval.gate check <report-dir> --against main
 
 # 质量（= PR 门禁的全部内容，见 .github/workflows/ci.yml）
-uv run ruff check app tests migrations ../eval packages --config pyproject.toml
+uv run ruff check app tests ../eval packages --config pyproject.toml
 uv run mypy app packages/*/src/workpilot_*
 uv run lint-imports          # 层次契约（ADR-0011），比 pytest 快两个量级
 uv run pytest
@@ -117,9 +123,10 @@ cd ../frontend && npm run lint && npm run typecheck
 
 7. **禁止在 `data/` 之外落语料，禁止把语料提交进 git**。
 
-8. **评测 gold 标注锚定在 `parsed_blocks` 的字符区间，绝不锚 `chunk_id`**。
-   引用溯源同理，锚 `block_id`。
-   → chunk 随分块策略与重新分块而变，标注绑上去就废了（[ADR-0006](docs/adr/0006-分块与标注分层.md)）。
+8. **评测 gold 标注绝不锚 `chunk_id`**。chunk 随分块策略与重新分块而变，标注绑上去就废了
+   （[ADR-0006](docs/adr/0006-分块与标注分层.md)）。
+   → 原锚点 `parsed_blocks` 的字符区间随 Postgres 退役，**重建时锚
+   `(文件 content_hash, 页码, 字符区间)`**。阅读路径的引用溯源仍锚 `ParsedBlock`。
 
 9. **有副作用的工具必须走 `tool_invocations` 幂等协议**，
    不得依赖 Agent 状态里的 `cursor` 或任何步骤序号做去重。
@@ -128,8 +135,12 @@ cd ../frontend && npm run lint && npm run typecheck
    重试必须区分有效租约与过期租约；跨系统副作用只承诺 effectively-once，
    并尽量向下游透传同一幂等键。
 
-10. **候选文档版本只有在解析、分块、embedding 全部成功后才能事务激活**。
-    版本切换与 `chunks.is_searchable` 投影同事务；新版失败时旧版必须继续服务。
+10. **换了 embedding 就不许拿旧索引检索。** 原来由"候选版本全部成功才事务激活"保证
+    （版本切换与 `chunks.is_searchable` 同事务）；换到文件系统之后，由 `manifest.json` 里的
+    **embedding 签名**（model + dimensions + revision）在每次加载时比对，不一致就**拒绝检索
+    并要求重建**（[ADR-0012](docs/adr/0012-退役postgres与redis改用本机文件.md)）。
+    → 不拒绝的话，旧向量和新查询向量不在同一个空间里，检索不会报错，只会安静地返回
+    胡说八道的结果。**无声失败和显式失败的区别，是这条约束的全部理由。**
 
 ---
 
@@ -155,7 +166,8 @@ cd ../frontend && npm run lint && npm run typecheck
 评测跑批的工程骨架、看板可视化、测试用例生成。
 
 **必须自己想清楚再让 agent 落地**：检索融合策略、Agent 图结构、记忆的冲突消解规则、
-评测指标定义与门禁阈值、模型路由分档。
+评测指标定义与门禁阈值、模型路由分档、**阅读接地的引文校验强度**（哪些情况拒绝、
+哪些情况降级成只翻页不高亮）。
 → 这四块是面试主战场，代码可以是 AI 写的，**设计决策必须是自己的**。
 
 **每次 agent 产出后自查的三件事**：边界情况（断流、超长输入、并发、错误态）、
@@ -165,15 +177,17 @@ cd ../frontend && npm run lint && npm run typecheck
 
 ## 常见陷阱
 
-- **pgvector 属性过滤会导致召回不足**：HNSW 在候选扫描阶段过滤，
-  四策略共用一个索引再按 `strategy` 过滤会丢掉约 75% 候选。
-  用**每策略部分索引** + `hnsw.iterative_scan`（[03 §4.1](docs/03-数据模型.md)）
 - **LangGraph interrupt 恢复会从节点开头重跑**，节点内 interrupt 之前的副作用会重复执行
-- pgvector 建 HNSW 索引前先灌数据，否则构建极慢
-- **PG 全文检索是 `ts_rank_cd` 不是 BM25**，代码与文档中一律叫"词法检索 / lexical"
-- bge-m3 的 sparse 要存（生成免费），但 v1 不建检索路径
-- LangGraph 的 checkpointer 用 Postgres 而非内存，否则重启即丢
-- **worker 不依附 HTTP 连接**：任务入 Arq 队列独立执行，客户端只是订阅 `run_events`
+- **SQLite 里时间是字符串，比较是字典序**：全程存 UTC ISO。混了本地偏移，
+  `22:59+08:00` 会排在 `15:05+00:00` 后面——两者其实是同一刻，租约与过期清扫会判错
+- **SQLite 没有 decimal**：钱一律存整数微美元。用 REAL 存美元会让
+  `0.1 + 0.2 != 0.3` 直接发生在预算比较上，而且不报错
+- **`os.replace` 是原子的但不排他**：两个进程都会"成功"。要互斥用
+  `O_CREAT|O_EXCL` 建锁文件，过期判定读锁里的 claimed_at，不要读 mtime
+- **worker 不依附 HTTP 连接**：任务入进程内队列独立执行，客户端只是订阅 `run_events`；
+  持久化真相是 SQLite 里的 queued 状态，队列只负责降低唤醒延迟
+- **阅读的 locator 里空页也要占一格**：只有图没有文字层的论文页很常见，跳过它会让此后
+  所有页码整体偏移一位——模型引第 12 页、用户翻到第 13 页，而且没有任何迹象表明出了错
 - **PDF bbox 只有四个数不够**：必须同时存页面尺寸、旋转、坐标原点、归一化坐标；跨页/多区域位置存子表
 - **字符偏移统一口径**：NFC + Unicode code point；前端 UTF-16 offset 由后端转换并用 quote 校验
 - 中文/学术 PDF 解析后务必抽样人工检查，表格错位与双栏乱序是最隐蔽的质量杀手

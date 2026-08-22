@@ -4,7 +4,6 @@ from pathlib import Path
 import httpx
 import pytest
 from docx import Document
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import (
     get_editor_permission_store,
@@ -12,11 +11,10 @@ from app.api.dependencies import (
     require_owner_identity,
 )
 from app.core.config import Settings, get_settings
+from app.core.db import DbSession as AsyncSession
 from app.core.db import get_db_session
 from app.main import create_app
-from app.platform.request_identity import RequestIdentity
 from app.rag.editor_permissions import EditorPermissionStore
-from app.rag.local_dir import register_local_dir
 from tests.fakes import DeterministicProvider
 from workpilot_ai.gateway import ModelGateway
 
@@ -46,12 +44,9 @@ async def test_workspace_write_requires_grant_then_executes_directly(
     document = Document()
     document.add_paragraph("旧内容")
     document.save(str(library / "brief.docx"))
-    await register_local_dir(
-        db_session, requested_root=Path("."), allowed_root=library, name="办公资料"
-    )
     settings = Settings.model_validate(
         {
-            "local_library_path": library,
+            "cowork_default_workspace_path": library,
             "admin_cookie_name": "workpilot_admin_session",
         }
     )
@@ -72,9 +67,7 @@ async def test_workspace_write_requires_grant_then_executes_directly(
     app = create_app()
     app.dependency_overrides[get_db_session] = override_session
     app.dependency_overrides[get_settings] = lambda: settings
-    app.dependency_overrides[require_owner_identity] = lambda: RequestIdentity(
-        scope="local_owner"
-    )
+    app.dependency_overrides[require_owner_identity] = lambda: None
     app.dependency_overrides[get_editor_permission_store] = lambda: store
     app.dependency_overrides[get_model_gateway] = lambda: gateway
     transport = httpx.ASGITransport(app=app)

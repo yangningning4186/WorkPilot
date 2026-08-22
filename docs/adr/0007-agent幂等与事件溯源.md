@@ -83,8 +83,8 @@ CREATE TABLE run_events (run_id, seq, type, payload, created_at, PRIMARY KEY (ru
 配套的执行模型改为：
 
 ```
-POST /runs                        创建 run，任务入 Arq 队列
-Arq worker                        独立执行，不依附 HTTP 连接 ★
+POST /runs                        创建 run，任务入进程内队列
+嵌入式 worker                     独立执行，不依附 HTTP 连接 ★
   └─ 每产生一个事件 → 写 run_events → 推送给在线订阅者
 GET  /runs/{id}/events?after_seq=N   SSE，先补发历史再续流
 POST /runs/{id}/resume               中断确认
@@ -105,7 +105,7 @@ POST /runs/{id}/resume               中断确认
 | **保留单表，把 step_idx 改成事件自增序号** | 改动最小 | 解决了冲突，但完全没有幂等能力——重放会重复执行副作用。只是把错误藏起来 |
 | **靠 LangGraph checkpoint 天然去重** | 不写额外表 | checkpoint 恢复的是**状态**，不是**副作用**。节点重执行时外部写入照样发生。这是 LangGraph 文档明确提示的陷阱 |
 | **把副作用工具全部移到节点末尾** | 规避重执行 | 脆弱的约定，靠人记住而非机制保证；且 HITL 场景下 interrupt 必然在工具之后 |
-| **Redis 做幂等键** | 更快 | 幂等记录必须和业务数据同生命周期、可审计、进程重启后仍在。放 Postgres 与 run 同库，可用事务 |
+| **Redis 做幂等键** | 更快 | 幂等记录必须和业务数据同生命周期、可审计、进程重启后仍在。放在与 run 同一个库里才能用事务——[ADR-0012](0012-退役postgres与redis改用本机文件.md) 之后那个库是 `~/.workpilot/cowork.db`，这条理由不受影响，Redis 反而先没了 |
 | **SSE 不做恢复，刷新就重来** | 最简单 | 直接放弃 B1/B2/B3 三条边界需求，而这三条正是面试会问的部分 |
 
 ## 接受的代价

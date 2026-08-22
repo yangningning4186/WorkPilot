@@ -58,30 +58,17 @@ tiers:
 # 对不上就会静默落到 default_route，路由表也就白写了。
 routes:
   # —— 生成：甜点档。质量与成本的最优点，也是 §4 帕累托实验的基准配置。
-  grounded_answer: main
-  general_answer: main
-  agent_generate_review: main
-  agent_compare_documents: main
   cowork_decision: main
 
-  # —— 改写/分解：高频、对单次质量不敏感，后面还有检索与 rerank 兜底。
-  query_decomposition: light
-  contextual_query_rewrite: light
+  # —— 改写：高频、对单次质量不敏感。
   edit_rewrite: light
   edit_word: main
   edit_excel: main
-  conversation_summary: main
   cowork_compaction: main
   memory_op: light
   skill_distillation: light
 
-  # —— 结构化抽取：**刻意留在 main**。
-  # docs/07 §3 的设计是 light 起步、置信度不达标再升档，但那套升档机制还没实现。
-  # 在没有升档兜底的情况下先降到 light，等于把 A1/A2 已经量到的首轮合格率
-  # （抽卡 30%）再往下压一截。等 §3 落地后这两行才改成 light。
-  evidence_sufficiency: main
-  agent_extract_card: main
-  eval_agent_evidence_anchor: main
+  # —— 评测专用。
   eval_memory_injection: main
 
   # —— 判分：错了会污染整个评测体系，最不该省钱的一档。
@@ -97,9 +84,7 @@ routes:
 # 变更，必须先有对照数据（§3 要测的是升档率、质量增益、相比全走 main 的净省），
 # 不能顺手翻过去。light 曾因部署参数只有 8192 而让长证据直接超上下文；当前已修正
 # 为 32768，但分档仍必须服从每个 endpoint 声明的真实 context_window_tokens。
-escalation:
-  evidence_sufficiency: main
-  agent_extract_card: main
+escalation: {}
 
 # 未登记的 task_type 落到甜点档，并靠 llm_calls 的审计发现遗漏。
 default_route: main

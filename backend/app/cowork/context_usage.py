@@ -6,28 +6,31 @@ import json
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.agent_core.compaction import (
     build_outbound_messages,
     normalize_compaction_state,
 )
 from app.core.config import Settings
+from app.core.db import DbSession as AsyncSession
 from app.cowork.automation_tools import register_scheduler_tools
 from app.cowork.browser_tools import register_browser_tools
 from app.cowork.connector_tools import register_connector_tools
+from app.cowork.environment import render_roots_block
 from app.cowork.extensions import register_skill_tools
 from app.cowork.memory_tools import register_memory_tools
+from app.cowork.permissions import list_session_roots
+from app.cowork.plans import CoworkMode, normalize_mode
+from app.cowork.provider_profiles import get_provider_profile
 from app.cowork.runtime import (
     COWORK_COMPACTION_PROMPTS,
+    _ephemeral_context,
     _system_prompt,
     _tools_referenced_in_history,
 )
 from app.cowork.subagent import register_readonly_subagent
 from app.cowork.todos import TodoItem, normalize_todos
 from app.cowork.tools import CoworkToolRegistry, build_default_cowork_registry
-from app.cowork_store.routing import configured_cowork_store
+from app.cowork_store.routing import cowork_store
 from workpilot_ai.gateway import PromptBudget, request_character_count
 from workpilot_ai.types import Message, ToolDefinition
 
@@ -79,7 +82,7 @@ async def get_cowork_context_usage(
     conversation_id: UUID,
     settings: Settings,
 ) -> dict[str, Any]:
-    store = configured_cowork_store()
+    store = cowork_store()
     local_metadata = (
         []
         if store is None
@@ -87,101 +90,43 @@ async def get_cowork_context_usage(
             conversation_id=conversation_id, archived=None, limit=1
         )
     )
-    if local_metadata:
-        local = local_metadata[0]
-        profile_id = local["provider_profile_id"]
-        profile = None
-        if profile_id is not None:
-            profile = (
-                (
-                    await session.execute(
-                        text(
-                            """SELECT context_window_tokens, default_model
-                               FROM provider_profiles WHERE id = :id"""
-                        ),
-                        {"id": profile_id},
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
-        conversation: dict[str, Any] | Any = {
-            "context_window": (
-                settings.tier_main_context_window_tokens
-                if profile is None
-                else profile["context_window_tokens"]
-            ),
-            "model": local["model_override"]
-            or (None if profile is None else profile["default_model"])
-            or "系统默认",
-        }
-    else:
-        conversation = (
-            (
-                await session.execute(
-                    text(
-                        """
-                    SELECT COALESCE(p.context_window_tokens, :default_window) AS context_window,
-                           COALESCE(c.model_override, p.default_model, '系统默认') AS model
-                    FROM conversations c
-                    LEFT JOIN provider_profiles p ON p.id = c.provider_profile_id
-                    WHERE c.id = :conversation_id
-                    """
-                    ),
-                    {
-                        "conversation_id": conversation_id,
-                        "default_window": settings.tier_main_context_window_tokens,
-                    },
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
-    if conversation is None:
-        raise LookupError("会话不存在")
+    selection = (
+        local_metadata[0]["provider_profile_id"],
+        local_metadata[0]["model_override"],
+    )
+    raw_profile_id, model_override = selection
+    # Profile 出了数据库，这里少了一条 LEFT JOIN：id 悬空（用户删了 profile）时
+    # 按"没选 Provider"处理，回落到默认档位的上下文窗口。
+    profile = (
+        None
+        if raw_profile_id is None
+        else get_provider_profile(settings, UUID(str(raw_profile_id)))
+    )
+    conversation: dict[str, Any] = {
+        "context_window": (
+            settings.tier_main_context_window_tokens
+            if profile is None
+            else profile.context_window_tokens
+        ),
+        "model": model_override
+        or (None if profile is None else profile.default_model)
+        or "系统默认",
+    }
 
-    if local_metadata and store is not None:
-        local_run = await store.get_latest_run(conversation_id=conversation_id)
-        local_checkpoint = (
-            None if local_run is None else await store.load_latest_checkpoint(run_id=local_run.id)
-        )
-        latest: dict[str, Any] | Any | None = (
-            None
-            if local_run is None
-            else {
-                "id": local_run.id,
-                "goal": local_run.goal,
-                "status": local_run.status,
-                "state": None if local_checkpoint is None else local_checkpoint.state,
-            }
-        )
-    else:
-        latest = (
-            (
-                await session.execute(
-                    text(
-                        """
-                    SELECT ar.id, ar.goal, ar.status, cp.state
-                    FROM agent_runs ar
-                    LEFT JOIN LATERAL (
-                        SELECT state
-                        FROM agent_checkpoints
-                        WHERE run_id = ar.id
-                        ORDER BY checkpoint_id DESC
-                        LIMIT 1
-                    ) cp ON true
-                    WHERE ar.conversation_id = :conversation_id
-                      AND ar.workflow_type = 'cowork'
-                    ORDER BY ar.created_at DESC, ar.id DESC
-                    LIMIT 1
-                    """
-                    ),
-                    {"conversation_id": conversation_id},
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
+    local_run = await store.get_latest_run(conversation_id=conversation_id)
+    local_checkpoint = (
+        None if local_run is None else await store.load_latest_checkpoint(run_id=local_run.id)
+    )
+    latest: dict[str, Any] | Any | None = (
+        None
+        if local_run is None
+        else {
+            "id": local_run.id,
+            "goal": local_run.goal,
+            "status": local_run.status,
+            "state": None if local_checkpoint is None else local_checkpoint.state,
+        }
+    )
 
     canonical: list[dict[str, Any]] = []
     compaction = normalize_compaction_state(None, message_count=0)
@@ -189,6 +134,9 @@ async def get_cowork_context_usage(
     run_status: str | None = None
     runtime_snapshot: dict[str, Any] = {}
     todos: list[TodoItem] = []
+    environment_block = ""
+    memory_block = ""
+    mode = "execute"
     if latest is not None:
         goal = str(latest["goal"])
         run_status = str(latest["status"])
@@ -205,39 +153,27 @@ async def get_cowork_context_usage(
             if isinstance(state.get("runtime_snapshot"), dict):
                 runtime_snapshot = cast("dict[str, Any]", state["runtime_snapshot"])
             todos = normalize_todos(state.get("todos"))
+            mode = normalize_mode(state.get("mode"))
+            for key, value in (
+                ("environment_block", state.get("environment_block")),
+                ("memory_block", state.get("memory_block")),
+            ):
+                if isinstance(value, str):
+                    if key == "environment_block":
+                        environment_block = value
+                    else:
+                        memory_block = value
     if not canonical:
-        if local_metadata:
-            from app.cowork_store.factory import local_cowork_stores
+        from app.cowork_store.factory import local_cowork_stores
 
-            local_messages = await local_cowork_stores().conversations.read(conversation_id)
-            rows: list[dict[str, str]] | Any = [
-                {"role": item.role, "content": item.content}
-                for item in local_messages
-                if item.status == "completed"
-                and item.role in {"user", "assistant"}
-                and item.content
-            ]
-        else:
-            rows = (
-                (
-                    await session.execute(
-                        text(
-                            """
-                        SELECT role, content
-                        FROM messages
-                        WHERE conversation_id = :conversation_id
-                          AND status = 'completed'
-                          AND role IN ('user', 'assistant')
-                          AND content <> ''
-                        ORDER BY seq
-                        """
-                        ),
-                        {"conversation_id": conversation_id},
-                    )
-                )
-                .mappings()
-                .all()
-            )
+        local_messages = await local_cowork_stores().conversations.read(conversation_id)
+        rows: list[dict[str, str]] | Any = [
+            {"role": item.role, "content": item.content}
+            for item in local_messages
+            if item.status == "completed"
+            and item.role in {"user", "assistant"}
+            and item.content
+        ]
         canonical = [{"role": str(row["role"]), "content": str(row["content"])} for row in rows]
         if rows:
             goal = str(rows[-1]["content"])
@@ -250,12 +186,24 @@ async def get_cowork_context_usage(
             | _tools_referenced_in_history(canonical)
         ),
     )
-    system_prompt = _system_prompt(registry.system_instructions(), todos=todos)
+    # 与 runtime 的装配保持一致，否则页面上的占用条量的不是真正发出去的东西。
+    system_prompt = _system_prompt(
+        registry.system_instructions(),
+        environment_block=environment_block,
+        memory_block=memory_block,
+    )
     outbound = build_outbound_messages(
         canonical,
         compaction,
         system_prompt=system_prompt,
         prompts=COWORK_COMPACTION_PROMPTS,
+        ephemeral_suffix=_ephemeral_context(
+            mode=cast("CoworkMode", mode),
+            todos=todos,
+            roots_block=render_roots_block(
+                await list_session_roots(session, conversation_id=conversation_id)
+            ),
+        ),
     )
     context_window = int(conversation["context_window"])
     budget = PromptBudget(

@@ -67,26 +67,59 @@ def test_native_artifact_generation_docx_xlsx_pdf(tmp_path: Path) -> None:
 
 
 def test_native_pptx_is_editable_widescreen_deck(tmp_path: Path) -> None:
+    """页数必须等于 slides 项数：调用方说几页就是几页。"""
+
     pptx_path = tmp_path / "儿童节.pptx"
+    slides = [
+        {"title": "节日由来", "bullets": ["关爱儿童", "快乐成长"]},
+        {"title": "活动安排", "body": "游戏、表演与分享"},
+    ]
     result = create_native_artifact(
         pptx_path,
         format="pptx",
         title="快乐六一",
         content="",
         sheets=[],
-        slides=[
-            {"title": "节日由来", "bullets": ["关爱儿童", "快乐成长"]},
-            {"title": "活动安排", "body": "游戏、表演与分享"},
-        ],
+        slides=slides,
         baseline_sha256=None,
     )
 
     presentation = Presentation(str(pptx_path))
     assert result.mime_type.endswith("presentationml.presentation")
-    assert len(presentation.slides) == 3
+    assert len(presentation.slides) == len(slides)
     assert presentation.slide_width / presentation.slide_height == pytest.approx(16 / 9)
+    assert "节日由来" in " ".join(
+        shape.text for shape in presentation.slides[0].shapes if hasattr(shape, "text")
+    )
+
+
+def test_native_pptx_cover_is_opt_in_and_adds_exactly_one_page(tmp_path: Path) -> None:
+    """封面是显式选择；开启后多出来的那一页承载 title，而不是挤掉内容页。"""
+
+    pptx_path = tmp_path / "封面.pptx"
+    slides = [
+        {"title": "节日由来", "subtitle": "2026 年度", "bullets": ["关爱儿童"]},
+        {"title": "活动安排", "body": "游戏、表演与分享"},
+    ]
+    create_native_artifact(
+        pptx_path,
+        format="pptx",
+        title="快乐六一",
+        content="",
+        sheets=[],
+        slides=slides,
+        cover=True,
+        baseline_sha256=None,
+    )
+
+    presentation = Presentation(str(pptx_path))
+    assert len(presentation.slides) == len(slides) + 1
     assert "快乐六一" in " ".join(
         shape.text for shape in presentation.slides[0].shapes if hasattr(shape, "text")
+    )
+    # 内容页一页没少。
+    assert "活动安排" in " ".join(
+        shape.text for shape in presentation.slides[2].shapes if hasattr(shape, "text")
     )
 
 

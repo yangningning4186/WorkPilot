@@ -2,8 +2,8 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import DbSession as AsyncSession
 from app.cowork.memory import (
     forget_memory,
     list_memories,
@@ -15,7 +15,7 @@ from app.cowork.memory import (
     update_memory,
 )
 from app.cowork.permissions import create_session_root
-from app.cowork.runtime import _system_prompt
+from app.cowork.runtime import _ephemeral_context, _system_prompt
 from app.cowork_contracts import (
     CoworkMemoryRecord,
     MemoryNotFoundError,
@@ -83,15 +83,21 @@ def test_forgotten_memories_are_never_injected() -> None:
     assert render_memory_block([], max_chars=4000, preview_chars=240) == ""
 
 
-def test_memory_block_is_pinned_above_the_todo_block() -> None:
-    """记忆是做事的前提，清单是这次要做的事——顺序对模型的读法有影响。"""
+def test_memory_lives_in_the_stable_prefix_and_todos_do_not() -> None:
+    """记忆是 run 内不变的知识，进 system prompt；清单每轮都在变，只能挂末尾。
+
+    分界不是主题而是"这一次 run 里会不会变"：会变的东西放进 system prompt，模型每动一次
+    清单就要把整段前缀重新计费。
+    """
 
     block = render_memory_block([_record("用户偏好 Markdown")], max_chars=4000, preview_chars=240)
-    prompt = _system_prompt(
-        "", todos=[{"content": "生成报告", "status": "pending"}], memory_block=block
-    )
+    prompt = _system_prompt("", memory_block=block)
+    tail = _ephemeral_context(mode="execute", todos=[{"content": "生成报告", "status": "pending"}])
 
-    assert prompt.index("<known_memories>") < prompt.index("<current_todos>")
+    assert "<known_memories>" in prompt
+    assert "<current_todos>" not in prompt
+    assert "<current_todos>" in tail
+    assert "<known_memories>" not in tail
     assert "<known_memories>" not in _system_prompt("")
 
 
@@ -99,7 +105,7 @@ async def test_keyed_remember_updates_instead_of_piling_up(db_session: AsyncSess
     """同 key 的修正必须替换：新旧并存会让模型无从判断哪个还算数。"""
 
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Memory upsert"
+        db_session, title="Memory upsert"
     )
 
     first, replaced = await remember(
@@ -132,7 +138,7 @@ async def test_forget_is_soft_and_idempotent_and_restore_brings_it_back(
     """撤销依赖软删除；硬删掉就没有第二次机会了。"""
 
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Memory forget"
+        db_session, title="Memory forget"
     )
     record, _ = await remember(
         db_session,
@@ -162,8 +168,8 @@ async def test_visibility_never_leaks_across_conversations_or_workspaces(
 ) -> None:
     """作用域漏了就是把无关事实喂给模型，所以按可见性而不是按 id 过滤。"""
 
-    mine = await ensure_conversation(db_session, scope="local_owner", title="Memory mine")
-    theirs = await ensure_conversation(db_session, scope="local_owner", title="Memory theirs")
+    mine = await ensure_conversation(db_session, title="Memory mine")
+    theirs = await ensure_conversation(db_session, title="Memory theirs")
     my_root = tmp_path / "mine"
     other_root = tmp_path / "other"
     my_root.mkdir()
@@ -210,7 +216,7 @@ async def test_list_memories_can_include_forgotten_for_the_panel(
     db_session: AsyncSession,
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Memory panel"
+        db_session, title="Memory panel"
     )
     record, _ = await remember(
         db_session, conversation_id=conversation_id, scope="global", content="已 retire"
@@ -234,7 +240,7 @@ async def test_list_memories_can_include_forgotten_for_the_panel(
 
 async def test_content_length_is_bounded(db_session: AsyncSession) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="Memory bounds"
+        db_session, title="Memory bounds"
     )
 
     with pytest.raises(MemoryScopeError):

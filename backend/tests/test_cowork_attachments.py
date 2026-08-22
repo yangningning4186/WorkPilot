@@ -1,9 +1,9 @@
 from pathlib import Path
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.core.db import DbSession as AsyncSession
 from app.cowork.attachments import (
     CoworkAttachmentError,
     bind_attachments,
@@ -20,7 +20,7 @@ async def test_attachment_is_private_bound_and_loaded_into_canonical_message(
     db_session: AsyncSession, tmp_path: Path
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="附件测试"
+        db_session, title="附件测试"
     )
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -79,7 +79,7 @@ async def test_attachment_rejects_spoofed_and_reused_files(
     db_session: AsyncSession, tmp_path: Path
 ) -> None:
     conversation_id = await ensure_conversation(
-        db_session, scope="local_owner", title="附件边界"
+        db_session, title="附件边界"
     )
     settings = Settings(
         app_env="test",

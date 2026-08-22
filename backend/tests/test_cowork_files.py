@@ -1,4 +1,6 @@
+import asyncio
 import hashlib
+import subprocess
 from pathlib import Path
 
 import fitz
@@ -10,6 +12,7 @@ from app.cowork.files import (
     list_files,
     read_pdf_file,
     read_text_file,
+    ripgrep_path,
     search_files,
     write_text_file,
 )
@@ -169,3 +172,53 @@ async def test_read_pdf_uses_existing_parser_and_returns_bounded_text(tmp_path: 
     assert len(snapshot.content) == 1000
     assert snapshot.truncated is True
     assert snapshot.parser == "pymupdf"
+
+
+def _git_init(root: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+
+
+async def test_search_respects_gitignore_when_ripgrep_is_available(tmp_path: Path) -> None:
+    """.gitignore 感知是换 ripgrep 的主要收益之一。
+
+    纯 Python 那条路会把构建产物、vendored 依赖逐字节读一遍再当成命中回给模型；在真实
+    仓库里这既是几十倍的耗时，也是一大批噪声命中。这里锁住的是"被忽略的文件不出现在
+    结果里"这个语义本身。
+    """
+
+    if ripgrep_path() is None:
+        pytest.skip("这台机器没有 ripgrep")
+    # ripgrep 只在 git 仓库里才认 `.gitignore`（仓库外要用 `.ignore`），
+    # 所以这条用例必须真的建一个仓库，否则它验证的不是 gitignore 感知。
+    await asyncio.to_thread(_git_init, tmp_path)
+    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "bundle.js").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "src.txt").write_text("needle\n", encoding="utf-8")
+
+    matches, _, _ = await search_files(
+        tmp_path,
+        query="needle",
+        pattern="*",
+        case_sensitive=False,
+        max_results=10,
+        max_scan_entries=100,
+        max_file_bytes=1024,
+    )
+    assert {item.relative_path for item in matches} == {"src.txt"}
+
+
+async def test_search_treats_the_query_as_a_literal_not_a_regex(tmp_path: Path) -> None:
+    """模型给的是"要找的字符串"。不加字面匹配开关，一个 `.` 或 `(` 就会改掉语义。"""
+
+    (tmp_path / "a.txt").write_text("value = f(x)\nvalueXX\n", encoding="utf-8")
+    matches, _, _ = await search_files(
+        tmp_path,
+        query="f(x)",
+        pattern="*",
+        case_sensitive=False,
+        max_results=10,
+        max_scan_entries=100,
+        max_file_bytes=1024,
+    )
+    assert [item.line for item in matches] == [1]

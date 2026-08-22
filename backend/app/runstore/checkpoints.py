@@ -7,17 +7,13 @@ checkpoint 对状态的**内容**不作任何假设：`save_checkpoint` / `load_
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-from uuid6 import uuid7
-
 from app.agent_core.state import PLAN_STEP_STATUSES, PlanStepState, json_state
-from app.cowork_store.routing import configured_cowork_store
+from app.core.db import DbSession as AsyncSession
+from app.cowork_store.routing import cowork_store
 
 
 @dataclass(frozen=True)
@@ -34,60 +30,24 @@ async def ensure_plan(
     run_id: UUID,
     steps: list[PlanStepState],
 ) -> None:
+    store = cowork_store()
     for step in steps:
-        await session.execute(
-            text(
-                """
-                INSERT INTO agent_plan_steps
-                    (id, run_id, step_idx, description, tool, depends_on, status)
-                VALUES (:id, :run_id, :step_idx, :description, :tool, :depends_on, :status)
-                ON CONFLICT (run_id, step_idx) DO NOTHING
-                """
-            ),
-            {
-                "id": UUID(step["id"]),
-                "run_id": run_id,
-                "step_idx": step["idx"],
-                "description": step["description"],
-                "tool": step["tool"],
-                "depends_on": step["depends_on"],
-                "status": step["status"],
-            },
+        await store.upsert_plan_step(
+            step_id=UUID(step["id"]),
+            run_id=run_id,
+            step_idx=step["idx"],
+            description=step["description"],
+            tool=step["tool"],
+            status=step["status"],
         )
-    rows = (
-        (
-            await session.execute(
-                text(
-                    """
-                    SELECT id, step_idx, description, tool, depends_on, status
-                    FROM agent_plan_steps WHERE run_id = :run_id ORDER BY step_idx
-                    """
-                ),
-                {"run_id": run_id},
-            )
-        )
-        .mappings()
-        .all()
-    )
+    existing = await store.list_plan_steps(run_id=run_id)
     expected = [
-        (
-            step["id"],
-            step["idx"],
-            step["description"],
-            step["tool"],
-            step["depends_on"],
-        )
+        (step["id"], step["idx"], step["description"], step["tool"])
         for step in steps
     ]
     actual = [
-        (
-            str(row["id"]),
-            int(row["step_idx"]),
-            str(row["description"]),
-            row["tool"],
-            list(row["depends_on"] or []),
-        )
-        for row in rows
+        (str(row["id"]), int(row["step_idx"]), str(row["description"]), row["tool"])
+        for row in existing
     ]
     if actual != expected:
         raise ValueError("已存在的 Agent plan 与固定工作流定义漂移")
@@ -102,24 +62,9 @@ async def update_plan_step(
 ) -> None:
     if status not in PLAN_STEP_STATUSES:
         raise ValueError(f"非法 plan step 状态: {status}")
-    store = configured_cowork_store()
-    if store is not None and await store.get_run(run_id) is not None:
-        await store.update_plan_step_status(run_id=run_id, step_id=step_id, status=status)
-        return
-    updated = (
-        await session.execute(
-            text(
-                """
-                UPDATE agent_plan_steps SET status = :status
-                WHERE id = :step_id AND run_id = :run_id
-                RETURNING id
-                """
-            ),
-            {"run_id": run_id, "step_id": step_id, "status": status},
-        )
-    ).scalar_one_or_none()
-    if updated is None:
-        raise LookupError(f"Agent plan step 不存在: {step_id}")
+    store = cowork_store()
+    await store.update_plan_step_status(run_id=run_id, step_id=step_id, status=status)
+    return
 
 
 async def record_attempt(
@@ -138,54 +83,21 @@ async def record_attempt(
     tokens: int | None = None,
     error_model: str | None = None,
 ) -> UUID:
-    store = configured_cowork_store()
-    if store is not None and await store.get_run(run_id) is not None:
-        return await store.record_attempt(
-            run_id=run_id,
-            plan_step_id=plan_step_id,
-            attempt_no=attempt_no,
-            node=node,
-            status=status,
-            tool_name=tool_name,
-            tool_args=tool_args,
-            tool_result=tool_result,
-            idempotency_key=idempotency_key,
-            latency_ms=latency_ms,
-            tokens=tokens,
-            error_model=error_model,
-        )
-    attempt_id = uuid7()
-    await session.execute(
-        text(
-            """
-            INSERT INTO agent_attempts
-                (id, run_id, plan_step_id, attempt_no, node, tool_name, tool_args,
-                 tool_result, status, idempotency_key, latency_ms, tokens, error_model)
-            VALUES
-                (:id, :run_id, :plan_step_id, :attempt_no, :node, :tool_name,
-                 CAST(:tool_args AS jsonb), CAST(:tool_result AS jsonb), :status,
-                 :idempotency_key, :latency_ms, :tokens, :error_model)
-            """
-        ),
-        {
-            "id": attempt_id,
-            "run_id": run_id,
-            "plan_step_id": plan_step_id,
-            "attempt_no": attempt_no,
-            "node": node,
-            "tool_name": tool_name,
-            "tool_args": None if tool_args is None else json.dumps(tool_args, ensure_ascii=False),
-            "tool_result": (
-                None if tool_result is None else json.dumps(tool_result, ensure_ascii=False)
-            ),
-            "status": status,
-            "idempotency_key": idempotency_key,
-            "latency_ms": latency_ms,
-            "tokens": tokens,
-            "error_model": error_model,
-        },
+    store = cowork_store()
+    return await store.record_attempt(
+        run_id=run_id,
+        plan_step_id=plan_step_id,
+        attempt_no=attempt_no,
+        node=node,
+        status=status,
+        tool_name=tool_name,
+        tool_args=tool_args,
+        tool_result=tool_result,
+        idempotency_key=idempotency_key,
+        latency_ms=latency_ms,
+        tokens=tokens,
+        error_model=error_model,
     )
-    return attempt_id
 
 
 async def next_attempt_no(
@@ -195,22 +107,8 @@ async def next_attempt_no(
     plan_step_id: UUID,
     node: str,
 ) -> int:
-    store = configured_cowork_store()
-    if store is not None and await store.get_run(run_id) is not None:
-        return await store.next_attempt_no(run_id=run_id, plan_step_id=plan_step_id, node=node)
-    latest = (
-        await session.execute(
-            text(
-                """
-                SELECT COALESCE(max(attempt_no), 0)
-                FROM agent_attempts
-                WHERE run_id = :run_id AND plan_step_id = :plan_step_id AND node = :node
-                """
-            ),
-            {"run_id": run_id, "plan_step_id": plan_step_id, "node": node},
-        )
-    ).scalar_one()
-    return int(latest) + 1
+    store = cowork_store()
+    return await store.next_attempt_no(run_id=run_id, plan_step_id=plan_step_id, node=node)
 
 
 async def save_checkpoint[StateT](
@@ -220,51 +118,24 @@ async def save_checkpoint[StateT](
     state: StateT,
     parent_id: str | None,
 ) -> AgentCheckpoint[StateT]:
+    del session
     clean = json_state(state)
-    checkpoint_id = str(uuid7())
-    await session.execute(
-        text(
-            """
-            INSERT INTO agent_checkpoints (run_id, checkpoint_id, parent_id, state)
-            VALUES (:run_id, :checkpoint_id, :parent_id, CAST(:state AS jsonb))
-            """
-        ),
-        {
-            "run_id": run_id,
-            "checkpoint_id": checkpoint_id,
-            "parent_id": parent_id,
-            "state": json.dumps(clean, ensure_ascii=False, separators=(",", ":")),
-        },
+    saved = await cowork_store().save_checkpoint(
+        run_id=run_id, state=cast("dict[str, Any]", clean), parent_id=parent_id
     )
-    return AgentCheckpoint(run_id, checkpoint_id, parent_id, clean)
+    return AgentCheckpoint(run_id, saved.checkpoint_id, parent_id, clean)
 
 
 async def load_latest_checkpoint[StateT](
     session: AsyncSession, *, run_id: UUID
 ) -> AgentCheckpoint[StateT] | None:
-    row = (
-        (
-            await session.execute(
-                text(
-                    """
-                    SELECT run_id, checkpoint_id, parent_id, state
-                    FROM agent_checkpoints
-                    WHERE run_id = :run_id
-                    ORDER BY created_at DESC, checkpoint_id DESC
-                    LIMIT 1
-                    """
-                ),
-                {"run_id": run_id},
-            )
-        )
-        .mappings()
-        .one_or_none()
-    )
-    if row is None:
+    del session
+    checkpoint = await cowork_store().load_latest_checkpoint(run_id=run_id)
+    if checkpoint is None:
         return None
     return AgentCheckpoint(
-        run_id=UUID(str(row["run_id"])),
-        checkpoint_id=str(row["checkpoint_id"]),
-        parent_id=None if row["parent_id"] is None else str(row["parent_id"]),
-        state=json_state(cast("StateT", row["state"])),
+        run_id=run_id,
+        checkpoint_id=checkpoint.checkpoint_id,
+        parent_id=checkpoint.parent_id,
+        state=json_state(cast("StateT", checkpoint.state)),
     )

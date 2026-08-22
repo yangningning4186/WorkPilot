@@ -13,25 +13,32 @@ from eval.cowork_task_suite import (
 )
 
 
-def test_cowork_core_40_has_frozen_coverage() -> None:
+def test_cowork_core_suite_has_frozen_coverage() -> None:
+    """整份快照断言，而不是逐字段挑几个。
+
+    配额漂移是最容易悄悄发生的一类改动：加两条 dev 用例、忘了同步 test，成功率的分母
+    就变了，而跨版本对比看起来仍然"正常"。整份比对会在那一刻直接失败。
+    """
+
     summary = summarize_suite(load_suite(DEFAULT_SUITE))
 
     assert summary == {
-        "name": "cowork-core-40",
-        "version": "1.0.0",
-        "items": 40,
-        "splits": {"dev": 32, "test": 8},
+        "name": "cowork-core-48",
+        "version": "1.2.0",
+        "items": 48,
+        "splits": {"dev": 37, "test": 11},
         "categories": {
             "artifact": 8,
             "knowledge": 8,
             "office": 6,
+            "reading": 4,
             "safety_hitl": 4,
             "web": 6,
-            "workspace": 8,
+            "workspace": 12,
         },
-        "difficulties": {"1": 7, "2": 21, "3": 12},
+        "difficulties": {"1": 10, "2": 24, "3": 14},
         "hitl_items": 5,
-        "average_optimal_tool_calls": 1.9,
+        "average_optimal_tool_calls": 1.85,
         "review_status": "pending_human_review",
     }
 
@@ -67,3 +74,37 @@ def test_cowork_suite_rejects_test_quota_drift() -> None:
 
     with pytest.raises(CoworkSuiteError, match="split 配额漂移"):
         validate_suite(suite)
+
+
+def test_reading_tasks_require_locator_grounded_citations() -> None:
+    """阅读类任务的产品承诺是"每个论断都能落回原文的具体位置"。
+
+    一条只断言"回答里出现了某个词"的阅读任务是通过不了这个承诺的：模型不读文档、
+    凭对同名论文的印象也能写出那个词。因此除了纯导航题，都必须断言 `[p.` 出现。
+    """
+    suite = load_suite(DEFAULT_SUITE)
+    reading = [item for item in suite["items"] if item["category"] == "reading"]
+
+    assert len(reading) == 4
+    for item in reading:
+        tools = item["gold"]["required_tools"]
+        assert tools, f"{item['id']}: 阅读任务必须指明该走哪些阅读工具"
+        assert all(
+            name in {"material_outline", "search_material", "read_material", "reader_goto"}
+            for name in tools
+        ), f"{item['id']}: 阅读任务的 gold 工具应当全是阅读工具"
+        # 只用 material_outline 的是纯导航题（"这篇分了哪几节"），没有可引用的论断。
+        if tools != ["material_outline"]:
+            values = [
+                value
+                for assertion in item["gold"]["assertions"]
+                if assertion["type"] == "response_contains"
+                for value in assertion["values"]
+            ]
+            has_locator = any("[p." in value for value in values)
+            refuses = any(
+                assertion["type"] == "response_contains_any"
+                and any(word in value for value in assertion["values"] for word in ("没有", "未提"))
+                for assertion in item["gold"]["assertions"]
+            )
+            assert has_locator or refuses, f"{item['id']}: 缺少 locator 引用断言"

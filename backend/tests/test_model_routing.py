@@ -165,9 +165,8 @@ def test_repo_routing_table_loads_and_covers_the_documented_task_types() -> None
 
     table = load_routing_table(REPO_ROUTING, ENV)
 
-    assert table.tier_for("grounded_answer") == "main"
-    assert table.tier_for("query_decomposition") == "light"
-    assert table.tier_for("conversation_summary") == "main"
+    assert table.tier_for("cowork_decision") == "main"
+    assert table.tier_for("edit_rewrite") == "light"
     assert table.tier_for("cowork_compaction") == "main"
     assert table.tier_for("judge") == "heavy"
     # 未登记的 task_type 落到甜点档而不是报错——新任务上线忘了加路由是常态。

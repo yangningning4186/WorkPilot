@@ -42,6 +42,7 @@ def create_native_artifact(
     sheets: list[dict[str, Any]],
     baseline_sha256: str | None,
     slides: list[dict[str, Any]] | None = None,
+    cover: bool = False,
     backup_versions: int = 5,
     max_existing_bytes: int = 20 * 1024 * 1024,
 ) -> NativeArtifactResult:
@@ -65,7 +66,9 @@ def create_native_artifact(
             _write_xlsx(temporary, title=title, sheets=sheets)
             mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         elif format == "pptx":
-            _write_pptx(temporary, title=title, content=content, slides=slides or [])
+            _write_pptx(
+                temporary, title=title, content=content, slides=slides or [], cover=cover
+            )
             mime_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         else:
             _write_pdf(temporary, title=title, content=content)
@@ -177,8 +180,15 @@ def _write_xlsx(path: Path, *, title: str, sheets: list[dict[str, Any]]) -> None
     workbook.save(path)
 
 
-def _write_pptx(path: Path, *, title: str, content: str, slides: list[dict[str, Any]]) -> None:
-    """生成 16:9、可继续编辑的原生演示文稿。"""
+def _write_pptx(
+    path: Path, *, title: str, content: str, slides: list[dict[str, Any]], cover: bool
+) -> None:
+    """生成 16:9、可继续编辑的原生演示文稿。
+
+    页数契约：``slides`` 里有几项就生成几页，封面必须由 ``cover`` 显式要求。
+    以前这里无条件插一页封面，调用方说"做三页"、传三项、拿到四页——工具悄悄改掉了
+    调用方能观测的唯一结果。要封面就自己加一页，代价只是一次显式选择。
+    """
 
     presentation = Presentation()
     presentation.slide_width = Inches(40 / 3)
@@ -186,8 +196,9 @@ def _write_pptx(path: Path, *, title: str, content: str, slides: list[dict[str, 
     presentation.core_properties.title = title
     blank = presentation.slide_layouts[6]
     normalized = _normalize_slides(content, slides)
-    cover_subtitle = str(slides[0].get("subtitle") or "") if slides else ""
-    _add_ppt_cover(presentation.slides.add_slide(blank), title, cover_subtitle)
+    if cover:
+        cover_subtitle = str(slides[0].get("subtitle") or "") if slides else ""
+        _add_ppt_cover(presentation.slides.add_slide(blank), title, cover_subtitle)
     for index, item in enumerate(normalized, start=1):
         _add_ppt_content_slide(presentation.slides.add_slide(blank), item, index)
     presentation.save(str(path))

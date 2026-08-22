@@ -17,6 +17,7 @@ export type WorkdeskIconName =
   | "agent"
   | "automation"
   | "archive"
+  | "book"
   | "dots"
   | "file"
   | "folder"
@@ -37,6 +38,7 @@ export function WorkdeskIcon({ name }: { name: WorkdeskIconName }) {
       {name === "add" && <><circle cx="12" cy="12" r="8.5" /><path d="M12 8v8M8 12h8" /></>}
       {name === "agent" && <><path d="M5 7.5A3.5 3.5 0 0 1 8.5 4h7A3.5 3.5 0 0 1 19 7.5v5a3.5 3.5 0 0 1-3.5 3.5H11l-4.5 3v-3.7A3.5 3.5 0 0 1 5 12.5z" /><path d="M9 9.5h6M9 12.5h4" /></>}
       {name === "automation" && <><circle cx="12" cy="12" r="7.5" /><path d="M12 8v4l2.5 2M5.8 4.8 4 6.6M18.2 4.8 20 6.6" /></>}
+      {name === "book" && <><path d="M4.5 5.5A1.5 1.5 0 0 1 6 4h11.5v16H6a1.5 1.5 0 0 1-1.5-1.5z" /><path d="M8 4v16M11 8.5h4M11 11.5h4" /></>}
       {name === "archive" && <><path d="M4 7.5h16v12H4zM3.5 4.5h17v3h-17z" /><path d="M9 11h6" /></>}
       {name === "dots" && <><circle cx="6" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="18" cy="12" r="1" /></>}
       {name === "file" && <><path d="M7 3.5h6l4 4v13H7z" /><path d="M13 3.5v4h4M9.5 12h5M9.5 15h5" /></>}
@@ -63,12 +65,14 @@ interface WorkdeskNavigationProps {
 export function WorkdeskNavigation({ newTaskDisabled = false, onNewTask }: WorkdeskNavigationProps) {
   const pathname = usePathname();
   const items: Array<{ href: string; icon: WorkdeskIconName; label: string }> = [
-    { href: "/library", icon: "file", label: "资料库" },
+    { href: "/knowledge", icon: "book", label: "知识库" },
     { href: "/connectors", icon: "agent", label: "连接器与 OAuth" },
     { href: "/providers", icon: "spark", label: "模型与密钥" },
     { href: "/automations", icon: "automation", label: "自动化与收件箱" },
     { href: "/skills", icon: "skill", label: "Skills" },
     { href: "/mcp", icon: "mcp", label: "MCP" },
+    { href: "/workspace", icon: "folder", label: "办公工作台" },
+    { href: "/cost", icon: "automation", label: "成本" },
     { href: "/memory", icon: "more", label: "记忆与设置" },
   ];
 
@@ -150,7 +154,7 @@ export function WorkdeskAppShell({ children, icon, sectionTitle }: WorkdeskAppSh
             <span><WorkdeskIcon name="spark" /></span>
             <div><strong>WorkPilot</strong><small>Local Cowork</small></div>
           </Link>
-          <Link aria-label="搜索资料" className="workdesk-icon-button" href="/library">
+          <Link aria-label="知识库" className="workdesk-icon-button" href="/knowledge">
             <WorkdeskIcon name="search" />
           </Link>
         </div>

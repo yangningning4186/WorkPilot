@@ -2,10 +2,10 @@ import asyncio
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.rag.review.graph import initialize_review_state
+from app.core.db import DbSession as AsyncSession
+from app.core.db import session_factory
 from app.runstore.runs import (
     append_events,
     append_message,
@@ -19,6 +19,7 @@ from app.runstore.runs import (
     renew_lease,
     request_cancel,
 )
+from tests.conftest import iso_ago
 
 pytestmark = pytest.mark.integration
 
@@ -70,7 +71,7 @@ async def test_concurrent_claims_cannot_double_run(
 
     run = await _new_run(db_session)
     await db_session.commit()
-    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    factory = session_factory
 
     async def claim(worker_id: str):
         async with factory() as session:
@@ -92,41 +93,55 @@ async def test_lease_renewal_fails_after_takeover(db_session: AsyncSession) -> N
     assert await renew_lease(db_session, run_id=run.id, worker_id="worker-b", lease_s=60) is None
 
 
-async def test_expired_lease_allows_reclaim_but_live_lease_does_not(
-    db_session: AsyncSession,
+async def test_an_expired_lease_is_reclaimed_through_the_watchdog_not_by_stealing(
+    db_session: AsyncSession, store_sql,
 ) -> None:
+    """租约过期不等于可以直接抢。
+
+    PostgreSQL 版的 `claim_run` 允许第二个 worker 直接偷走过期租约。那条路绕开了
+    `recovery_count`——ADR-0007 用它挡住"稳定把 worker 拖垮的 run 被无限重投"。
+    SQLite 版只认 `queued`，于是回收必须经过 watchdog，重投次数也就必然被计数。
+    """
+
     run = await _new_run(db_session)
     assert await claim_run(db_session, run_id=run.id, worker_id="worker-a", lease_s=60)
     assert await claim_run(db_session, run_id=run.id, worker_id="worker-b", lease_s=60) is None
 
-    await db_session.execute(
-        text("UPDATE agent_runs SET lease_until = now() - interval '1 second' WHERE id = :id"),
-        {"id": run.id},
+    store_sql(
+        "UPDATE agent_runs SET lease_until = ? WHERE id = ?",
+        (iso_ago(1), str(run.id)),
     )
-    assert await claim_run(db_session, run_id=run.id, worker_id="worker-b", lease_s=60)
+    # 租约过期了，但没经过 watchdog 之前谁也抢不到。
+    assert await claim_run(db_session, run_id=run.id, worker_id="worker-b", lease_s=60) is None
+
+    # 这个 run 没有 checkpoint，watchdog 把它判死而不是重投——重投一个不知道跑到
+    # 哪一步的 run，副作用会从头再来一遍。带 checkpoint 的恢复见下面那条用例。
+    reaped = await reap_expired_runs(db_session)
+    assert reaped.failed == [run.id]
+    assert await claim_run(db_session, run_id=run.id, worker_id="worker-b", lease_s=60) is None
 
 
-async def test_watchdog_fails_expired_runs_and_marks_message(db_session: AsyncSession) -> None:
+async def test_watchdog_fails_expired_runs_and_marks_message(db_session: AsyncSession, store_sql, message_status) -> None:
     """普通流式回答不自动重试: 是否已计费无法确认, 静默重放等于重复计费。"""
 
     run = await _new_run(db_session)
     await claim_run(db_session, run_id=run.id, worker_id="worker-a", lease_s=60)
-    message_id = await append_message(
+    await append_message(
         db_session,
         conversation_id=run.conversation_id,
         role="assistant",
         status="streaming",
         run_id=run.id,
     )
-    await db_session.execute(
-        text("UPDATE agent_runs SET lease_until = now() - interval '1 second' WHERE id = :id"),
-        {"id": run.id},
+    store_sql(
+        "UPDATE agent_runs SET lease_until = ? WHERE id = ?",
+        (iso_ago(1), str(run.id)),
     )
 
     reaped = await reap_expired_runs(db_session)
     # 普通回答不可自动恢复: 已发出的模型调用是否计费无法确认。
     assert reaped.failed == [run.id]
-    assert reaped.recovered == []
+    assert reaped.recovered_cowork == []
 
     refreshed = await get_run(db_session, run.id)
     assert refreshed is not None
@@ -139,10 +154,8 @@ async def test_watchdog_fails_expired_runs_and_marks_message(db_session: AsyncSe
     assert events[0].payload["retryable"] is True
 
     status = (
-        await db_session.execute(
-            text("SELECT status FROM messages WHERE id = :id"), {"id": message_id}
-        )
-    ).scalar_one()
+        await message_status(run.conversation_id, run.id, "assistant")
+    )[0]
     assert status == "failed"
 
 
@@ -150,7 +163,7 @@ async def test_watchdog_ignores_runs_with_live_lease(db_session: AsyncSession) -
     run = await _new_run(db_session)
     await claim_run(db_session, run_id=run.id, worker_id="worker-a", lease_s=600)
     reaped = await reap_expired_runs(db_session)
-    assert reaped.failed == [] and reaped.recovered == []
+    assert reaped.failed == [] and reaped.recovered_cowork == []
 
 
 async def test_cancel_is_immediate_only_before_pickup(db_session: AsyncSession) -> None:
@@ -169,21 +182,21 @@ async def test_cancel_is_immediate_only_before_pickup(db_session: AsyncSession) 
 
 
 async def test_watchdog_finalizes_cancelled_run_after_worker_disappears(
-    db_session: AsyncSession,
+    db_session: AsyncSession, store_sql,
 ) -> None:
     run = await _new_run(db_session)
     await claim_run(db_session, run_id=run.id, worker_id="worker-a", lease_s=60)
     requested = await request_cancel(db_session, run_id=run.id)
     assert requested.status == "executing"
-    await db_session.execute(
-        text("UPDATE agent_runs SET lease_until = now() - interval '1 second' WHERE id = :id"),
-        {"id": run.id},
+    store_sql(
+        "UPDATE agent_runs SET lease_until = ? WHERE id = ?",
+        (iso_ago(1), str(run.id)),
     )
 
     reaped = await reap_expired_runs(db_session)
 
     assert reaped.cancelled == [run.id]
-    assert reaped.recovered == []
+    assert reaped.recovered_cowork == []
     refreshed = await get_run(db_session, run.id)
     assert refreshed is not None
     assert refreshed.status == "cancelled"
@@ -204,27 +217,32 @@ async def test_finish_run_requires_matching_worker(db_session: AsyncSession) -> 
     assert refreshed.is_terminal
 
 
-async def test_messages_get_sequential_seq_per_conversation(db_session: AsyncSession) -> None:
+async def test_messages_get_sequential_seq_per_conversation(db_session: AsyncSession, store_sql) -> None:
     conversation_id = await ensure_conversation(db_session)
     await append_message(db_session, conversation_id=conversation_id, role="user", content="一")
     await append_message(
         db_session, conversation_id=conversation_id, role="assistant", content="二"
     )
 
-    seqs = list(
-        (
-            await db_session.execute(
-                text("SELECT seq FROM messages WHERE conversation_id = :id ORDER BY seq"),
-                {"id": conversation_id},
-            )
+    seqs = [
+        row["seq"]
+        for row in store_sql(
+            "SELECT seq FROM conversation_message_index WHERE conversation_id = ? ORDER BY seq",
+            (str(conversation_id),),
         )
-        .scalars()
-        .all()
-    )
+    ]
     assert seqs == [1, 2]
 
 
-async def _expired_review_run(session: AsyncSession, *, with_checkpoint: bool = True) -> UUID:
+async def _expired_run(
+    session: AsyncSession, store_sql, *, with_checkpoint: bool = True
+) -> UUID:
+    """一个租约已过期、worker 消失了的 Cowork run。
+
+    checkpoint 用裸 SQL 插，不走 `initialize_cowork_state`：watchdog 判定"可不可恢复"
+    只看 `agent_checkpoints` 里有没有行，不读 state 的内容。让这个 fixture 去组装一整套
+    工具注册表，只会让它跟着 Cowork 运行时一起漂。
+    """
     conversation_id = await ensure_conversation(session)
     run = await create_run(
         session,
@@ -233,33 +251,33 @@ async def _expired_review_run(session: AsyncSession, *, with_checkpoint: bool = 
         budget_tokens=10_000,
         budget_calls=20,
         budget_wall_ms=60_000,
-        workflow_type="literature_review",
+        workflow_type="cowork",
     )
     if with_checkpoint:
-        await initialize_review_state(
-            session,
-            run_id=run.id,
-            document_ids=[uuid4(), uuid4()],
-            output_path="reviews/memory.md",
+        store_sql(
+            """INSERT INTO agent_checkpoints
+                   (run_id, checkpoint_id, parent_id, state, created_at)
+               VALUES (?, ?, NULL, '{}', datetime('now'))""",
+            (str(run.id), str(uuid4())),
         )
     await claim_run(session, run_id=run.id, worker_id="worker-a", lease_s=60)
-    await session.execute(
-        text("UPDATE agent_runs SET lease_until = now() - interval '1 second' WHERE id = :id"),
-        {"id": run.id},
+    store_sql(
+        "UPDATE agent_runs SET lease_until = ? WHERE id = ?",
+        (iso_ago(1), str(run.id)),
     )
     return run.id
 
 
-async def test_watchdog_recovers_review_run_instead_of_failing_it(
-    db_session: AsyncSession,
+async def test_watchdog_recovers_a_checkpointed_run_instead_of_failing_it(
+    db_session: AsyncSession, store_sql,
 ) -> None:
-    """带 checkpoint 的固定综述 run 被 SIGKILL 后应重新入队，而不是判死。"""
+    """带 checkpoint 的 run 被 SIGKILL 后应重新入队，而不是判死。"""
 
-    run_id = await _expired_review_run(db_session)
+    run_id = await _expired_run(db_session, store_sql)
 
     reaped = await reap_expired_runs(db_session)
     assert reaped.failed == []
-    assert reaped.recovered == [(run_id, 1)]
+    assert reaped.recovered_cowork == [(run_id, 1)]
 
     refreshed = await get_run(db_session, run_id)
     assert refreshed is not None
@@ -272,34 +290,34 @@ async def test_watchdog_recovers_review_run_instead_of_failing_it(
     assert reclaimed.worker_id == "worker-b"
 
 
-async def test_watchdog_fails_review_run_without_checkpoint(
-    db_session: AsyncSession,
+async def test_watchdog_fails_a_run_without_checkpoint(
+    db_session: AsyncSession, store_sql,
 ) -> None:
     """没有 checkpoint 就没有可恢复的进度，重跑等于从头再烧一遍预算。"""
 
-    run_id = await _expired_review_run(db_session, with_checkpoint=False)
+    run_id = await _expired_run(db_session, store_sql, with_checkpoint=False)
 
     reaped = await reap_expired_runs(db_session)
-    assert reaped.recovered == []
+    assert reaped.recovered_cowork == []
     assert reaped.failed == [run_id]
 
 
 async def test_watchdog_stops_recovering_after_the_cap(
-    db_session: AsyncSession,
+    db_session: AsyncSession, store_sql,
 ) -> None:
     """稳定把 worker 拖垮的 run 必须停下来交给人，不能无限重投。"""
 
-    run_id = await _expired_review_run(db_session)
+    run_id = await _expired_run(db_session, store_sql)
 
     for attempt in (1, 2):
         reaped = await reap_expired_runs(db_session, max_recovery=2)
-        assert reaped.recovered == [(run_id, attempt)]
+        assert reaped.recovered_cowork == [(run_id, attempt)]
         await claim_run(db_session, run_id=run_id, worker_id="worker-a", lease_s=60)
-        await db_session.execute(
-            text("UPDATE agent_runs SET lease_until = now() - interval '1 second' WHERE id = :id"),
-            {"id": run_id},
+        store_sql(
+            "UPDATE agent_runs SET lease_until = ? WHERE id = ?",
+            (iso_ago(1), str(run_id)),
         )
 
     exhausted = await reap_expired_runs(db_session, max_recovery=2)
-    assert exhausted.recovered == []
+    assert exhausted.recovered_cowork == []
     assert exhausted.failed == [run_id]

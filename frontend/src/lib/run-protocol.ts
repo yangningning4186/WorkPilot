@@ -17,9 +17,14 @@ export type RunEventType =
   | "context.compacted"
   | "todo.update"
   | "memory.saved"
+  | "reading.goto"
   | "steering.queued"
   | "steering.applied"
   | "interrupt"
+  // 免审批放行：会话处于 auto 档、命中常驻规则、或仓库白名单 + 目录信任同时成立。
+  // 必须在时间线上看得见，否则用户只会看到一条命令凭空执行了。
+  | "approval.waived"
+  | "run.sleeping"
   | "interaction.resolved"
   | "artifact"
   | "run.done"
@@ -151,6 +156,17 @@ export interface InterruptPayload {
   payload: Record<string, unknown>;
 }
 
+/** 一次免审批放行。`reason` 说明是哪条来源，好让用户能顺着它找到要撤销的东西。 */
+export interface ApprovalWaivedPayload {
+  tool: string;
+  reason: "approval_mode=auto" | "standing_rule" | "workspace_trust";
+  rule_id?: string;
+  match_kind?: "tool" | "target" | "command_prefix";
+  scope?: "conversation" | "schedule";
+  allowlist_entry?: string;
+  command?: string;
+}
+
 export interface InteractionResolvedPayload {
   inbox_id: string;
   kind:
@@ -180,6 +196,32 @@ export interface TodoUpdatePayload {
 }
 
 /** 模型写入长期记忆后的通知，带旧文本以支持撤销。 */
+/** 引用高亮的一块几何。字段与 `parsed_block_locations` 同口径（后端约束 3）。 */
+export interface ReadingLocation {
+  page_no: number;
+  page_width: number;
+  page_height: number;
+  rotation: number;
+  coord_origin: string;
+  bbox_norm: [number, number, number, number];
+}
+
+/**
+ * 模型调用 `reader_goto` 的结果：把阅读器带到某个 locator 并高亮一段。
+ *
+ * `locations` 为空是有意义的一档——引文没能逐字对上时翻页但不画高亮。跨语言问答里
+ * 模型给的"引文"往往是它自己的译文，此时落在正确的页上远比原地不动有用，而在错误的
+ * 位置涂一块颜色比不涂更糟。
+ */
+export interface ReadingGotoPayload {
+  path: string;
+  material_id: string;
+  unit: "page" | "section";
+  locator: number;
+  quote: string;
+  locations: ReadingLocation[];
+}
+
 export interface MemorySavedPayload {
   action: "saved" | "updated" | "forgotten";
   memory: {
@@ -193,6 +235,12 @@ export interface MemorySavedPayload {
     updated_at: string;
   };
   previous_content: string | null;
+}
+
+/** run 自己挂起到某个时间点：在等时间，不是在等人，不需要用户操作。 */
+export interface RunSleepingPayload {
+  wake_at: string;
+  reason: string | null;
 }
 
 export interface ArtifactPayload {
@@ -222,10 +270,13 @@ export type RunEventData =
   | ToolEventPayload
   | ContextCompactedPayload
   | InterruptPayload
+  | ApprovalWaivedPayload
   | InteractionResolvedPayload
   | ArtifactPayload
   | TodoUpdatePayload
   | MemorySavedPayload
+  | ReadingGotoPayload
+  | RunSleepingPayload
   | RunDonePayload
   | ErrorPayload;
 

@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import get_settings
-from app.cowork.runtime import _system_prompt
+from app.cowork.runtime import _ephemeral_context, _system_prompt
 from app.cowork.todos import (
     MAX_TODO_CONTENT_CHARS,
     TODO_TOOL_NAME,
@@ -95,8 +95,12 @@ def test_todo_summary_counts_each_status() -> None:
     }
 
 
-def test_todo_block_is_pinned_into_system_prompt() -> None:
-    """清单要钉在压缩边界之上，否则压缩一次模型就忘了自己定过什么计划。"""
+def test_todo_block_goes_to_the_ephemeral_tail_not_the_system_prompt() -> None:
+    """清单要活过压缩，但不能进 system prompt。
+
+    它每完成一项就变一次，而 system 是第 0 条消息——放进去等于每更新一次清单就把整段
+    前缀缓存作废。挂在 outbound 末尾同样活过压缩（末尾永远不被归档），代价只有这一小块。
+    """
 
     todos: list[TodoItem] = [
         {"content": "读取源文件", "status": "done"},
@@ -105,13 +109,16 @@ def test_todo_block_is_pinned_into_system_prompt() -> None:
     ]
 
     assert render_todo_block([]) == ""
-    prompt = _system_prompt("扩展说明", todos=todos)
-    assert "<current_todos>" in prompt
-    assert "[x] 读取源文件" in prompt
-    assert "[>] 生成报告" in prompt
-    assert "[ ] 复核" in prompt
-    # 空清单不占位，也不该在没有 todo 的会话里凭空多出一段。
+    tail = _ephemeral_context(mode="execute", todos=todos)
+    assert "<current_todos>" in tail
+    assert "[x] 读取源文件" in tail
+    assert "[>] 生成报告" in tail
+    assert "[ ] 复核" in tail
+    # 渲染成 user 消息发出，必须显式标明不是用户说的话。
+    assert "不是用户消息" in tail
     assert "<current_todos>" not in _system_prompt("扩展说明")
+    # 空清单不占位，也不该在没有 todo 的会话里凭空多出一段。
+    assert _ephemeral_context(mode="execute", todos=[]) == ""
 
 
 async def test_todo_write_is_a_pure_read_tool_and_echoes_the_list() -> None:

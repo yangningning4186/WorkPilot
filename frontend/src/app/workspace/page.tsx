@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAdminSession } from "@/components/admin-session";
-import { Topbar } from "@/components/topbar";
+import { WorkdeskAppShell } from "@/components/workdesk-shell";
 import {
   ApiError,
   executeWorkspaceInstruction,
@@ -231,8 +231,7 @@ export default function WorkspacePage() {
   const selectedCharacters = Math.max(0, selection.end - selection.start);
 
   return (
-    <main className="app-frame office-frame">
-      <Topbar />
+    <WorkdeskAppShell icon="folder" sectionTitle="办公工作台">
       {authState !== "authenticated" ? (
         <WorkspaceGate />
       ) : (
@@ -426,6 +425,6 @@ export default function WorkspacePage() {
           </aside>
         </div>
       )}
-    </main>
+    </WorkdeskAppShell>
   );
 }
