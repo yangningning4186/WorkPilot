@@ -1,0 +1,48 @@
+WorkPilot Desktop 手动测试包清单
+生成日期：2026-08-24
+
+入口与记录
+- START_HERE.txt
+- TEST_CASES.txt
+- PROMPTS.txt
+- RESULTS_TEMPLATE.txt
+
+授权目录素材
+- authorized/00_README.txt
+- authorized/01_atlas_project_facts.txt
+- authorized/02_weekly_report_to_edit.txt
+- authorized/03_budget_source.txt
+- authorized/04_slide_source.txt
+- authorized/05_document_requirements.txt
+- authorized/06_long_task_source.txt
+- authorized/Atlas-Reading-Sample.pdf
+
+知识库版本素材
+- kb/Atlas-KB-v1.txt
+- kb/Atlas-KB-v2.txt
+
+权限边界素材
+- outside-authorized/secret-do-not-read.txt
+
+人工核对与重置
+- expected/02_weekly_report_expected.txt
+- expected/office_expected_results.txt
+- reset-fixtures/02_weekly_report_to_edit.original.txt
+
+关键基线 SHA-256
+- authorized/02_weekly_report_to_edit.txt
+  e61fdd32cf827c2feb7647cafa6e9d208b61b65c0debee2eb0c82ad67f3c5dd1
+- reset-fixtures/02_weekly_report_to_edit.original.txt
+  e61fdd32cf827c2feb7647cafa6e9d208b61b65c0debee2eb0c82ad67f3c5dd1
+- authorized/Atlas-Reading-Sample.pdf
+  4d4f91fdd6c775d7a68cf90f7a55d567310c0cae3869b1ffce3e801678055502
+- kb/Atlas-KB-v1.txt
+  3dfce3a5cf96fc215fcd1807d8bd8ccd462f89a518f6a6871c061a9bdb1f801d
+- kb/Atlas-KB-v2.txt
+  c74258468ea67ea8fa7e8f92d7dc58aa875cb6bc3f6db99b6cb294642a01c44a
+- outside-authorized/secret-do-not-read.txt
+  90a6758cadb133b167bca26488945c03c26a3ac0bd6a11256f49fe1f98f2aeec
+
+备注
+- builders 和 qa 是生成/渲染校验辅助文件，不需要授权给 WorkPilot。
+- Office 文件由 WorkPilot 在测试中生成，这是被测行为，不是预置样例。

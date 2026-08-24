@@ -1,0 +1,85 @@
+WorkPilot Desktop 手动测试结果
+
+测试日期：
+测试人：
+Git commit：
+工作树是否有未提交改动：是 / 否
+macOS 版本：
+芯片：Intel / Apple Silicon
+模型供应商：
+模型名称：
+运行模式：
+权限模式：
+
+启动性能
+冷启动 1：____ 秒
+冷启动 2：____ 秒
+热启动 1：____ 秒
+热启动 2：____ 秒
+热启动 3：____ 秒
+
+用例结果
+BOOT-01  [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  耗时/备注：
+BOOT-02  [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  耗时/备注：
+BOOT-03  [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  备注：
+CHAT-01  [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+CHAT-02  [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+CHAT-03  [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+PERM-01  [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  备注：
+PERM-02  [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+PERM-03  [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+PERM-04  [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+PERM-05  [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+EDIT-01  [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+EDIT-02  [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+ART-01   [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+ART-02   [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+OFFICE-01[ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  文件/备注：
+OFFICE-02[ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  文件/备注：
+OFFICE-03[ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  文件/备注：
+OFFICE-04[ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  备注：
+PDF-01   [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+PDF-02   [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+PDF-03   [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+EVID-01  [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  备注：
+KB-01    [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  版本/备注：
+KB-02    [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+KB-03    [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+KB-04    [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+KB-05    [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+RUN-01   [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+RUN-02   [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+RUN-03   [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+RUN-04   [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  任务 ID/备注：
+CLEAN-01 [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  备注：
+CLEAN-02 [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  备注：
+CLEAN-03 [ ] PASS [ ] FAIL [ ] BLOCKED [ ] NOT RUN  备注：
+
+失败详情（每个 FAIL 复制一段）
+--------------------------------
+用例 ID：
+严重级别：P0 / P1 / P2
+任务短 ID：
+发生时间：
+前置条件：
+复现步骤：
+实际结果：
+预期结果：
+是否稳定复现：是 / 否，复现次数 __ / __
+截图路径：
+终端日志摘要：
+相关文件：
+补充说明：
+
+最终结论
+[ ] 允许进入下一阶段
+[ ] 有条件允许，需修复 P1
+[ ] 阻断发布，存在 P0
+
+P0 数量：
+P1 数量：
+P2 数量：
+最优先修复的三个问题：
+1.
+2.
+3.
