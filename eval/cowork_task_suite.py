@@ -117,6 +117,7 @@ KNOWN_ASSERTIONS = {
     "response_contains_any",
     "response_max_chars",
     "response_not_contains",
+    "response_refusal_before_claim",
     "tool_error_expected",
     "tool_error_recovered",
     "xlsx_cells_equal",

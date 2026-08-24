@@ -41,11 +41,12 @@ dev（39 条）和冻结 test（11 条）是两个独立 baseline，不会显示
 与安全/HITL，并新增飞书连接器和持久 shell 两类回归任务。每条记录均包含
 可复现 fixture、初始 capability、期望终态、gold 工具、工具顺序/调用预算和确定性成功断言；
 knowledge 类额外强制 `EvidenceBundle` 合约，不允许 `chunk_id`、内部 score 或 ORM 泄漏；
-reading 类强制 locator 引用（`[p.N]`），并留一条负例考"文档答不了就直说答不了"——
-这一档最糟的失败不是答错，而是凭对同名论文的印象编出一个像模像样的页码。
+沉浸阅读路径强制 locator 引用（`[p.N]`）。若 prompt 已给出精确 Markdown 路径，完整
+`read_text_file` 加章节/行号引用也算可溯源，不能强迫它伪造页码；负例则要求在给出任何候选
+数字前先明确说明文档不可答，避免仅凭对同名论文的印象编答案。
 
 当前套件由助手起草，因此保留生成来源 `origin=synthetic`；行之已于
-`2026-08-24T20:54:00+08:00` 逐条复核并将其批准为 `review_status=approved`。这不把生成来源
+`2026-08-24T22:44:18+08:00` 复核 v1.5.0 并将其批准为 `review_status=approved`。这不把生成来源
 改写成 human，也不解除冻结 test 不得用于调参的约束。
 
 ```bash
@@ -61,6 +62,9 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
   --label cowork-dev-v1 --split dev --allow-synthetic --allow-model-send \
   --authorization-note '<已核验的模型端点与合成数据发送授权>'
 ```
+
+评测只记录 token 用量，不用 token 数决定任务成败：`run_budget_tokens` 固定为 `0`。
+`--budget-tokens` 仅为旧命令保留且只接受 `0`；模型调用数和墙钟上限仍可独立配置，防止失控循环。
 
 跑完整 50 条必须显式留下 test access 审计：
 

@@ -24,7 +24,7 @@ def test_cowork_core_suite_has_frozen_coverage() -> None:
 
     assert summary == {
         "name": "cowork-core-50",
-        "version": "1.4.0",
+        "version": "1.5.0",
         "items": 50,
         "splits": {"dev": 39, "test": 11},
         "categories": {
@@ -40,10 +40,10 @@ def test_cowork_core_suite_has_frozen_coverage() -> None:
         },
         "difficulties": {"1": 10, "2": 26, "3": 14},
         "hitl_items": 7,
-        "average_optimal_tool_calls": 2.06,
+        "average_optimal_tool_calls": 2.02,
         "review_status": "approved",
         "reviewer": "行之",
-        "reviewed_at": "2026-08-24T20:54:00+08:00",
+        "reviewed_at": "2026-08-24T22:44:18+08:00",
     }
 
 
@@ -134,9 +134,15 @@ def test_reading_tasks_require_locator_grounded_citations() -> None:
     reading = [item for item in suite["items"] if item["category"] == "reading"]
 
     assert len(reading) == 4
+    direct_markdown_items = {"cowork-core-046", "cowork-core-047"}
     for item in reading:
         tools = item["gold"]["required_tools"]
         assert tools, f"{item['id']}: 阅读任务必须指明该走哪些阅读工具"
+        if item["id"] in direct_markdown_items:
+            # Prompt 已给出精确 Markdown 路径时，完整 read_text_file 同样能证明回答来自原文；
+            # 不能为了沉浸阅读 UI 的 locator 协议，否定带章节/行号的正确引用或正确拒答。
+            assert tools == ["read_text_file"]
+            continue
         assert all(
             name in {"material_outline", "search_material", "read_material", "reader_goto"}
             for name in tools

@@ -11,7 +11,10 @@ from app.core.config import get_settings
 from app.core.db import session_factory
 from app.knowledge_contracts import RagSearchRequest
 from eval.cowork_runner import (
+    CoworkRunnerError,
     FixtureRagService,
+    MaterializedCase,
+    _evaluation_settings,
     _metric_slice,
     evaluate_assertion,
     materialize_case,
@@ -170,6 +173,102 @@ def test_metric_slice_uses_nearest_rank_p95() -> None:
     assert metrics["tool_selection_accuracy"] == 0.5
     assert metrics["latency_ms"]["p95"] == 1_900
     assert metrics["tokens"]["p95"] == 19_000
+
+
+def test_evaluation_settings_disable_token_fuse() -> None:
+    base = get_settings().model_copy(
+        update={
+            "run_budget_tokens": 100_000,
+            "run_budget_calls": 20,
+            "run_budget_wall_ms": 180_000,
+        }
+    )
+
+    settings = _evaluation_settings(
+        base,
+        budget_tokens=None,
+        budget_calls=None,
+        budget_wall_ms=None,
+    )
+
+    assert settings.run_budget_tokens == 0
+    assert settings.run_budget_calls == 20
+    assert settings.run_budget_wall_ms == 180_000
+    with pytest.raises(CoworkRunnerError, match="禁用 token 熔断"):
+        _evaluation_settings(
+            base,
+            budget_tokens=100_000,
+            budget_calls=None,
+            budget_wall_ms=None,
+        )
+
+
+def test_no_files_changed_ignores_git_internal_metadata(tmp_path: Path) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = next(value for value in suite["items"] if value["id"] == "cowork-core-041")
+    materialized = materialize_case(suite, item, case_root=tmp_path / "case")
+    assert not any(Path(relative).parts[0] == ".git" for relative in materialized.before_files)
+
+    legacy = MaterializedCase(
+        workspace=materialized.workspace,
+        fixtures=materialized.fixtures,
+        before_files={**materialized.before_files, ".git/index": "before"},
+        document_ids=materialized.document_ids,
+    )
+    result = evaluate_assertion(
+        {"type": "no_files_changed"},
+        response="只读取版本视图",
+        status="done",
+        interrupt=None,
+        trace=[],
+        artifacts=[],
+        materialized=legacy,
+        after_files={**materialized.before_files, ".git/index": "after"},
+    )
+
+    assert result.passed is True
+    assert "changed=[]" in result.detail
+
+
+def test_unanswerable_reading_requires_refusal_before_numeric_claim(tmp_path: Path) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = next(value for value in suite["items"] if value["id"] == "cowork-core-047")
+    materialized = materialize_case(suite, item, case_root=tmp_path / "case")
+    assertion = next(
+        value
+        for value in item["gold"]["assertions"]
+        if value["type"] == "response_refusal_before_claim"
+    )
+
+    correct_refusal = evaluate_assertion(
+        assertion,
+        response=(
+            "文中没有任何多语言检索实验，因此无法给出多少个点的提升。"
+            "文中另有十一个点，但那是领域子集差距。"
+        ),
+        status="done",
+        interrupt=None,
+        trace=[],
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+    contradictory_claim = evaluate_assertion(
+        assertion,
+        response=(
+            "多语言检索提升了十一个点。实验设置是材料科学和法律子集。"
+            "不过文中没有给出多语言独立实验。"
+        ),
+        status="done",
+        interrupt=None,
+        trace=[],
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+
+    assert correct_refusal.passed is True
+    assert contradictory_claim.passed is False
 
 
 def test_hitl_assertion_can_pin_tool_arguments(tmp_path: Path) -> None:

@@ -186,10 +186,27 @@ def _git_state(repo_root: Path) -> tuple[str | None, bool]:
 def _snapshot_files(workspace: Path | None) -> dict[str, str]:
     if workspace is None or not workspace.exists():
         return {}
+    snapshot: dict[str, str] = {}
+    for path in sorted(workspace.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(workspace)
+        # `.git` 是版本视图工具自己的实现状态，不是用户工作区内容。`git status` /
+        # `git diff` 允许刷新 index/stat cache；把它计入 no_files_changed 会让只读查询
+        # 因 `.git/index` 哈希变化被误判成写文件。
+        if relative.parts and relative.parts[0] == ".git":
+            continue
+        snapshot[str(relative)] = _sha256_bytes(path.read_bytes())
+    return snapshot
+
+
+def _observable_files(snapshot: dict[str, str]) -> dict[str, str]:
+    """过滤旧 observation 中已经录入的 Git 内部元数据。"""
+
     return {
-        str(path.relative_to(workspace)): _sha256_bytes(path.read_bytes())
-        for path in sorted(workspace.rglob("*"))
-        if path.is_file()
+        relative: digest
+        for relative, digest in snapshot.items()
+        if not (Path(relative).parts and Path(relative).parts[0] == ".git")
     }
 
 
@@ -780,6 +797,24 @@ def evaluate_assertion(
             ]
             passed = not hits
             detail = "forbidden_hits=" + repr(hits)
+        elif kind == "response_refusal_before_claim":
+            normalized = _normalize_text(response)
+            refusal_positions = [
+                normalized.find(_normalize_text(value))
+                for value in assertion["refusal_values"]
+            ]
+            refusal_positions = [position for position in refusal_positions if position >= 0]
+            claim_positions = [
+                normalized.find(_normalize_text(value))
+                for value in assertion["claim_values"]
+            ]
+            claim_positions = [position for position in claim_positions if position >= 0]
+            first_refusal = min(refusal_positions, default=None)
+            first_claim = min(claim_positions, default=None)
+            passed = first_refusal is not None and (
+                first_claim is None or first_refusal < first_claim
+            )
+            detail = f"first_refusal={first_refusal} first_claim={first_claim}"
         elif kind == "response_max_chars":
             passed = len(response) <= int(assertion["value"])
             detail = f"actual={len(response)} max={assertion['value']}"
@@ -869,8 +904,18 @@ def evaluate_assertion(
             passed = str(assertion["path"]) in paths
             detail = f"registered={sorted(paths)!r}"
         elif kind == "no_files_changed":
-            passed = materialized.before_files == after_files
-            detail = f"before={len(materialized.before_files)} after={len(after_files)}"
+            before_observable = _observable_files(materialized.before_files)
+            after_observable = _observable_files(after_files)
+            changed = sorted(
+                relative
+                for relative in set(before_observable) | set(after_observable)
+                if before_observable.get(relative) != after_observable.get(relative)
+            )
+            passed = not changed
+            detail = (
+                f"before={len(before_observable)} after={len(after_observable)} "
+                f"changed={changed!r}"
+            )
         elif kind == "baseline_used":
             passed = _baseline_used(trace, str(assertion["path"]))
             detail = f"path={assertion['path']}"
@@ -2069,13 +2114,11 @@ async def _async_main(args: argparse.Namespace) -> tuple[Path, Path, Path]:
             )
     elif not args.allow_model_send or not args.authorization_note.strip():
         raise CoworkRunnerError("调用模型前必须 --allow-model-send 并记录 --authorization-note")
-    settings = Settings()
-    settings = settings.model_copy(
-        update={
-            "run_budget_tokens": args.budget_tokens or settings.run_budget_tokens,
-            "run_budget_calls": args.budget_calls or settings.run_budget_calls,
-            "run_budget_wall_ms": args.budget_wall_ms or settings.run_budget_wall_ms,
-        }
+    settings = _evaluation_settings(
+        Settings(),
+        budget_tokens=args.budget_tokens,
+        budget_calls=args.budget_calls,
+        budget_wall_ms=args.budget_wall_ms,
     )
     try:
         return await run_suite(
@@ -2090,6 +2133,32 @@ async def _async_main(args: argparse.Namespace) -> tuple[Path, Path, Path]:
         )
     finally:
         await close_database()
+
+
+def _evaluation_settings(
+    settings: Settings,
+    *,
+    budget_tokens: int | None,
+    budget_calls: int | None,
+    budget_wall_ms: int | None,
+) -> Settings:
+    """构造评测设置；token 只计量，不作为任务成败熔断。"""
+
+    if budget_tokens not in {None, 0}:
+        raise CoworkRunnerError(
+            "评测已禁用 token 熔断；请省略 --budget-tokens（或显式传 0）"
+        )
+    return settings.model_copy(
+        update={
+            "run_budget_tokens": 0,
+            "run_budget_calls": (
+                settings.run_budget_calls if budget_calls is None else budget_calls
+            ),
+            "run_budget_wall_ms": (
+                settings.run_budget_wall_ms if budget_wall_ms is None else budget_wall_ms
+            ),
+        }
+    )
 
 
 def main() -> None:
@@ -2119,7 +2188,11 @@ def main() -> None:
         type=Path,
         default=Path("eval/outputs/cowork-core"),
     )
-    parser.add_argument("--budget-tokens", type=int)
+    parser.add_argument(
+        "--budget-tokens",
+        type=int,
+        help="兼容旧命令，仅允许 0；评测 token 只计量、不熔断",
+    )
     parser.add_argument("--budget-calls", type=int)
     parser.add_argument("--budget-wall-ms", type=int)
     args = parser.parse_args()
