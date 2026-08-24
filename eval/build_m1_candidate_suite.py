@@ -241,9 +241,7 @@ def stable_test_groups(groups: tuple[GroupPlan, ...] = GROUPS) -> frozenset[str]
     for chosen in itertools.combinations(groups, 4):
         if Counter(group.language for group in chosen) != {"zh": 2, "en": 2}:
             continue
-        categories = Counter(
-            category for group in chosen for category in group.categories
-        )
+        categories = Counter(category for group in chosen for category in group.categories)
         if categories != TEST_CATEGORY_TARGET:
             continue
         keys = tuple(sorted(group.key for group in chosen))
@@ -255,9 +253,7 @@ def stable_test_groups(groups: tuple[GroupPlan, ...] = GROUPS) -> frozenset[str]
 
 
 def _clean_heading(anchor: BlockAnchor) -> str:
-    heading = (
-        anchor.heading_path[-1] if anchor.heading_path else f"block {anchor.block_idx}"
-    )
+    heading = anchor.heading_path[-1] if anchor.heading_path else f"block {anchor.block_idx}"
     heading = _QUESTION_PREFIX.sub("", heading).strip()
     return heading[:180] or f"block {anchor.block_idx}"
 
@@ -274,9 +270,7 @@ def _question(plan: GroupPlan, category: str, anchors: list[BlockAnchor]) -> str
         if category == "table":
             return f"《{plan.title}》“{labels[0]}”中的表格列出了哪些关键结果？"
         if category == "temporal":
-            return (
-                f"在该语料版本生效时，《{plan.title}》“{labels[0]}”记录的结论是什么？"
-            )
+            return f"在该语料版本生效时，《{plan.title}》“{labels[0]}”记录的结论是什么？"
         if category == "global":
             return f"结合《{plan.title}》“{labels[0]}”和“{labels[1]}”，文档强调了哪两个要点？"
         if category == "agent_task":
@@ -297,9 +291,7 @@ def _question(plan: GroupPlan, category: str, anchors: list[BlockAnchor]) -> str
     return f'Does "{plan.title}" specify an exact annual subscription price for its commercial product?'
 
 
-def _candidate_constraints(
-    item_key: str, language: Language, group_key: str
-) -> dict[str, Any]:
+def _candidate_constraints(item_key: str, language: Language, group_key: str) -> dict[str, Any]:
     return {
         "must_include": [],
         "must_not_include": [],
@@ -313,9 +305,7 @@ def _candidate_constraints(
     }
 
 
-def _select_anchors(
-    blocks: list[BlockAnchor], category: str, used: set[int]
-) -> list[BlockAnchor]:
+def _select_anchors(blocks: list[BlockAnchor], category: str, used: set[int]) -> list[BlockAnchor]:
     if category in {"unanswerable", "agent_task"}:
         return []
     needed = 2 if category in {"multi_hop", "global"} else 1
@@ -391,9 +381,7 @@ def build_group_items(
                 gold_spans=spans,
                 gold_tools=tools,
                 constraints=_candidate_constraints(item_key, plan.language, plan.key),
-                difficulty=3
-                if category in {"multi_hop", "global", "agent_task"}
-                else 2,
+                difficulty=3 if category in {"multi_hop", "global", "agent_task"} else 2,
                 origin="synthetic",
                 temporal_ctx=activated_at if category == "temporal" else None,
                 partition_version_id=version_id,
@@ -415,9 +403,7 @@ def _span_keys(item: CandidateItem) -> set[tuple[str, int, int]]:
 
 def fingerprint_items(items: list[CandidateItem]) -> str:
     payload = [asdict(item) for item in sorted(items, key=lambda entry: entry.item_key)]
-    return _digest(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    )
+    return _digest(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
 def validate_candidate_items(
@@ -459,9 +445,7 @@ def validate_candidate_items(
             failures.append(f"candidate origin must be synthetic: {item.item_key}")
         review = item.constraints.get("candidate_review") or {}
         if review.get("status") != "pending_human":
-            failures.append(
-                f"candidate review status must be pending_human: {item.item_key}"
-            )
+            failures.append(f"candidate review status must be pending_human: {item.item_key}")
         if item.language == "en" and _CJK.search(item.question):
             failures.append(f"english question contains CJK: {item.item_key}")
         if item.category == "unanswerable":
@@ -485,16 +469,12 @@ def validate_candidate_items(
             )
             if start < 0 or end <= start or len(quote) != end - start:
                 failures.append(f"span range/quote length: {item.item_key}")
-    duplicate_questions = {
-        key: value for key, value in questions.items() if len(value) > 1
-    }
+    duplicate_questions = {key: value for key, value in questions.items() if len(value) > 1}
     if duplicate_questions:
         failures.append(f"duplicate questions={duplicate_questions}")
     existing_overlap = sorted(set(questions) & (human_questions or set()))
     if existing_overlap:
-        failures.append(
-            f"existing-vs-candidate duplicate questions={existing_overlap[:10]}"
-        )
+        failures.append(f"existing-vs-candidate duplicate questions={existing_overlap[:10]}")
 
     dev_items = [item for item in items if item.split == "dev"]
     test_items = [item for item in items if item.split == "test"]
@@ -517,9 +497,7 @@ def validate_candidate_items(
             f"{split_}:{language}": count
             for (split_, language), count in sorted(language_counts.items())
         },
-        "category_counts": dict(
-            sorted(Counter(item.category for item in items).items())
-        ),
+        "category_counts": dict(sorted(Counter(item.category for item in items).items())),
         "test_category_counts": dict(sorted(test_categories.items())),
         "cross_split_question_duplicates": 0,
         "cross_split_gold_span_duplicates": 0,
@@ -554,17 +532,11 @@ async def _load_human_summary(
     )
     counts = Counter(str(row["name"]) for row in rows)
     if counts != {"core-dev": 20, "english-dev": 20}:
-        raise CandidateSuiteError(
-            f"既有 human 必须是 core-dev=20/english-dev=20, 实际={counts}"
-        )
-    invalid = [
-        str(row["id"]) for row in rows if row["gold_spans"] and not row["spans_valid"]
-    ]
+        raise CandidateSuiteError(f"既有 human 必须是 core-dev=20/english-dev=20, 实际={counts}")
+    invalid = [str(row["id"]) for row in rows if row["gold_spans"] and not row["spans_valid"]]
     if invalid:
         raise CandidateSuiteError(f"既有 human 含 stale gold span: {invalid[:10]}")
-    versions = {
-        str(span["version_id"]) for row in rows for span in (row["gold_spans"] or [])
-    }
+    versions = {str(span["version_id"]) for row in rows for span in (row["gold_spans"] or [])}
     canonical = [
         {
             key: (
@@ -592,9 +564,7 @@ async def _load_human_summary(
         "item_count": len(rows),
         "origin": "human",
         "datasets": dict(sorted(counts.items())),
-        "category_counts": dict(
-            sorted(Counter(str(row["category"]) for row in rows).items())
-        ),
+        "category_counts": dict(sorted(Counter(str(row["category"]) for row in rows).items())),
         "fingerprint": _digest(
             json.dumps(canonical, ensure_ascii=False, sort_keys=True, default=str)
         ),
@@ -643,9 +613,7 @@ async def _load_group_blocks(
         title_rows = by_title[title]
         version_ids = {str(row["version_id"]) for row in title_rows}
         if len(version_ids) != 1:
-            raise CandidateSuiteError(
-                f"文档必须恰好一个激活版本: {title} -> {sorted(version_ids)}"
-            )
+            raise CandidateSuiteError(f"文档必须恰好一个激活版本: {title} -> {sorted(version_ids)}")
         full_texts = {str(row["full_text"]) for row in title_rows}
         if len(full_texts) != 1:
             raise CandidateSuiteError(f"同一版本 full_text 不一致: {title}")
@@ -702,9 +670,7 @@ async def build_suite(
     validation = validate_candidate_items(
         items, human_versions=human_versions, human_questions=human_questions
     )
-    full_counts = Counter(human["category_counts"]) + Counter(
-        validation["category_counts"]
-    )
+    full_counts = Counter(human["category_counts"]) + Counter(validation["category_counts"])
     if full_counts != EXPECTED_FULL_COUNTS:
         raise CandidateSuiteError(f"120 条总类别分布错误: {full_counts}")
     return items, {
@@ -803,9 +769,7 @@ def audit_content_quality(items: list[CandidateItem]) -> dict[str, Any]:
     return {
         "status": "passed" if not findings else "rejected_content_quality",
         "finding_counts": {key: len(value) for key, value in sorted(findings.items())},
-        "sample_item_keys": {
-            key: value[:10] for key, value in sorted(findings.items())
-        },
+        "sample_item_keys": {key: value[:10] for key, value in sorted(findings.items())},
     }
 
 
@@ -871,9 +835,7 @@ async def import_candidates(
             ):
                 raise CandidateSuiteError(f"staging dataset 元数据冲突: {name}")
             actual_dataset_id = stored_dataset["id"]
-            expected_ids = {
-                uuid5(NAMESPACE, f"item:{item.item_key}") for item in expected_items
-            }
+            expected_ids = {uuid5(NAMESPACE, f"item:{item.item_key}") for item in expected_items}
             stored_ids = set(
                 (
                     await session.execute(
@@ -937,14 +899,11 @@ async def import_candidates(
             if len(rows) != len(expected_items) or any(
                 row["origin"] != "synthetic" for row in rows
             ):
-                raise CandidateSuiteError(
-                    f"staging dataset 条目数量/origin 错误: {name}"
-                )
+                raise CandidateSuiteError(f"staging dataset 条目数量/origin 错误: {name}")
             if any(row["gold_spans"] and not row["spans_valid"] for row in rows):
                 raise CandidateSuiteError(f"staging dataset 含 stale span: {name}")
             expected_by_id = {
-                uuid5(NAMESPACE, f"item:{item.item_key}"): item
-                for item in expected_items
+                uuid5(NAMESPACE, f"item:{item.item_key}"): item for item in expected_items
             }
             for row in rows:
                 expected = expected_by_id[row["id"]]
@@ -1014,9 +973,7 @@ def write_outputs(
             "split": split,
             "language": language,
             "item_count": sum(item.dataset == name for item in items),
-            "fingerprint": _dataset_fingerprint(
-                [item for item in items if item.dataset == name]
-            ),
+            "fingerprint": _dataset_fingerprint([item for item in items if item.dataset == name]),
             "origin": "synthetic",
             "review_status": "pending_human",
         }
@@ -1054,8 +1011,7 @@ def write_outputs(
         ]
         (output_dir / f"review-{split}.jsonl").write_text(
             "".join(
-                json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
-                for record in records
+                json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records
             ),
             encoding="utf-8",
         )
@@ -1109,9 +1065,7 @@ async def run(*, apply: bool, output_root: Path) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="构建/导入 M1 120 条候选评测套件")
-    parser.add_argument(
-        "--apply", action="store_true", help="写入四个隔离 staging dataset"
-    )
+    parser.add_argument("--apply", action="store_true", help="写入四个隔离 staging dataset")
     parser.add_argument(
         "--output-root",
         type=Path,
@@ -1119,11 +1073,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     manifest = asyncio.run(run(apply=args.apply, output_root=args.output_root))
-    print(
-        json.dumps(
-            {"manifest": str(manifest), "applied": args.apply}, ensure_ascii=False
-        )
-    )
+    print(json.dumps({"manifest": str(manifest), "applied": args.apply}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

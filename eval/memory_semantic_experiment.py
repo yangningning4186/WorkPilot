@@ -147,11 +147,7 @@ class ArmScore:
 
     @property
     def qualified(self) -> bool:
-        return (
-            self.task_quality == 2
-            and self.memory_use == 2
-            and not self.source_disclosure
-        )
+        return self.task_quality == 2 and self.memory_use == 2 and not self.source_disclosure
 
 
 @dataclass(frozen=True)
@@ -543,11 +539,7 @@ def _enforce_preference(
 def _unblind_preference(record: JudgeRecord) -> str:
     if record.preferred == "tie":
         return "tie"
-    return (
-        record.answer_a_condition
-        if record.preferred == "A"
-        else record.answer_b_condition
-    )
+    return record.answer_a_condition if record.preferred == "A" else record.answer_b_condition
 
 
 def _judge_prompt(case: SemanticCase, answer_a: str, answer_b: str) -> str:
@@ -563,9 +555,7 @@ def _judge_prompt(case: SemanticCase, answer_a: str, answer_b: str) -> str:
     )
 
 
-def _pair_fingerprint(
-    case: SemanticCase, arm_a: GenerationArm, arm_b: GenerationArm
-) -> str:
+def _pair_fingerprint(case: SemanticCase, arm_a: GenerationArm, arm_b: GenerationArm) -> str:
     return _sha256_json(
         {
             "case": asdict(case),
@@ -850,9 +840,7 @@ def _parse_args() -> argparse.Namespace:
     generate.add_argument("--allow-model-send", action="store_true")
     generate.add_argument("--authorization-note", default="")
     generate.add_argument("--allow-synthetic", action="store_true")
-    generate.add_argument(
-        "--output-root", type=Path, default=Path("eval/outputs/memory-semantic")
-    )
+    generate.add_argument("--output-root", type=Path, default=Path("eval/outputs/memory-semantic"))
     judge = subparsers.add_parser("judge", help="用独立模型做匿名配对语义评分")
     judge.add_argument("--package", type=Path, required=True)
     judge.add_argument("--provider", default="openai_compatible")

@@ -27,9 +27,7 @@ async def check_heavy_endpoint(
     if not base_url or not model:
         raise ValueError("TIER_HEAVY_BASE_URL/TIER_HEAVY_MODEL 尚未配置")
     headers = (
-        {"Authorization": f"Bearer {settings.cluster_api_key}"}
-        if settings.cluster_api_key
-        else {}
+        {"Authorization": f"Bearer {settings.cluster_api_key}"} if settings.cluster_api_key else {}
     )
     owns_client = client is None
     current_client = client or httpx.AsyncClient(
@@ -65,8 +63,7 @@ async def check_heavy_endpoint(
             payload = response.json()
             if payload.get("model") != model:
                 raise ValueError(
-                    "heavy chat 实际身份漂移: "
-                    f"expected={model}, actual={payload.get('model')}"
+                    f"heavy chat 实际身份漂移: expected={model}, actual={payload.get('model')}"
                 )
             choices = payload.get("choices")
             if not isinstance(choices, list) or not choices:
@@ -87,9 +84,7 @@ async def check_heavy_endpoint(
             "data_scope": "synthetic health prompt only; no project data sent",
         }
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(
-            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         return result
     finally:
         if owns_client:
@@ -122,9 +117,7 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    result = asyncio.run(
-        check_heavy_endpoint(output=args.output, chat_smoke=args.chat_smoke)
-    )
+    result = asyncio.run(check_heavy_endpoint(output=args.output, chat_smoke=args.chat_smoke))
     print(json.dumps(result, ensure_ascii=False))
 
 

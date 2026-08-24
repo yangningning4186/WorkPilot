@@ -53,9 +53,7 @@ BADCASES: tuple[Badcase, ...] = (
         # 端到端那条覆盖随 pgvector 主答路径一起退役了（2026-08-21）。这里保留的是
         # 仍然成立的那一半：排序函数的默认值。E5（证据门控误拒）整条摘掉——它锁的是
         # grounded_answer 的证据打包顺序，那段代码已经不存在，留着只是让棘轮空转。
-        covered_by=(
-            "tests.test_regression_badcases::test_default_lexical_mode_stays_ts_rank",
-        ),
+        covered_by=("tests.test_regression_badcases::test_default_lexical_mode_stays_ts_rank",),
     ),
     Badcase(
         case_id="G1-门禁拒判退出码撞车",

@@ -80,9 +80,7 @@ def export_review(reports: list[Path], output: Path) -> int:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="导出 M0 逐引用人工语义支撑复核表")
-    parser.add_argument(
-        "--generation-report", type=Path, action="append", required=True
-    )
+    parser.add_argument("--generation-report", type=Path, action="append", required=True)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 

@@ -192,6 +192,56 @@ def _retrieval_report(
     }
 
 
+def _strict_hybrid_report(
+    *,
+    label: str,
+    lexical_weight: float = 1.0,
+    adaptive_enabled: bool = False,
+) -> dict[str, Any]:
+    report = _retrieval_report(
+        _four_retrieval_items([0.5] * 4),
+        label=label,
+        config={
+            "strategy": "hybrid",
+            "kb_version_id": "v1",
+            "retrieval_score_source": "rrf",
+            "embedding": {"model": "bge-m3", "dimensions": 1024, "revision": "r1"},
+            "retrieval": {
+                "engine": "hybrid",
+                "chunk_size": 512,
+                "chunk_overlap": 64,
+                "rrf_k": 60,
+                "rrf_lexical_weight": lexical_weight,
+                "vector_top_k_multiplier": 2,
+                "bm25_top_k_multiplier": 2,
+            },
+            "rerank": {
+                "enabled": False,
+                "candidate_k": 10,
+                "model": "BAAI/bge-reranker-v2-m3",
+                "max_candidate_chars": 1200,
+                "candidate_text_mode": "content",
+            },
+            "adaptive_top_k": {
+                "enabled": adaptive_enabled,
+                "max_top_k": 10,
+                "trigger": "rrf_route_consensus",
+                "consensus_rank": 4,
+                "min_score": 1 / 60 + 1 / 63,
+            },
+        },
+    )
+    report["suite"] = {"sha256": "suite-sha", "selected_items": 4}
+    report["kb"] = {
+        "slug": "papers",
+        "version_id": "v1",
+        "document_hashes": ["a" * 64],
+        "node_count": 10,
+    }
+    report["reproducibility"] = {"implementation_fingerprint": "impl-sha"}
+    return report
+
+
 def _generation_item(
     item_id: str,
     category: str,
@@ -459,6 +509,183 @@ def test_config_diff_lists_the_experimental_variable(tmp_path: Path) -> None:
     assert diff["strategy"] == {"baseline": "dense-only", "candidate": "dense-lexical-rrf"}
     assert diff["rrf_k"] == {"baseline": None, "candidate": 60}
     assert payload["compatibility"]["controlled_diff"] == []
+
+
+def test_local_kb_engine_experiment_verifies_all_single_variable_invariants(
+    tmp_path: Path,
+) -> None:
+    def local_report(*, label: str, engine: str, version_id: str) -> dict[str, Any]:
+        report = _retrieval_report(
+            _four_retrieval_items([0.5] * 4),
+            label=label,
+            config={
+                "strategy": engine,
+                "kb_version_id": version_id,
+                "retrieval_score_source": "rrf" if engine == "hybrid" else engine,
+                "embedding": {"model": "bge-m3", "dimensions": 1024, "revision": "r1"},
+                "retrieval": {
+                    "engine": engine,
+                    "chunk_size": 512,
+                    "chunk_overlap": 64,
+                    "rrf_k": 60,
+                    "vector_top_k_multiplier": 2,
+                    "bm25_top_k_multiplier": 2,
+                },
+            },
+        )
+        report["suite"] = {"sha256": "suite-sha", "selected_items": 4}
+        report["kb"] = {
+            "slug": "papers",
+            "document_hashes": ["a" * 64],
+            "node_count": 10,
+        }
+        report["reproducibility"] = {"implementation_fingerprint": "impl-sha"}
+        return report
+
+    baseline = local_report(label="dense", engine="dense", version_id="dense-v1")
+    candidate = local_report(label="hybrid", engine="hybrid", version_id="hybrid-v1")
+
+    payload = _compare(
+        tmp_path,
+        baseline,
+        candidate,
+        experiment_variable="retrieval.engine",
+    )
+
+    audit = payload["compatibility"]["single_variable"]
+    assert audit["verified"] is True
+    assert audit["baseline"] == "dense"
+    assert audit["candidate"] == "hybrid"
+    assert "单变量校验通过" in markdown_report(payload)
+
+    candidate["kb"]["document_hashes"] = ["b" * 64]
+    with pytest.raises(ValueError, match="实验条件发生变化"):
+        _compare(
+            tmp_path,
+            baseline,
+            candidate,
+            experiment_variable="retrieval.engine",
+        )
+
+
+def test_local_kb_rerank_experiment_verifies_single_variable_invariants(
+    tmp_path: Path,
+) -> None:
+    def local_report(*, label: str, rerank_enabled: bool) -> dict[str, Any]:
+        report = _retrieval_report(
+            _four_retrieval_items([0.5] * 4),
+            label=label,
+            config={
+                "strategy": "hybrid",
+                "kb_version_id": "v1",
+                "retrieval_score_source": "rerank" if rerank_enabled else "rrf",
+                "embedding": {"model": "bge-m3", "dimensions": 1024, "revision": "r1"},
+                "retrieval": {
+                    "engine": "hybrid",
+                    "chunk_size": 512,
+                    "chunk_overlap": 64,
+                    "rrf_k": 60,
+                    "vector_top_k_multiplier": 2,
+                    "bm25_top_k_multiplier": 2,
+                },
+                "rerank": {
+                    "enabled": rerank_enabled,
+                    "candidate_k": 10,
+                    "model": "BAAI/bge-reranker-v2-m3",
+                    "max_candidate_chars": 1200,
+                    "candidate_text_mode": "content",
+                },
+            },
+        )
+        report["suite"] = {"sha256": "suite-sha", "selected_items": 4}
+        report["kb"] = {
+            "slug": "papers",
+            "version_id": "v1",
+            "document_hashes": ["a" * 64],
+            "node_count": 10,
+        }
+        report["reproducibility"] = {"implementation_fingerprint": "impl-sha"}
+        return report
+
+    baseline = local_report(label="rrf", rerank_enabled=False)
+    candidate = local_report(label="rerank", rerank_enabled=True)
+
+    payload = _compare(
+        tmp_path,
+        baseline,
+        candidate,
+        experiment_variable="rerank.enabled",
+    )
+
+    audit = payload["compatibility"]["single_variable"]
+    assert audit["verified"] is True
+    assert audit["baseline"] is False
+    assert audit["candidate"] is True
+
+    candidate["config"]["rerank"]["candidate_k"] = 20
+    with pytest.raises(ValueError, match="不只改变了 enabled"):
+        _compare(
+            tmp_path,
+            baseline,
+            candidate,
+            experiment_variable="rerank.enabled",
+        )
+
+
+def test_rrf_lexical_weight_experiment_verifies_single_variable_invariants(
+    tmp_path: Path,
+) -> None:
+    baseline = _strict_hybrid_report(label="equal", lexical_weight=1.0)
+    candidate = _strict_hybrid_report(label="lex075", lexical_weight=0.75)
+
+    payload = _compare(
+        tmp_path,
+        baseline,
+        candidate,
+        experiment_variable="retrieval.rrf_lexical_weight",
+    )
+
+    audit = payload["compatibility"]["single_variable"]
+    assert audit["verified"] is True
+    assert audit["baseline"] == 1.0
+    assert audit["candidate"] == 0.75
+
+    candidate["config"]["retrieval"]["bm25_top_k_multiplier"] = 3
+    with pytest.raises(ValueError, match="词法权重之外"):
+        _compare(
+            tmp_path,
+            baseline,
+            candidate,
+            experiment_variable="retrieval.rrf_lexical_weight",
+        )
+
+
+def test_adaptive_top_k_experiment_verifies_single_variable_invariants(
+    tmp_path: Path,
+) -> None:
+    baseline = _strict_hybrid_report(label="fixed", adaptive_enabled=False)
+    candidate = _strict_hybrid_report(label="adaptive", adaptive_enabled=True)
+
+    payload = _compare(
+        tmp_path,
+        baseline,
+        candidate,
+        experiment_variable="adaptive_top_k.enabled",
+    )
+
+    audit = payload["compatibility"]["single_variable"]
+    assert audit["verified"] is True
+    assert audit["baseline"] is False
+    assert audit["candidate"] is True
+
+    candidate["config"]["adaptive_top_k"]["max_top_k"] = 20
+    with pytest.raises(ValueError, match="除 enabled 外"):
+        _compare(
+            tmp_path,
+            baseline,
+            candidate,
+            experiment_variable="adaptive_top_k.enabled",
+        )
 
 
 # ------------------------------------------------------------------ 兼容性校验

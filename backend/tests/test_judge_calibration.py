@@ -544,9 +544,7 @@ def test_below_threshold_slices_stay_visible_under_report_only(tmp_path: Path) -
     assert "低于阈值" in _markdown(report)
 
 
-def _bundle_with_labels(
-    tmp_path: Path, *, labeled_splits: tuple[str, ...]
-) -> tuple[Path, Path]:
+def _bundle_with_labels(tmp_path: Path, *, labeled_splits: tuple[str, ...]) -> tuple[Path, Path]:
     """造一个 bundle，并按 split 决定哪些行已经填了 score。"""
     tmp_path.mkdir(parents=True, exist_ok=True)
     report = _generation_report(

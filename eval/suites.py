@@ -41,14 +41,9 @@ def load_suite(path: Path) -> EvalSuite:
             str(dataset): {str(key): str(value) for key, value in review.items()}
             for dataset, review in payload["provenance"].items()
         },
-        category_counts={
-            str(key): int(value) for key, value in payload["category_counts"].items()
-        },
+        category_counts={str(key): int(value) for key, value in payload["category_counts"].items()},
     )
-    if (
-        not suite.datasets
-        or sum(item.item_count for item in suite.datasets) != suite.item_count
-    ):
+    if not suite.datasets or sum(item.item_count for item in suite.datasets) != suite.item_count:
         raise ValueError("suite 的 dataset 条数之和与 item_count 不一致")
     if sum(suite.category_counts.values()) != suite.item_count:
         raise ValueError("suite 的 category_counts 与 item_count 不一致")

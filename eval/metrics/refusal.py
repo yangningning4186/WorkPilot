@@ -37,13 +37,17 @@ class RefusalAnalysis:
 
 
 def analyze_refusal(
-    observations: list[tuple[float, bool]], *, configured_threshold: float
+    observations: list[tuple[float, bool]], *, configured_threshold: float | None
 ) -> RefusalAnalysis:
     answerable = [score for score, label in observations if label]
     unanswerable = [score for score, label in observations if not label]
     if not observations:
         return RefusalAnalysis(None, None, None, 0, 0)
-    configured = score_threshold(observations, configured_threshold)
+    configured = (
+        score_threshold(observations, configured_threshold)
+        if configured_threshold is not None
+        else None
+    )
     candidates = _candidate_thresholds([score for score, _ in observations])
     scored = [score_threshold(observations, threshold) for threshold in candidates]
     best = max(
@@ -54,9 +58,7 @@ def analyze_refusal(
     return RefusalAnalysis(auroc, best, configured, len(answerable), len(unanswerable))
 
 
-def score_threshold(
-    observations: list[tuple[float, bool]], threshold: float
-) -> ThresholdMetrics:
+def score_threshold(observations: list[tuple[float, bool]], threshold: float) -> ThresholdMetrics:
     true_answerable = false_answerable = true_refusal = false_refusal = 0
     for score, answerable in observations:
         predicted_answerable = score >= threshold

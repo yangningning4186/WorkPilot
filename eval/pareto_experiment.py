@@ -181,9 +181,7 @@ async def run_one(
 
     if result.report_path is not None:
         # report_path 指向 report.md（给人看的），机器读的指标在同目录的 report.json。
-        report = json.loads(
-            (result.report_path.parent / "report.json").read_text(encoding="utf-8")
-        )
+        report = json.loads((result.report_path.parent / "report.json").read_text(encoding="utf-8"))
         outcome.metrics = report["metrics"]
     if costs:
         item = costs[0]
@@ -225,11 +223,7 @@ _MEDIAN_PATHS: tuple[tuple[str, ...], ...] = (
 def _median_metrics(runs: list[dict[str, Any]]) -> dict[str, Any]:
     merged: dict[str, Any] = {}
     for path in _MEDIAN_PATHS:
-        values = [
-            value
-            for run in runs
-            if isinstance(value := _dig(run, *path), int | float)
-        ]
+        values = [value for run in runs if isinstance(value := _dig(run, *path), int | float)]
         median = _median([float(v) for v in values])
         if median is None:
             continue
@@ -351,9 +345,7 @@ async def main() -> None:
         default=1024,
         help="证据门控的 token 预算，对所有配置统一生效（默认 300 对推理模型不够）",
     )
-    parser.add_argument(
-        "--configs", default="", help="只跑其中几个，逗号分隔，例如 C2,C3"
-    )
+    parser.add_argument("--configs", default="", help="只跑其中几个，逗号分隔，例如 C2,C3")
     parser.add_argument("--output-root", type=Path, default=Path("eval/outputs/pareto"))
     args = parser.parse_args()
 

@@ -4,11 +4,40 @@
 
 与 backend 平级的一等模块，不是测试目录的附属。
 
-## Cowork 单 Agent 48 条基线
+## 统一评测与回放入口
 
-`cowork-core-48.json` 是 Cowork 的首个端到端标注候选集：37 条 dev、11 条冻结 test，
-覆盖 workspace（含只读 git 视图）、artifact、Office、Web、knowledge/RAG、工作区文档沉浸阅读
-与安全/HITL 七类任务。每条记录均包含
+新的回归评测、基线晋升与回放契约见
+[docs/18-评测与回放层.md](../docs/18-评测与回放层.md)。交付门禁以 `eval.regression` 为准；
+`eval.compare` 保留统计诊断用途，`eval.gate` 只兼容历史 retrieval/generation 报告，不用于新 baseline。
+
+```bash
+# 只读检查 track/suite/policy/baseline/replay 目录
+PYTHONPATH=backend backend/.venv/bin/python -m eval.catalog doctor
+
+# 零模型、零工具地验证 Run 事件协议与状态折叠
+PYTHONPATH=backend backend/.venv/bin/python -m eval.replay verify \
+  eval/replays/run-protocol-v1.json --format markdown
+
+# 从本机权威 run_events 导出已完成 Run（敏感、0600、不覆盖）
+PYTHONPATH=backend backend/.venv/bin/python -m eval.run_replay_export \
+  --run-id <RUN_UUID> --output eval/outputs/replay/<RUN_UUID>.json \
+  --acknowledge-sensitive-output
+
+# 从批准报告生成隐私安全 baseline，再对候选做严格配对门禁
+PYTHONPATH=backend backend/.venv/bin/python -m eval.regression snapshot \
+  <approved-report.json> --policy eval/policies/cowork.json --output <new-baseline.json>
+PYTHONPATH=backend backend/.venv/bin/python -m eval.regression check \
+  <candidate-report.json> --baseline <baseline.json> --policy eval/policies/cowork.json
+```
+
+`eval.regression` 的稳定退出码是 `0=通过`、`1=可比较但发生回退`、`2=拒绝判定`。
+当前 catalog 会如实把三份历史 snapshot 标为 `rebuild_required`，而不是显示为可发布 baseline。
+
+## Cowork 单 Agent 50 条基线
+
+`cowork-core-50.json` 是 Cowork 的端到端标注候选集：39 条 dev、11 条冻结 test，
+覆盖 workspace（含只读 git 视图）、artifact、格式 Skill + Shell、Web、knowledge/RAG、工作区文档沉浸阅读
+与安全/HITL，并新增飞书连接器和持久 shell 两类回归任务。每条记录均包含
 可复现 fixture、初始 capability、期望终态、gold 工具、工具顺序/调用预算和确定性成功断言；
 knowledge 类额外强制 `EvidenceBundle` 合约，不允许 `chunk_id`、内部 score 或 ORM 泄漏；
 reading 类强制 locator 引用（`[p.N]`），并留一条负例考"文档答不了就直说答不了"——
@@ -32,11 +61,11 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
   --authorization-note '<已核验的模型端点与合成数据发送授权>'
 ```
 
-跑完整 40 条必须显式留下 test access 审计：
+跑完整 50 条必须显式留下 test access 审计：
 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
-  --label cowork-core40-v1 --split all --include-test \
+  --label cowork-core50-v1 --split all --include-test \
   --test-access-note '<本次冻结验收原因>' \
   --allow-synthetic --allow-model-send \
   --authorization-note '<已核验的模型端点与合成数据发送授权>'
@@ -48,12 +77,20 @@ checkpoint/tool trace，`report.json` 提供机器可读总表及 category/split
 `actual_tool_calls / optimal_tool_calls` 步骤效率、P95 延迟和 Token；同时报告工具错误率与恢复数。
 runner 逐题落盘，某一题或进程失败不会抹掉已经完成的 observation。
 
+**动过阅读工具的题另算一层**（`metrics/reading.py`，口径见 [docs/04 §5](../docs/04-知识与阅读设计.md)）：
+`read_before_claim`（回答里每个 `[p.N]` 之前有没有真的 `read_material` 过那一节）、
+`quote_verifiability`（交给 `reader_goto` / `reader_annotate` 的引文能不能逐字回原文，
+**按书写体系分桶并单列 cross-language**）、`locator_accuracy`（在已验证存在的引文里，真身所在
+的 locator 是不是模型声称的那个）。三条的分母互不重叠，落在 `report.json` 的
+`metrics.reading` 与每条样本的 `score.reading`；没碰阅读工具的题整条不计入——"没考"和
+"考砸了"必须长得不一样。这一层完全是确定性的，所以离线重评分（下面那条命令）能原样重算。
+
 若只调整了标注或确定性 scorer，可复用既有 observation 离线重评分，不再次调用模型；延迟、
 Token 和工具轨迹保持原值，并在 manifest 记录源报告哈希：
 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
-  --label cowork-core40-v1-rescored \
+  --label cowork-core50-v1-rescored \
   --rescore-report eval/outputs/cowork-core/<baseline>/report.json \
   --include-test --test-access-note '<离线重评分原因>' --allow-synthetic
 ```
@@ -61,6 +98,20 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
 首轮人工复核应逐条确认：prompt 是否自然且无歧义、fixture 是否足以作答、gold 工具是否是
 最短安全路径、断言是否真的代表任务完成、HITL/权限预期是否符合产品策略。复核完成后再提升
 版本并冻结 test split；不要直接修改已经产生正式报告的版本。
+
+live Cowork 跑批会自动生成权限 `0600` 的 `model-cassette.json`。在同一 suite/split/item
+顺序上可用它进行零真实模型 dispatch 的 fixture 执行回放：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
+  --suite eval/suites/cowork-core-50.json --label replay-cowork-dev \
+  --split dev --allow-synthetic \
+  --replay-cassette eval/outputs/cowork-core/<recorded>/model-cassette.json
+```
+
+cassette 含完整 prompt/模型响应，不得提交 Git 或上传公共 artifact。请求漂移、篡改、
+cassette miss 或未消费记录都 fail closed；当前无可验证的断网 sandbox，所以 gold 或
+cassette 实际响应含 `run_shell` 的 case 会在 graph 执行前被拒绝。
 
 ## A5 长期记忆注入
 
@@ -113,7 +164,124 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.memory_semantic_experiment j
 自评。任务完整性、记忆使用与来源泄漏分开计分，确定性泄漏轨仍是硬失败。完整预注册门槛
 见 `docs/experiments/2026-08-18-A6-长期记忆语义评测预注册.md`。
 
-## Dense-only 基线
+## 当前文件系统 KB 检索基线
+
+`kb_retrieval_runner.py` 直接走生产中的 `LocalKbService -> search_index`，不恢复已经退役的
+PostgreSQL 表。gold 锚点固定为 `(content_hash, page_no, char_start, char_end)`：PDF 字符区间
+相对物理页起算，Markdown/TXT 的 `page_no` 为 `null`。runner 会在第一条 query 发出前把所有
+quote 逐字映射回选定索引；内容、页码或区间漂移时整批拒绝运行。
+
+先用索引中的逐字原文生成可复制的 anchor：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.kb_retrieval_runner anchors \
+  --kb-slug <slug> --kb-version <version> --quote '<原文中的连续引文>'
+```
+
+评测集是独立 JSON 文件，最小结构如下。可答题必须有事实组，不可答题必须没有伪造证据；
+同一事实的多个等价出处放进同一个 `alternatives`，多跳问题则放多个事实组。
+
+```json
+{
+  "schema_version": 1,
+  "name": "my-kb-dev-v1",
+  "origin": "synthetic",
+  "review": {"status": "pending_human_review"},
+  "items": [{
+    "item_id": "dev-001",
+    "split": "dev",
+    "category": "single_hop",
+    "question": "……？",
+    "answerable": true,
+    "gold_evidence_groups": [{
+      "fact_id": "R1",
+      "alternatives": [{
+        "content_hash": "<64 位 sha256>",
+        "page_no": 3,
+        "char_start": 149,
+        "char_end": 176,
+        "quote": "……"
+      }]
+    }]
+  }]
+}
+```
+
+跑 dev 候选集：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.kb_retrieval_runner run \
+  --suite /path/to/kb-dev.json --kb-slug <slug> --kb-version <version> \
+  --label current-hybrid-v1 --top-k 10 --diagnostic-k 50 \
+  --token-budget 4000 --allow-synthetic
+```
+
+输出位于 `eval/outputs/kb-retrieval/<timestamp>-<label>/`，包含 `report.json` 和 `report.md`。
+报告记录 suite/config/index/实现指纹、逐题命中与失败归因、Recall/nDCG/α-nDCG/MRR、上下文
+精度、文档覆盖、token、延迟、可答/不可答分数分布和拒答 AUROC。它保持现有
+`eval.compare` / `eval.gate` 的报告形状；只有 owner 逐题复核并把 `origin` 升级为 `human`
+之后，才允许导出新的正式 baseline 快照。冻结 test split 必须额外携带
+`--include-test --test-access-note '<原因>'`。
+
+`--top-k` 是产品正式召回深度；runner 会以这个深度单独调用一次 `search_index`
+并据此计分。只有可答题漏召回时，才用 `--diagnostic-k` 再跑一次不精排的深层检索；
+这份结果只用来区分 `outside_top_k` / `document_not_retrieved` 等归因，**不会再切回 Top-K
+混入正式指标**。
+
+当前可复跑的多文档候选集是 `eval/suites/kb-rag-research-dev-v1.json`：53 篇论文上的
+22 条可答题与 4 条不可答题。它仍是 `synthetic/pending_human_review`，只允许用于工程闭环和
+候选方向判断。E2-FS 固定其余配置，只比较已保留的 `e2-dense` 与 active `v1 hybrid`：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.kb_retrieval_runner run \
+  --suite eval/suites/kb-rag-research-dev-v1.json \
+  --kb-slug rag-research --kb-version e2-dense --label e2-dense-control-v1 \
+  --top-k 10 --diagnostic-k 50 --token-budget 4000 --allow-synthetic
+
+PYTHONPATH=backend backend/.venv/bin/python -m eval.kb_retrieval_runner run \
+  --suite eval/suites/kb-rag-research-dev-v1.json \
+  --kb-slug rag-research --kb-version v1 --label e2-hybrid-candidate-v1 \
+  --top-k 10 --diagnostic-k 50 --token-budget 4000 --allow-synthetic
+
+PYTHONPATH=backend backend/.venv/bin/python -m eval.compare \
+  <dense-report-dir> <hybrid-report-dir> \
+  --output-dir eval/outputs/kb-retrieval-compare/<label> \
+  --primary-metric ndcg_at_k --experiment-variable retrieval.engine
+```
+
+完整约束、指标和结论见
+[`E2-FS`](../docs/experiments/2026-08-23-E2-FS-文件系统KB混合检索单变量对照.md)。
+
+E3-FS 在同一个 active hybrid 索引上只切换 `rerank.enabled`。先启动
+[`reranker/`](../reranker/README.md) 的本机服务，再跑 Top-5 对照：
+
+```bash
+PYTHONPATH=backend RERANK_ENABLED=false backend/.venv/bin/python -m eval.kb_retrieval_runner run \
+  --suite eval/suites/kb-rag-research-dev-v1.json \
+  --kb-slug rag-research --kb-version v1 --label e3-top5-rrf-control-v3 \
+  --top-k 5 --diagnostic-k 50 --token-budget 4000 --allow-synthetic
+
+PYTHONPATH=backend RERANK_ENABLED=true RERANK_CANDIDATE_K=10 \
+RERANK_CANDIDATE_TEXT_MODE=content \
+backend/.venv/bin/python -m eval.kb_retrieval_runner run \
+  --suite eval/suites/kb-rag-research-dev-v1.json \
+  --kb-slug rag-research --kb-version v1 --label e3-top5-rerank10-candidate-v3 \
+  --top-k 5 --diagnostic-k 50 --token-budget 4000 --allow-synthetic
+
+PYTHONPATH=backend backend/.venv/bin/python -m eval.compare \
+  <rrf-report-dir> <rerank-report-dir> \
+  --output-dir eval/outputs/kb-retrieval-compare/<label> \
+  --primary-metric ndcg_at_k --experiment-variable rerank.enabled
+```
+
+完整结果和选参过程见
+[`E3-FS`](../docs/experiments/2026-08-23-E3-FS-本地cross-encoder精排.md)。
+
+## PostgreSQL 时代的 Dense-only 基线（历史）
+
+> 下方 `dense_baseline` / `suite_retrieval_runner` 是 PostgreSQL 时代的历史复现实验；
+> ADR-0012 退役数据库后不再是当前 KB 的运行入口。当前文件系统 KB 请使用上一节的
+> `kb_retrieval_runner`，不要把旧快照当成当前质量基线。
 
 先在本地 `http://127.0.0.1:8000/annotation` 标注 gold spans，再运行：
 
@@ -434,12 +602,11 @@ markdown 里各列几条，`report.json` 始终保留全部逐样本差值。
 一侧跑批报错），两侧就一起剔除，剔除数量记在「仅一侧适用」列——
 否则比较的是两批不同的样本。因此对照报告里的绝对值可能与单次跑批报告的聚合值不同。
 
-## 夜间门禁
+## 历史夜间门禁（仅旧报告）
 
-`gate.py` 在 `compare.py` 之上加"什么算不合格"，判定引擎完全复用后者，
-所以配对、兼容性校验、逐样本 delta 都是同一套口径。
-**跑在本机/集群，不在 GitHub Actions**——runner 既到不了推理集群也到不了私人库，
-PR 层是静态检查 + pytest（[docs/06 §4.1](../docs/06-评测体系.md)）。
+`gate.py` 是已退役 PostgreSQL retrieval/generation 报告的兼容层，不识别当前 Cowork
+报告，也不应为当前架构生成新 snapshot。下列命令只用于重现历史实验；新的三轨统一门禁
+使用本文顶部的 `eval.regression`，baseline readiness 以 `eval.catalog doctor` 为准。
 
 检索轨与生成轨**各一份快照**，按报告类型自动解析，不用每次手写 `--baseline`：
 

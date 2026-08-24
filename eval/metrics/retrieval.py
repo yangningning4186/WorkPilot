@@ -62,9 +62,7 @@ def evaluate_retrieval(
     )[:top_k]
     ndcg = _safe_ratio(_dcg(relevances), _dcg(ideal_relevances))
     alpha_dcg = _alpha_dcg(ranked, groups, theta=theta, alpha=alpha)
-    ideal_alpha_dcg = _ideal_alpha_dcg(
-        candidates, groups, top_k=top_k, theta=theta, alpha=alpha
-    )
+    ideal_alpha_dcg = _ideal_alpha_dcg(candidates, groups, top_k=top_k, theta=theta, alpha=alpha)
     first_relevant = next(
         (
             index
@@ -117,9 +115,7 @@ def _document_diversity(
     """
     gold_docs = {span.version_id for span in spans}
     hit_docs = {
-        span.version_id
-        for span in spans
-        if any(hits(chunk, span, theta=theta) for chunk in ranked)
+        span.version_id for span in spans if any(hits(chunk, span, theta=theta) for chunk in ranked)
     }
     counts: dict[object, int] = {}
     for chunk in ranked:
@@ -142,33 +138,22 @@ def _covered_group_indexes(
     }
 
 
-def _chunk_relevance(
-    chunk: RetrievedChunk, groups: list[GoldEvidenceGroup]
-) -> float:
+def _chunk_relevance(chunk: RetrievedChunk, groups: list[GoldEvidenceGroup]) -> float:
     return min(
         1.0,
-        sum(
-            max(overlap_ratio(chunk, span) for span in group.alternatives)
-            for group in groups
-        ),
+        sum(max(overlap_ratio(chunk, span) for span in group.alternatives) for group in groups),
     )
 
 
-def _is_relevant(
-    chunk: RetrievedChunk, groups: list[GoldEvidenceGroup], theta: float
-) -> bool:
+def _is_relevant(chunk: RetrievedChunk, groups: list[GoldEvidenceGroup], theta: float) -> bool:
     return any(_hits_group(chunk, group, theta) for group in groups)
 
 
-def _hits_group(
-    chunk: RetrievedChunk, group: GoldEvidenceGroup, theta: float
-) -> bool:
+def _hits_group(chunk: RetrievedChunk, group: GoldEvidenceGroup, theta: float) -> bool:
     return any(hits(chunk, span, theta=theta) for span in group.alternatives)
 
 
-def take_token_budget(
-    chunks: list[RetrievedChunk], budget: int
-) -> list[RetrievedChunk]:
+def take_token_budget(chunks: list[RetrievedChunk], budget: int) -> list[RetrievedChunk]:
     selected: list[RetrievedChunk] = []
     consumed = 0
     for chunk in chunks:
@@ -182,9 +167,7 @@ def take_token_budget(
 
 
 def _dcg(relevances: list[float]) -> float:
-    return sum(
-        relevance / math.log2(rank + 1) for rank, relevance in enumerate(relevances, 1)
-    )
+    return sum(relevance / math.log2(rank + 1) for rank, relevance in enumerate(relevances, 1))
 
 
 def _alpha_dcg(

@@ -211,8 +211,7 @@ def _snapshot_item(item: dict[str, Any], kind: str) -> dict[str, Any]:
         return projected
     # detect_kind 只看 citations 这个键在不在，不看内容；标题与 quote 一律不带
     projected["citations"] = [
-        {"citation_id": citation.get("citation_id")}
-        for citation in item.get("citations") or []
+        {"citation_id": citation.get("citation_id")} for citation in item.get("citations") or []
     ]
     for field, subfields in _NESTED_FIELDS.items():
         nested = item.get(field) or {}
@@ -232,9 +231,7 @@ def read_baseline(*, path: Path, git_ref: str | None) -> LoadedReport:
     """`--against <ref>` 从该 git ref 读 baseline，这样在分支上也能对着 main 的快照判。"""
     if git_ref is None:
         if not path.exists():
-            raise GateRefused(
-                f"baseline 快照不存在: {path}。先跑 `eval.gate snapshot` 生成并提交"
-            )
+            raise GateRefused(f"baseline 快照不存在: {path}。先跑 `eval.gate snapshot` 生成并提交")
         return load_report(path)
     target = f"{git_ref}:{path.as_posix()}"
     payload = json.loads(_git_show(target))
@@ -290,9 +287,7 @@ def evaluate(baseline: LoadedReport, candidate: LoadedReport) -> GateOutcome:
     )
 
 
-def _compare_or_refuse(
-    baseline: LoadedReport, candidate: LoadedReport
-) -> dict[str, Any]:
+def _compare_or_refuse(baseline: LoadedReport, candidate: LoadedReport) -> dict[str, Any]:
     """比较层的前置校验（数据集、报告类型、受控配置、item_id 配对、类别漂移）
     抛的是 `ValueError`——那是给 `eval.compare` 交互式使用的口径。门禁必须把它们
     统一成 `GateRefused`：这些同样是"拒绝判定"，不是"判为不合格"。
@@ -307,13 +302,10 @@ def _compare_or_refuse(
 
 
 def _reject_incomplete(candidate: LoadedReport) -> None:
-    errored = [
-        str(item["item_id"]) for item in candidate.items if item.get("error") is not None
-    ]
+    errored = [str(item["item_id"]) for item in candidate.items if item.get("error") is not None]
     if errored:
         raise GateRefused(
-            f"候选跑批含失败样本，结果不完整，拒绝判定: {errored[:5]}"
-            f"（共 {len(errored)} 条）"
+            f"候选跑批含失败样本，结果不完整，拒绝判定: {errored[:5]}（共 {len(errored)} 条）"
         )
 
 
@@ -373,9 +365,7 @@ def _check_no_regression(
             )
         ]
     gain = (
-        candidate_value - baseline_value
-        if higher_is_better
-        else baseline_value - candidate_value
+        candidate_value - baseline_value if higher_is_better else baseline_value - candidate_value
     )
     check["gain"] = gain
     if gain < 0:
@@ -408,9 +398,7 @@ def _sample_churn(
     return improved, regressed
 
 
-def _check_cost(
-    comparison: dict[str, Any], metric: str
-) -> tuple[dict[str, Any], list[Violation]]:
+def _check_cost(comparison: dict[str, Any], metric: str) -> tuple[dict[str, Any], list[Violation]]:
     entry = comparison["metrics"].get(metric) or {}
     baseline_value = entry.get("baseline")
     candidate_value = entry.get("candidate")
@@ -469,12 +457,14 @@ def render_markdown(outcome: GateOutcome) -> str:
     if outcome.violations:
         lines += ["## 不合格项", "", "| 规则 | 指标 | 详情 |", "|---|---|---|"]
         lines += [
-            f"| `{item.rule}` | `{item.metric}` | {item.detail} |"
-            for item in outcome.violations
+            f"| `{item.rule}` | `{item.metric}` | {item.detail} |" for item in outcome.violations
         ]
         lines.append("")
     lines += ["## 逐项检查", "", "| 规则 | 指标 | 结果 |", "|---|---|---|"]
-    lines += [f"| `{check['rule']}` | `{check['metric']}` | {_check_cell(check)} |" for check in outcome.checks]
+    lines += [
+        f"| `{check['rule']}` | `{check['metric']}` | {_check_cell(check)} |"
+        for check in outcome.checks
+    ]
     lines += [
         "",
         "## 未启用",
@@ -482,10 +472,7 @@ def render_markdown(outcome: GateOutcome) -> str:
         "| 指标 | 原因 |",
         "|---|---|",
     ]
-    lines += [
-        f"| `{metric}` | 等实验 J（Judge 校准）收口后启用 |"
-        for metric in outcome.pending
-    ]
+    lines += [f"| `{metric}` | 等实验 J（Judge 校准）收口后启用 |" for metric in outcome.pending]
     lines += [f"| `{metric}` | {reason} |" for metric, reason in outcome.excluded.items()]
     lines.append("")
     return "\n".join(lines)
@@ -525,9 +512,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="main",
         help="从该 git ref 读 baseline 快照；给 'working' 则读工作区文件",
     )
-    check.add_argument(
-        "--baseline", type=Path, default=None, help="默认按候选报告类型选快照"
-    )
+    check.add_argument("--baseline", type=Path, default=None, help="默认按候选报告类型选快照")
     check.add_argument("--output-dir", type=Path, default=None)
     return parser.parse_args(argv)
 
@@ -564,9 +549,7 @@ def _run_check(args: argparse.Namespace) -> int:
         # 候选报告本身读不动（缺 items、认不出轨）同样是拒判，不是不合格
         raise GateRefused(f"候选报告无法载入: {error}") from error
     git_ref = None if args.against == "working" else args.against
-    baseline = read_baseline(
-        path=_snapshot_path(candidate.kind, args.baseline), git_ref=git_ref
-    )
+    baseline = read_baseline(path=_snapshot_path(candidate.kind, args.baseline), git_ref=git_ref)
     outcome = evaluate(baseline, candidate)
     report = render_markdown(outcome)
     print(report)

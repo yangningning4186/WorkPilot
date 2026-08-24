@@ -139,8 +139,7 @@ def _check_kinds(runs: Sequence[StrategyRun]) -> dict[str, object]:
             )
         if run.generation is not None and run.generation.kind != KIND_GENERATION:
             raise ValidationError(
-                f"策略 {run.name} 的 --generation 必须是生成跑批报告，"
-                f"实际是 {run.generation.kind}"
+                f"策略 {run.name} 的 --generation 必须是生成跑批报告，实际是 {run.generation.kind}"
             )
     return {"name": "报告类型正确", "passed": True, "detail": "检索轨 + 可选生成轨"}
 
@@ -164,13 +163,9 @@ def _check_failed_runs(runs: Sequence[StrategyRun]) -> dict[str, object]:
             if report is None:
                 continue
             metrics = report.payload.get("metrics")
-            errors = (
-                int(metrics.get("error_count") or 0) if isinstance(metrics, dict) else 0
-            )
+            errors = int(metrics.get("error_count") or 0) if isinstance(metrics, dict) else 0
             failed = [
-                str(item["item_id"])
-                for item in report.items
-                if item.get("error") is not None
+                str(item["item_id"]) for item in report.items if item.get("error") is not None
             ]
             if errors or failed:
                 raise ValidationError(
@@ -204,9 +199,7 @@ def _check_retrieval_config(
     for run in runs:
         if run.name == baseline:
             continue
-        diff = config_diff(
-            base.retrieval.config, run.retrieval.config, ignore=vary_keys
-        )
+        diff = config_diff(base.retrieval.config, run.retrieval.config, ignore=vary_keys)
         if diff:
             detail = ", ".join(
                 f"{key}: {value['baseline']!r} → {value['candidate']!r}"
@@ -246,9 +239,7 @@ def _check_generation_config(
     for run in runs:
         if run.name == baseline or run.generation is None:
             continue
-        diff = config_diff(
-            base.generation.config, run.generation.config, ignore=vary_keys
-        )
+        diff = config_diff(base.generation.config, run.generation.config, ignore=vary_keys)
         if diff:
             detail = ", ".join(
                 f"{key}: {value['baseline']!r} → {value['candidate']!r}"
@@ -292,8 +283,7 @@ def _check_generation_chunk_strategy(runs: Sequence[StrategyRun]) -> dict[str, o
             mismatched.append(f"{run.name} 的报告实际跑在 {actual} 上")
     if mismatched:
         raise ValidationError(
-            "生成报告的 chunk_strategy 与策略名对不上，报告挂错了位置: "
-            + "; ".join(mismatched)
+            "生成报告的 chunk_strategy 与策略名对不上，报告挂错了位置: " + "; ".join(mismatched)
         )
     if is_chunk_matrix and unlabeled:
         raise ValidationError(
@@ -365,10 +355,7 @@ def pair_matrix(
         categories=tuple(str(indexed[reference][i]["category"]) for i in ids),
         questions=tuple(str(indexed[reference][i].get("question", "")) for i in ids),
         answerable=tuple(bool(indexed[reference][i].get("answerable")) for i in ids),
-        items={
-            name: tuple(by_id[item_id] for item_id in ids)
-            for name, by_id in indexed.items()
-        },
+        items={name: tuple(by_id[item_id] for item_id in ids) for name, by_id in indexed.items()},
     )
     checks: list[dict[str, object]] = [
         {"name": f"{kind} item 集合一致", "passed": True, "detail": f"{len(ids)} 条"},
@@ -393,17 +380,13 @@ class MetricColumns:
     own_ineligible: dict[str, int]
     common_eligible: int
 
-    def subset(
-        self, baseline: str, strategy: str, indexes: Sequence[int]
-    ) -> MetricSamples:
+    def subset(self, baseline: str, strategy: str, indexes: Sequence[int]) -> MetricSamples:
         return MetricSamples(
             baseline=tuple(self.points[baseline][index] for index in indexes),
             candidate=tuple(self.points[strategy][index] for index in indexes),
         )
 
-    def value(
-        self, strategy: str, indexes: Sequence[int] | None = None
-    ) -> float | None:
+    def value(self, strategy: str, indexes: Sequence[int] | None = None) -> float | None:
         points = self.points[strategy]
         selected = points if indexes is None else [points[index] for index in indexes]
         numerator = sum(p.numerator for p in selected if p.denominator)
@@ -443,8 +426,7 @@ def build_metric_columns(
                 for name in strategies
             },
             own_ineligible={
-                name: sum(not point.eligible for point in raw[name])
-                for name in strategies
+                name: sum(not point.eligible for point in raw[name]) for name in strategies
             },
             common_eligible=sum(mask),
         )
@@ -487,8 +469,7 @@ def _metric_payload(
         reason = (
             "所有跑批都没有记录该字段"
             if all(
-                count == len(column.points[name])
-                for name, count in column.own_ineligible.items()
+                count == len(column.points[name]) for name, count in column.own_ineligible.items()
             )
             else "配对后没有公共可比样本"
         )
@@ -565,13 +546,9 @@ def _outliers(
             divergent.append(record)
         if all(abs(number) <= 1e-12 for number in numbers):
             universal_zero.append(record)
-        elif column.spec.unit == "ratio" and all(
-            abs(number - 1.0) <= 1e-12 for number in numbers
-        ):
+        elif column.spec.unit == "ratio" and all(abs(number - 1.0) <= 1e-12 for number in numbers):
             universal_max.append(record)
-    divergent.sort(
-        key=lambda record: (-float(record["spread"]), str(record["item_id"]))
-    )
+    divergent.sort(key=lambda record: (-float(record["spread"]), str(record["item_id"])))
     return {
         "metric": column.spec.name,
         "divergence_threshold": divergence,
@@ -831,12 +808,8 @@ def _variable_section(validation: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _absolute_table(
-    metrics: dict[str, Any], strategies: Sequence[str], baseline: str
-) -> list[str]:
-    header = " | ".join(
-        f"{name}（基线）" if name == baseline else name for name in strategies
-    )
+def _absolute_table(metrics: dict[str, Any], strategies: Sequence[str], baseline: str) -> list[str]:
+    header = " | ".join(f"{name}（基线）" if name == baseline else name for name in strategies)
     lines = [
         f"| 指标 | 有效样本 | {header} |",
         "|---|---:|" + "---:|" * len(strategies),
@@ -847,16 +820,13 @@ def _absolute_table(
             lines.append(f"| {entry['title']} | 0 | {cells} |")
             continue
         cells = " | ".join(
-            format_value(entry["by_strategy"][name], entry["unit"])
-            for name in strategies
+            format_value(entry["by_strategy"][name], entry["unit"]) for name in strategies
         )
         lines.append(f"| {entry['title']} | {entry['sample_size']} | {cells} |")
     return lines
 
 
-def _delta_tables(
-    metrics: dict[str, Any], strategies: Sequence[str], baseline: str
-) -> list[str]:
+def _delta_tables(metrics: dict[str, Any], strategies: Sequence[str], baseline: str) -> list[str]:
     lines: list[str] = []
     others = [name for name in strategies if name != baseline]
     for entry in metrics.values():
@@ -889,9 +859,7 @@ def _category_section(
 ) -> list[str]:
     primary = str(payload["primary_metric"])
     by_category = as_dict(payload["by_category"])
-    header = " | ".join(
-        f"{name}（基线）" if name == baseline else name for name in strategies
-    )
+    header = " | ".join(f"{name}（基线）" if name == baseline else name for name in strategies)
     lines = [
         "",
         f"## 分类别切片（主指标：{primary}）",
@@ -907,8 +875,7 @@ def _category_section(
             lines.append(f"| {category} | {slice_entry['item_count']} | 0 | {cells} |")
             continue
         cells = " | ".join(
-            format_value(metric["by_strategy"][name], metric["unit"])
-            for name in strategies
+            format_value(metric["by_strategy"][name], metric["unit"]) for name in strategies
         )
         lines.append(
             f"| {category} | {slice_entry['item_count']} | {metric['sample_size']} | {cells} |"
@@ -916,9 +883,7 @@ def _category_section(
     return lines
 
 
-def _outlier_section(
-    payload: dict[str, object], strategies: Sequence[str]
-) -> list[str]:
+def _outlier_section(payload: dict[str, object], strategies: Sequence[str]) -> list[str]:
     outliers = as_dict(payload["outliers"])
     counts = as_dict(outliers["counts"])
     lines = [
@@ -944,9 +909,7 @@ def _outlier_section(
         for row in rows:
             record = as_dict(row)
             values = as_dict(record["values"])
-            cells = " | ".join(
-                format_value(values[name], "ratio") for name in strategies
-            )
+            cells = " | ".join(format_value(values[name], "ratio") for name in strategies)
             lines.append(
                 f"| `{record['item_id']}` | {record['category']} | "
                 f"{truncate_question(record['question'])} | {cells} |"
@@ -1085,9 +1048,7 @@ def build_runs(
         StrategyRun(
             name=name,
             retrieval=load_report(path),
-            generation=load_report(generation_paths[name])
-            if name in generation_paths
-            else None,
+            generation=load_report(generation_paths[name]) if name in generation_paths else None,
         )
         for name, path in runs
     ]
@@ -1095,9 +1056,7 @@ def build_runs(
 
 def main() -> None:
     args = _parse_args()
-    run_inputs = (
-        load_chunk_strategy_manifest(args.manifest) if args.manifest else args.run
-    )
+    run_inputs = load_chunk_strategy_manifest(args.manifest) if args.manifest else args.run
     if args.generation and args.generation_manifest:
         raise ValidationError("--generation 与 --generation-manifest 只能给一个")
     generation_inputs = (
@@ -1123,9 +1082,7 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=False)
     json_path = args.output_dir / "report.json"
     md_path = args.output_dir / "report.md"
-    json_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(markdown_report(payload), encoding="utf-8")
     print(md_path)
 

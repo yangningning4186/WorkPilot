@@ -23,24 +23,41 @@ def test_cowork_core_suite_has_frozen_coverage() -> None:
     summary = summarize_suite(load_suite(DEFAULT_SUITE))
 
     assert summary == {
-        "name": "cowork-core-48",
-        "version": "1.2.0",
-        "items": 48,
-        "splits": {"dev": 37, "test": 11},
+        "name": "cowork-core-50",
+        "version": "1.4.0",
+        "items": 50,
+        "splits": {"dev": 39, "test": 11},
         "categories": {
             "artifact": 8,
+            "connector": 1,
             "knowledge": 8,
             "office": 6,
             "reading": 4,
             "safety_hitl": 4,
+            "shell": 1,
             "web": 6,
             "workspace": 12,
         },
-        "difficulties": {"1": 10, "2": 24, "3": 14},
-        "hitl_items": 5,
-        "average_optimal_tool_calls": 1.85,
+        "difficulties": {"1": 10, "2": 26, "3": 14},
+        "hitl_items": 7,
+        "average_optimal_tool_calls": 2.06,
         "review_status": "pending_human_review",
     }
+
+
+def test_chinese_office_regressions_pin_specialized_connector_and_persistent_shell() -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    calendar = next(item for item in suite["items"] if item["id"] == "cowork-core-049")
+    shell = next(item for item in suite["items"] if item["id"] == "cowork-core-050")
+
+    assert calendar["gold"]["required_tools"] == ["feishu_calendar_event_action"]
+    assert "act_connector_api" in calendar["gold"]["forbidden_tools"]
+    shell_interrupt = next(
+        assertion
+        for assertion in shell["gold"]["assertions"]
+        if assertion["type"] == "hitl_interrupt"
+    )
+    assert shell_interrupt["arguments"]["persistent_session"] is True
 
 
 def test_cowork_knowledge_tasks_pin_evidence_contract() -> None:

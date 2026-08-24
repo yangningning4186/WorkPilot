@@ -218,9 +218,7 @@ async def test_semantic_judge_checkpoints_and_resumes_after_invalid_json() -> No
         },
         ensure_ascii=False,
     )
-    provider = DeterministicProvider(
-        completion_texts=[first_response, "截断 {", "仍然截断 {"]
-    )
+    provider = DeterministicProvider(completion_texts=[first_response, "截断 {", "仍然截断 {"])
     gateway = ModelGateway(provider, embedding_dimensions=1024)
     checkpoint = []
     cases = [_case("one"), _case("two")]

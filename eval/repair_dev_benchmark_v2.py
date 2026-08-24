@@ -36,7 +36,7 @@ ANSWER_REWRITES = {
     ),
     "019ffd2a-5430-76cf-a775-1e4c2d798112": (
         "WorkPilot 采用分层架构：Next.js 前端通过 SSE 展示流式对话、引用、Agent 时间线和 "
-        "HITL；FastAPI 负责鉴权、限流与会话；业务层分为 LangGraph Agent、RAG 知识链路和"
+        "HITL；FastAPI 负责鉴权、限流与会话；业务层分为确定性 Agent 工具循环、RAG 知识链路和"
         "评测层。底层以 Postgres/pgvector 保存业务与向量数据，Redis 和任务队列承载异步执行，"
         "并预留对象存储与全链路观测。"
     ),
@@ -46,7 +46,7 @@ ANSWER_REWRITES = {
         "看板持续监控 P50/P95、单会话成本、缓存命中率和各模型调用占比。"
     ),
     "019ffd34-3949-7b6d-b109-1e4feef649ce": (
-        "核心选型为：LangGraph 编排可恢复状态机；Postgres + pgvector 以较低运维成本同时提供"
+        "核心选型为：显式状态与可恢复 Agent 循环；Postgres + pgvector 以较低运维成本同时提供"
         "事务和向量检索；PG 全文索引承担关键词召回；bge-m3 支持中英与稀疏/稠密表示，"
         "bge-reranker-v2-m3 做交叉编码精排；FastAPI 提供异步 API 与 Pydantic 契约；Next.js"
         "负责流式交互，Langfuse 统一记录 trace、成本和评测。"
@@ -162,9 +162,10 @@ async def repair(*, output_dir: Path, apply: bool) -> dict[str, object]:
 
 async def _load_rows(session: AsyncSession) -> list[dict[str, Any]]:
     rows = (
-        await session.execute(
-            text(
-                """
+        (
+            await session.execute(
+                text(
+                    """
                 SELECT i.*, d.name AS dataset_name, d.split AS dataset_split,
                        validate_eval_spans(i.gold_spans) AS spans_valid,
                        validate_eval_evidence_groups(i.gold_evidence_groups)
@@ -174,10 +175,13 @@ async def _load_rows(session: AsyncSession) -> list[dict[str, Any]]:
                 WHERE d.name=ANY(:names) AND i.origin='human'
                 ORDER BY d.name, i.id
                 """
-            ),
-            {"names": list(DEV_DATASETS)},
+                ),
+                {"names": list(DEV_DATASETS)},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     await session.rollback()
     return [dict(row) for row in rows]
 
@@ -294,17 +298,21 @@ async def _split_cross_block_span(session: AsyncSession) -> None:
         raise ValueError("跨 block 修复样本的 canonical span 数已漂移")
     version_id = spans[1]["version_id"]
     blocks = (
-        await session.execute(
-            text(
-                """
+        (
+            await session.execute(
+                text(
+                    """
                 SELECT char_start, char_end, text FROM parsed_blocks
                 WHERE version_id=CAST(:version_id AS uuid) AND block_idx IN (82,83)
                 ORDER BY block_idx
                 """
-            ),
-            {"version_id": version_id},
+                ),
+                {"version_id": version_id},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     if len(blocks) != 2:
         raise ValueError("跨 block 修复所需的 block 82/83 不存在")
     split_spans = [
@@ -385,8 +393,7 @@ async def _append_alternatives(session: AsyncSession) -> None:
         alternatives = groups[group_index]["alternatives"]
         key = (alternative["version_id"], alternative["char_start"], alternative["char_end"])
         existing = {
-            (span["version_id"], span["char_start"], span["char_end"])
-            for span in alternatives
+            (span["version_id"], span["char_start"], span["char_end"]) for span in alternatives
         }
         if key not in existing:
             alternatives.append(alternative)
@@ -422,8 +429,7 @@ def _postflight(rows: list[dict[str, Any]]) -> dict[str, object]:
             if not result.passed:
                 constraint_failures.append(str(row["id"]))
         alternative_count += sum(
-            max(0, len(group["alternatives"]) - 1)
-            for group in row["gold_evidence_groups"]
+            max(0, len(group["alternatives"]) - 1) for group in row["gold_evidence_groups"]
         )
     expected = {
         "single_hop": 20,
@@ -451,9 +457,10 @@ def _postflight(rows: list[dict[str, Any]]) -> dict[str, object]:
 
 async def _temporal_invisible_gold(session: AsyncSession) -> list[str]:
     rows = (
-        await session.execute(
-            text(
-                """
+        (
+            await session.execute(
+                text(
+                    """
                 SELECT DISTINCT i.id::text
                 FROM eval_items i
                 JOIN eval_datasets d ON d.id=i.dataset_id
@@ -465,10 +472,13 @@ async def _temporal_invisible_gold(session: AsyncSession) -> list[str]:
                     AND (v.invalid_at IS NULL OR v.invalid_at > i.temporal_ctx)
                   )
                 """
-            ),
-            {"names": list(DEV_DATASETS)},
+                ),
+                {"names": list(DEV_DATASETS)},
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [str(value) for value in rows]
 
 

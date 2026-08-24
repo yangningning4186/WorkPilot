@@ -56,7 +56,7 @@ def top_k_chunks(item: dict[str, Any], config: dict[str, Any]) -> list[dict[str,
     retrieved = item.get("retrieved")
     if not isinstance(retrieved, list):
         return []
-    top_k = config.get("top_k")
+    top_k = item.get("effective_top_k") or config.get("top_k")
     chunks = [chunk for chunk in retrieved if isinstance(chunk, dict)]
     return chunks[: int(top_k)] if top_k else chunks
 
@@ -78,9 +78,7 @@ def _context_redundancy(item: dict[str, Any], config: dict[str, Any]) -> RatioPo
         if start is None or end is None or end <= start:
             continue
         total += int(end) - int(start)
-        spans.setdefault(str(chunk.get("version_id")), []).append(
-            (int(start), int(end))
-        )
+        spans.setdefault(str(chunk.get("version_id")), []).append((int(start), int(end)))
     if total <= 0:
         return INELIGIBLE
     union = sum(_union_length(ranges) for ranges in spans.values())
@@ -109,9 +107,7 @@ def _retrieved_tokens(item: dict[str, Any], config: dict[str, Any]) -> RatioPoin
     return RatioPoint(float(tokens), 1.0)
 
 
-def _refusal_correct_by_score(
-    item: dict[str, Any], config: dict[str, Any]
-) -> RatioPoint:
+def _refusal_correct_by_score(item: dict[str, Any], config: dict[str, Any]) -> RatioPoint:
     threshold = config.get("refusal_threshold")
     score = item.get("top_score")
     if threshold is None or score is None:
@@ -157,9 +153,7 @@ def _generation_flag(
     return extract
 
 
-def _citation_gold_alignment(
-    item: dict[str, Any], config: dict[str, Any]
-) -> RatioPoint:
+def _citation_gold_alignment(item: dict[str, Any], config: dict[str, Any]) -> RatioPoint:
     if not _completed(item) or item.get("refused") is not False:
         return INELIGIBLE
     alignment = item["citation_gold_alignment"]
@@ -382,9 +376,7 @@ def load_report(path: Path) -> LoadedReport:
         raise ValueError(
             f"报告的 items 缺少 item_id，无法按样本配对（refusal_baseline 报告不支持）: {resolved}"
         )
-    return LoadedReport(
-        path=resolved, payload=payload, kind=detect_kind(items[0], resolved)
-    )
+    return LoadedReport(path=resolved, payload=payload, kind=detect_kind(items[0], resolved))
 
 
 def detect_kind(item: dict[str, Any], path: Path) -> str:
@@ -392,9 +384,7 @@ def detect_kind(item: dict[str, Any], path: Path) -> str:
         return KIND_GENERATION
     if "retrieval" in item:
         return KIND_RETRIEVAL
-    raise ValueError(
-        f"无法识别报告类型，仅支持 dense_baseline 与 generation_baseline 报告: {path}"
-    )
+    raise ValueError(f"无法识别报告类型，仅支持 retrieval 与 generation 报告: {path}")
 
 
 def config_diff(
@@ -411,9 +401,10 @@ def config_diff(
 def gold_span_fingerprint(
     item: dict[str, Any],
 ) -> tuple[tuple[str, int, int, str], ...]:
-    """gold span 的身份指纹：version + 字符区间 + quote。
+    """gold span 的身份指纹：稳定来源 + 字符区间 + quote。
 
-    锚的是 `parsed_blocks` 字符区间而不是 chunk（ADR-0006），所以这个指纹
+    新文件系统报告优先使用 content hash + page，旧报告回退到 document version UUID。
+    锚的是来源字符区间而不是 chunk（ADR-0006），所以这个指纹
     在不同分块策略之间必须完全一致；不一致说明混了解析版本或重标过，
     此时跨策略比较无效。
     """
@@ -423,7 +414,11 @@ def gold_span_fingerprint(
     return tuple(
         sorted(
             (
-                str(span.get("version_id")),
+                (
+                    f"{span.get('content_hash')}:page:{span.get('page_no')}"
+                    if span.get("content_hash")
+                    else str(span.get("version_id"))
+                ),
                 int(span.get("char_start", -1)),
                 int(span.get("char_end", -1)),
                 str(span.get("quote", "")),

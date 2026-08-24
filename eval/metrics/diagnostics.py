@@ -51,35 +51,37 @@ def diagnose_spans(
     token_budget: int,
     theta: float,
     evidence_groups: list[GoldEvidenceGroup] | None = None,
+    diagnostic_retrieved: list[RetrievedChunk] | None = None,
 ) -> list[SpanDiagnostic]:
     budget_ranked = take_token_budget(retrieved, token_budget)
+    diagnostic_ranked = diagnostic_retrieved if diagnostic_retrieved is not None else retrieved
     diagnostics: list[SpanDiagnostic] = []
     groups = evidence_groups or singleton_evidence_groups(spans)
     for index, group in enumerate(groups):
         span = group.alternatives[0]
-        first_hit_rank = next(
+        formal_hit_rank = next(
             (
                 rank
                 for rank, chunk in enumerate(retrieved, start=1)
-                if any(
-                    hits(chunk, alternative, theta=theta)
-                    for alternative in group.alternatives
-                )
+                if any(hits(chunk, alternative, theta=theta) for alternative in group.alternatives)
+            ),
+            None,
+        )
+        diagnostic_hit_rank = next(
+            (
+                rank
+                for rank, chunk in enumerate(diagnostic_ranked, start=1)
+                if any(hits(chunk, alternative, theta=theta) for alternative in group.alternatives)
             ),
             None,
         )
         mapped = [
             chunk
             for chunk in candidates
-            if any(
-                hits(chunk, alternative, theta=theta)
-                for alternative in group.alternatives
-            )
+            if any(hits(chunk, alternative, theta=theta) for alternative in group.alternatives)
         ]
         group_versions = {alternative.version_id for alternative in group.alternatives}
-        same_version = [
-            chunk for chunk in retrieved if chunk.version_id in group_versions
-        ]
+        same_version = [chunk for chunk in diagnostic_ranked if chunk.version_id in group_versions]
         best_overlap = max(
             (
                 overlap_ratio(chunk, alternative)
@@ -88,7 +90,7 @@ def diagnose_spans(
             ),
             default=0.0,
         )
-        if first_hit_rank is not None and first_hit_rank <= top_k:
+        if formal_hit_rank is not None and formal_hit_rank <= top_k:
             status: SpanStatus = (
                 "hit"
                 if any(
@@ -98,7 +100,7 @@ def diagnose_spans(
                 )
                 else "outside_token_budget"
             )
-        elif first_hit_rank is not None:
+        elif diagnostic_hit_rank is not None:
             status = "outside_top_k"
         elif not mapped:
             status = "no_relevant_indexed_chunk"
@@ -114,7 +116,9 @@ def diagnose_spans(
                 char_end=span.char_end,
                 quote=span.quote,
                 status=status,
-                first_hit_rank=first_hit_rank,
+                first_hit_rank=(
+                    formal_hit_rank if formal_hit_rank is not None else diagnostic_hit_rank
+                ),
                 best_retrieved_overlap=best_overlap,
                 mapped_chunk_count=len(mapped),
                 same_version_retrieved=bool(same_version),
@@ -125,9 +129,7 @@ def diagnose_spans(
     return diagnostics
 
 
-def summarize_scores(
-    scores: list[float], *, histogram_step: float = 0.05
-) -> dict[str, object]:
+def summarize_scores(scores: list[float], *, histogram_step: float = 0.05) -> dict[str, object]:
     if histogram_step <= 0:
         raise ValueError("histogram_step 必须大于 0")
     if not scores:

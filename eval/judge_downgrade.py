@@ -61,7 +61,9 @@ def load_runs(specs: Sequence[str], examples_path: Path) -> list[JudgeRun]:
                 name=name,
                 path=path,
                 scores={key: row.score for key, row in predictions.items()},
-                models=tuple(sorted({f"{row.provider}/{row.model}" for row in predictions.values()})),
+                models=tuple(
+                    sorted({f"{row.provider}/{row.model}" for row in predictions.values()})
+                ),
                 input_tokens=sum(row.input_tokens for row in predictions.values()),
                 output_tokens=sum(row.output_tokens for row in predictions.values()),
             )
@@ -99,19 +101,13 @@ def _same_tier(left: JudgeRun, right: JudgeRun) -> bool:
     return left.models == right.models
 
 
-def build_report(
-    runs: Sequence[JudgeRun], *, baseline: str, candidate: str
-) -> dict[str, Any]:
+def build_report(runs: Sequence[JudgeRun], *, baseline: str, candidate: str) -> dict[str, Any]:
     names = {run.name for run in runs}
     for name in (baseline, candidate):
         if name not in names:
             raise ValueError(f"--baseline/--candidate 指向不存在的 run: {name}")
     rows = pairwise(runs)
-    headline = next(
-        row
-        for row in rows
-        if {row["left"], row["right"]} == {baseline, candidate}
-    )
+    headline = next(row for row in rows if {row["left"], row["right"]} == {baseline, candidate})
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "design": "口径 B：判者间一致性；不声称任何一方判得更准",

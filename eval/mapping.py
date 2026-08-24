@@ -101,9 +101,7 @@ class RetrievedChunk:
 def overlap_characters(chunk: RetrievedChunk, span: GoldSpan) -> int:
     if chunk.version_id != span.version_id:
         return 0
-    return max(
-        0, min(chunk.char_end, span.char_end) - max(chunk.char_start, span.char_start)
-    )
+    return max(0, min(chunk.char_end, span.char_end) - max(chunk.char_start, span.char_start))
 
 
 def overlap_ratio(chunk: RetrievedChunk, span: GoldSpan) -> float:

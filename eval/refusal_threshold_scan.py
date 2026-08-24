@@ -175,7 +175,11 @@ def _margin(item: dict[str, Any]) -> float | None:
     if isinstance(signals, dict) and signals.get("score_margin_ratio") is not None:
         return float(signals["score_margin_ratio"])
     scores = sorted(
-        (float(chunk["score"]) for chunk in item.get("retrieved") or [] if chunk.get("score") is not None),
+        (
+            float(chunk["score"])
+            for chunk in item.get("retrieved") or []
+            if chunk.get("score") is not None
+        ),
         reverse=True,
     )
     return scores[0] - scores[1] if len(scores) > 1 else None
@@ -197,7 +201,11 @@ def scan(observations: Sequence[Observation], *, configured_threshold: float) ->
     analysis = analyze_refusal(list(pairs), configured_threshold=configured_threshold)
     by_category = {
         category: analyze_refusal(
-            [(item.top_score, item.answerable) for item in observations if item.category == category],
+            [
+                (item.top_score, item.answerable)
+                for item in observations
+                if item.category == category
+            ],
             configured_threshold=configured_threshold,
         )
         for category in sorted({item.category for item in observations})
@@ -287,7 +295,9 @@ def build_report(
     generation_reports: Sequence[Path] = (),
 ) -> dict[str, Any]:
     observations, meta = load_observations(paths)
-    configured = override_threshold if override_threshold is not None else meta["configured_threshold"]
+    configured = (
+        override_threshold if override_threshold is not None else meta["configured_threshold"]
+    )
     if configured is None:
         raise ScanRefused("报告里没有 refusal_threshold，且没有显式给 --configured-threshold")
     if generation_reports:

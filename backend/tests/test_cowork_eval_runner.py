@@ -17,6 +17,7 @@ from eval.cowork_runner import (
     materialize_case,
     rescore_report,
     run_case,
+    run_suite,
     score_observation,
 )
 from eval.cowork_task_suite import DEFAULT_SUITE, load_suite
@@ -171,6 +172,36 @@ def test_metric_slice_uses_nearest_rank_p95() -> None:
     assert metrics["tokens"]["p95"] == 19_000
 
 
+def test_hitl_assertion_can_pin_tool_arguments(tmp_path: Path) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = next(value for value in suite["items"] if value["id"] == "cowork-core-050")
+    materialized = materialize_case(suite, item, case_root=tmp_path / "case")
+
+    result = evaluate_assertion(
+        {
+            "type": "hitl_interrupt",
+            "kind": "tool_confirmation",
+            "tool": "run_shell",
+            "arguments": {"persistent_session": True, "run_in_background": False},
+        },
+        response="",
+        status="waiting_human",
+        interrupt={
+            "kind": "shell_approval",
+            "request": {
+                "persistent_session": True,
+                "run_in_background": False,
+            },
+        },
+        trace=[{"name": "run_shell", "status": "interrupt", "arguments": {}}],
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+
+    assert result.passed is True
+
+
 def test_scoring_accepts_annotated_cross_tool_recovery(tmp_path: Path) -> None:
     suite = load_suite(DEFAULT_SUITE)
     item = next(value for value in suite["items"] if value["id"] == "cowork-core-025")
@@ -291,6 +322,13 @@ def test_rescore_report_reuses_observations_without_model(tmp_path: Path) -> Non
     )
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["kind"] == "cowork"
+    assert report["dataset"] == suite["name"]
+    assert report["label"] == "unit-rescore"
+    assert report["run_id"] == report["manifest"]["run_id"]
+    assert len(report["config_hash"]) == 64
+    assert report["config_hash"] == report["manifest"]["config_hash"]
+    assert len(report["reproducibility"]["scorer_fingerprint"]) == 64
     assert report["manifest"]["mode"] == "offline_rescore_no_model_calls"
     assert report["metrics"]["task_success_rate"] == 1.0
     assert report["metrics"]["tokens"]["total"] == 456
@@ -308,10 +346,13 @@ async def test_run_case_executes_real_cowork_graph(db_engine: AsyncEngine, tmp_p
             _final("计划发布日期为 2026-09-15，负责人是林琪，来源 notes/project.md。"),
         ]
     )
-    gateway = ModelGateway(provider, embedding_dimensions=16)
+    gateway = ModelGateway(
+        provider,
+        embedding_dimensions=16,
+        default_context_window_tokens=128_000,
+    )
     settings = get_settings().model_copy(
         update={
-            "cowork_store_backend": "postgres",
             "memory_extraction_enabled": False,
             "skill_distillation_enabled": False,
             "run_heartbeat_s": 60.0,
@@ -334,3 +375,169 @@ async def test_run_case_executes_real_cowork_graph(db_engine: AsyncEngine, tmp_p
         "search_files",
         "read_text_file",
     ]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("item_id", "call"),
+    [
+        (
+            "cowork-core-049",
+            _tool(
+                "calendar",
+                "feishu_calendar_event_action",
+                {
+                    "account_id": "11111111-1111-4111-8111-111111111111",
+                    "action": "create",
+                    "calendar_id": "primary",
+                    "event": {
+                        "summary": "中文办公栈评审",
+                        "start_time": {
+                            "timestamp": "1787623200",
+                            "timezone": "Asia/Shanghai",
+                        },
+                        "end_time": {
+                            "timestamp": "1787626800",
+                            "timezone": "Asia/Shanghai",
+                        },
+                    },
+                },
+            ),
+        ),
+        (
+            "cowork-core-050",
+            _tool(
+                "shell",
+                "run_shell",
+                {
+                    "command": "export WP_STAGE=中文办公栈",
+                    "cwd": ".",
+                    "reason": "为后续命令准备持久环境",
+                    "persistent_session": True,
+                },
+            ),
+        ),
+    ],
+)
+async def test_chinese_office_eval_cases_reach_production_approval_gate(
+    db_engine: AsyncEngine,
+    tmp_path: Path,
+    item_id: str,
+    call: CompletionResult,
+) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = next(value for value in suite["items"] if value["id"] == item_id)
+    completions = [call]
+    if item_id == "cowork-core-049":
+        completions.insert(
+            0,
+            _tool(
+                "load-calendar",
+                "load_tools",
+                {"names": ["feishu_calendar_event_action"]},
+            ),
+        )
+    gateway = ModelGateway(
+        ScriptedCoworkProvider(completions),
+        embedding_dimensions=16,
+        default_context_window_tokens=128_000,
+    )
+    settings = get_settings().model_copy(
+        update={
+            "memory_extraction_enabled": False,
+            "skill_distillation_enabled": False,
+            "run_heartbeat_s": 60.0,
+        }
+    )
+
+    record = await run_case(
+        suite,
+        item,
+        case_root=tmp_path / item_id,
+        gateway=gateway,
+        settings=settings,
+        db_sessions=session_factory,
+    )
+
+    assert record["observation"]["status"] == "waiting_human"
+    assert record["score"]["task_success"] is True
+
+
+@pytest.mark.integration
+async def test_run_suite_starts_and_isolates_records_in_its_own_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """跑批必须能启动，并且运行记录落在包目录里而不是 ~/.workpilot。
+
+    回归的是一条静默死亡：`run_suite` 曾把 `cowork_store_backend` 钉成 "postgres"，
+    而那个后端随 ADR-0012 一起没了——入口处的闸门让整条 Cowork 任务集评测直接
+    拒绝启动。修法不是删掉闸门了事：它承担的"隔离运行记录"仍然必须成立，
+    所以断言两件事——能跑完，以及 SQLite 确实出现在 package 里。
+    """
+
+    suite = load_suite(DEFAULT_SUITE)
+    item = suite["items"][0]
+    gateway = ModelGateway(
+        ScriptedCoworkProvider(
+            [
+                _tool("roots", "list_workspace_roots", {}),
+                _tool("search", "search_files", {"path": ".", "query": "Atlas"}),
+                _tool("read", "read_text_file", {"path": "notes/project.md"}),
+                _final("计划发布日期为 2026-09-15，负责人是林琪，来源 notes/project.md。"),
+            ]
+        ),
+        embedding_dimensions=16,
+        default_context_window_tokens=128_000,
+    )
+    package = tmp_path / "package"
+
+    manifest_path, report_path, _ = await run_suite(
+        suite_path=DEFAULT_SUITE,
+        items=[item],
+        package=package,
+        label="isolation-smoke",
+        authorization_note="单元测试内的脚本化 provider，不出网",
+        test_access_note=None,
+        settings=get_settings(),
+        gateway=gateway,
+    )
+
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["label"] == "isolation-smoke"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["kind"] == "cowork"
+    assert report["dataset"] == suite["name"]
+    assert report["label"] == "isolation-smoke"
+    assert report["config_hash"] == report["manifest"]["config_hash"]
+    assert len(report["reproducibility"]["implementation_fingerprint"]) == 64
+    assert report["metrics"]["task_success_rate"] == 1.0
+    # 隔离的真凭据：控制面库在包里。
+    assert (package / "store" / "cowork.db").exists()
+    cassette = package / "model-cassette.json"
+    assert cassette.is_file()
+    assert report["model_io"]["mode"] == "record"
+    assert report["model_io"]["recorded_model_interactions"] == 4
+
+    def _network_gateway_must_not_be_built(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("cassette replay 不得构造真实模型网关")
+
+    monkeypatch.setattr(
+        "eval.cowork_runner.build_model_gateway", _network_gateway_must_not_be_built
+    )
+    replay_package = tmp_path / "replay-package"
+    _, replay_report_path, _ = await run_suite(
+        suite_path=DEFAULT_SUITE,
+        items=[item],
+        package=replay_package,
+        label="isolation-replay",
+        authorization_note="",
+        test_access_note=None,
+        settings=get_settings(),
+        replay_cassette=cassette,
+    )
+    replay_report = json.loads(replay_report_path.read_text(encoding="utf-8"))
+    assert replay_report["metrics"]["task_success_rate"] == 1.0
+    assert replay_report["model_io"]["mode"] == "cassette_replay"
+    assert replay_report["model_io"]["real_model_dispatches"] == 0
+    assert replay_report["items"][0]["score"] == report["items"][0]["score"]

@@ -39,9 +39,7 @@ def load_reviews(path: Path) -> dict[tuple[UUID, str], CitationReview]:
                 reviewer=(row.get("reviewer") or "").strip(),
                 reviewed_at=(row.get("reviewed_at") or "").strip(),
             )
-            if not all(
-                (review.citation_id, review.reason, review.reviewer, review.reviewed_at)
-            ):
+            if not all((review.citation_id, review.reason, review.reviewer, review.reviewed_at)):
                 raise ValueError(f"{path}:{row_number}: 人工复核字段不完整")
             key = (review.item_id, review.citation_id)
             if key in reviews:
@@ -65,12 +63,8 @@ async def import_reviews(
         for citation in item["citations"]
     }
     if set(reviews) != expected:
-        missing = sorted(
-            f"{item_id}/{label}" for item_id, label in expected - set(reviews)
-        )
-        extra = sorted(
-            f"{item_id}/{label}" for item_id, label in set(reviews) - expected
-        )
+        missing = sorted(f"{item_id}/{label}" for item_id, label in expected - set(reviews))
+        extra = sorted(f"{item_id}/{label}" for item_id, label in set(reviews) - expected)
         raise ValueError(f"复核引用集合不一致: missing={missing}, extra={extra}")
 
     by_item: dict[UUID, list[CitationReview]] = defaultdict(list)
@@ -134,9 +128,7 @@ async def _import_run(
     run_reviews: list[CitationReview] = []
     for row in rows:
         item_id = row["item_id"]
-        item_reviews = sorted(
-            by_item.get(item_id, []), key=lambda review: review.citation_id
-        )
+        item_reviews = sorted(by_item.get(item_id, []), key=lambda review: review.citation_id)
         stored_labels = {str(citation["citation_id"]) for citation in row["retrieved"]}
         review_labels = {review.citation_id for review in item_reviews}
         if stored_labels != review_labels:
@@ -218,9 +210,7 @@ def _item_payload(reviews: list[CitationReview]) -> dict[str, object]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="校验并写回 M0 人工逐引用复核")
-    parser.add_argument(
-        "--generation-report", type=Path, action="append", required=True
-    )
+    parser.add_argument("--generation-report", type=Path, action="append", required=True)
     parser.add_argument("--review-csv", type=Path, required=True)
     parser.add_argument("--apply", action="store_true", help="通过全量校验后写入数据库")
     return parser.parse_args()

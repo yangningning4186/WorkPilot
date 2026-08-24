@@ -1,4 +1,3 @@
-
 import argparse
 import asyncio
 import json
@@ -29,7 +28,10 @@ ITEMS = (
             "不同任务需要不同的记忆能力，固定的摄取、抽象和检索管线无法随任务适配；EvolveLab "
             "以 BaseMemoryProvider 统一 Encode、Store、Retrieve、Manage 四个组件。"
         ),
-        evidence=(("MemEvolve: Meta-Evolution of Agent Memory Systems", 11), ("MemEvolve: Meta-Evolution of Agent Memory Systems", 41)),
+        evidence=(
+            ("MemEvolve: Meta-Evolution of Agent Memory Systems", 11),
+            ("MemEvolve: Meta-Evolution of Agent Memory Systems", 41),
+        ),
         must_include=("不同任务", "BaseMemoryProvider", "Encode", "Store", "Retrieve", "Manage"),
     ),
     ItemSeed(
@@ -40,18 +42,22 @@ ITEMS = (
             "接口由 Encode、Store、Retrieve、Manage 构成；take_in_memory 主要整合 Encode 和 Store，"
             "Manage 的离线整合或选择性遗忘通常由 provider 辅助方法实现，或在特定生命周期事件触发。"
         ),
-        evidence=(("MemEvolve: Meta-Evolution of Agent Memory Systems", 41), ("MemEvolve: Meta-Evolution of Agent Memory Systems", 192)),
+        evidence=(
+            ("MemEvolve: Meta-Evolution of Agent Memory Systems", 41),
+            ("MemEvolve: Meta-Evolution of Agent Memory Systems", 192),
+        ),
         must_include=("Encode", "Store", "Retrieve", "Manage", "take_in_memory", "生命周期"),
     ),
     ItemSeed(
-        question=(
-            "现有自改进记忆为何被认为收益不稳定，MemEvolve 的跨基准收益与成本表现如何？"
-        ),
+        question=("现有自改进记忆为何被认为收益不稳定，MemEvolve 的跨基准收益与成本表现如何？"),
         gold_answer=(
             "DILU、Dynamic Cheatsheet 和 ExpeL 会在不同基准上退化，说明固定设计缺少任务适配；"
             "MemEvolve 在三个基准上稳定提升 3.54%–5.0%，同时 API 成本与 No-Memory 基线相近。"
         ),
-        evidence=(("MemEvolve: Meta-Evolution of Agent Memory Systems", 92), ("MemEvolve: Meta-Evolution of Agent Memory Systems", 94)),
+        evidence=(
+            ("MemEvolve: Meta-Evolution of Agent Memory Systems", 92),
+            ("MemEvolve: Meta-Evolution of Agent Memory Systems", 94),
+        ),
         must_include=("收益不稳定", "3.54%", "5.0%", "No-Memory"),
     ),
     ItemSeed(
@@ -63,7 +69,10 @@ ITEMS = (
             "SkillWeaverProvider 用 LLM 从成功轨迹合成可复用 Python 函数，以代码仓库存储，再通过统一 "
             "MemoryItem 接口动态检索并注入 agent 动作空间。"
         ),
-        evidence=(("MemEvolve: Meta-Evolution of Agent Memory Systems", 197), ("MemEvolve: Meta-Evolution of Agent Memory Systems", 203)),
+        evidence=(
+            ("MemEvolve: Meta-Evolution of Agent Memory Systems", 197),
+            ("MemEvolve: Meta-Evolution of Agent Memory Systems", 203),
+        ),
         must_include=("MemoryItem", "Python", "成功轨迹", "动作空间"),
     ),
     ItemSeed(
@@ -74,7 +83,10 @@ ITEMS = (
             "研究从 TaskCraft 收集 300 条工作子集，其中 120 条用于三轮元演化，每轮 40 条；"
             "候选变体可在编码策略、存储规则、检索约束和管理策略上变化。"
         ),
-        evidence=(("MemEvolve: Meta-Evolution of Agent Memory Systems", 210), ("MemEvolve: Meta-Evolution of Agent Memory Systems", 71)),
+        evidence=(
+            ("MemEvolve: Meta-Evolution of Agent Memory Systems", 210),
+            ("MemEvolve: Meta-Evolution of Agent Memory Systems", 71),
+        ),
         must_include=("300", "120", "三轮", "40", "编码", "存储", "检索", "管理"),
     ),
     ItemSeed(
@@ -85,7 +97,10 @@ ITEMS = (
             "长对话历史和单一可编辑程序不保留替代方向，使 agent 围绕一个方案微调；"
             "SWARMRESEARCH 在 15 个任务中超过 EvoX 13 个、持平 1 个，超过 CORAL 10 个、持平 2 个。"
         ),
-        evidence=(("SWARMRESEARCH: Orchestrating Coding Agents for Open-Ended Discovery", 10), ("SWARMRESEARCH: Orchestrating Coding Agents for Open-Ended Discovery", 43)),
+        evidence=(
+            ("SWARMRESEARCH: Orchestrating Coding Agents for Open-Ended Discovery", 10),
+            ("SWARMRESEARCH: Orchestrating Coding Agents for Open-Ended Discovery", 43),
+        ),
         must_include=("替代方向", "13/15", "10/15"),
     ),
     ItemSeed(
@@ -97,7 +112,10 @@ ITEMS = (
             "15×4、得分 0.6369，编排器引导扩展平均为 6.78×8、得分 0.6787；总体上较短的并行运行"
             "优于较长的串行运行，但并行度并非越高越好。"
         ),
-        evidence=(("SWARMRESEARCH: Orchestrating Coding Agents for Open-Ended Discovery", 53), ("SWARMRESEARCH: Orchestrating Coding Agents for Open-Ended Discovery", 54)),
+        evidence=(
+            ("SWARMRESEARCH: Orchestrating Coding Agents for Open-Ended Discovery", 53),
+            ("SWARMRESEARCH: Orchestrating Coding Agents for Open-Ended Discovery", 54),
+        ),
         must_include=("Minimax-M2.5", "5", "15×4", "0.6369", "6.78×8", "0.6787"),
     ),
     ItemSeed(
@@ -109,7 +127,10 @@ ITEMS = (
             "三种方法在 15 个任务上单次运行约耗费 1700 美元 Opus 4.6 额度。作者认为独立搜索 agent "
             "本身提供并行扩展并改善稳定性，因此在现实预算下建议运行一次。"
         ),
-        evidence=(("SWARMRESEARCH: Orchestrating Coding Agents for Open-Ended Discovery", 129), ("SWARMRESEARCH: Orchestrating Coding Agents for Open-Ended Discovery", 131)),
+        evidence=(
+            ("SWARMRESEARCH: Orchestrating Coding Agents for Open-Ended Discovery", 129),
+            ("SWARMRESEARCH: Orchestrating Coding Agents for Open-Ended Discovery", 131),
+        ),
         must_include=("高温采样", "五次", "1700", "独立搜索", "一次"),
     ),
 )

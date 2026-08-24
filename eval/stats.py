@@ -120,9 +120,7 @@ def paired_bootstrap(
     if item_count:
         rng = Random(seed)
         for _ in range(resamples):
-            weights = Counter(
-                rng.randrange(item_count) for _ in range(item_count)
-            ).items()
+            weights = Counter(rng.randrange(item_count) for _ in range(item_count)).items()
             for name, samples in metrics.items():
                 baseline = _ratio(samples.baseline, weights)
                 candidate = _ratio(samples.candidate, weights)
@@ -142,9 +140,7 @@ def paired_bootstrap(
         results[name] = BootstrapResult(
             sample_size=sum(
                 point.eligible and other.eligible
-                for point, other in zip(
-                    samples.baseline, samples.candidate, strict=True
-                )
+                for point, other in zip(samples.baseline, samples.candidate, strict=True)
             ),
             baseline=baseline,
             candidate=candidate,
@@ -160,9 +156,7 @@ def paired_bootstrap(
     return results
 
 
-def _ratio(
-    points: tuple[RatioPoint, ...], weights: Iterable[tuple[int, int]]
-) -> float | None:
+def _ratio(points: tuple[RatioPoint, ...], weights: Iterable[tuple[int, int]]) -> float | None:
     numerator = 0.0
     denominator = 0.0
     for index, weight in weights:
@@ -195,9 +189,7 @@ def _percentile(sorted_values: list[float], quantile: float) -> float:
     return sorted_values[lower] * (1 - weight) + sorted_values[upper] * weight
 
 
-def _verdict(
-    ci_low: float | None, ci_high: float | None, *, higher_is_better: bool
-) -> str:
+def _verdict(ci_low: float | None, ci_high: float | None, *, higher_is_better: bool) -> str:
     if ci_low is None or ci_high is None:
         return "not_applicable"
     if ci_low > 0:

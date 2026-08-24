@@ -55,9 +55,7 @@ async def _load_stored(session: AsyncSession, item_ids: list[Any]) -> dict[Any, 
     return {row["id"]: dict(row) for row in rows}
 
 
-async def promote(
-    items_path: Path, *, reviewer: str, note: str, apply: bool
-) -> dict[str, Any]:
+async def promote(items_path: Path, *, reviewer: str, note: str, apply: bool) -> dict[str, Any]:
     if not reviewer.strip():
         raise CandidateSuiteError("必须显式给出复核人；升 human 不留痕等于无法追溯")
     items = load_items(items_path)
@@ -94,9 +92,7 @@ async def promote(
                 f"落库内容与 manifest 不一致，复核对象与升级对象不是同一批: {drifted[:5]}"
             )
 
-        already = [
-            expected[i].item_key for i, row in stored.items() if row["origin"] == "human"
-        ]
+        already = [expected[i].item_key for i, row in stored.items() if row["origin"] == "human"]
         pending = [i for i, row in stored.items() if row["origin"] != "human"]
         summary: dict[str, Any] = {
             "suite": SUITE_NAME,
@@ -157,7 +153,7 @@ async def promote(
 def main() -> None:
     parser = argparse.ArgumentParser(description="把复核通过的候选题升为 human")
     parser.add_argument("--items", type=Path, required=True)
-    parser.add_argument("--reviewer", required=True, help="复核人，例如 \"姓名 <邮箱>\"")
+    parser.add_argument("--reviewer", required=True, help='复核人，例如 "姓名 <邮箱>"')
     parser.add_argument("--note", default="逐条复核通过", help="复核备注")
     parser.add_argument("--apply", action="store_true", help="不加则只做 dry-run 校验")
     args = parser.parse_args()

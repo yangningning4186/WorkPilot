@@ -30,8 +30,7 @@ def _contains(actual: object, expected: object) -> bool:
 
     if isinstance(expected, dict):
         return isinstance(actual, dict) and all(
-            key in actual and _contains(actual[key], value)
-            for key, value in expected.items()
+            key in actual and _contains(actual[key], value) for key, value in expected.items()
         )
     if isinstance(expected, list):
         return isinstance(actual, list) and actual == expected
@@ -60,20 +59,14 @@ def evaluate_agent_task(
         _contains(actual.get("arguments"), gold.get("arguments"))
         for gold, actual in zip(gold_tools, actual_tools, strict=True)
     )
-    statuses_ok = bool(actual_tools) and all(
-        item.get("status") == "ok" for item in actual_tools
-    )
+    statuses_ok = bool(actual_tools) and all(item.get("status") == "ok" for item in actual_tools)
     constraints = dict(task.get("constraints") or {})
-    workflow_match = observed.get("workflow_type") == constraints.get(
-        "expected_workflow_type"
-    )
+    workflow_match = observed.get("workflow_type") == constraints.get("expected_workflow_type")
     terminal_match = observed.get("status") == "done"
     hitl_match = observed.get("hitl_decision") == constraints.get("hitl_decision")
 
     relative_path = observed.get("artifact_path")
-    artifact = (
-        _safe_artifact(package, relative_path) if isinstance(relative_path, str) else None
-    )
+    artifact = _safe_artifact(package, relative_path) if isinstance(relative_path, str) else None
     path_safe = artifact is not None
     actual_sha = hashlib.sha256(artifact.read_bytes()).hexdigest() if artifact else None
     expected_sha = constraints.get("expected_artifact_sha256")
@@ -86,9 +79,11 @@ def evaluate_agent_task(
     text = artifact.read_text(encoding="utf-8") if artifact else ""
     must_include = list(constraints.get("must_include") or [])
     must_not_include = list(constraints.get("must_not_include") or [])
-    content_match = bool(must_include) and all(
-        isinstance(term, str) and term in text for term in must_include
-    ) and all(isinstance(term, str) and term not in text for term in must_not_include)
+    content_match = (
+        bool(must_include)
+        and all(isinstance(term, str) and term in text for term in must_include)
+        and all(isinstance(term, str) and term not in text for term in must_not_include)
+    )
 
     checks = (
         sequence_match,

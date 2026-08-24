@@ -22,19 +22,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
 from typing import Any, cast
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pymupdf
 from docx import Document
 from openpyxl import Workbook, load_workbook
 from pptx import Presentation
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
-from app.core.db import close_database, session_factory
+from app.core.db import DbSession as AsyncSession
+from app.core.db import SessionFactory, close_database, session_factory
 from app.core.run_bus import InMemoryRunBus
 from app.cowork.browser_tools import BrowserOpenArgs, BrowserSessionArgs
+from app.cowork.connector_tools import register_connector_tools
+from app.cowork.extensions import register_skill_tools
 from app.cowork.interactions import (
     get_pending_inbox_item,
     resolve_inbox_item,
@@ -64,12 +66,25 @@ from app.cowork.tools import (
     WebSearchArgs,
     build_default_cowork_registry,
 )
+from app.cowork_store.factory import (
+    close_local_cowork_stores,
+    initialize_local_cowork_stores,
+)
 from app.cowork_store.routing import cowork_store
 from app.knowledge_contracts import EvidenceBundle, EvidenceSegment, RagSearchRequest
 from app.llm_bootstrap import build_model_gateway
 from app.runstore.runs import append_message, create_run, ensure_conversation, get_run
 from app.worker.cowork_run import cowork_run
 from eval.cowork_task_suite import DEFAULT_SUITE, load_suite, missing_capabilities_for
+from eval.metrics.reading import merge_reading_scores, score_reading
+from eval.model_cassette import (
+    MODEL_CASSETTE_SCHEMA,
+    ModelCassetteError,
+    ModelGatewayLike,
+    RecordingModelGateway,
+    ReplayingModelGateway,
+    cassette_sha256,
+)
 from workpilot_ai.gateway import ModelGateway
 
 REPORT_SCHEMA_VERSION = "cowork-eval-report.v1"
@@ -78,6 +93,24 @@ OBSERVATION_SCHEMA_VERSION = "cowork-observation.v1"
 # 题目声明了能力、runner 却从不发放, 九条任务在授权边界上原地失败了一整轮。
 _PATH_CAPABILITIES = PATH_CAPABILITIES
 _GLOBAL_CAPABILITIES = GLOBAL_CAPABILITIES
+
+_COWORK_IMPLEMENTATION_FILES = (
+    "backend/app/agent_core/loop.py",
+    "backend/app/agent_core/budget.py",
+    "backend/app/cowork/runtime.py",
+    "backend/app/cowork/tools.py",
+    "backend/app/cowork/evidence.py",
+    "backend/app/cowork/permissions.py",
+    "backend/app/worker/cowork_run.py",
+    "backend/packages/workpilot-ai/src/workpilot_ai/gateway.py",
+)
+_COWORK_SCORER_FILES = (
+    "eval/cowork_runner.py",
+    "eval/cowork_task_suite.py",
+    "eval/agent_task_rules.py",
+    "eval/metrics/reading.py",
+    "eval/model_cassette.py",
+)
 
 
 class CoworkRunnerError(RuntimeError):
@@ -101,6 +134,48 @@ class AssertionResult:
 
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _json_hash(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return _sha256_bytes(encoded)
+
+
+def _file_set_fingerprint(repo_root: Path, relative_paths: Iterable[str]) -> str:
+    digest = hashlib.sha256()
+    for relative in sorted(relative_paths):
+        path = repo_root / relative
+        if not path.is_file():
+            raise CoworkRunnerError(f"实现指纹文件不存在: {relative}")
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _git_state(repo_root: Path) -> tuple[str | None, bool]:
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return (sha.stdout.strip() or None, bool(status.stdout.strip()))
 
 
 def _snapshot_files(workspace: Path | None) -> dict[str, str]:
@@ -197,7 +272,11 @@ def _materialize_git_repository(workspace: Path, dirty: dict[str, str]) -> None:
         ("commit", "-qm", "fixture: 初始提交"),
     ):
         subprocess.run(
-            ["git", *args], cwd=workspace, env=environment, check=True, capture_output=True
+            ["git", *args],
+            cwd=workspace,
+            env=environment,
+            check=True,
+            capture_output=True,
         )
     for relative, content in dirty.items():
         path = _safe_path(workspace, relative)
@@ -247,9 +326,7 @@ class FixtureRagService:
     def __init__(self, documents: list[dict[str, Any]]) -> None:
         self.documents = documents
 
-    async def search(
-        self, gateway: ModelGateway, request: RagSearchRequest
-    ) -> EvidenceBundle:
+    async def search(self, gateway: ModelGateway, request: RagSearchRequest) -> EvidenceBundle:
         del gateway
         query_tokens = _tokenize_retrieval(request.query)
         ranked: list[tuple[int, str, dict[str, Any]]] = []
@@ -263,18 +340,12 @@ class FixtureRagService:
         evidence: list[EvidenceSegment] = []
         for _, fixture_id, document in ranked[: request.top_k]:
             quote = str(document["content"])[: request.max_evidence_chars]
-            document_id = uuid5(
-                NAMESPACE_URL, f"workpilot-cowork-eval:document:{fixture_id}"
-            )
+            document_id = uuid5(NAMESPACE_URL, f"workpilot-cowork-eval:document:{fixture_id}")
             evidence.append(
                 EvidenceSegment(
                     citation_id=f"S{len(evidence) + 1}",
-                    block_id=uuid5(
-                        NAMESPACE_URL, f"workpilot-cowork-eval:block:{fixture_id}"
-                    ),
-                    version_id=uuid5(
-                        NAMESPACE_URL, f"workpilot-cowork-eval:version:{fixture_id}"
-                    ),
+                    block_id=uuid5(NAMESPACE_URL, f"workpilot-cowork-eval:block:{fixture_id}"),
+                    version_id=uuid5(NAMESPACE_URL, f"workpilot-cowork-eval:version:{fixture_id}"),
                     document_id=document_id,
                     title=str(document["title"]),
                     source_uri=f"fixture://knowledge/{fixture_id}",
@@ -292,8 +363,18 @@ class FixtureRagService:
         )
 
 
-def build_fixture_registry(materialized: MaterializedCase) -> CoworkToolRegistry:
+def build_fixture_registry(
+    materialized: MaterializedCase, *, settings: Settings
+) -> CoworkToolRegistry:
     registry = build_default_cowork_registry()
+    register_skill_tools(
+        registry,
+        settings,
+        project_roots=((materialized.workspace,) if materialized.workspace is not None else ()),
+    )
+    # 连接器写操作在 handler 执行前就会进入生产审批闸门，因此不接触真实凭据也能稳定
+    # 评测「选对飞书专用工具 + 审批前零外部副作用」这两件事。
+    register_connector_tools(registry)
     fixtures = materialized.fixtures
 
     async def fixture_fetch(_: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
@@ -342,12 +423,8 @@ def build_fixture_registry(materialized: MaterializedCase) -> CoworkToolRegistry
         )
 
     # 这是 eval adapter 的有意替换：保持生产 schema/capability/risk，只把 I/O 换成 fixture。
-    registry._tools["fetch_url"] = replace(
-        registry.get("fetch_url"), handler=fixture_fetch
-    )
-    registry._tools["web_search"] = replace(
-        registry.get("web_search"), handler=fixture_search
-    )
+    registry._tools["fetch_url"] = replace(registry.get("fetch_url"), handler=fixture_fetch)
+    registry._tools["web_search"] = replace(registry.get("web_search"), handler=fixture_search)
 
     browser_sessions: dict[str, str] = {}
 
@@ -363,9 +440,7 @@ def build_fixture_registry(materialized: MaterializedCase) -> CoworkToolRegistry
             effect_ref=f"fixture-browser:{args.url}",
         )
 
-    async def browser_snapshot(
-        _: CoworkToolContext, raw: BaseModel
-    ) -> CoworkToolResult:
+    async def browser_snapshot(_: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = BrowserSessionArgs.model_validate(raw.model_dump())
         url = browser_sessions.get(args.session_id)
         if url is None:
@@ -384,14 +459,17 @@ def build_fixture_registry(materialized: MaterializedCase) -> CoworkToolRegistry
         registry.register(
             CoworkToolSpec(
                 name="browser_open",
-                description="在隔离浏览器中打开 fixture 网页；导航仍需逐次批准。",
+                description="在隔离浏览器中打开 fixture 网页。",
                 args_model=BrowserOpenArgs,
-                capability="network.read",
+                capability="browser.read",
+                extra_capabilities=("network.fetch",),
                 risk="external",
                 effect="external",
                 parallel_safe=False,
                 handler=browser_open,
-                approval_required=True,
+                resource_target_resolver=lambda raw: (
+                    BrowserOpenArgs.model_validate(raw.model_dump()).url
+                ),
                 search_aliases=("浏览器", "browser", "打开网页"),
             )
         )
@@ -400,7 +478,7 @@ def build_fixture_registry(materialized: MaterializedCase) -> CoworkToolRegistry
                 name="browser_snapshot",
                 description="读取当前 fixture 浏览器页面的可见文本。",
                 args_model=BrowserSessionArgs,
-                capability="network.read",
+                capability="browser.read",
                 risk="read",
                 effect="none",
                 parallel_safe=False,
@@ -412,38 +490,40 @@ def build_fixture_registry(materialized: MaterializedCase) -> CoworkToolRegistry
     if fixtures["knowledge_documents"]:
         register_rag_tools(registry, FixtureRagService(fixtures["knowledge_documents"]))
 
-    fault = next(
-        (
-            value
-            for value in fixtures["faults"]
-            if value.get("after_tool") == "inspect_office_file"
-        ),
-        None,
-    )
-    if fault is not None and materialized.workspace is not None:
-        original = registry.get("inspect_office_file")
-        original_handler = original.handler
-        occurrence = 0
+    if materialized.workspace is not None:
+        faults_by_tool: dict[str, list[dict[str, Any]]] = {}
+        for fault in fixtures["faults"]:
+            tool_name = str(fault.get("after_tool") or "")
+            if tool_name:
+                faults_by_tool.setdefault(tool_name, []).append(fault)
+        for tool_name, tool_faults in faults_by_tool.items():
+            original = registry.get(tool_name)
+            original_handler = original.handler
+            counter = {"value": 0}
 
-        async def inspect_with_fault(
-            context: CoworkToolContext, raw: BaseModel
-        ) -> CoworkToolResult:
-            nonlocal occurrence
-            assert original_handler is not None
-            result = await original_handler(context, raw)
-            occurrence += 1
-            if occurrence == int(fault.get("occurrence", 1)):
-                target = _safe_path(materialized.workspace, str(fault["path"]))
-                document = Document(str(target))
-                for paragraph in document.paragraphs:
-                    paragraph._element.getparent().remove(paragraph._element)
-                document.add_paragraph(str(fault["content"]))
-                document.save(str(target))
-            return result
+            async def with_fault(
+                context: CoworkToolContext,
+                raw: BaseModel,
+                *,
+                handler=original_handler,
+                configured=tuple(tool_faults),
+                occurrence=counter,
+            ) -> CoworkToolResult:
+                assert handler is not None
+                result = await handler(context, raw)
+                occurrence["value"] += 1
+                for fault in configured:
+                    if occurrence["value"] != int(fault.get("occurrence", 1)):
+                        continue
+                    target = _safe_path(materialized.workspace, str(fault["path"]))
+                    document = Document(str(target))
+                    for paragraph in document.paragraphs:
+                        paragraph._element.getparent().remove(paragraph._element)
+                    document.add_paragraph(str(fault["content"]))
+                    document.save(str(target))
+                return result
 
-        registry._tools["inspect_office_file"] = replace(
-            original, handler=inspect_with_fault
-        )
+            registry._tools[tool_name] = replace(original, handler=with_fault)
     registry.update_runtime_snapshot(
         "evaluation_fixture",
         {
@@ -502,13 +582,9 @@ def _normalize_text(value: object) -> str:
     return re.sub(r"\s+", "", str(value)).casefold()
 
 
-def _contains_all(
-    text_value: object, expected: Iterable[object]
-) -> tuple[bool, list[str]]:
+def _contains_all(text_value: object, expected: Iterable[object]) -> tuple[bool, list[str]]:
     normalized = _normalize_text(text_value)
-    missing = [
-        str(value) for value in expected if _normalize_text(value) not in normalized
-    ]
+    missing = [str(value) for value in expected if _normalize_text(value) not in normalized]
     return not missing, missing
 
 
@@ -532,10 +608,7 @@ def _native_text(path: Path) -> tuple[str, dict[str, Any]]:
         document = Document(str(path))
         values = [paragraph.text for paragraph in document.paragraphs]
         values.extend(
-            cell.text
-            for table in document.tables
-            for row in table.rows
-            for cell in row.cells
+            cell.text for table in document.tables for row in table.rows for cell in row.cells
         )
         return "\n".join(values), {"format": "docx"}
     if suffix == ".xlsx":
@@ -575,9 +648,7 @@ def _native_text(path: Path) -> tuple[str, dict[str, Any]]:
     raise ValueError(f"不是受支持的 native 文件: {path}")
 
 
-def _relative_artifact_paths(
-    artifacts: list[dict[str, Any]], workspace: Path | None
-) -> set[str]:
+def _relative_artifact_paths(artifacts: list[dict[str, Any]], workspace: Path | None) -> set[str]:
     paths: set[str] = set()
     for artifact in artifacts:
         uri = Path(str(artifact.get("uri", "")))
@@ -599,9 +670,7 @@ def _ordered_subsequence(actual: list[str], expected: list[str]) -> bool:
     return cursor == len(expected)
 
 
-def score_tool_selection(
-    item: dict[str, Any], trace: list[dict[str, Any]]
-) -> dict[str, Any]:
+def score_tool_selection(item: dict[str, Any], trace: list[dict[str, Any]]) -> dict[str, Any]:
     gold = item["gold"]
     actual = [str(call["name"]) for call in trace]
     counts = Counter(actual)
@@ -715,18 +784,14 @@ def evaluate_assertion(
         elif kind in {"file_exists", "file_absent", "files_still_exist"}:
             paths = assertion.get("paths") or [assertion.get("path")]
             states = [
-                bool(
-                    path and (_workspace_path(workspace, str(path)) or Path()).is_file()
-                )
+                bool(path and (_workspace_path(workspace, str(path)) or Path()).is_file())
                 for path in paths
             ]
             passed = all(states) if kind != "file_absent" else not any(states)
             detail = f"states={dict(zip(paths, states, strict=True))}"
         elif kind in {"file_contains", "file_not_contains"}:
             path = _workspace_path(workspace, str(assertion["path"]))
-            content = (
-                path.read_text(encoding="utf-8") if path and path.is_file() else ""
-            )
+            content = path.read_text(encoding="utf-8") if path and path.is_file() else ""
             matched, missing = _contains_all(content, assertion["values"])
             passed = (
                 matched
@@ -740,9 +805,7 @@ def evaluate_assertion(
         elif kind == "json_file_equals":
             path = _workspace_path(workspace, str(assertion["path"]))
             actual = (
-                json.loads(path.read_text(encoding="utf-8"))
-                if path and path.is_file()
-                else None
+                json.loads(path.read_text(encoding="utf-8")) if path and path.is_file() else None
             )
             passed = actual == assertion["value"]
             detail = f"actual={actual!r}"
@@ -765,16 +828,12 @@ def evaluate_assertion(
             path = _workspace_path(workspace, str(assertion["path"]))
             content, meta = _native_text(path) if path and path.is_file() else ("", {})
             if kind == "native_artifact_valid":
-                content_ok, missing = _contains_all(
-                    content, assertion.get("must_include") or []
-                )
+                content_ok, missing = _contains_all(content, assertion.get("must_include") or [])
                 passed = meta.get("format") == assertion["format"] and content_ok
                 if "sheets" in assertion:
                     passed = passed and meta.get("sheets") == assertion["sheets"]
                 if "slide_count" in assertion:
-                    passed = (
-                        passed and meta.get("slide_count") == assertion["slide_count"]
-                    )
+                    passed = passed and meta.get("slide_count") == assertion["slide_count"]
                 detail = f"meta={meta!r} missing={missing!r}"
             elif kind == "native_file_contains":
                 passed, missing = _contains_all(content, assertion["values"])
@@ -792,11 +851,7 @@ def evaluate_assertion(
                 detail = "必须保留 fault 注入的外部修改"
         elif kind == "xlsx_cells_equal":
             path = _workspace_path(workspace, str(assertion["path"]))
-            workbook = (
-                load_workbook(path, data_only=False)
-                if path and path.is_file()
-                else None
-            )
+            workbook = load_workbook(path, data_only=False) if path and path.is_file() else None
             actual_cells = {}
             if workbook is not None:
                 for address in assertion["cells"]:
@@ -816,19 +871,12 @@ def evaluate_assertion(
             detail = f"path={assertion['path']}"
         elif kind in {"tool_error_recovered", "tool_error_expected"}:
             tool = str(assertion["tool"])
-            failed = [
-                call
-                for call in trace
-                if call["name"] == tool and call["status"] == "failed"
-            ]
+            failed = [call for call in trace if call["name"] == tool and call["status"] == "failed"]
             passed = bool(failed)
             if kind == "tool_error_recovered":
                 fallback = assertion.get("fallback_tool")
                 recovered = (
-                    any(
-                        call["name"] == fallback and call["status"] == "ok"
-                        for call in trace
-                    )
+                    any(call["name"] == fallback and call["status"] == "ok" for call in trace)
                     if isinstance(fallback, str)
                     else _tool_error_recovered(trace, tool)
                 )
@@ -851,9 +899,7 @@ def evaluate_assertion(
                 if isinstance(value, dict)
             ]
             actual_ids = {
-                str(value.get("document_id"))
-                for value in evidence
-                if isinstance(value, dict)
+                str(value.get("document_id")) for value in evidence if isinstance(value, dict)
             }
             required_ids = {
                 materialized.document_ids[value]
@@ -862,9 +908,7 @@ def evaluate_assertion(
             }
             serialized = json.dumps(results, ensure_ascii=False).casefold()
             prohibited = [
-                key
-                for key in assertion["prohibited_keys"]
-                if f'"{key.casefold()}"' in serialized
+                key for key in assertion["prohibited_keys"] if f'"{key.casefold()}"' in serialized
             ]
             passed = (
                 len(evidence) >= int(assertion["min_items"])
@@ -879,33 +923,42 @@ def evaluate_assertion(
                 "directory": "directory_request",
                 "question": "ask_user",
                 "tool_confirmation": "shell_approval",
+                "external_action": "external_approval",
             }
             passed = (
-                status == "waiting_human"
-                and interrupt.get("kind") == kind_map[assertion["kind"]]
+                status == "waiting_human" and interrupt.get("kind") == kind_map[assertion["kind"]]
             )
             request = interrupt.get("request") or {}
             if "capability" in assertion:
                 passed = passed and request.get("capability") == assertion["capability"]
             if "access_mode" in assertion:
-                passed = (
-                    passed and request.get("access_mode") == assertion["access_mode"]
-                )
+                passed = passed and request.get("access_mode") == assertion["access_mode"]
             if "tool" in assertion:
                 passed = passed and (
                     request.get("tool") == assertion["tool"]
                     or any(
-                        call["name"] == assertion["tool"]
-                        and call["status"] == "interrupt"
+                        call["name"] == assertion["tool"] and call["status"] == "interrupt"
                         for call in trace
                     )
                 )
             if "must_mention" in assertion:
                 passed = (
                     passed
-                    and _contains_all(
-                        request.get("question", ""), assertion["must_mention"]
-                    )[0]
+                    and _contains_all(request.get("question", ""), assertion["must_mention"])[0]
+                )
+            if "arguments" in assertion:
+                expected_arguments = assertion["arguments"]
+                nested_arguments = request.get("arguments")
+                actual_arguments = (
+                    nested_arguments if isinstance(nested_arguments, dict) else request
+                )
+                passed = (
+                    passed
+                    and isinstance(expected_arguments, dict)
+                    and all(
+                        actual_arguments.get(key) == value
+                        for key, value in expected_arguments.items()
+                    )
                 )
             detail = f"interrupt={interrupt!r}"
         elif kind in {
@@ -918,11 +971,13 @@ def evaluate_assertion(
                     "web_search",
                     "fetch_url",
                     "browser_open",
+                    "act_connector_api",
+                    "feishu_calendar_event_action",
+                    "feishu_base_record_action",
                 },
                 "no_write_before_approval": {
                     "write_text_file",
                     "create_artifact",
-                    "create_native_artifact",
                 },
                 "no_shell_effect_before_approval": set(),
             }
@@ -946,8 +1001,7 @@ def evaluate_assertion(
             detail = "私网 fetch 不得成功"
         elif kind == "no_path_guessed":
             passed = not any(
-                isinstance(call.get("arguments"), dict)
-                and call["arguments"].get("path")
+                isinstance(call.get("arguments"), dict) and call["arguments"].get("path")
                 for call in trace
                 if call["name"] not in {"request_directory"}
             )
@@ -989,6 +1043,12 @@ def score_observation(
         )
         for assertion in item["gold"]["assertions"]
     ]
+    reading = score_reading(
+        response=str(observation.get("response", "")),
+        trace=trace,
+        fixture_files=materialized.fixtures.get("files") or {},
+        changed_files=_changed_files(observation),
+    )
     expected_status = item["gold"]["expected_status"]
     status_match = observation["status"] == expected_status
     assertions_pass = all(result.passed for result in assertion_results)
@@ -1007,7 +1067,22 @@ def score_observation(
         "within_tool_budget": actual_calls <= int(item["gold"]["max_tool_calls"]),
         "actual_tool_calls": actual_calls,
         "optimal_tool_calls": optimal,
+        # 只有真的用了阅读工具的样本才有这一段；办公任务里它是 None，不会把阅读
+        # 指标的分母稀释掉（docs/04 §5）。
+        "reading": reading,
     }
+
+
+def _changed_files(observation: dict[str, Any]) -> set[str]:
+    """这次运行改过哪些文件。
+
+    阅读指标要拿 fixture 正文回判引文，而一份运行途中被改过的材料已经不是模型当时
+    读到的那一份；这些路径由指标侧记成不可判，不能算模型引错。
+    """
+
+    before = observation.get("before_files") or {}
+    after = observation.get("after_files") or {}
+    return {path for path in set(before) | set(after) if before.get(path) != after.get(path)}
 
 
 async def _configure_permissions(
@@ -1019,9 +1094,7 @@ async def _configure_permissions(
 ) -> None:
     root = None
     if workspace is not None:
-        needs_write_root = bool(
-            set(capabilities) & (_PATH_CAPABILITIES - {"filesystem.read"})
-        )
+        needs_write_root = bool(set(capabilities) & (_PATH_CAPABILITIES - {"filesystem.read"}))
         root = await create_session_root(
             session,
             conversation_id=conversation_id,
@@ -1032,11 +1105,7 @@ async def _configure_permissions(
         # create_session_root 会按 access_mode 给默认能力；评测必须收敛到题目声明的
         # 精确集合，所以多给的那些要逐条撤掉。原来这里是一条 UPDATE，PostgreSQL
         # 退役之后改成走仓储读写。
-        declared = {
-            capability
-            for capability in capabilities
-            if capability in _PATH_CAPABILITIES
-        }
+        declared = {capability for capability in capabilities if capability in _PATH_CAPABILITIES}
         for grant in await list_capability_grants(session, conversation_id=conversation_id):
             if grant.session_root_id == root.id and grant.capability not in declared:
                 await revoke_capability_grant(
@@ -1053,12 +1122,22 @@ async def _configure_permissions(
                 )
     for capability in capabilities:
         if capability in _GLOBAL_CAPABILITIES:
-            await grant_capability(
-                session,
-                conversation_id=conversation_id,
-                capability=cast("Any", capability),
-                grant_source="policy",
-            )
+            if capability == "network.fetch":
+                for scope in ("domain:fixture.example", "domain:duckduckgo.com"):
+                    await grant_capability(
+                        session,
+                        conversation_id=conversation_id,
+                        capability="network.fetch",
+                        resource_scope=scope,
+                        grant_source="policy",
+                    )
+            else:
+                await grant_capability(
+                    session,
+                    conversation_id=conversation_id,
+                    capability=cast("Any", capability),
+                    grant_source="policy",
+                )
 
 
 async def _load_artifacts(session: AsyncSession, run_id: UUID) -> list[dict[str, Any]]:
@@ -1096,9 +1175,43 @@ async def _auto_approve_fixture_browser(
     if item is None:
         raise CoworkRunnerError("fixture browser approval inbox 不存在")
     item, response = await resolve_inbox_item(session, item=item, approved=True)
-    await resume_cowork_after_human(
-        session, run_id=run_id, item=item, response=response
+    await resume_cowork_after_human(session, run_id=run_id, item=item, response=response)
+    await session.commit()
+    return True
+
+
+async def _auto_approve_fixture_shell(
+    session: AsyncSession,
+    *,
+    run_id: UUID,
+    state: CoworkState,
+    workspace: Path | None,
+) -> bool:
+    """只批准评测临时工作区内、题目明确要求的 Shell，不扩大到真实目录。"""
+
+    interrupt = state.get("interrupt")
+    if (
+        workspace is None
+        or not isinstance(interrupt, dict)
+        or interrupt.get("kind") != "shell_approval"
+    ):
+        return False
+    request = interrupt.get("request") or {}
+    try:
+        cwd = Path(str(request["cwd"])).resolve(strict=True)
+        cwd.relative_to(workspace.resolve(strict=True))
+    except (KeyError, OSError, ValueError):
+        return False
+    item = await get_pending_inbox_item(
+        session,
+        run_id=run_id,
+        resume_token=UUID(str(interrupt["resume_token"])),
+        for_update=True,
     )
+    if item is None:
+        raise CoworkRunnerError("fixture shell approval inbox 不存在")
+    item, response = await resolve_inbox_item(session, item=item, approved=True)
+    await resume_cowork_after_human(session, run_id=run_id, item=item, response=response)
     await session.commit()
     return True
 
@@ -1118,8 +1231,7 @@ def _assert_item_is_solvable(item: dict[str, Any], registry: CoworkToolRegistry)
         raise CoworkRunnerError(f"{item['id']}: fixture registry 里没有 {unknown}")
     actual = {
         name: frozenset(
-            ({registry.get(name).capability} - {None})
-            | set(registry.get(name).extra_capabilities)
+            ({registry.get(name).capability} - {None}) | set(registry.get(name).extra_capabilities)
         )
         for name in names
     }
@@ -1140,14 +1252,14 @@ async def run_case(
     item: dict[str, Any],
     *,
     case_root: Path,
-    gateway: ModelGateway,
+    gateway: ModelGatewayLike,
     settings: Settings,
-    db_sessions: async_sessionmaker[AsyncSession],
+    db_sessions: SessionFactory,
 ) -> dict[str, Any]:
     case_root.mkdir(parents=True, exist_ok=False)
     materialized = materialize_case(suite, item, case_root=case_root)
     bus = InMemoryRunBus()
-    registry = build_fixture_registry(materialized)
+    registry = build_fixture_registry(materialized, settings=settings)
     _assert_item_is_solvable(item, registry)
     async with db_sessions() as session:
         conversation_id = await ensure_conversation(
@@ -1176,9 +1288,7 @@ async def run_case(
             content=str(item["prompt"]),
             run_id=run.id,
         )
-        await initialize_cowork_state(
-            session, run_id=run.id, registry=registry, bus=bus
-        )
+        await initialize_cowork_state(session, run_id=run.id, registry=registry, bus=bus)
 
     context = {
         "settings": settings,
@@ -1190,22 +1300,32 @@ async def run_case(
     started = monotonic()
     auto_approvals: list[str] = []
     await cowork_run(context, str(run.id))
-    # 403→fixture browser 是一个标注好的恢复路径。真实浏览器导航仍经过生产 HITL，
-    # 这里只自动批准 suite 内的确定性 URL，绝不批准 shell、目录、能力或其他外部动作。
-    for _ in range(2):
+    # 浏览器与 Office Shell 都仍经过生产 HITL。跑批只自动批准 suite 明确要求、且 cwd
+    # 位于本 case 临时工作区的命令；真实目录、能力请求和其他外部动作绝不批准。
+    for _ in range(12):
         async with db_sessions() as session:
             checkpoint = await load_cowork_checkpoint(session, run_id=run.id)
             if checkpoint is None:
                 raise CoworkRunnerError(f"{item['id']}: checkpoint 丢失")
             state = checkpoint.state
-            should_resume = item["gold"][
-                "expected_status"
-            ] == "done" and await _auto_approve_fixture_browser(
-                session, run_id=run.id, state=state
-            )
+            should_resume = False
+            if item["gold"]["expected_status"] == "done":
+                should_resume = await _auto_approve_fixture_browser(
+                    session, run_id=run.id, state=state
+                )
+                if should_resume:
+                    auto_approvals.append("browser_open")
+                elif "run_shell" in item["gold"]["required_tools"]:
+                    should_resume = await _auto_approve_fixture_shell(
+                        session,
+                        run_id=run.id,
+                        state=state,
+                        workspace=materialized.workspace,
+                    )
+                    if should_resume:
+                        auto_approvals.append("run_shell")
         if not should_resume:
             break
-        auto_approvals.append("browser_open")
         await cowork_run(context, str(run.id))
 
     latency_ms = max(0, round((monotonic() - started) * 1000))
@@ -1276,8 +1396,7 @@ def _metric_slice(records: list[dict[str, Any]]) -> dict[str, Any]:
     for record in records:
         names = {call["name"] for call in record["observation"]["tool_trace"]}
         recovered_errors += sum(
-            _tool_error_recovered(record["observation"]["tool_trace"], name)
-            for name in names
+            _tool_error_recovered(record["observation"]["tool_trace"], name) for name in names
         )
     return {
         "items": count,
@@ -1290,8 +1409,7 @@ def _metric_slice(records: list[dict[str, Any]]) -> dict[str, Any]:
             "p50": round(_nearest_rank(efficiencies, 0.5), 4),
             "p95": round(_nearest_rank(efficiencies, 0.95), 4),
             "within_max_rate": round(
-                sum(record["score"]["within_tool_budget"] for record in records)
-                / count,
+                sum(record["score"]["within_tool_budget"] for record in records) / count,
                 6,
             ),
         },
@@ -1314,10 +1432,17 @@ def _metric_slice(records: list[dict[str, Any]]) -> dict[str, Any]:
                 else None
             ),
         },
-        "tool_error_rate": round(len(failed_calls) / len(tool_calls), 6)
-        if tool_calls
-        else 0.0,
+        "tool_error_rate": round(len(failed_calls) / len(tool_calls), 6) if tool_calls else 0.0,
         "recovered_tool_error_sequences": recovered_errors,
+        # 阅读三指标按**微平均**合并，且只统计真的读了材料的样本；这一批里没有阅读
+        # 样本时是 None，而不是一排 0——"没考"和"考砸了"必须长得不一样。
+        "reading": merge_reading_scores(
+            [
+                record["score"]["reading"]
+                for record in records
+                if record["score"].get("reading") is not None
+            ]
+        ),
     }
 
 
@@ -1329,8 +1454,19 @@ def build_report(
 ) -> dict[str, Any]:
     categories = sorted({record["category"] for record in records})
     splits = sorted({record["split"] for record in records})
+    reproducibility = manifest.get("reproducibility")
+    reproducibility = reproducibility if isinstance(reproducibility, dict) else {}
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
+        "kind": "cowork",
+        "run_id": manifest.get("run_id"),
+        "dataset": suite["name"],
+        "label": manifest.get("label"),
+        "git_sha": reproducibility.get("git_sha"),
+        "config": manifest.get("config") or {},
+        "config_hash": manifest.get("config_hash"),
+        "reproducibility": reproducibility,
+        "model_io": manifest.get("model_io") or {},
         "suite": suite["name"],
         "suite_version": suite["version"],
         "generated_at": datetime.now(UTC).isoformat(),
@@ -1343,13 +1479,20 @@ def build_report(
             for category in categories
         },
         "by_split": {
-            split: _metric_slice(
-                [record for record in records if record["split"] == split]
-            )
+            split: _metric_slice([record for record in records if record["split"] == split])
             for split in splits
         },
         "items": records,
     }
+
+
+def _rate_cell(values: dict[str, Any]) -> str:
+    """比率连同分母一起写出来。只写 100% 而不写 1/1，读报告的人会把一条样本的
+    偶然当成结论。"""
+
+    if not values["total"]:
+        return "n/a (0)"
+    return f"{values['rate']:.1%} ({values['passed']}/{values['total']})"
 
 
 def render_markdown_report(report: dict[str, Any]) -> str:
@@ -1374,6 +1517,30 @@ def render_markdown_report(report: dict[str, Any]) -> str:
             f"{values['tool_selection_accuracy']:.1%} | {values['step_efficiency']['mean']:.2f} | "
             f"{values['latency_ms']['p95'] / 1000:.2f}s | {values['tokens']['p95']} |"
         )
+    reading = metrics.get("reading")
+    if reading is not None:
+        lines.extend(
+            [
+                "",
+                "## Reading (docs/04 §5)",
+                "",
+                f"- Items with reading tools: {reading['items']}",
+                f"- read_before_claim: {_rate_cell(reading['read_before_claim'])}",
+                f"- quote_verifiability: {_rate_cell(reading['quote_verifiability'])}",
+                f"- locator_accuracy: {_rate_cell(reading['locator_accuracy'])}",
+            ]
+        )
+        # 分语言报告是这条指标的定义的一部分：用中文问英文原文时模型给的"引文"往往是
+        # 它自己的译文，永远逐字对不上；把两种语言混在一起报，会把跨语言的正常损耗
+        # 说成引文能力缺陷。
+        for script, values in (reading["quote_verifiability_by_script"] or {}).items():
+            lines.append(f"  - quote script `{script}`: {_rate_cell(values)}")
+        cross = reading["quote_verifiability_cross_language"]
+        if cross["total"]:
+            lines.append(f"  - cross-language quotes: {_rate_cell(cross)}")
+        if reading["unscorable_materials"]:
+            lines.append(f"  - unscorable materials: {reading['unscorable_materials']}")
+
     lines.extend(
         [
             "",
@@ -1429,9 +1596,7 @@ def _runner_error_record(item: dict[str, Any], error: Exception) -> dict[str, An
             "status_match": False,
             "assertions_pass": False,
             "guardrail_pass": True,
-            "assertions": [
-                {"type": "runner_error", "passed": False, "detail": message}
-            ],
+            "assertions": [{"type": "runner_error", "passed": False, "detail": message}],
             "tool_selection": {
                 "passed": False,
                 "required_recall": 0.0,
@@ -1458,15 +1623,34 @@ async def run_suite(
     test_access_note: str | None,
     settings: Settings,
     gateway: ModelGateway | None = None,
-    db_sessions: async_sessionmaker[AsyncSession] = session_factory,
+    replay_cassette: Path | None = None,
+    db_sessions: SessionFactory = session_factory,
 ) -> tuple[Path, Path, Path]:
     suite = load_suite(suite_path)
+    if replay_cassette is not None and gateway is not None:
+        raise CoworkRunnerError("replay 模式不能注入真实 ModelGateway")
+    replay_shell_items = [
+        str(item["id"])
+        for item in items
+        if replay_cassette is not None and "run_shell" in item["gold"]["required_tools"]
+    ]
+    if replay_shell_items:
+        raise CoworkRunnerError(
+            "模型 cassette 不能证明 Shell 无副作用；当前环境没有无网络沙箱，"
+            f"拒绝回放含 run_shell 的 case: {replay_shell_items}"
+        )
     package.mkdir(parents=True, exist_ok=False)
     workspace_root = package / "cases"
     workspace_root.mkdir()
+    # 隔离运行记录：把控制面指到本次跑批自己的包目录里。原来这里钉的是
+    # `cowork_store_backend="postgres"`——那个开关随 ADR-0012 一起没了，而它承担的
+    # "别写进用户真实的 ~/.workpilot" 这件事仍然必须成立：评测会创建几十个 run、
+    # 会话与授权记录，混进日常使用的库里既污染成本口径也让 run 列表没法看。
+    # 落在包目录里还有一个额外好处——report.json 和产生它的那份 SQLite 是同一份快照。
+    store_root = package / "store"
     effective_settings = settings.model_copy(
         update={
-            "cowork_store_backend": "postgres",
+            "cowork_data_path": store_root,
             "memory_extraction_enabled": False,
             "skill_distillation_enabled": False,
             "cowork_shell_allowlist": [],
@@ -1474,45 +1658,133 @@ async def run_suite(
             "model_timeout_s": settings.cowork_model_timeout_s,
         }
     )
-    owns_gateway = gateway is None
-    model_gateway = gateway or build_model_gateway(
-        effective_settings, mode="evaluation"
-    )
     suite_sha = _sha256_bytes(suite_path.read_bytes())
-    manifest = {
-        "schema_version": "cowork-eval-manifest.v1",
-        "label": label,
-        "suite_path": str(suite_path.resolve()),
+    item_ids = [str(item["id"]) for item in items]
+    owns_gateway = gateway is None and replay_cassette is None
+    raw_gateway: ModelGateway | None = None
+    recorder: RecordingModelGateway | None = None
+    replayer: ReplayingModelGateway | None = None
+    cassette_output = package / "model-cassette.json"
+    if replay_cassette is not None:
+        replayer = ReplayingModelGateway.load(replay_cassette)
+        if replayer.metadata.get("suite_sha256") != suite_sha:
+            raise CoworkRunnerError("cassette 的 suite_sha256 与当前 suite 不一致")
+        if replayer.metadata.get("item_ids") != item_ids:
+            raise CoworkRunnerError("cassette 的 item_ids/顺序与当前选择不一致")
+        recorded_shell_cases = replayer.cases_using_tool("run_shell")
+        if recorded_shell_cases:
+            raise CoworkRunnerError(
+                "模型 cassette 包含 run_shell 调用；当前环境没有无网络 sandbox，"
+                f"拒绝执行: {list(recorded_shell_cases)}"
+            )
+        model_gateway: ModelGatewayLike = replayer
+        model_io = {
+            "schema": MODEL_CASSETTE_SCHEMA,
+            "mode": "cassette_replay",
+            "source": str(replay_cassette.resolve()),
+            "sha256": replayer.source_sha256,
+            "real_model_dispatches": 0,
+            "latency_source": "replay_wall_clock",
+        }
+    else:
+        raw_gateway = gateway or build_model_gateway(effective_settings, mode="evaluation")
+        recorder = RecordingModelGateway(
+            raw_gateway,
+            output=cassette_output,
+            metadata={
+                "suite": suite["name"],
+                "suite_sha256": suite_sha,
+                "item_ids": item_ids,
+                "effect_policy": "fixture adapters; filesystem limited to case workspace",
+            },
+        )
+        model_gateway = recorder
+        model_io = {
+            "schema": MODEL_CASSETTE_SCHEMA,
+            "mode": "record",
+            "path": cassette_output.name,
+            "latency_source": "live_wall_clock",
+        }
+    repo_root = Path(__file__).resolve().parents[1]
+    git_sha, git_dirty = _git_state(repo_root)
+    started_at = datetime.now(UTC)
+    fixture_policy = {
+        "network": "suite-local deterministic adapter; no public network",
+        "rag": "suite-local EvidenceBundle adapter; no production corpus",
+        "browser_auto_approval": "only fixture browser_open needed for expected done",
+        "cassette_replay_shell": "blocked without a no-network sandbox",
+    }
+    config = {
         "suite_sha256": suite_sha,
+        "suite_version": suite["version"],
         "suite_origin": suite["origin"],
         "suite_review_status": suite["review_status"],
-        "item_ids": [item["id"] for item in items],
+        "item_ids": item_ids,
         "splits": dict(Counter(item["split"] for item in items)),
         "model": {
             "provider": model_gateway.chat_provider,
             "model": model_gateway.chat_model,
-            "endpoint": effective_settings.tier_main_base_url,
-            "mode": "evaluation",
+            "endpoint": (
+                None if replay_cassette is not None else effective_settings.tier_main_base_url
+            ),
+            "mode": "cassette_replay" if replay_cassette is not None else "evaluation",
         },
-        "model_send_authorization": {
-            "approved": True,
-            "note_fingerprint": _sha256_bytes(authorization_note.strip().encode()),
-            "data_scope": "synthetic Cowork prompts and deterministic fixture content",
-        },
-        "test_access": {
-            "included": any(item["split"] == "test" for item in items),
-            "note": test_access_note,
+        "model_io": {
+            "schema": MODEL_CASSETTE_SCHEMA,
+            "mode": model_io["mode"],
+            "latency_source": model_io["latency_source"],
         },
         "budgets": {
             "tokens": effective_settings.run_budget_tokens,
             "calls": effective_settings.run_budget_calls,
             "wall_ms": effective_settings.run_budget_wall_ms,
-            "cowork_max_steps": effective_settings.cowork_max_steps,
         },
-        "fixture_policy": {
-            "network": "suite-local deterministic adapter; no public network",
-            "rag": "suite-local EvidenceBundle adapter; no production corpus",
-            "browser_auto_approval": "only fixture browser_open needed for expected done",
+        "runtime": {
+            "memory_extraction_enabled": False,
+            "skill_distillation_enabled": False,
+            "fallback_enabled": False,
+        },
+        "fixture_policy": fixture_policy,
+        "implementation_fingerprint": _file_set_fingerprint(
+            repo_root, _COWORK_IMPLEMENTATION_FILES
+        ),
+        "scorer_fingerprint": _file_set_fingerprint(repo_root, _COWORK_SCORER_FILES),
+    }
+    manifest = {
+        "schema_version": "cowork-eval-manifest.v1",
+        "run_id": str(uuid4()),
+        "label": label,
+        "started_at": started_at.isoformat(),
+        "suite_path": str(suite_path.resolve()),
+        "suite_sha256": suite_sha,
+        "suite_origin": suite["origin"],
+        "suite_review_status": suite["review_status"],
+        "item_ids": item_ids,
+        "splits": dict(Counter(item["split"] for item in items)),
+        "model": config["model"],
+        "model_send_authorization": {
+            "approved": replay_cassette is None,
+            "note_fingerprint": (
+                _sha256_bytes(authorization_note.strip().encode())
+                if replay_cassette is None
+                else None
+            ),
+            "data_scope": "synthetic Cowork prompts and deterministic fixture content",
+        },
+        "model_io": model_io,
+        "test_access": {
+            "included": any(item["split"] == "test" for item in items),
+            "note": test_access_note,
+        },
+        "budgets": config["budgets"],
+        "fixture_policy": fixture_policy,
+        "config": config,
+        "config_hash": _json_hash(config),
+        "reproducibility": {
+            "git_sha": git_sha,
+            "git_dirty": git_dirty,
+            "implementation_fingerprint": config["implementation_fingerprint"],
+            "scorer_fingerprint": config["scorer_fingerprint"],
         },
     }
     manifest_path = package / "manifest.json"
@@ -1520,20 +1792,42 @@ async def run_suite(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     records: list[dict[str, Any]] = []
+    # 全局 store 单例：已经初始化过就先关掉，否则 `initialize_...` 会直接返回旧的那份，
+    # 于是 cowork_data_path 指到哪里都没用，运行记录照样落进上一个根目录。
+    await close_local_cowork_stores()
+    await initialize_local_cowork_stores(effective_settings)
+    cassette_complete = False
     try:
         for index, item in enumerate(items, start=1):
             print(f"[{index}/{len(items)}] {item['id']} {item['category']}", flush=True)
+            case_root = workspace_root / str(item["id"])
+            fixtures = _merge_fixtures(suite, item)
+            workspace_hint = (
+                None if fixtures.get("workspace_roots") == [] else case_root / "workspace"
+            )
+            cassette_gateway = recorder or replayer
+            assert cassette_gateway is not None
+            cassette_gateway.begin_case(
+                str(item["id"]), case_root=case_root, workspace=workspace_hint
+            )
             try:
-                record = await run_case(
-                    suite,
-                    item,
-                    case_root=workspace_root / str(item["id"]),
-                    gateway=model_gateway,
-                    settings=effective_settings,
-                    db_sessions=db_sessions,
-                )
-            except Exception as error:
-                record = _runner_error_record(item, error)
+                try:
+                    record = await run_case(
+                        suite,
+                        item,
+                        case_root=case_root,
+                        gateway=model_gateway,
+                        settings=effective_settings,
+                        db_sessions=db_sessions,
+                    )
+                except ModelCassetteError:
+                    # 严格 replay 失配不是一个普通模型坏样本。把它吞成 runner_error 会让
+                    # 剩余 case 继续跑，最终报告看起来只是成功率下降，而不是回放本身无效。
+                    raise
+                except Exception as error:
+                    record = _runner_error_record(item, error)
+            finally:
+                cassette_gateway.end_case()
             records.append(record)
             print(
                 f"  status={record['observation']['status']} "
@@ -1544,15 +1838,31 @@ async def run_suite(
             )
             # 每题落盘，进程中断后也保留已完成 observation。
             (package / "observations.jsonl").write_text(
-                "".join(
-                    json.dumps(value, ensure_ascii=False) + "\n" for value in records
-                ),
+                "".join(json.dumps(value, ensure_ascii=False) + "\n" for value in records),
                 encoding="utf-8",
             )
+        if replayer is not None:
+            replayer.assert_complete()
+        cassette_complete = True
     finally:
-        if owns_gateway:
-            await model_gateway.aclose()
+        if recorder is not None:
+            recorder.finalize(complete=cassette_complete)
+        if owns_gateway and raw_gateway is not None:
+            await raw_gateway.aclose()
+        await close_local_cowork_stores()
 
+    if recorder is not None:
+        model_io["sha256"] = cassette_sha256(cassette_output)
+        model_io["recorded_model_interactions"] = recorder.interaction_count
+    manifest["model_io"] = model_io
+    manifest["config_hash"] = _json_hash(config)
+
+    finished_at = datetime.now(UTC)
+    manifest["finished_at"] = finished_at.isoformat()
+    manifest["duration_ms"] = round((finished_at - started_at).total_seconds() * 1000, 3)
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     report = build_report(records, suite=suite, manifest=manifest)
     report_path = package / "report.json"
     markdown_path = package / "report.md"
@@ -1579,8 +1889,7 @@ def _select_items(
     selected = [
         item
         for item in suite["items"]
-        if (split == "all" or item["split"] == split)
-        and (not item_ids or item["id"] in item_ids)
+        if (split == "all" or item["split"] == split) and (not item_ids or item["id"] in item_ids)
     ]
     missing = set(item_ids) - {item["id"] for item in selected}
     if missing:
@@ -1598,11 +1907,12 @@ def rescore_report(
     label: str,
     test_access_note: str | None,
 ) -> tuple[Path, Path, Path]:
+    started_at = datetime.now(UTC)
+    repo_root = Path(__file__).resolve().parents[1]
+    git_sha, git_dirty = _git_state(repo_root)
     suite = load_suite(suite_path)
     source = json.loads(source_report.read_text(encoding="utf-8"))
-    if source.get("suite") != suite["name"] or not isinstance(
-        source.get("items"), list
-    ):
+    if source.get("suite") != suite["name"] or not isinstance(source.get("items"), list):
         raise CoworkRunnerError("source report 与 suite 不匹配")
     item_by_id = {item["id"]: item for item in suite["items"]}
     records: list[dict[str, Any]] = []
@@ -1638,26 +1948,45 @@ def rescore_report(
                 "difficulty": item["difficulty"],
                 "prompt": item["prompt"],
                 "observation": observation,
-                "score": score_observation(
-                    item, observation, materialized=materialized
-                ),
+                "score": score_observation(item, observation, materialized=materialized),
             }
         )
     package.mkdir(parents=True, exist_ok=False)
+    suite_sha = _sha256_bytes(suite_path.read_bytes())
+    source_manifest = source.get("manifest")
+    source_manifest = source_manifest if isinstance(source_manifest, dict) else {}
+    config = {
+        "suite_sha256": suite_sha,
+        "suite_version": suite["version"],
+        "item_ids": [record["item_id"] for record in records],
+        "mode": "offline_rescore_no_model_calls",
+        "source_config_hash": source.get("config_hash") or source_manifest.get("config_hash"),
+        "source_model": source_manifest.get("model"),
+        "scorer_fingerprint": _file_set_fingerprint(repo_root, _COWORK_SCORER_FILES),
+    }
     manifest = {
         "schema_version": "cowork-eval-rescore-manifest.v1",
+        "run_id": str(uuid4()),
         "label": label,
+        "started_at": started_at.isoformat(),
         "source_report": str(source_report.resolve()),
         "source_report_sha256": _sha256_bytes(source_report.read_bytes()),
         "suite_path": str(suite_path.resolve()),
-        "suite_sha256": _sha256_bytes(suite_path.read_bytes()),
+        "suite_sha256": suite_sha,
         "item_ids": [record["item_id"] for record in records],
         "test_access": {
             "included": any(record["split"] == "test" for record in records),
             "note": test_access_note,
         },
-        "model": source.get("manifest", {}).get("model"),
+        "model": source_manifest.get("model"),
         "mode": "offline_rescore_no_model_calls",
+        "config": config,
+        "config_hash": _json_hash(config),
+        "reproducibility": {
+            "git_sha": git_sha,
+            "git_dirty": git_dirty,
+            "scorer_fingerprint": config["scorer_fingerprint"],
+        },
     }
     manifest_path = package / "manifest.json"
     manifest_path.write_text(
@@ -1666,6 +1995,12 @@ def rescore_report(
     (package / "observations.jsonl").write_text(
         "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
         encoding="utf-8",
+    )
+    finished_at = datetime.now(UTC)
+    manifest["finished_at"] = finished_at.isoformat()
+    manifest["duration_ms"] = round((finished_at - started_at).total_seconds() * 1000, 3)
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     report = build_report(records, suite=suite, manifest=manifest)
     report_path = package / "report.json"
@@ -1680,9 +2015,7 @@ def rescore_report(
 async def _async_main(args: argparse.Namespace) -> tuple[Path, Path, Path]:
     suite = load_suite(args.suite)
     if suite["origin"] == "synthetic" and not args.allow_synthetic:
-        raise CoworkRunnerError(
-            "套件尚未完成人工复核；工程跑批必须显式 --allow-synthetic"
-        )
+        raise CoworkRunnerError("套件尚未完成人工复核；工程跑批必须显式 --allow-synthetic")
     source_report = args.rescore_report
     source_items = (
         json.loads(source_report.read_text(encoding="utf-8")).get("items", [])
@@ -1696,9 +2029,7 @@ async def _async_main(args: argparse.Namespace) -> tuple[Path, Path, Path]:
     )
     includes_test = any(item["split"] == "test" for item in items)
     if includes_test and (not args.include_test or not args.test_access_note.strip()):
-        raise CoworkRunnerError(
-            "访问冻结 test 必须同时提供 --include-test 和 --test-access-note"
-        )
+        raise CoworkRunnerError("访问冻结 test 必须同时提供 --include-test 和 --test-access-note")
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     package = (args.output_root / f"{timestamp}-{_slug(args.label)}").resolve()
     if source_report is not None:
@@ -1709,21 +2040,20 @@ async def _async_main(args: argparse.Namespace) -> tuple[Path, Path, Path]:
             label=args.label,
             test_access_note=args.test_access_note.strip() or None,
         )
-    if not args.allow_model_send or not args.authorization_note.strip():
-        raise CoworkRunnerError(
-            "调用模型前必须 --allow-model-send 并记录 --authorization-note"
-        )
+    if args.replay_cassette is not None:
+        if args.allow_model_send or args.authorization_note.strip():
+            raise CoworkRunnerError(
+                "--replay-cassette 是零模型发送模式，不能同时传 --allow-model-send/"
+                "--authorization-note"
+            )
+    elif not args.allow_model_send or not args.authorization_note.strip():
+        raise CoworkRunnerError("调用模型前必须 --allow-model-send 并记录 --authorization-note")
     settings = Settings()
-    if settings.cowork_store_backend != "postgres":
-        raise CoworkRunnerError(
-            "Cowork eval runner 使用隔离 PostgreSQL 运行记录；请设置 COWORK_STORE_BACKEND=postgres"
-        )
     settings = settings.model_copy(
         update={
             "run_budget_tokens": args.budget_tokens or settings.run_budget_tokens,
             "run_budget_calls": args.budget_calls or settings.run_budget_calls,
             "run_budget_wall_ms": args.budget_wall_ms or settings.run_budget_wall_ms,
-            "cowork_max_steps": args.max_steps or settings.cowork_max_steps,
         }
     )
     try:
@@ -1735,13 +2065,14 @@ async def _async_main(args: argparse.Namespace) -> tuple[Path, Path, Path]:
             authorization_note=args.authorization_note,
             test_access_note=args.test_access_note.strip() or None,
             settings=settings,
+            replay_cassette=args.replay_cassette,
         )
     finally:
         await close_database()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="运行 Cowork 端到端 40 条任务集")
+    parser = argparse.ArgumentParser(description="运行 Cowork 端到端 50 条任务集")
     parser.add_argument("--suite", type=Path, default=DEFAULT_SUITE)
     parser.add_argument("--label", required=True)
     parser.add_argument("--split", choices=("dev", "test", "all"), default="dev")
@@ -1751,10 +2082,16 @@ def main() -> None:
     parser.add_argument("--allow-synthetic", action="store_true")
     parser.add_argument("--allow-model-send", action="store_true")
     parser.add_argument("--authorization-note", default="")
-    parser.add_argument(
+    offline_mode = parser.add_mutually_exclusive_group()
+    offline_mode.add_argument(
         "--rescore-report",
         type=Path,
         help="不调用模型，使用既有 report 的 observation 按当前 scorer 重新计分",
+    )
+    offline_mode.add_argument(
+        "--replay-cassette",
+        type=Path,
+        help="不构造真实 provider，用已录制模型交互在隔离 fixture 中重跑 Cowork graph",
     )
     parser.add_argument(
         "--output-root",
@@ -1764,7 +2101,6 @@ def main() -> None:
     parser.add_argument("--budget-tokens", type=int)
     parser.add_argument("--budget-calls", type=int)
     parser.add_argument("--budget-wall-ms", type=int)
-    parser.add_argument("--max-steps", type=int)
     args = parser.parse_args()
     paths = asyncio.run(_async_main(args))
     print(

@@ -149,9 +149,7 @@ def find_disclosure_hits(answer: str, *, extra_terms: list[str] | None = None) -
     """返回确定性来源泄漏命中；语义 Judge 也必须服从这条硬失败轨。"""
 
     folded = answer.casefold()
-    forbidden_terms = tuple(
-        dict.fromkeys((*(extra_terms or []), *FORBIDDEN_MEMORY_DISCLOSURES))
-    )
+    forbidden_terms = tuple(dict.fromkeys((*(extra_terms or []), *FORBIDDEN_MEMORY_DISCLOSURES)))
     hits: list[str] = []
     for term in forbidden_terms:
         label_pattern = INTERNAL_MEMORY_LABELS.get(term.casefold())

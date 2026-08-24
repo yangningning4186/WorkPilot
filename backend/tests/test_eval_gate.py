@@ -130,16 +130,12 @@ def _generation_item(
         "latency_ms": 1500,
         "total_tokens": total_tokens,
         "cost_usd": None,
-        "span_diagnostics": [
-            {"version_id": "v1", "char_start": 0, "char_end": 5, "quote": "原文"}
-        ],
+        "span_diagnostics": [{"version_id": "v1", "char_start": 0, "char_end": 5, "quote": "原文"}],
         "error": None,
     }
 
 
-def _generation_report(
-    items: list[dict[str, Any]], *, label: str = "gen"
-) -> dict[str, Any]:
+def _generation_report(items: list[dict[str, Any]], *, label: str = "gen") -> dict[str, Any]:
     return {
         "run_id": f"run-{label}",
         "dataset": "core-dev",
@@ -195,9 +191,7 @@ def test_retrieval_snapshot_drops_document_identity(tmp_path: Path) -> None:
 
 
 def test_snapshot_refuses_a_run_with_failed_items(tmp_path: Path) -> None:
-    report = _retrieval_report(
-        [_retrieval_item("a"), _retrieval_item("b", error="超时")]
-    )
+    report = _retrieval_report([_retrieval_item("a"), _retrieval_item("b", error="超时")])
 
     with pytest.raises(GateRefused, match="含失败样本"):
         build_snapshot(load_report(_write(tmp_path, "ret", report)))
@@ -226,9 +220,7 @@ def test_identical_run_passes(tmp_path: Path) -> None:
 
 def test_aggregate_regression_is_blocked(tmp_path: Path) -> None:
     baseline = _retrieval_report([_retrieval_item("a"), _retrieval_item("b")])
-    candidate = _retrieval_report(
-        [_retrieval_item("a"), _retrieval_item("b", recall=0.0)]
-    )
+    candidate = _retrieval_report([_retrieval_item("a"), _retrieval_item("b", recall=0.0)])
 
     outcome = _evaluate(tmp_path, baseline, candidate)
 
@@ -254,9 +246,7 @@ def test_per_sample_churn_alone_does_not_block(tmp_path: Path) -> None:
     outcome = _evaluate(tmp_path, baseline, candidate)
 
     assert outcome.passed
-    check = next(
-        item for item in outcome.checks if item["metric"] == "span_recall_at_k"
-    )
+    check = next(item for item in outcome.checks if item["metric"] == "span_recall_at_k")
     # 放行，但逐样本的胜负必须照样报出来给人看
     assert check["improved_samples"] == 1
     assert check["regressed_samples"] == 1
@@ -306,9 +296,7 @@ def test_metric_without_comparable_samples_is_blocked(tmp_path: Path) -> None:
 
 def test_generation_track_is_gated_too(tmp_path: Path) -> None:
     baseline = _generation_report([_generation_item("a"), _generation_item("b")])
-    candidate = _generation_report(
-        [_generation_item("a"), _generation_item("b", passed=False)]
-    )
+    candidate = _generation_report([_generation_item("a"), _generation_item("b", passed=False)])
 
     outcome = _evaluate(tmp_path, baseline, candidate)
 
@@ -333,9 +321,7 @@ def test_gold_span_drift_refuses_judgement(tmp_path: Path) -> None:
 
 def test_candidate_with_failed_items_refuses_judgement(tmp_path: Path) -> None:
     baseline = _retrieval_report([_retrieval_item("a"), _retrieval_item("b")])
-    candidate = _retrieval_report(
-        [_retrieval_item("a"), _retrieval_item("b", error="集群超时")]
-    )
+    candidate = _retrieval_report([_retrieval_item("a"), _retrieval_item("b", error="集群超时")])
 
     with pytest.raises(GateRefused, match="含失败样本"):
         _evaluate(tmp_path, baseline, candidate)
@@ -398,17 +384,11 @@ def test_cli_exit_codes_separate_failure_from_refusal(tmp_path: Path) -> None:
     )
     # 下面两条走的是比较层的 ValueError，历史上会漏成 traceback + 退出码 1，
     # 也就是把"跑批配错了"混报成"质量回退"
-    wrong_dataset = _write(
-        tmp_path, "dataset", _retrieval_report(items, dataset="english-dev")
-    )
-    drifted_config = _write(
-        tmp_path, "config", _retrieval_report(items, config={"top_k": 5})
-    )
+    wrong_dataset = _write(tmp_path, "dataset", _retrieval_report(items, dataset="english-dev"))
+    drifted_config = _write(tmp_path, "config", _retrieval_report(items, config={"top_k": 5}))
 
     def _check(report: Path) -> int:
-        return main(
-            ["check", str(report), "--against", "working", "--baseline", str(baseline)]
-        )
+        return main(["check", str(report), "--against", "working", "--baseline", str(baseline)])
 
     assert _check(passing) == 0
     assert _check(failing) == 1

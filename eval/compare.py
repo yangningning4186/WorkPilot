@@ -59,7 +59,11 @@ class PairedItems:
 
 
 def check_compatibility(
-    baseline: LoadedReport, candidate: LoadedReport, *, allow_config_drift: bool
+    baseline: LoadedReport,
+    candidate: LoadedReport,
+    *,
+    allow_config_drift: bool,
+    experiment_variable: str | None = None,
 ) -> dict[str, object]:
     if baseline.kind != candidate.kind:
         raise ValueError(
@@ -75,13 +79,22 @@ def check_compatibility(
     controlled = sorted(set(diff) & set(CONTROLLED_KEYS[baseline.kind]))
     if controlled and not allow_config_drift:
         detail = ", ".join(
-            f"{key}: {diff[key]['baseline']!r} → {diff[key]['candidate']!r}"
-            for key in controlled
+            f"{key}: {diff[key]['baseline']!r} → {diff[key]['candidate']!r}" for key in controlled
         )
         raise ValueError(
             f"受控配置项不一致，两份报告算的不是同一个指标: {detail}。"
             "确认这是有意的对照后可加 --allow-config-drift"
         )
+    single_variable = (
+        _validate_single_variable_experiment(
+            baseline,
+            candidate,
+            config_difference=diff,
+            variable=experiment_variable,
+        )
+        if experiment_variable is not None
+        else None
+    )
     return {
         "dataset": baseline.payload.get("dataset"),
         "kind": baseline.kind,
@@ -90,6 +103,359 @@ def check_compatibility(
         "config_drift_allowed": allow_config_drift,
         "identical_config": baseline.payload.get("config_hash")
         == candidate.payload.get("config_hash"),
+        "single_variable": single_variable,
+    }
+
+
+def _validate_single_variable_experiment(
+    baseline: LoadedReport,
+    candidate: LoadedReport,
+    *,
+    config_difference: dict[str, dict[str, Any]],
+    variable: str,
+) -> dict[str, object]:
+    if variable == "rerank.enabled":
+        return _validate_rerank_enabled_experiment(
+            baseline,
+            candidate,
+            config_difference=config_difference,
+        )
+    if variable == "retrieval.rrf_lexical_weight":
+        return _validate_rrf_lexical_weight_experiment(
+            baseline,
+            candidate,
+            config_difference=config_difference,
+        )
+    if variable == "adaptive_top_k.enabled":
+        return _validate_adaptive_top_k_experiment(
+            baseline,
+            candidate,
+            config_difference=config_difference,
+        )
+    if variable != "retrieval.engine":
+        raise ValueError(
+            f"尚不支持单变量 {variable!r}；当前支持 retrieval.engine、"
+            "retrieval.rrf_lexical_weight、adaptive_top_k.enabled、rerank.enabled"
+        )
+    if baseline.kind != "retrieval":
+        raise ValueError("retrieval.engine 单变量校验只适用于检索报告")
+
+    expected_config_keys = {
+        "kb_version_id",
+        "retrieval",
+        "retrieval_score_source",
+        "strategy",
+    }
+    actual_config_keys = set(config_difference)
+    if actual_config_keys != expected_config_keys:
+        raise ValueError(
+            "retrieval.engine 单变量实验出现额外或缺失的配置变化: "
+            f"expected={sorted(expected_config_keys)}, actual={sorted(actual_config_keys)}"
+        )
+
+    left_retrieval = as_dict(baseline.config.get("retrieval"))
+    right_retrieval = as_dict(candidate.config.get("retrieval"))
+    retrieval_diff = config_diff(left_retrieval, right_retrieval)
+    if set(retrieval_diff) != {"engine"}:
+        raise ValueError(
+            "retrieval.engine 单变量实验的 retrieval 配置不只改变了 engine: "
+            f"{sorted(retrieval_diff)}"
+        )
+    if left_retrieval["engine"] == right_retrieval["engine"]:
+        raise ValueError("retrieval.engine 单变量实验两侧 engine 必须不同")
+
+    invariant_pairs: tuple[tuple[str, object, object], ...] = (
+        (
+            "suite.sha256",
+            as_dict(baseline.payload.get("suite")).get("sha256"),
+            as_dict(candidate.payload.get("suite")).get("sha256"),
+        ),
+        (
+            "suite.selected_items",
+            as_dict(baseline.payload.get("suite")).get("selected_items"),
+            as_dict(candidate.payload.get("suite")).get("selected_items"),
+        ),
+        (
+            "kb.slug",
+            as_dict(baseline.payload.get("kb")).get("slug"),
+            as_dict(candidate.payload.get("kb")).get("slug"),
+        ),
+        (
+            "kb.document_hashes",
+            as_dict(baseline.payload.get("kb")).get("document_hashes"),
+            as_dict(candidate.payload.get("kb")).get("document_hashes"),
+        ),
+        (
+            "kb.node_count",
+            as_dict(baseline.payload.get("kb")).get("node_count"),
+            as_dict(candidate.payload.get("kb")).get("node_count"),
+        ),
+        (
+            "config.embedding",
+            baseline.config.get("embedding"),
+            candidate.config.get("embedding"),
+        ),
+        (
+            "reproducibility.implementation_fingerprint",
+            as_dict(baseline.payload.get("reproducibility")).get("implementation_fingerprint"),
+            as_dict(candidate.payload.get("reproducibility")).get("implementation_fingerprint"),
+        ),
+    )
+    missing = [
+        name for name, left, right in invariant_pairs if left in (None, "") or right in (None, "")
+    ]
+    if missing:
+        raise ValueError(f"单变量校验缺少 provenance 字段: {missing}")
+    drifted = [name for name, left, right in invariant_pairs if left != right]
+    if drifted:
+        raise ValueError(f"retrieval.engine 之外的实验条件发生变化: {drifted}")
+
+    return {
+        "variable": variable,
+        "baseline": left_retrieval["engine"],
+        "candidate": right_retrieval["engine"],
+        "verified": True,
+        "invariants": [name for name, _, _ in invariant_pairs],
+    }
+
+
+def _validate_rerank_enabled_experiment(
+    baseline: LoadedReport,
+    candidate: LoadedReport,
+    *,
+    config_difference: dict[str, dict[str, Any]],
+) -> dict[str, object]:
+    if baseline.kind != "retrieval":
+        raise ValueError("rerank.enabled 单变量校验只适用于检索报告")
+
+    expected_config_keys = {"rerank", "retrieval_score_source"}
+    actual_config_keys = set(config_difference)
+    if actual_config_keys != expected_config_keys:
+        raise ValueError(
+            "rerank.enabled 单变量实验出现额外或缺失的配置变化: "
+            f"expected={sorted(expected_config_keys)}, actual={sorted(actual_config_keys)}"
+        )
+
+    left_rerank = as_dict(baseline.config.get("rerank"))
+    right_rerank = as_dict(candidate.config.get("rerank"))
+    rerank_diff = config_diff(left_rerank, right_rerank)
+    if set(rerank_diff) != {"enabled"}:
+        raise ValueError(
+            f"rerank.enabled 单变量实验的 rerank 配置不只改变了 enabled: {sorted(rerank_diff)}"
+        )
+    if left_rerank.get("enabled") is not False or right_rerank.get("enabled") is not True:
+        raise ValueError("rerank.enabled 单变量实验必须从 false 对照到 true 候选")
+    if baseline.config.get("retrieval_score_source") == candidate.config.get(
+        "retrieval_score_source"
+    ):
+        raise ValueError("启用精排后 retrieval_score_source 必须发生变化")
+
+    invariant_pairs: tuple[tuple[str, object, object], ...] = (
+        (
+            "suite.sha256",
+            as_dict(baseline.payload.get("suite")).get("sha256"),
+            as_dict(candidate.payload.get("suite")).get("sha256"),
+        ),
+        (
+            "suite.selected_items",
+            as_dict(baseline.payload.get("suite")).get("selected_items"),
+            as_dict(candidate.payload.get("suite")).get("selected_items"),
+        ),
+        (
+            "kb.slug",
+            as_dict(baseline.payload.get("kb")).get("slug"),
+            as_dict(candidate.payload.get("kb")).get("slug"),
+        ),
+        (
+            "kb.version_id",
+            as_dict(baseline.payload.get("kb")).get("version_id"),
+            as_dict(candidate.payload.get("kb")).get("version_id"),
+        ),
+        (
+            "kb.document_hashes",
+            as_dict(baseline.payload.get("kb")).get("document_hashes"),
+            as_dict(candidate.payload.get("kb")).get("document_hashes"),
+        ),
+        (
+            "kb.node_count",
+            as_dict(baseline.payload.get("kb")).get("node_count"),
+            as_dict(candidate.payload.get("kb")).get("node_count"),
+        ),
+        (
+            "config.embedding",
+            baseline.config.get("embedding"),
+            candidate.config.get("embedding"),
+        ),
+        (
+            "config.retrieval",
+            baseline.config.get("retrieval"),
+            candidate.config.get("retrieval"),
+        ),
+        (
+            "reproducibility.implementation_fingerprint",
+            as_dict(baseline.payload.get("reproducibility")).get("implementation_fingerprint"),
+            as_dict(candidate.payload.get("reproducibility")).get("implementation_fingerprint"),
+        ),
+    )
+    missing = [
+        name for name, left, right in invariant_pairs if left in (None, "") or right in (None, "")
+    ]
+    if missing:
+        raise ValueError(f"单变量校验缺少 provenance 字段: {missing}")
+    drifted = [name for name, left, right in invariant_pairs if left != right]
+    if drifted:
+        raise ValueError(f"rerank.enabled 之外的实验条件发生变化: {drifted}")
+
+    return {
+        "variable": "rerank.enabled",
+        "baseline": False,
+        "candidate": True,
+        "verified": True,
+        "invariants": [name for name, _, _ in invariant_pairs],
+    }
+
+
+def _retrieval_invariants(
+    baseline: LoadedReport,
+    candidate: LoadedReport,
+    *,
+    include_retrieval: bool,
+) -> tuple[tuple[str, object, object], ...]:
+    pairs: list[tuple[str, object, object]] = [
+        (
+            "suite.sha256",
+            as_dict(baseline.payload.get("suite")).get("sha256"),
+            as_dict(candidate.payload.get("suite")).get("sha256"),
+        ),
+        (
+            "suite.selected_items",
+            as_dict(baseline.payload.get("suite")).get("selected_items"),
+            as_dict(candidate.payload.get("suite")).get("selected_items"),
+        ),
+        (
+            "kb.slug",
+            as_dict(baseline.payload.get("kb")).get("slug"),
+            as_dict(candidate.payload.get("kb")).get("slug"),
+        ),
+        (
+            "kb.version_id",
+            as_dict(baseline.payload.get("kb")).get("version_id"),
+            as_dict(candidate.payload.get("kb")).get("version_id"),
+        ),
+        (
+            "kb.document_hashes",
+            as_dict(baseline.payload.get("kb")).get("document_hashes"),
+            as_dict(candidate.payload.get("kb")).get("document_hashes"),
+        ),
+        (
+            "kb.node_count",
+            as_dict(baseline.payload.get("kb")).get("node_count"),
+            as_dict(candidate.payload.get("kb")).get("node_count"),
+        ),
+        (
+            "config.embedding",
+            baseline.config.get("embedding"),
+            candidate.config.get("embedding"),
+        ),
+        (
+            "config.rerank",
+            baseline.config.get("rerank"),
+            candidate.config.get("rerank"),
+        ),
+        (
+            "reproducibility.implementation_fingerprint",
+            as_dict(baseline.payload.get("reproducibility")).get("implementation_fingerprint"),
+            as_dict(candidate.payload.get("reproducibility")).get("implementation_fingerprint"),
+        ),
+    ]
+    if include_retrieval:
+        pairs.append(
+            (
+                "config.retrieval",
+                baseline.config.get("retrieval"),
+                candidate.config.get("retrieval"),
+            )
+        )
+    return tuple(pairs)
+
+
+def _verify_retrieval_invariants(
+    invariant_pairs: tuple[tuple[str, object, object], ...],
+    *,
+    variable: str,
+) -> list[str]:
+    missing = [
+        name for name, left, right in invariant_pairs if left in (None, "") or right in (None, "")
+    ]
+    if missing:
+        raise ValueError(f"单变量校验缺少 provenance 字段: {missing}")
+    drifted = [name for name, left, right in invariant_pairs if left != right]
+    if drifted:
+        raise ValueError(f"{variable} 之外的实验条件发生变化: {drifted}")
+    return [name for name, _, _ in invariant_pairs]
+
+
+def _validate_rrf_lexical_weight_experiment(
+    baseline: LoadedReport,
+    candidate: LoadedReport,
+    *,
+    config_difference: dict[str, dict[str, Any]],
+) -> dict[str, object]:
+    if baseline.kind != "retrieval":
+        raise ValueError("retrieval.rrf_lexical_weight 单变量校验只适用于检索报告")
+    if set(config_difference) != {"retrieval"}:
+        raise ValueError(f"RRF 词法权重实验只能改变 retrieval: actual={sorted(config_difference)}")
+    left = as_dict(baseline.config.get("retrieval"))
+    right = as_dict(candidate.config.get("retrieval"))
+    nested = config_diff(left, right)
+    if set(nested) != {"rrf_lexical_weight"}:
+        raise ValueError(f"RRF 词法权重之外的 retrieval 配置发生变化: {sorted(nested)}")
+    baseline_weight = float(left["rrf_lexical_weight"])
+    candidate_weight = float(right["rrf_lexical_weight"])
+    if baseline_weight <= 0 or candidate_weight <= 0 or baseline_weight == candidate_weight:
+        raise ValueError("两臂 RRF 词法权重必须为不同的正数")
+    invariants = _retrieval_invariants(baseline, candidate, include_retrieval=False)
+    return {
+        "variable": "retrieval.rrf_lexical_weight",
+        "baseline": baseline_weight,
+        "candidate": candidate_weight,
+        "verified": True,
+        "invariants": _verify_retrieval_invariants(
+            invariants,
+            variable="retrieval.rrf_lexical_weight",
+        ),
+    }
+
+
+def _validate_adaptive_top_k_experiment(
+    baseline: LoadedReport,
+    candidate: LoadedReport,
+    *,
+    config_difference: dict[str, dict[str, Any]],
+) -> dict[str, object]:
+    if baseline.kind != "retrieval":
+        raise ValueError("adaptive_top_k.enabled 单变量校验只适用于检索报告")
+    if set(config_difference) != {"adaptive_top_k"}:
+        raise ValueError(
+            f"adaptive Top-K 实验只能改变 adaptive_top_k: actual={sorted(config_difference)}"
+        )
+    left = as_dict(baseline.config.get("adaptive_top_k"))
+    right = as_dict(candidate.config.get("adaptive_top_k"))
+    nested = config_diff(left, right)
+    if set(nested) != {"enabled"}:
+        raise ValueError(f"adaptive Top-K 除 enabled 外还有配置变化: {sorted(nested)}")
+    if left.get("enabled") is not False or right.get("enabled") is not True:
+        raise ValueError("adaptive Top-K 单变量实验必须从 false 对照到 true 候选")
+    invariants = _retrieval_invariants(baseline, candidate, include_retrieval=True)
+    return {
+        "variable": "adaptive_top_k.enabled",
+        "baseline": False,
+        "candidate": True,
+        "verified": True,
+        "invariants": _verify_retrieval_invariants(
+            invariants,
+            variable="adaptive_top_k.enabled",
+        ),
     }
 
 
@@ -117,9 +483,7 @@ def pair_items(baseline: LoadedReport, candidate: LoadedReport) -> PairedItems:
         baseline=tuple(baseline_by_id[item_id] for item_id in ids),
         candidate=tuple(candidate_by_id[item_id] for item_id in ids),
         categories=tuple(str(baseline_by_id[item_id]["category"]) for item_id in ids),
-        questions=tuple(
-            str(baseline_by_id[item_id].get("question", "")) for item_id in ids
-        ),
+        questions=tuple(str(baseline_by_id[item_id].get("question", "")) for item_id in ids),
     )
 
 
@@ -166,12 +530,8 @@ def build_columns(
     """
     columns: dict[str, MetricColumn] = {}
     for spec in specs:
-        baseline_points = [
-            spec.extract(item, baseline_config) for item in pairs.baseline
-        ]
-        candidate_points = [
-            spec.extract(item, candidate_config) for item in pairs.candidate
-        ]
+        baseline_points = [spec.extract(item, baseline_config) for item in pairs.baseline]
+        candidate_points = [spec.extract(item, candidate_config) for item in pairs.candidate]
         baseline_only = sum(
             left.eligible and not right.eligible
             for left, right in zip(baseline_points, candidate_points, strict=True)
@@ -181,9 +541,7 @@ def build_columns(
             for left, right in zip(baseline_points, candidate_points, strict=True)
         )
         paired = [
-            (left, right)
-            if left.eligible and right.eligible
-            else (INELIGIBLE, INELIGIBLE)
+            (left, right) if left.eligible and right.eligible else (INELIGIBLE, INELIGIBLE)
             for left, right in zip(baseline_points, candidate_points, strict=True)
         ]
         columns[spec.name] = MetricColumn(
@@ -206,9 +564,13 @@ def build_comparison(
     top_n: int = 10,
     primary_metric: str | None = None,
     allow_config_drift: bool = False,
+    experiment_variable: str | None = None,
 ) -> dict[str, object]:
     compatibility = check_compatibility(
-        baseline, candidate, allow_config_drift=allow_config_drift
+        baseline,
+        candidate,
+        allow_config_drift=allow_config_drift,
+        experiment_variable=experiment_variable,
     )
     pairs = pair_items(baseline, candidate)
     specs = METRICS[baseline.kind]
@@ -297,9 +659,7 @@ def _sample_sort_key(record: dict[str, Any]) -> tuple[float, str]:
     return -abs(float(record["delta"] or 0.0)), str(record["item_id"])
 
 
-def _classify_samples(
-    pairs: PairedItems, column: MetricColumn, *, top_n: int
-) -> dict[str, object]:
+def _classify_samples(pairs: PairedItems, column: MetricColumn, *, top_n: int) -> dict[str, object]:
     improved: list[dict[str, Any]] = []
     regressed: list[dict[str, Any]] = []
     tied: list[dict[str, Any]] = []
@@ -345,9 +705,7 @@ def _classify_samples(
     }
 
 
-def _item_payload(
-    pairs: PairedItems, columns: dict[str, MetricColumn]
-) -> list[dict[str, object]]:
+def _item_payload(pairs: PairedItems, columns: dict[str, MetricColumn]) -> list[dict[str, object]]:
     payload: list[dict[str, object]] = []
     for index, item_id in enumerate(pairs.ids):
         metrics: dict[str, object] = {}
@@ -385,14 +743,22 @@ def markdown_report(payload: dict[str, object]) -> str:
         f"# 评测对照：{baseline['label']} → {candidate['label']}",
         "",
         f"- 时间：{payload['generated_at']}",
-        f"- 数据集：`{payload['dataset']}`｜报告类型：`{payload['kind']}`"
-        f"｜配对样本：{payload['item_count']} 条",
-        f"- baseline：`{baseline['label']}` run=`{baseline['run_id']}` "
-        f"git=`{baseline['git_sha']}` config=`{short_hash(baseline['config_hash'])}`",
-        f"- candidate：`{candidate['label']}` run=`{candidate['run_id']}` "
-        f"git=`{candidate['git_sha']}` config=`{short_hash(candidate['config_hash'])}`",
-        f"- 显著性：配对百分位 bootstrap，resamples={bootstrap['resamples']}，"
-        f"seed={bootstrap['seed']}，CI={float(bootstrap['ci_level']):.0%}",
+        (
+            f"- 数据集：`{payload['dataset']}`｜报告类型：`{payload['kind']}`"
+            f"｜配对样本：{payload['item_count']} 条"
+        ),
+        (
+            f"- baseline：`{baseline['label']}` run=`{baseline['run_id']}` "
+            f"git=`{baseline['git_sha']}` config=`{short_hash(baseline['config_hash'])}`"
+        ),
+        (
+            f"- candidate：`{candidate['label']}` run=`{candidate['run_id']}` "
+            f"git=`{candidate['git_sha']}` config=`{short_hash(candidate['config_hash'])}`"
+        ),
+        (
+            f"- 显著性：配对百分位 bootstrap，resamples={bootstrap['resamples']}，"
+            f"seed={bootstrap['seed']}，CI={float(bootstrap['ci_level']):.0%}"
+        ),
         "",
         "## 配置差异",
         "",
@@ -414,14 +780,20 @@ def markdown_report(payload: dict[str, object]) -> str:
         [
             "## 口径与结论边界",
             "",
-            "- **置信区间跨 0 即无显著差异，不得写成提升或回退**；"
-            "显著性来自配对重采样，不是点估计的大小。",
+            (
+                "- **置信区间跨 0 即无显著差异，不得写成提升或回退**；"
+                "显著性来自配对重采样，不是点估计的大小。"
+            ),
             "- 比率类指标的 Δ 与置信区间是百分点差，不是相对涨幅。",
-            "- 配对口径：任一跑批中不适用该指标的样本两侧一并剔除，"
-            "因此这里的绝对值可能与单次跑批报告里的聚合值不同；剔除数量见"
-            "「仅一侧适用」列。",
-            "- 小切片（如 4 条的类别）置信区间必然很宽，这是样本量的真实反映，"
-            "不是计算错误；类别结论只能当方向性线索。",
+            (
+                "- 配对口径：任一跑批中不适用该指标的样本两侧一并剔除，"
+                "因此这里的绝对值可能与单次跑批报告里的聚合值不同；剔除数量见"
+                "「仅一侧适用」列。"
+            ),
+            (
+                "- 小切片（如 4 条的类别）置信区间必然很宽，这是样本量的真实反映，"
+                "不是计算错误；类别结论只能当方向性线索。"
+            ),
             "- 延迟只在同机同负载下可比：跨机器、跨时间的跑批，延迟差值不构成结论。",
             "- bootstrap 只度量抽样噪声，不能校正数据集偏差、标注错误或对 dev 集的过拟合。",
             "- 同 config_hash 的两次跑批做对照，得到的是噪声地板估计，不是策略收益。",
@@ -434,8 +806,10 @@ def _config_section(compatibility: dict[str, Any]) -> list[str]:
     diff = compatibility.get("config_diff") or {}
     if not diff:
         return [
-            "两次跑批配置完全一致（config_hash 相同）。"
-            "本次对照测的是跑批噪声地板，不能解读为策略收益。"
+            (
+                "两次跑批配置完全一致（config_hash 相同）。"
+                "本次对照测的是跑批噪声地板，不能解读为策略收益。"
+            )
         ]
     lines = ["| 配置项 | baseline | candidate |", "|---|---|---|"]
     lines.extend(
@@ -447,9 +821,24 @@ def _config_section(compatibility: dict[str, Any]) -> list[str]:
         lines.extend(
             [
                 "",
-                f"⚠️ 受控配置项 {', '.join(f'`{key}`' for key in controlled)} 发生变化"
-                "（已通过 --allow-config-drift 放行）：两侧指标的定义不完全相同，"
-                "解读时必须一并说明。",
+                (
+                    f"⚠️ 受控配置项 {', '.join(f'`{key}`' for key in controlled)} 发生变化"
+                    "（已通过 --allow-config-drift 放行）：两侧指标的定义不完全相同，"
+                    "解读时必须一并说明。"
+                ),
+            ]
+        )
+    single_variable = compatibility.get("single_variable")
+    if single_variable:
+        audit = as_dict(single_variable)
+        lines.extend(
+            [
+                "",
+                (
+                    f"✅ 单变量校验通过：`{audit['variable']}`，"
+                    f"`{audit['baseline']}` → `{audit['candidate']}`；"
+                    f"已核对 {len(audit['invariants'])} 项不变量。"
+                ),
             ]
         )
     return lines
@@ -462,9 +851,7 @@ def _metric_table(metrics: dict[str, Any]) -> list[str]:
     ]
     for entry in metrics.values():
         unit = entry["unit"]
-        dropped = int(entry["dropped_baseline_only"]) + int(
-            entry["dropped_candidate_only"]
-        )
+        dropped = int(entry["dropped_baseline_only"]) + int(entry["dropped_candidate_only"])
         lines.append(
             f"| {entry['title']} | {format_value(entry['baseline'], unit)} | "
             f"{format_value(entry['candidate'], unit)} | {format_delta(entry['delta'], unit)} | "
@@ -474,9 +861,7 @@ def _metric_table(metrics: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _sample_section(
-    samples: dict[str, Any], primary: str, metrics: dict[str, Any]
-) -> list[str]:
+def _sample_section(samples: dict[str, Any], primary: str, metrics: dict[str, Any]) -> list[str]:
     counts = samples["counts"]
     spec = as_dict(metrics[primary])
     title = spec["title"]
@@ -484,8 +869,10 @@ def _sample_section(
     lines = [
         f"## 逐样本变化（主指标：{title}）",
         "",
-        f"- 变好 {counts['improved']} 条｜变差 {counts['regressed']} 条｜"
-        f"持平 {counts['tied']} 条｜不适用 {counts['not_applicable']} 条",
+        (
+            f"- 变好 {counts['improved']} 条｜变差 {counts['regressed']} 条｜"
+            f"持平 {counts['tied']} 条｜不适用 {counts['not_applicable']} 条"
+        ),
         "",
     ]
     for key, heading in (("improved", "变好样本"), ("regressed", "变差样本")):
@@ -511,12 +898,8 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="配对比较两次评测跑批，输出快照 diff 与 bootstrap 置信区间"
     )
-    parser.add_argument(
-        "baseline", type=Path, help="baseline 的 report.json 或其所在目录"
-    )
-    parser.add_argument(
-        "candidate", type=Path, help="candidate 的 report.json 或其所在目录"
-    )
+    parser.add_argument("baseline", type=Path, help="baseline 的 report.json 或其所在目录")
+    parser.add_argument("candidate", type=Path, help="candidate 的 report.json 或其所在目录")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--resamples", type=int, default=DEFAULT_RESAMPLES)
@@ -527,6 +910,14 @@ def _parse_args() -> argparse.Namespace:
         "--allow-config-drift",
         action="store_true",
         help="允许受控配置项不同；只在明确知道两侧指标定义差异时使用",
+    )
+    parser.add_argument(
+        "--experiment-variable",
+        default=None,
+        help=(
+            "声明并严格校验单变量；当前支持 retrieval.engine、"
+            "retrieval.rrf_lexical_weight、adaptive_top_k.enabled、rerank.enabled"
+        ),
     )
     return parser.parse_args()
 
@@ -542,13 +933,12 @@ def main() -> None:
         top_n=args.top_n,
         primary_metric=args.primary_metric,
         allow_config_drift=args.allow_config_drift,
+        experiment_variable=args.experiment_variable,
     )
     args.output_dir.mkdir(parents=True, exist_ok=False)
     json_path = args.output_dir / "report.json"
     md_path = args.output_dir / "report.md"
-    json_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(markdown_report(payload), encoding="utf-8")
     print(md_path)
 

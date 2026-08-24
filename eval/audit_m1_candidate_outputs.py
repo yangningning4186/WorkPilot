@@ -79,9 +79,7 @@ GENERIC_PATTERNS = (
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for line_number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), 1
-    ):
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         try:
             records.append(json.loads(line))
         except json.JSONDecodeError as error:
@@ -111,15 +109,11 @@ async def audit(output_dir: Path) -> dict[str, Any]:
     split_counts = Counter(str(item.get("split")) for item in items)
     if split_counts != {"dev": 60, "test": 20}:
         failures.append(f"split counts: {dict(split_counts)}")
-    language_counts = Counter(
-        (str(item.get("split")), str(item.get("language"))) for item in items
-    )
+    language_counts = Counter((str(item.get("split")), str(item.get("language"))) for item in items)
     if language_counts != EXPECTED_LANGUAGE_COUNTS:
         failures.append(f"language counts: {dict(language_counts)}")
     split_category_counts = {
-        split: Counter(
-            str(item.get("category")) for item in items if item.get("split") == split
-        )
+        split: Counter(str(item.get("category")) for item in items if item.get("split") == split)
         for split in ("dev", "test")
     }
     for split, expected in EXPECTED_SPLIT_CATEGORY_COUNTS.items():
@@ -167,13 +161,8 @@ async def audit(output_dir: Path) -> dict[str, Any]:
             failures.append(f"{key}: English question contains CJK")
         if item.get("language") == "zh" and not re.search(r"[\u3400-\u9fff]", question):
             failures.append(f"{key}: Chinese question lacks CJK")
-        if (
-            item.get("origin") != "synthetic"
-            or item.get("review_status") != "pending_human"
-        ):
-            failures.append(
-                f"{key}: candidate provenance is not synthetic/pending_human"
-            )
+        if item.get("origin") != "synthetic" or item.get("review_status") != "pending_human":
+            failures.append(f"{key}: candidate provenance is not synthetic/pending_human")
         if item.get("reviewer") or item.get("reviewed_at") or item.get("review_note"):
             failures.append(f"{key}: pending candidate contains review approval")
         if not partition_version:
@@ -211,9 +200,7 @@ async def audit(output_dir: Path) -> dict[str, Any]:
             failures.append(f"{key}: answerable retrieval item lacks span/answer")
         if (category == "temporal") != bool(item.get("temporal_ctx")):
             failures.append(f"{key}: temporal_ctx contract violated")
-        if spans and answer == "\n\n".join(
-            str(span.get("quote", "")) for span in spans
-        ):
+        if spans and answer == "\n\n".join(str(span.get("quote", "")) for span in spans):
             raw_block_answers.append(key)
         if partition_version:
             version_splits[partition_version].add(split)
@@ -227,9 +214,7 @@ async def audit(output_dir: Path) -> dict[str, Any]:
             span_records.append((version_id, start, end, quote, split, key))
 
     duplicate_questions = {
-        question: keys
-        for question, keys in normalized_questions.items()
-        if len(keys) > 1
+        question: keys for question, keys in normalized_questions.items() if len(keys) > 1
     }
     if duplicate_questions:
         failures.append(f"exact normalized duplicate questions: {duplicate_questions}")
@@ -239,9 +224,7 @@ async def audit(output_dir: Path) -> dict[str, Any]:
     if cross_split_versions:
         failures.append(f"cross-split versions: {cross_split_versions}")
     cross_split_spans = sorted(
-        key
-        for key, usages in span_keys.items()
-        if len({split for split, _ in usages}) > 1
+        key for key, usages in span_keys.items() if len({split for split, _ in usages}) > 1
     )
     if cross_split_spans:
         failures.append(f"cross-split spans: {cross_split_spans}")
@@ -265,11 +248,7 @@ async def audit(output_dir: Path) -> dict[str, Any]:
         """
     )
     async with session_factory() as session:
-        rows = (
-            (await session.execute(statement, {"version_ids": version_ids}))
-            .mappings()
-            .all()
-        )
+        rows = (await session.execute(statement, {"version_ids": version_ids})).mappings().all()
         human_rows = (await session.execute(human_statement)).mappings().all()
         await session.rollback()
     await close_database()
@@ -293,12 +272,7 @@ async def audit(output_dir: Path) -> dict[str, Any]:
     outside_blocks: list[str] = []
     for version_id, start, end, quote, _split, key in span_records:
         full_text = full_text_by_version.get(version_id)
-        if (
-            full_text is None
-            or start < 0
-            or end <= start
-            or full_text[start:end] != quote
-        ):
+        if full_text is None or start < 0 or end <= start or full_text[start:end] != quote:
             bad_quotes.append(key)
             continue
         containing = [
@@ -315,9 +289,7 @@ async def audit(output_dir: Path) -> dict[str, Any]:
     if bad_quotes:
         failures.append(f"invalid full_text quote/range: {sorted(set(bad_quotes))}")
     if outside_blocks:
-        failures.append(
-            f"span not contained in parsed block: {sorted(set(outside_blocks))}"
-        )
+        failures.append(f"span not contained in parsed block: {sorted(set(outside_blocks))}")
 
     human_questions = {_normalize_question(str(row["question"])) for row in human_rows}
     non_dev_human = sum(str(row["split"]) != "dev" for row in human_rows)
@@ -332,9 +304,7 @@ async def audit(output_dir: Path) -> dict[str, Any]:
     if copied_questions:
         failures.append(f"questions copied from existing human set: {copied_questions}")
     human_versions = {
-        str(span["version_id"])
-        for row in human_rows
-        for span in (row["gold_spans"] or [])
+        str(span["version_id"]) for row in human_rows for span in (row["gold_spans"] or [])
     }
     test_versions = {
         str(span["version_id"])
@@ -344,30 +314,20 @@ async def audit(output_dir: Path) -> dict[str, Any]:
     }
     overlap_human_test = sorted(human_versions & test_versions)
     if overlap_human_test:
-        failures.append(
-            f"test versions overlap existing dev human versions: {overlap_human_test}"
-        )
+        failures.append(f"test versions overlap existing dev human versions: {overlap_human_test}")
 
     if generic_questions:
         failures.append(f"generic template questions: {len(generic_questions)}")
     if missing_partition_versions:
-        failures.append(
-            f"missing partition_version_id: {len(missing_partition_versions)}"
-        )
+        failures.append(f"missing partition_version_id: {len(missing_partition_versions)}")
     if incomplete_schema:
         failures.append(f"incomplete review schema: {len(incomplete_schema)}")
     if placeholder_questions:
-        failures.append(
-            f"placeholder block labels in questions: {placeholder_questions}"
-        )
+        failures.append(f"placeholder block labels in questions: {placeholder_questions}")
     if raw_block_answers:
-        failures.append(
-            f"gold_answer is raw concatenated evidence block: {len(raw_block_answers)}"
-        )
+        failures.append(f"gold_answer is raw concatenated evidence block: {len(raw_block_answers)}")
     if empty_tool_arguments:
-        warnings.append(
-            f"agent_task tools with empty arguments: {len(empty_tool_arguments)}"
-        )
+        warnings.append(f"agent_task tools with empty arguments: {len(empty_tool_arguments)}")
     repeated_skeletons = {key: count for key, count in skeletons.items() if count >= 3}
     if repeated_skeletons:
         warnings.append(f"question skeletons repeated >=3 times: {repeated_skeletons}")
@@ -377,8 +337,7 @@ async def audit(output_dir: Path) -> dict[str, Any]:
         "item_count": len(items),
         "split_counts": dict(split_counts),
         "language_counts": {
-            f"{split}:{language}": count
-            for (split, language), count in language_counts.items()
+            f"{split}:{language}": count for (split, language), count in language_counts.items()
         },
         "split_category_counts": {
             split: dict(counts) for split, counts in split_category_counts.items()

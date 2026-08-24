@@ -25,9 +25,7 @@ def build_m0_report(
     _validate_report_set(generation_reports, expected_datasets, kind="generation")
 
     retrieval_items = [item for report in retrieval_reports for item in report["items"]]
-    generation_items = [
-        item for report in generation_reports for item in report["items"]
-    ]
+    generation_items = [item for report in generation_reports for item in report["items"]]
     _validate_items(retrieval_items, suite, label="retrieval")
     _validate_items(generation_items, suite, label="generation")
     retrieval_by_id = {str(item["item_id"]): item for item in retrieval_items}
@@ -50,10 +48,7 @@ def build_m0_report(
     }
     configured_threshold = float(retrieval_reports[0]["config"]["refusal_threshold"])
     refusal_analysis = analyze_refusal(
-        [
-            (float(item["top_score"]), bool(item["answerable"]))
-            for item in retrieval_items
-        ],
+        [(float(item["top_score"]), bool(item["answerable"])) for item in retrieval_items],
         configured_threshold=configured_threshold,
     ).to_dict()
 
@@ -62,9 +57,7 @@ def build_m0_report(
     answerable_generation = [item for item in completed if item["answerable"]]
     unanswerable_generation = [item for item in completed if not item["answerable"]]
     citation_total = sum(len(item["citations"]) for item in non_refusals)
-    aligned_total = sum(
-        int(item["citation_gold_alignment"]["aligned"]) for item in non_refusals
-    )
+    aligned_total = sum(int(item["citation_gold_alignment"]["aligned"]) for item in non_refusals)
     human_review = _human_review(generation_items, review_paths)
     generation_metrics = {
         "completed_count": len(completed),
@@ -103,20 +96,14 @@ def build_m0_report(
                 sum(bool(item["constraint_pass"]["passed"]) for item in completed),
                 len(completed),
             ),
-            "passed": sum(
-                bool(item["constraint_pass"]["passed"]) for item in completed
-            ),
+            "passed": sum(bool(item["constraint_pass"]["passed"]) for item in completed),
             "total": len(completed),
             "answerable_rate": _rate(
-                sum(
-                    bool(item["constraint_pass"]["passed"])
-                    for item in answerable_generation
-                ),
+                sum(bool(item["constraint_pass"]["passed"]) for item in answerable_generation),
                 len(answerable_generation),
             ),
             "answerable_passed": sum(
-                bool(item["constraint_pass"]["passed"])
-                for item in answerable_generation
+                bool(item["constraint_pass"]["passed"]) for item in answerable_generation
             ),
             "answerable_total": len(answerable_generation),
             "non_refusal_rate": _rate(
@@ -135,14 +122,10 @@ def build_m0_report(
         },
         "citation_accuracy": human_review,
         "latency_ms": {
-            "mean": fmean(float(item["latency_ms"]) for item in completed)
-            if completed
-            else None,
+            "mean": fmean(float(item["latency_ms"]) for item in completed) if completed else None,
         },
     }
-    git_shas = sorted(
-        {str(report["git_sha"]) for report in retrieval_reports + generation_reports}
-    )
+    git_shas = sorted({str(report["git_sha"]) for report in retrieval_reports + generation_reports})
     return {
         "suite": suite.name,
         "description": suite.description,
@@ -190,9 +173,7 @@ def _validate_report_set(
         )
 
 
-def _validate_items(
-    items: list[dict[str, Any]], suite: EvalSuite, *, label: str
-) -> None:
+def _validate_items(items: list[dict[str, Any]], suite: EvalSuite, *, label: str) -> None:
     ids = [str(item["item_id"]) for item in items]
     if len(ids) != suite.item_count or len(set(ids)) != suite.item_count:
         raise ValueError(f"{label} 结果必须包含 {suite.item_count} 个唯一 item")
@@ -230,9 +211,7 @@ def _human_review(
                     invalid_rows.append(f"{path}:{row_number}:duplicate_citation")
                     continue
                 if value not in {"yes", "no"}:
-                    invalid_rows.append(
-                        f"{path}:{row_number}:supported_must_be_yes_or_no"
-                    )
+                    invalid_rows.append(f"{path}:{row_number}:supported_must_be_yes_or_no")
                     continue
                 if not (row.get("reason") or "").strip():
                     invalid_rows.append(f"{path}:{row_number}:missing_reason")
@@ -278,8 +257,7 @@ def markdown_report(payload: dict[str, object]) -> str:
     alignment = generation["citation_gold_alignment"]
     accuracy = generation["citation_accuracy"]
     assert all(
-        isinstance(value, dict)
-        for value in (refusal, validity, constraints, alignment, accuracy)
+        isinstance(value, dict) for value in (refusal, validity, constraints, alignment, accuracy)
     )
     configured = score_refusal.get("configured")
     best = score_refusal.get("best")
@@ -345,16 +323,10 @@ def _human_accuracy(accuracy: dict[str, Any]) -> str:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="合并 M0 40 条正式检索、拒答与引用报告"
-    )
-    parser.add_argument(
-        "--suite", type=Path, default=Path("eval/suites/m0-core-40.json")
-    )
+    parser = argparse.ArgumentParser(description="合并 M0 40 条正式检索、拒答与引用报告")
+    parser.add_argument("--suite", type=Path, default=Path("eval/suites/m0-core-40.json"))
     parser.add_argument("--retrieval-report", type=Path, action="append", required=True)
-    parser.add_argument(
-        "--generation-report", type=Path, action="append", required=True
-    )
+    parser.add_argument("--generation-report", type=Path, action="append", required=True)
     parser.add_argument("--review-csv", type=Path, action="append", default=[])
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
@@ -371,9 +343,7 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=False)
     json_path = args.output_dir / "report.json"
     md_path = args.output_dir / "report.md"
-    json_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(markdown_report(payload), encoding="utf-8")
     print(md_path)
 

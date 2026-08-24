@@ -168,9 +168,7 @@ class JudgePrediction:
 
 
 def sha256_json(value: object) -> str:
-    encoded = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode()
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -273,9 +271,7 @@ def prepare_bundle(
         for core in ordered:
             materialized = {
                 **core,
-                "split": "validation"
-                if str(core["item_id"]) in validation_ids
-                else "calibration",
+                "split": "validation" if str(core["item_id"]) in validation_ids else "calibration",
             }
             fingerprint = sha256_json(materialized)
             example_id = hashlib.sha256(
@@ -297,11 +293,7 @@ def prepare_bundle(
     unsupported = sorted(set(expected_categories) & {"agent_task"})
     split_counts = Counter(row.split for row in examples)
     split_category_counts = {
-        split: dict(
-            sorted(
-                Counter(row.category for row in examples if row.split == split).items()
-            )
-        )
+        split: dict(sorted(Counter(row.category for row in examples if row.split == split).items()))
         for split in ("calibration", "validation")
     }
     missing_split_categories = {
@@ -317,9 +309,7 @@ def prepare_bundle(
     )
     manifest: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
-        "status": "awaiting_human_labels_and_model_authorization"
-        if ready
-        else "pending",
+        "status": "awaiting_human_labels_and_model_authorization" if ready else "pending",
         "metric": "answer_correctness",
         "label_scale": list(LABELS),
         "rubric_id": RUBRIC_ID,
@@ -414,9 +404,7 @@ def load_examples(path: Path) -> list[CalibrationExample]:
     return examples
 
 
-def load_human_labels(
-    path: Path, examples: Sequence[CalibrationExample]
-) -> dict[str, HumanLabel]:
+def load_human_labels(path: Path, examples: Sequence[CalibrationExample]) -> dict[str, HumanLabel]:
     expected = {row.example_id: row for row in examples}
     labels: dict[str, HumanLabel] = {}
     with path.open(encoding="utf-8-sig", newline="") as handle:
@@ -469,9 +457,7 @@ def load_judge_predictions(
                 raw_output=str(row["raw_output"]),
                 input_tokens=int(row["input_tokens"]),
                 output_tokens=int(row["output_tokens"]),
-                authorization_note_fingerprint=str(
-                    row["authorization_note_fingerprint"]
-                ),
+                authorization_note_fingerprint=str(row["authorization_note_fingerprint"]),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"{path}:{line}: 无效 Judge 输出: {exc}") from exc
@@ -585,9 +571,7 @@ async def import_to_database(
                 .one_or_none()
             )
             if stored is None:
-                raise ValueError(
-                    f"DB 缺少 eval_result: run={row['run_id']} item={row['item_id']}"
-                )
+                raise ValueError(f"DB 缺少 eval_result: run={row['run_id']} item={row['item_id']}")
             human = dict(stored["human_label"] or {})
             judge = dict(stored["judge_raw"] or {})
             human_changed = _merge_calibration_namespace(
@@ -669,19 +653,14 @@ async def run_judge(
                 {f"{row.provider}/{row.model}" for row in predictions.values()}
             ),
         }
-    if (
-        gateway.chat_provider != expected_provider
-        or gateway.chat_model != expected_model
-    ):
+    if gateway.chat_provider != expected_provider or gateway.chat_model != expected_model:
         raise ValueError(
             "Judge gateway 配置身份不符: "
             f"expected={expected_provider}/{expected_model}, "
             f"configured={gateway.chat_provider}/{gateway.chat_model}"
         )
     predictions: list[JudgePrediction] = []
-    authorization_fingerprint = hashlib.sha256(
-        authorization_note.strip().encode()
-    ).hexdigest()
+    authorization_fingerprint = hashlib.sha256(authorization_note.strip().encode()).hexdigest()
     repairs = 0
     for example in examples:
         # 服务端在连续批处理下即使 temperature=0 也非严格确定，偶发空 content 或截断。
@@ -860,9 +839,7 @@ def calibration_report(
     if not all(split_indexes.values()):
         raise ValueError("calibration/validation 任一 split 为空，拒绝报告")
     split_metrics = {
-        split: agreement_metrics(
-            [human[i] for i in indexes], [judge[i] for i in indexes]
-        )
+        split: agreement_metrics([human[i] for i in indexes], [judge[i] for i in indexes])
         for split, indexes in split_indexes.items()
     }
     validation_indexes = split_indexes["validation"]
@@ -883,9 +860,7 @@ def calibration_report(
         slices[f"all/category:{category}"] = agreement_metrics(
             [human[i] for i in indexes], [judge[i] for i in indexes]
         )
-        validation_category = [
-            i for i in validation_indexes if examples[i].category == category
-        ]
+        validation_category = [i for i in validation_indexes if examples[i].category == category]
         if validation_category:
             slices[f"validation/category:{category}"] = agreement_metrics(
                 [human[i] for i in validation_category],
@@ -905,9 +880,7 @@ def calibration_report(
     missing_categories = sorted(set(required_categories) - set(category_names))
     unexpected_categories = sorted(set(category_names) - set(required_categories))
     validation_categories = {examples[i].category for i in validation_indexes}
-    missing_validation_categories = sorted(
-        set(required_categories) - validation_categories
-    )
+    missing_validation_categories = sorted(set(required_categories) - validation_categories)
     # 类别切片的定位: 诊断线索, 不是验收门槛(默认 report_only)。
     #
     # 为什么不设门禁: 6 类 × 每类至少 5 条 ⇒ validation 至少 30 条, 按 0.25 的比例
@@ -952,9 +925,7 @@ def calibration_report(
     if unexpected_categories:
         failures.append(f"unexpected_categories:{','.join(unexpected_categories)}")
     if missing_validation_categories:
-        failures.append(
-            f"validation_missing_categories:{','.join(missing_validation_categories)}"
-        )
+        failures.append(f"validation_missing_categories:{','.join(missing_validation_categories)}")
     if "agent_task" in category_names:
         failures.append("agent_task_execution_closure_pending")
     if gate_metrics["qwk"] is None or float(gate_metrics["qwk"]) < min_qwk:
@@ -983,9 +954,7 @@ def calibration_report(
         "example_set_fingerprint": sha256_json(
             [(row.example_id, row.example_fingerprint) for row in examples]
         ),
-        "actual_models": sorted(
-            {f"{row.provider}/{row.model}" for row in predictions.values()}
-        ),
+        "actual_models": sorted({f"{row.provider}/{row.model}" for row in predictions.values()}),
         "fallback_enabled": False,
         "rubric_freeze": {"frozen_at": freeze["frozen_at"], "path": str(rubric_freeze)}
         if freeze
@@ -1055,16 +1024,13 @@ def agreement_metrics(human: Sequence[int], judge: Sequence[int]) -> dict[str, o
             "values": matrix,
             "human_marginal": [sum(row) for row in matrix],
             "judge_marginal": [
-                sum(matrix[i][j] for i in range(LABEL_COUNT))
-                for j in range(LABEL_COUNT)
+                sum(matrix[i][j] for i in range(LABEL_COUNT)) for j in range(LABEL_COUNT)
             ],
         },
     }
 
 
-def quadratic_weighted_kappa(
-    human: Sequence[int], judge: Sequence[int]
-) -> float | None:
+def quadratic_weighted_kappa(human: Sequence[int], judge: Sequence[int]) -> float | None:
     """二次加权 kappa。
 
     标签只有两档时权重矩阵退化为 0/1，本函数等价于无权重的 Cohen's kappa；
@@ -1089,9 +1055,7 @@ def quadratic_weighted_kappa(
         for j in range(LABEL_COUNT):
             weight = ((i - j) / span) ** 2
             observed_disagreement += weight * observed[i][j] / count
-            expected_disagreement += (
-                weight * human_hist[i] * judge_hist[j] / (count * count)
-            )
+            expected_disagreement += weight * human_hist[i] * judge_hist[j] / (count * count)
     if expected_disagreement == 0:
         # 双方都只有同一个常量标签时，accuracy 有定义但 chance agreement 的分母为 0，
         # Kappa 不可定义；不能把“没有标签方差”伪报成完美一致。
@@ -1152,9 +1116,7 @@ def bootstrap_agreement(
     }
 
 
-def _bootstrap_summary(
-    values: list[float], resamples: int, ci_level: float
-) -> dict[str, object]:
+def _bootstrap_summary(values: list[float], resamples: int, ci_level: float) -> dict[str, object]:
     values.sort()
     tail = (1 - ci_level) / 2
     return {
@@ -1247,9 +1209,7 @@ def _write_label_template(path: Path, examples: Sequence[CalibrationExample]) ->
             )
 
 
-def _write_human_review_guide(
-    path: Path, examples: Sequence[CalibrationExample]
-) -> None:
+def _write_human_review_guide(path: Path, examples: Sequence[CalibrationExample]) -> None:
     split_counts = Counter(row.split for row in examples)
     lines = [
         "# Judge 人工正确性复核说明",
@@ -1422,9 +1382,7 @@ def _required_bool(payload: Mapping[str, object], key: str, *, source: Path) -> 
 
 def _read_jsonl(path: Path) -> list[tuple[int, dict[str, Any]]]:
     rows: list[tuple[int, dict[str, Any]]] = []
-    for line, line_text in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
+    for line, line_text in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line_text.strip():
             continue
         try:
@@ -1439,8 +1397,7 @@ def _read_jsonl(path: Path) -> list[tuple[int, dict[str, Any]]]:
 
 def _write_jsonl(path: Path, rows: Iterable[Mapping[str, object]]) -> None:
     content = "".join(
-        json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        + "\n"
+        json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
         for row in rows
     )
     path.write_text(content, encoding="utf-8")
@@ -1463,9 +1420,7 @@ def _validate_thresholds(
 ) -> None:
     if min_samples < 1 or resamples < 1:
         raise ValueError("样本门槛和 bootstrap 次数必须为正整数")
-    if any(
-        not 0 <= value <= 1 for value in (min_qwk, min_accuracy, min_slice_accuracy)
-    ):
+    if any(not 0 <= value <= 1 for value in (min_qwk, min_accuracy, min_slice_accuracy)):
         raise ValueError("一致性门槛必须位于 [0,1]")
     if not 0 < ci_level < 1:
         raise ValueError("ci_level 必须位于 (0,1)")
@@ -1475,9 +1430,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="离线 Judge 校准数据、跑批与门禁")
     sub = parser.add_subparsers(dest="command", required=True)
     prepare = sub.add_parser("prepare", help="从 generation report 导出待标注校准包")
-    prepare.add_argument(
-        "--generation-report", action="append", type=Path, required=True
-    )
+    prepare.add_argument("--generation-report", action="append", type=Path, required=True)
     prepare.add_argument("--output-dir", type=Path, required=True)
     prepare.add_argument("--seed", type=int, default=DEFAULT_SEED)
     prepare.add_argument("--validation-ratio", type=float, default=0.25)
@@ -1513,18 +1466,14 @@ def _parse_args() -> argparse.Namespace:
     )
     run.add_argument("--no-enable-thinking", dest="enable_thinking", action="store_false")
 
-    import_cmd = sub.add_parser(
-        "import", help="校验标签/输出并生成或应用版本化 DB patch"
-    )
+    import_cmd = sub.add_parser("import", help="校验标签/输出并生成或应用版本化 DB patch")
     import_cmd.add_argument("--examples", type=Path, required=True)
     import_cmd.add_argument("--human-labels", type=Path, required=True)
     import_cmd.add_argument("--judge-predictions", type=Path, required=True)
     import_cmd.add_argument("--output", type=Path, required=True)
     import_cmd.add_argument("--apply", action="store_true")
 
-    calibrate = sub.add_parser(
-        "calibrate", help="离线计算一致性并执行 fail-closed 门禁"
-    )
+    calibrate = sub.add_parser("calibrate", help="离线计算一致性并执行 fail-closed 门禁")
     calibrate.add_argument("--examples", type=Path, required=True)
     calibrate.add_argument("--human-labels", type=Path, required=True)
     calibrate.add_argument("--judge-predictions", type=Path, required=True)
