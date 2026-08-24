@@ -1,0 +1,1363 @@
+{
+  "calibration_fingerprint": "f6681f4bb4e48e91c171967c0be296b187f584ddff88c6aefbb57c072c633841",
+  "cases": [
+    {
+      "case_id": "rag-dev-001",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 14879.0,
+          "numerator": 522.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 1503.779
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 0.3333333333333333
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4198.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "exact_identifier",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-002",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 15521.0,
+          "numerator": 172.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 933.15
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4004.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "exact_identifier",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-003",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 19414.0,
+          "numerator": 0.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 902.93
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4678.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "semantic_single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-004",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 16936.0,
+          "numerator": 824.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 882.445
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4187.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "exact_identifier",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-005",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.6309297535714575
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 18457.0,
+          "numerator": 179.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 879.968
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.2
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.6309297535714575
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4450.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "exact_identifier",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-006",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 17761.0,
+          "numerator": 615.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 835.925
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 3940.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "semantic_single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-007",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 21659.0,
+          "numerator": 662.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 934.235
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 0.3333333333333333
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4689.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "semantic_single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-008",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 18452.0,
+          "numerator": 251.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 854.227
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4233.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "semantic_single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-009",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 18425.0,
+          "numerator": 548.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 861.75
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.7
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4298.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "semantic_single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-010",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.3562071871080222
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 18185.0,
+          "numerator": 737.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 860.959
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.9
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 0.16666666666666666
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.3562071871080222
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4019.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "semantic_single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-011",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 19402.0,
+          "numerator": 409.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 811.727
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4392.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "semantic_single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-012",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 16213.0,
+          "numerator": 509.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 990.651
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.7
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4427.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "exact_identifier",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-013",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 17990.0,
+          "numerator": 495.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 905.602
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.4
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4357.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "exact_identifier",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-014",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.6309297535714575
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 19982.0,
+          "numerator": 310.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 894.687
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.6309297535714575
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4765.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "semantic_single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-015",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.6309297535714575
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 19472.0,
+          "numerator": 576.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 884.361
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.6309297535714575
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4514.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "semantic_single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-016",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 16402.0,
+          "numerator": 651.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 884.679
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.7
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4233.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "exact_identifier",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-017",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 20314.0,
+          "numerator": 378.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 857.39
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.9
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4873.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "semantic_single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-018",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.6309297535714575
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 18886.0,
+          "numerator": 301.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 890.838
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.4
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.6309297535714575
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4725.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "semantic_single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-019",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 17561.0,
+          "numerator": 948.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 938.238
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4502.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "exact_identifier",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-020",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.1
+        },
+        "context_redundancy": {
+          "denominator": 13184.0,
+          "numerator": 935.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 932.316
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 3794.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "exact_identifier",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-021",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.8315546295836225
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.2
+        },
+        "context_redundancy": {
+          "denominator": 20070.0,
+          "numerator": 949.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 888.656
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.8
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.8315546295836225
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4417.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-022",
+      "error": false,
+      "metrics": {
+        "alpha_ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.6934264036172708
+        },
+        "budget_span_recall": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "context_precision": {
+          "denominator": 1.0,
+          "numerator": 0.2
+        },
+        "context_redundancy": {
+          "denominator": 17311.0,
+          "numerator": 340.0
+        },
+        "gold_doc_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 931.944
+        },
+        "max_doc_share_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "mrr": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "ndcg_at_k": {
+          "denominator": 1.0,
+          "numerator": 0.6934264036172708
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4148.0
+        },
+        "span_recall_at_k": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-023",
+      "error": false,
+      "metrics": {
+        "context_redundancy": {
+          "denominator": 15114.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 942.95
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4396.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-024",
+      "error": false,
+      "metrics": {
+        "context_redundancy": {
+          "denominator": 15333.0,
+          "numerator": 234.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 852.344
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 3975.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-025",
+      "error": false,
+      "metrics": {
+        "context_redundancy": {
+          "denominator": 12919.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 971.548
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4836.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "rag-dev-026",
+      "error": false,
+      "metrics": {
+        "context_redundancy": {
+          "denominator": 15018.0,
+          "numerator": 566.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 1010.5
+        },
+        "refusal_correct_at_threshold": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "retrieved_tokens": {
+          "denominator": 1.0,
+          "numerator": 4616.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    }
+  ],
+  "config_fingerprint": "178ecb645ccc9301f17db81561e0614316f3d2aeace477dc43d39726f6a52893",
+  "dataset": "kb-rag-research-dev-v1",
+  "dataset_fingerprint": "fa31771be6b18939c95784d766bfde244e7def3590720771d140c26a16cbb449",
+  "dataset_version": null,
+  "generated_at": "2026-08-24T13:06:07.879329+00:00",
+  "git_dirty": false,
+  "git_sha": "b3cd8155a9758142c703f7f1134446e6e5d09c78",
+  "integrity": {
+    "algorithm": "sha256",
+    "value": "510e8cc88ed7f5e74cd498b02f9711c6f97c96bc4933534e15355b7ad9bef877"
+  },
+  "kind": "retrieval",
+  "label": "baseline-v2-kb-evaluation",
+  "policy": {
+    "name": "kb-retrieval-v1",
+    "sha256": "a0dea1f64ec16c23f4d4b345702ef6e626f1215bb8ccf5f8c005f8e4ea2d444e"
+  },
+  "review": {
+    "origin": "synthetic",
+    "reviewed_at": "2026-08-24T20:54:00+08:00",
+    "reviewer": "行之",
+    "status": "approved"
+  },
+  "schema_version": "workpilot-regression-baseline.v1",
+  "selection": {
+    "split_counts": {
+      "dev": 26
+    }
+  },
+  "source_report_sha256": "1174cfc9223f254738cfbb629b0c8819ae64ed4d34b287767504e554b90a7833"
+}

@@ -14,7 +14,7 @@
       "baseline": {
         "status": "rebuild_required",
         "path": "eval/snapshots/cowork.json",
-        "reason": "dev 基线必须只含当前 core-50 的 39 条 dev。现有 snapshot 是旧的 cowork-core-40 runner 报告，既不匹配当前 suite，也不是 workpilot-regression-baseline.v1。"
+        "reason": "2026-08-24 已在 clean Git、固定 qwen3.6-35b-a3b 与 50000 tokens/20 calls/180000 ms 预算下重跑 39 条 dev；其中 22 条触发 token 预算熔断，晋升门禁拒绝含失败样本的报告，因此不得冻结为 baseline。"
       }
     },
     {
@@ -42,14 +42,13 @@
         "item_count": 26
       },
       "calibration": {
-        "status": "rebuild_required",
+        "status": "ready",
         "suite": "eval/suites/kb-rag-research-refusal-calibration-v1.json",
-        "reason": "独立 calibration suite 已由行之批准且与 evaluation gold 文档无交集；仍需在 clean Git、固定配置下跑批并生成带签字与完整性哈希的阈值文件。"
+        "path": "eval/calibrations/kb-rag-research-refusal-v1.json"
       },
       "baseline": {
-        "status": "rebuild_required",
-        "path": "eval/snapshots/retrieval.json",
-        "reason": "现有 snapshot 属于已退役 PostgreSQL runner 的 m1-dev-70，与当前文件系统 KB suite 不匹配；旧阈值也不在当前真实 score source 的量纲内。重跑必须固定实际 score source、禁止 reranker fallback，并使用不同于 evaluation suite 的独立校准文件。"
+        "status": "ready",
+        "path": "eval/snapshots/v2/kb-retrieval.json"
       }
     },
     {

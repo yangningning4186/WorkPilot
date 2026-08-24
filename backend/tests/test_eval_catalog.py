@@ -266,7 +266,7 @@ def _retrieval_fixture_tree(root: Path, *, ready: bool = False) -> dict[str, Any
     return catalog
 
 
-def test_repository_catalog_is_healthy_but_exposes_legacy_baseline_warnings() -> None:
+def test_repository_catalog_is_healthy_and_exposes_remaining_rebuild_warnings() -> None:
     report = doctor_catalog(DEFAULT_CATALOG, repo_root=REPO_ROOT)
 
     assert report.healthy is True
@@ -274,7 +274,7 @@ def test_repository_catalog_is_healthy_but_exposes_legacy_baseline_warnings() ->
     assert [resource.health for resource in report.resources] == [
         "warning",
         "warning",
-        "warning",
+        "ready",
         "warning",
         "ready",
     ]
@@ -282,7 +282,6 @@ def test_repository_catalog_is_healthy_but_exposes_legacy_baseline_warnings() ->
     assert {issue.resource_id for issue in rebuilds} == {
         "cowork-core-dev",
         "cowork-core-test",
-        "kb-retrieval",
         "grounded-generation",
     }
 
@@ -296,10 +295,10 @@ def test_cli_json_distinguishes_ready_and_warning(capsys: pytest.CaptureFixture[
     assert output["summary"] == {
         "error_count": 0,
         "invalid": 0,
-        "ready": 1,
+        "ready": 2,
         "resource_count": 5,
-        "warning_count": 4,
-        "warnings": 4,
+        "warning_count": 3,
+        "warnings": 3,
     }
 
 
