@@ -4,7 +4,9 @@
   "description": "rag-research 53 篇论文上的首轮检索候选集：20 个单跳、2 个多跳、4 个不可答问题。gold 锚定文件内容哈希、页码与页内字符区间；用于恢复工程评测闭环和单变量实验，不作为人工质量基线。",
   "origin": "synthetic",
   "review": {
-    "status": "pending_human_review"
+    "status": "approved",
+    "reviewer": "行之",
+    "reviewed_at": "2026-08-24T20:54:00+08:00"
   },
   "items": [
     {

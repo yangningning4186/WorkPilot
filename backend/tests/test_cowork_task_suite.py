@@ -41,9 +41,9 @@ def test_cowork_core_suite_has_frozen_coverage() -> None:
         "difficulties": {"1": 10, "2": 26, "3": 14},
         "hitl_items": 7,
         "average_optimal_tool_calls": 2.06,
-        "review_status": "pending_human_review",
-        "reviewer": None,
-        "reviewed_at": None,
+        "review_status": "approved",
+        "reviewer": "行之",
+        "reviewed_at": "2026-08-24T20:54:00+08:00",
     }
 
 
@@ -66,7 +66,11 @@ def test_cowork_suite_approval_requires_complete_auditable_signoff() -> None:
 
 def test_pending_cowork_suite_cannot_preclaim_a_reviewer() -> None:
     suite = deepcopy(load_suite(DEFAULT_SUITE))
+    suite["review_status"] = "pending_human_review"
+    suite.pop("reviewed_at")
     suite["reviewer"] = "not-yet-reviewed"
+    for item in suite["items"]:
+        item["review_status"] = "pending_human"
 
     with pytest.raises(CoworkSuiteError, match="不能提前填写"):
         validate_suite(suite)

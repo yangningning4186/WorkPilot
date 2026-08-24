@@ -4,7 +4,9 @@
   "description": "独立拒答阈值校准候选集；证据文档不与 kb-rag-research-dev-v1 的 evaluation gold 重叠。8 条可答题与 4 条高语义相似不可答题，仅用于固定 score source 下的拒答阈值标定。",
   "origin": "synthetic",
   "review": {
-    "status": "pending_human_review"
+    "status": "approved",
+    "reviewer": "行之",
+    "reviewed_at": "2026-08-24T20:54:00+08:00"
   },
   "items": [
     {

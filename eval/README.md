@@ -44,9 +44,9 @@ knowledge 类额外强制 `EvidenceBundle` 合约，不允许 `chunk_id`、内�
 reading 类强制 locator 引用（`[p.N]`），并留一条负例考"文档答不了就直说答不了"——
 这一档最糟的失败不是答错，而是凭对同名论文的印象编出一个像模像样的页码。
 
-当前套件由助手起草，因此固定为 `origin=synthetic`、
-`review_status=pending_human_review`。它可以用于打通 runner 和比较工程回归，但 owner 完成
-逐条复核前不得宣称为 human 产品质量基线，也不得用 test split 调参。
+当前套件由助手起草，因此保留生成来源 `origin=synthetic`；行之已于
+`2026-08-24T20:54:00+08:00` 逐条复核并将其批准为 `review_status=approved`。这不把生成来源
+改写成 human，也不解除冻结 test 不得用于调参的约束。
 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_task_suite
@@ -223,7 +223,7 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.kb_retrieval_runner run \
 
 不带阈值的报告可以用于工程诊断，但不能晋升正式 retrieval baseline。仓库中的独立候选集
 `eval/suites/kb-rag-research-refusal-calibration-v1.json` 有 8 条可答、4 条不可答，其证据文档
-与 26 条 evaluation gold 无交集；它仍需人工批准。正式流程先以相同 KB/index、预算和真实
+与 26 条 evaluation gold 无交集，并已由行之批准。正式流程先以相同 KB/index、预算和真实
 score source 跑这份 calibration suite，再冻结阈值：
 
 ```bash
@@ -254,8 +254,8 @@ reranker 配置开启却 fallback、校准/evaluation suite SHA 相同，都会�
 混入正式指标**。
 
 当前可复跑的多文档候选集是 `eval/suites/kb-rag-research-dev-v1.json`：53 篇论文上的
-22 条可答题与 4 条不可答题。它仍是 `synthetic/pending_human_review`，只允许用于工程闭环和
-候选方向判断。E2-FS 固定其余配置，只比较已保留的 `e2-dense` 与 active `v1 hybrid`：
+22 条可答题与 4 条不可答题；它保留 `origin=synthetic`，并已由行之人工批准。E2-FS 固定
+其余配置，只比较已保留的 `e2-dense` 与 active `v1 hybrid`：
 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/python -m eval.kb_retrieval_runner run \

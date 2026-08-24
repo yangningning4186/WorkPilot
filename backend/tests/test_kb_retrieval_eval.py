@@ -479,7 +479,8 @@ def test_checked_in_rag_research_candidate_suite_has_the_declared_shape() -> Non
     suite = load_kb_retrieval_suite(suite_path, allow_synthetic=True)
 
     assert suite.origin == "synthetic"
-    assert suite.review_status == "pending_human_review"
+    assert suite.review_status == "approved"
+    assert suite.reviewer == "行之"
     assert len(suite.items) == 26
     assert sum(item.answerable for item in suite.items) == 22
     assert {item.category for item in suite.items} == {
@@ -504,7 +505,8 @@ def test_refusal_calibration_suite_is_independent_from_evaluation_gold() -> None
     evaluation_documents = {span.content_hash for item in evaluation.items for span in item.spans}
     calibration_documents = {span.content_hash for item in calibration.items for span in item.spans}
 
-    assert calibration.review_status == "pending_human_review"
+    assert calibration.review_status == "approved"
+    assert calibration.reviewer == "行之"
     assert len(calibration.items) == 12
     assert sum(item.answerable for item in calibration.items) == 8
     assert evaluation_documents.isdisjoint(calibration_documents)
