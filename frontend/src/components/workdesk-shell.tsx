@@ -66,12 +66,10 @@ export function WorkdeskNavigation({ newTaskDisabled = false, onNewTask }: Workd
   const pathname = usePathname();
   const items: Array<{ href: string; icon: WorkdeskIconName; label: string }> = [
     { href: "/knowledge", icon: "book", label: "知识库" },
-    { href: "/connectors", icon: "agent", label: "连接器与 OAuth" },
+    { href: "/connectors", icon: "agent", label: "连接器" },
     { href: "/providers", icon: "spark", label: "模型与密钥" },
     { href: "/automations", icon: "automation", label: "自动化与收件箱" },
     { href: "/skills", icon: "skill", label: "Skills" },
-    { href: "/mcp", icon: "mcp", label: "MCP" },
-    { href: "/workspace", icon: "folder", label: "办公工作台" },
     { href: "/cost", icon: "automation", label: "成本" },
     { href: "/memory", icon: "more", label: "记忆与设置" },
   ];
@@ -87,16 +85,19 @@ export function WorkdeskNavigation({ newTaskDisabled = false, onNewTask }: Workd
           <WorkdeskIcon name="add" /><span>新建任务</span>
         </button>
       )}
-      {items.map((item) => (
+      {items.map((item) => {
+        const active = pathname === item.href || (item.href === "/connectors" && pathname === "/mcp");
+        return (
         <Link
-          aria-current={pathname === item.href ? "page" : undefined}
-          className={pathname === item.href ? "active" : ""}
+          aria-current={active ? "page" : undefined}
+          className={active ? "active" : ""}
           href={item.href}
           key={item.href}
         >
           <WorkdeskIcon name={item.icon} /><span>{item.label}</span>
         </Link>
-      ))}
+        );
+      })}
     </nav>
   );
 }

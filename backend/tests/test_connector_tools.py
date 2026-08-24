@@ -6,9 +6,27 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from app.core.config import get_settings
 from app.cowork.browser_tools import register_browser_tools
+from app.cowork.connector_descriptors import (
+    get_connector_descriptor,
+    list_connector_descriptors,
+)
 from app.cowork.connector_tools import (
     ConnectorRequestArgs,
+    FeishuBaseRecordActionArgs,
+    FeishuBaseRecordsArgs,
+    FeishuCalendarEventActionArgs,
+    FeishuCalendarEventsArgs,
+    FeishuDriveFilesArgs,
+    FeishuTaskActionArgs,
+    _connector_http_error,
+    _feishu_base_action_request,
+    _feishu_base_list_request,
+    _feishu_calendar_action_request,
+    _feishu_calendar_list_request,
+    _feishu_drive_list_request,
+    _feishu_task_action_request,
     _runtime_request,
     register_connector_tools,
 )
@@ -82,6 +100,30 @@ def test_connector_request_is_pinned_to_official_host_and_hides_token(tmp_path: 
     assert "Authorization" not in headers
 
 
+def test_github_app_403_explains_installation_requirement() -> None:
+    account = _account("github", "unused")
+    response = httpx.Response(
+        403,
+        json={
+            "message": "Resource not accessible by integration",
+            "documentation_url": "https://docs.github.com/rest/issues/issues#create-an-issue",
+        },
+        headers={"X-RateLimit-Remaining": "4999"},
+    )
+
+    message = _connector_http_error(
+        account,
+        response,
+        request_headers={"Authorization": "Bearer ghu_do-not-leak"},
+    )
+
+    assert "Resource not accessible by integration" in message
+    assert "GitHub App" in message
+    assert "安装到目标账户/仓库" in message
+    assert "Issues: Read and write" in message
+    assert "ghu_do-not-leak" not in message
+
+
 @pytest.mark.parametrize(
     "path",
     ["https://evil.example/steal", "//evil.example/steal", "/ok#fragment"],
@@ -91,54 +133,225 @@ def test_connector_request_rejects_host_override(path: str) -> None:
         ConnectorRequestArgs(account_id=uuid4(), path=path)
 
 
-def test_dynamic_tool_catalog_keeps_initial_schema_bounded_and_activates_matches() -> None:
+def test_feishu_calendar_tools_build_fixed_official_paths() -> None:
+    account_id = uuid4()
+    path, query = _feishu_calendar_list_request(
+        FeishuCalendarEventsArgs(
+            account_id=account_id,
+            calendar_id="feishu.cn_team@group.calendar.feishu.cn",
+            start_time=100,
+            end_time=200,
+            page_token="next",
+        )
+    )
+    assert path == ("/calendar/v4/calendars/feishu.cn_team%40group.calendar.feishu.cn/events")
+    assert query == {
+        "start_time": "100",
+        "end_time": "200",
+        "page_size": 100,
+        "page_token": "next",
+    }
+
+    method, create_path, body = _feishu_calendar_action_request(
+        FeishuCalendarEventActionArgs(
+            account_id=account_id,
+            action="create",
+            calendar_id="primary",
+            event={"summary": "周会"},
+        )
+    )
+    assert (method, create_path, body) == (
+        "POST",
+        "/calendar/v4/calendars/primary/events",
+        {"summary": "周会"},
+    )
+    with pytest.raises(ValueError, match="event_id"):
+        _feishu_calendar_action_request(
+            FeishuCalendarEventActionArgs(
+                account_id=account_id,
+                action="delete",
+                calendar_id="primary",
+            )
+        )
+
+
+def test_feishu_base_tools_build_fixed_official_paths() -> None:
+    account_id = uuid4()
+    path, query = _feishu_base_list_request(
+        FeishuBaseRecordsArgs(
+            account_id=account_id,
+            app_token="app_token",
+            table_id="tbl_table",
+            field_names=["负责人", "状态"],
+            sort=["状态 DESC"],
+        )
+    )
+    assert path == "/bitable/v1/apps/app_token/tables/tbl_table/records"
+    assert query["field_names"] == '["负责人","状态"]'
+    assert query["sort"] == '["状态 DESC"]'
+
+    method, update_path, body = _feishu_base_action_request(
+        FeishuBaseRecordActionArgs(
+            account_id=account_id,
+            action="update",
+            app_token="app_token",
+            table_id="tbl_table",
+            record_id="rec_record",
+            fields={"状态": "完成"},
+        )
+    )
+    assert (method, update_path, body) == (
+        "PUT",
+        "/bitable/v1/apps/app_token/tables/tbl_table/records/rec_record",
+        {"fields": {"状态": "完成"}},
+    )
+
+
+def test_connector_descriptors_are_the_single_catalog_and_mount_feishu_domains() -> None:
+    descriptors = list_connector_descriptors()
+
+    assert len({item.kind for item in descriptors}) == len(descriptors) == 5
+    feishu = get_connector_descriptor("feishu")
+    assert {"docs", "drive", "tasks", "approval"} <= set(feishu.capabilities)
+    assert feishu.public()["logo"] == "feishu"
+    assert feishu.public()["brand_color"] == "#3370ff"
+    assert feishu.public()["auth_types"] == ["oauth2", "token"]
+    assert feishu.tool_registrars == ("app.cowork.connector_tools:register_feishu_tools",)
+    assert get_connector_descriptor("tencent_docs").auth_types == ("oauth2",)
+
+    registry = build_default_cowork_registry()
+    register_connector_tools(registry)
+    names = {item["name"] for item in registry.catalog()}
+    assert {
+        "feishu_document_read",
+        "feishu_drive_files",
+        "feishu_task_read",
+        "feishu_task_action",
+        "feishu_approval_instance",
+        "feishu_approval_submit",
+    } <= names
+
+
+def test_feishu_drive_and_task_requests_use_fixed_domain_paths() -> None:
+    account_id = uuid4()
+    path, query = _feishu_drive_list_request(
+        FeishuDriveFilesArgs(account_id=account_id, folder_token="fld_demo", page_token="next")
+    )
+    assert path == "/drive/v1/files"
+    assert query["folder_token"] == "fld_demo"
+    assert query["page_token"] == "next"
+
+    method, task_path, body = _feishu_task_action_request(
+        FeishuTaskActionArgs(
+            account_id=account_id,
+            action="update",
+            task_guid="task_demo",
+            task={"summary": "更新周报"},
+        )
+    )
+    assert (method, task_path, body) == (
+        "PATCH",
+        "/task/v2/tasks/task_demo",
+        {"summary": "更新周报"},
+    )
+
+
+def test_tool_catalog_defers_extensions_until_explicitly_loaded() -> None:
     registry = build_default_cowork_registry()
     register_browser_tools(registry)
     register_connector_tools(registry)
+    registered = {item["name"] for item in registry.catalog()}
 
     initial = {item.name for item in registry.tool_definitions_for("整理本地项目文件")}
-    assert "search_tool_catalog" in initial
-    assert "act_connector_api" not in initial
-    assert "browser_open" not in initial
+    assert {"search_tool_catalog", "load_tools"} <= initial
+    assert {"act_connector_api", "browser_open"}.isdisjoint(initial)
+    assert initial < registered
 
     browser = {item.name for item in registry.tool_definitions_for("浏览网页并搜索资料")}
-    assert {"browser_open", "browser_click", "web_search"} <= browser
+    assert browser == initial
 
-    # 只是被下发过不构成保留理由。否则每轮目录都是上一轮的超集，几轮后等于
-    # 无条件注入整个 registry，动态目录就白做了。
     after_topic_switch = {item.name for item in registry.tool_definitions_for("继续整理本地文件")}
-    assert not {"browser_open", "browser_click", "web_search"} & after_topic_switch
+    assert after_topic_switch == initial
 
-    # 历史真的调用过才保留：模型上下文里已经有这些 tool_call，schema 不能消失。
     with_history = {
         item.name
         for item in registry.tool_definitions_for(
             "继续整理本地文件", retained_tools={"browser_click"}
         )
     }
-    assert "browser_click" in with_history
-    assert "browser_open" not in with_history
+    assert with_history == initial | {"browser_click"}
 
+    # 搜索只负责发现，不会因为关键词命中就悄悄扩张 schema。
     matches = registry.search_tools("连接器写入官方 API", max_results=8)
     assert any(item["name"] == "act_connector_api" for item in matches)
-    activated = {item.name for item in registry.tool_definitions_for("继续任务")}
-    assert "act_connector_api" in activated
+    assert {item.name for item in registry.tool_definitions_for("继续任务")} == initial
 
-    # search_tool_catalog 的显式激活才进快照；单纯下发过的不进。
+    loaded = registry.load_deferred_tools(
+        ["act_connector_api", "browser_open"], allowed=registry.names()
+    )
+    assert loaded["loaded"] == ["act_connector_api", "browser_open"]
+    activated = {item.name for item in registry.tool_definitions_for("继续任务")}
+    assert activated == initial | {"act_connector_api", "browser_open"}
+
     snapshot = registry.runtime_snapshot()
     assert "act_connector_api" in snapshot["tool_registry"]["activated_tools"]
-    assert "browser_open" not in snapshot["tool_registry"]["activated_tools"]
 
     resumed = build_default_cowork_registry()
     register_browser_tools(resumed)
     register_connector_tools(resumed)
     resumed.restore_runtime_snapshot(snapshot)
     resumed_tools = {item.name for item in resumed.tool_definitions_for("恢复后继续")}
-    assert "act_connector_api" in resumed_tools
+    assert resumed_tools == activated
 
 
-def test_dynamic_tool_catalog_does_not_grow_monotonically() -> None:
-    """连续换话题不能把目录推向完整 registry。"""
+def test_github_account_task_discovers_connectors_in_manifest_before_loading() -> None:
+    """真实 badcase：GitHub URL 同时命中 web/git，不能把连接器入口挤出目录。"""
+
+    registry = build_default_cowork_registry()
+    register_browser_tools(registry)
+    register_connector_tools(registry)
+    goal = (
+        "使用已连接的 GitHub 账户，在 "
+        "https://github.com/yangningning4186/yangningning4186.github.io 创建一个测试 Issue"
+    )
+    names = {
+        item.name
+        for item in registry.tool_definitions_for(
+            goal,
+            capability_tools={
+                "run_shell",
+                "load_skill",
+            },
+        )
+    }
+
+    assert {"list_connectors", "read_connector_api", "act_connector_api"}.isdisjoint(names)
+
+    manifest = registry.deferred_tools_manifest()
+    assert all(
+        name in manifest for name in ("list_connectors", "read_connector_api", "act_connector_api")
+    )
+
+    searched = {item["name"] for item in registry.search_tools("github", max_results=8)}
+    assert {"list_connectors", "read_connector_api", "act_connector_api"} <= searched
+
+
+def test_feishu_calendar_and_base_are_first_class_catalog_capabilities() -> None:
+    registry = build_default_cowork_registry()
+    register_connector_tools(registry)
+
+    calendar = {item["name"] for item in registry.search_tools("飞书日历安排会议", max_results=8)}
+    base = {item["name"] for item in registry.search_tools("写入飞书多维表格", max_results=8)}
+
+    assert {"feishu_calendar_events", "feishu_calendar_event_action"} <= calendar
+    assert {"feishu_base_records", "feishu_base_record_action"} <= base
+    specs = {item["name"]: item for item in registry.catalog()}
+    assert specs["feishu_calendar_event_action"]["approval_required"] is True
+    assert specs["feishu_base_record_action"]["approval_required"] is True
+
+
+def test_initial_tool_catalog_is_stable_across_topic_switches() -> None:
+    """基础 schema 不随关键词抖动，扩展目录也保持逐字稳定。"""
 
     registry = build_default_cowork_registry()
     register_browser_tools(registry)
@@ -152,30 +365,70 @@ def test_dynamic_tool_catalog_does_not_grow_monotonically() -> None:
     )
     sizes = [len(registry.tool_definitions_for(turn)) for turn in turns]
 
-    assert max(sizes) <= 24
-    assert len(registry.tool_definitions()) > max(sizes)
-    # 单调增长的旧行为下，最后一轮必然 >= 之前每一轮。
-    assert sizes[-1] < max(sizes)
+    assert len(set(sizes)) == 1
+    assert sizes[0] < len(registry.tool_definitions())
+    assert registry.deferred_tools_manifest() == registry.deferred_tools_manifest()
 
 
-def test_retained_tools_survive_even_beyond_max_tools() -> None:
-    """保留集宁可超出 max_tools 也不能丢：缺一个 schema 就可能让 provider 拒绝整个请求。"""
+def test_load_tools_has_no_schema_count_cap_and_keeps_manifest_byte_stable() -> None:
+    """一次可加载整个允许集合；加载状态不应改写 system prompt 里的目录。"""
 
     registry = build_default_cowork_registry()
     register_browser_tools(registry)
     register_connector_tools(registry)
-    registered = {item["name"] for item in registry.catalog()}
-    retained = {"browser_click", "browser_type", "act_connector_api", "edit_excel"}
-    assert retained <= registered
+    deferred = sorted(registry.deferred_tool_names())
+    manifest_before = registry.deferred_tools_manifest()
+
+    result = registry.load_deferred_tools(deferred, allowed=registry.names())
+
+    assert result == {
+        "loaded": deferred,
+        "already_loaded": [],
+        "unavailable": [],
+    }
+    assert registry.deferred_tools_manifest() == manifest_before
+    assert set(deferred) <= {item.name for item in registry.tool_definitions_for("继续完成长任务")}
+
+
+def test_load_tools_reports_already_loaded_without_mutating_state() -> None:
+    registry = build_default_cowork_registry()
+    register_browser_tools(registry)
+
+    first = registry.load_deferred_tools(["browser_click"], allowed=registry.names())
+    snapshot = registry.runtime_snapshot()
+    second = registry.load_deferred_tools(["browser_click"], allowed=registry.names())
+    core = registry.load_deferred_tools(["web_search"], allowed=frozenset())
+
+    assert first["loaded"] == ["browser_click"]
+    assert second == {
+        "loaded": [],
+        "already_loaded": ["browser_click"],
+        "unavailable": [],
+    }
+    assert core == {
+        "loaded": [],
+        "already_loaded": ["web_search"],
+        "unavailable": [],
+    }
+    assert registry.tools_already_loaded(["browser_click", "web_search"])
+    assert registry.runtime_snapshot() == snapshot
+
+
+def test_legacy_max_tools_argument_does_not_truncate_the_catalog() -> None:
+    """兼容参数仍可传入，但不能再截断 schema。"""
+
+    registry = build_default_cowork_registry()
+    register_browser_tools(registry)
+    register_connector_tools(registry)
+    initial = {item.name for item in registry.tool_definitions_for("继续任务")}
+    retained = {"browser_click", "browser_type", "act_connector_api", "run_shell"}
 
     names = {
         item.name
-        for item in registry.tool_definitions_for(
-            "继续任务", max_tools=4, retained_tools=retained
-        )
+        for item in registry.tool_definitions_for("继续任务", max_tools=4, retained_tools=retained)
     }
 
-    assert retained <= names
+    assert names == initial | retained
 
 
 def test_tool_catalog_order_does_not_depend_on_retained_set_iteration_order() -> None:
@@ -189,14 +442,16 @@ def test_tool_catalog_order_does_not_depend_on_retained_set_iteration_order() ->
     registry = build_default_cowork_registry()
     register_browser_tools(registry)
     register_connector_tools(registry)
-    retained = ["browser_click", "act_connector_api", "edit_excel", "browser_type"]
+    retained = ["browser_click", "act_connector_api", "run_shell", "browser_type"]
 
     forward = [
         item.name for item in registry.tool_definitions_for("继续任务", retained_tools=retained)
     ]
     backward = [
         item.name
-        for item in registry.tool_definitions_for("继续任务", retained_tools=list(reversed(retained)))
+        for item in registry.tool_definitions_for(
+            "继续任务", retained_tools=list(reversed(retained))
+        )
     ]
 
     assert forward == backward
@@ -224,12 +479,38 @@ def test_runtime_snapshot_ignores_activated_tools_missing_from_new_registry() ->
         "Create a daily AI news briefing",
     ],
 )
-def test_news_goals_activate_web_tools(goal: str) -> None:
+def test_news_goals_discover_web_tools_without_query_based_schema_growth(goal: str) -> None:
     registry = build_default_cowork_registry()
 
     names = {item.name for item in registry.tool_definitions_for(goal)}
 
     assert {"web_search", "fetch_url"} <= names
+    manifest = registry.deferred_tools_manifest()
+    assert "web_search" not in manifest
+    assert "fetch_url" not in manifest
+
+
+def test_core_file_shell_skill_and_web_tools_are_never_deferred() -> None:
+    registry = build_default_cowork_registry()
+    from app.cowork.extensions import register_skill_tools
+
+    register_skill_tools(registry, get_settings())
+    core = {
+        "web_search",
+        "fetch_url",
+        "load_skill",
+        "list_workspace_roots",
+        "list_files",
+        "search_files",
+        "read_text_file",
+        "write_text_file",
+        "replace_in_file",
+        "create_artifact",
+        "run_shell",
+    }
+
+    assert core <= {item.name for item in registry.tool_definitions_for("任意任务")}
+    assert core.isdisjoint(registry.deferred_tool_names())
 
 
 def test_tool_catalog_matches_english_aliases_for_chinese_web_tools() -> None:
@@ -243,7 +524,7 @@ def test_tool_catalog_matches_english_aliases_for_chinese_web_tools() -> None:
     assert "ai news" in web_search["search_aliases"]
 
 
-def test_read_only_subagent_catalog_is_bounded_and_excludes_external_actions() -> None:
+def test_read_only_subagent_catalog_is_unbounded_but_excludes_external_actions() -> None:
     registry = build_default_cowork_registry()
     register_browser_tools(registry)
     register_connector_tools(registry)
@@ -251,11 +532,11 @@ def test_read_only_subagent_catalog_is_bounded_and_excludes_external_actions() -
     tools = registry.read_only_tool_definitions(
         exclude=frozenset({"explore"}),
         query="搜索网页并查看结果",
-        max_tools=12,
+        max_tools=1,
     )
     names = {item.name for item in tools}
 
-    assert len(tools) <= 12
+    assert len(tools) > 1
     assert {"browser_snapshot", "web_search"} <= names
     assert "browser_open" not in names
     assert "search_tool_catalog" not in names

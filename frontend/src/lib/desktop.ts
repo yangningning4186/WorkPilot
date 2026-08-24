@@ -16,6 +16,11 @@ let contextPromise: Promise<DesktopContext | null> | null = null;
 
 const DESKTOP_BOOT_TIMEOUT_MS = 90_000;
 const DESKTOP_CONTEXT_RETRY_MS = 500;
+const DESKTOP_BOOT_PENDING = "WorkPilot sidecar 正在后台启动";
+
+function isDesktopBootPending(reason: unknown): boolean {
+  return String(reason).includes(DESKTOP_BOOT_PENDING);
+}
 
 export function isTauriRuntime(): boolean {
   if (typeof window === "undefined") return false;
@@ -33,6 +38,9 @@ export function getDesktopContext(): Promise<DesktopContext | null> {
       try {
         return await invoke<DesktopContext>("desktop_context");
       } catch (reason) {
+        // 只有明确的“仍在启动”可以重试。锁冲突、迁移失败、子进程退出等终态错误必须
+        // 立即交给界面，否则一个本可瞬间解释的问题会伪装成 90 秒冷启动。
+        if (!isDesktopBootPending(reason)) throw reason;
         lastError = reason;
         await new Promise((resolve) => window.setTimeout(resolve, DESKTOP_CONTEXT_RETRY_MS));
       }
@@ -52,4 +60,71 @@ export async function pickCoworkDirectory(): Promise<string | null> {
     title: "选择 WorkPilot 可访问的目录",
   });
   return typeof selected === "string" ? selected : null;
+}
+
+/**
+ * 选取要直接处理的本机原文件。调用方必须把“将授权所在文件夹”展示给用户；这和上传
+ * 一份私有只读副本是两种不同权限语义，不能共用一个含糊的附件按钮。
+ */
+export async function pickCoworkWorkingFiles(): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({
+    directory: false,
+    filters: [
+      {
+        name: "WorkPilot 工作文件",
+        extensions: ["docx", "xlsx", "pptx", "pdf", "md", "txt", "csv", "tsv", "json", "yaml", "yml"],
+      },
+    ],
+    multiple: true,
+    title: "选择要由 WorkPilot 直接处理的文件",
+  });
+  if (Array.isArray(selected)) return selected.filter((item): item is string => typeof item === "string");
+  return typeof selected === "string" ? [selected] : [];
+}
+
+/** 阅读模式只接受一份可定位的本机文档。 */
+export async function pickCoworkReadingFile(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({
+    directory: false,
+    filters: [{ name: "阅读文档", extensions: ["pdf", "md", "txt"] }],
+    multiple: false,
+    title: "选择要阅读的文档",
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+/**
+ * OAuth 必须在系统浏览器完成。桌面端通过一个只接受官方授权地址的 Tauri command
+ * 打开；Web 端复用当前点击同步创建的空白页，避免异步拿到 URL 后被 popup blocker 拦截。
+ */
+export function prepareConnectorAuthorizationWindow(): Window | null {
+  if (typeof window === "undefined" || isTauriRuntime()) return null;
+  return window.open("", "_blank");
+}
+
+export async function openConnectorAuthorization(
+  url: string,
+  preparedWindow: Window | null = null,
+): Promise<void> {
+  if (isTauriRuntime()) {
+    preparedWindow?.close();
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_connector_authorization", { url });
+    return;
+  }
+
+  if (preparedWindow !== null) {
+    preparedWindow.opener = null;
+    preparedWindow.location.replace(url);
+    return;
+  }
+
+  const opened = window.open(url, "_blank", "noopener,noreferrer");
+  if (opened === null) {
+    throw new Error("浏览器阻止了授权页，请允许 WorkPilot 打开新窗口后重试");
+  }
 }

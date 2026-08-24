@@ -74,9 +74,7 @@ async def upsert_inbox_binding(
     )
 
 
-async def get_inbox_binding(
-    session: AsyncSession, *, name: str
-) -> InboxBindingRecord | None:
+async def get_inbox_binding(session: AsyncSession, *, name: str) -> InboxBindingRecord | None:
     store = cowork_store()
     return await store.get_inbox_binding(name=name)
 
@@ -160,9 +158,7 @@ async def deliver_item(
     把整个运行拖失败，换来的不是安全而是更多的中断。
     """
 
-    binding = await resolve_inbox_for_conversation(
-        session, conversation_id=item.conversation_id
-    )
+    binding = await resolve_inbox_for_conversation(session, conversation_id=item.conversation_id)
     if binding is None or binding.platform is None or binding.chat_id is None:
         return None
     body, buttons = render_item(item)

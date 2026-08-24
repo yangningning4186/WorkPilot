@@ -14,6 +14,9 @@ from app.cowork_contracts import (
     AccessMode as AccessMode,
 )
 from app.cowork_contracts import (
+    ActiveCapability as ActiveCapability,
+)
+from app.cowork_contracts import (
     Capability as Capability,
 )
 from app.cowork_contracts import (
@@ -38,10 +41,16 @@ from app.cowork_contracts import (
     SessionRootRecord as SessionRootRecord,
 )
 from app.cowork_policy import (
+    ACTIVE_CAPABILITIES as ACTIVE_CAPABILITIES,
+)
+from app.cowork_policy import (
     ALL_CAPABILITIES as ALL_CAPABILITIES,
 )
 from app.cowork_policy import (
     GLOBAL_CAPABILITIES as GLOBAL_CAPABILITIES,
+)
+from app.cowork_policy import (
+    LEGACY_CAPABILITIES as LEGACY_CAPABILITIES,
 )
 from app.cowork_policy import (
     PATH_CAPABILITIES as PATH_CAPABILITIES,
@@ -98,10 +107,7 @@ async def ensure_default_session_root(
     canonical_default = Path(prepared)
     roots = await list_session_roots(session, conversation_id=conversation_id)
     for root in roots:
-        if (
-            root.label == DEFAULT_WORKSPACE_LABEL
-            and Path(root.canonical_path) != canonical_default
-        ):
+        if root.label == DEFAULT_WORKSPACE_LABEL and Path(root.canonical_path) != canonical_default:
             await revoke_session_root(
                 session,
                 conversation_id=conversation_id,
@@ -169,6 +175,7 @@ async def grant_capability(
     conversation_id: UUID,
     capability: Capability,
     session_root_id: UUID | None = None,
+    resource_scope: str | None = None,
     grant_source: Literal["user", "policy"] = "user",
     expires_in_s: int | None = None,
 ) -> CapabilityGrantRecord:
@@ -177,6 +184,7 @@ async def grant_capability(
         conversation_id=conversation_id,
         capability=capability,
         session_root_id=session_root_id,
+        resource_scope=resource_scope,
         grant_source=grant_source,
         expires_in_s=expires_in_s,
     )
@@ -193,17 +201,28 @@ async def revoke_capability_grant(
     session: AsyncSession, *, conversation_id: UUID, grant_id: UUID
 ) -> bool:
     store = cowork_store()
-    return await store.revoke_capability_grant(
-        conversation_id=conversation_id, grant_id=grant_id
-    )
+    return await store.revoke_capability_grant(conversation_id=conversation_id, grant_id=grant_id)
 
 
 async def authorize_capability(
     session: AsyncSession, *, conversation_id: UUID, capability: Capability
 ) -> CapabilityGrantRecord:
     store = cowork_store()
-    return await store.authorize_capability(
-        conversation_id=conversation_id, capability=capability
+    return await store.authorize_capability(conversation_id=conversation_id, capability=capability)
+
+
+async def authorize_scoped_capability(
+    session: AsyncSession,
+    *,
+    conversation_id: UUID,
+    capability: Capability,
+    target: str,
+) -> CapabilityGrantRecord:
+    store = cowork_store()
+    return await store.authorize_scoped_capability(
+        conversation_id=conversation_id,
+        capability=capability,
+        target=target,
     )
 
 

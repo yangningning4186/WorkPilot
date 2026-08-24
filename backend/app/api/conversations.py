@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
@@ -8,7 +9,10 @@ from app.core.config import Settings, get_settings
 from app.core.db import DbSession as AsyncSession
 from app.core.db import get_db_session
 from app.cowork.context_usage import get_cowork_context_usage
+from app.cowork.permissions import list_session_roots
+from app.cowork.personas import approval_mode_for_persona_change, load_persona_catalog
 from app.cowork.provider_profiles import get_provider_profile
+from app.rag.kb import local_kb_service
 from app.runstore.conversations import (
     ConversationBusyError,
     ConversationRecord,
@@ -37,9 +41,7 @@ RuntimeSettings = Annotated[Settings, Depends(get_settings)]
 Owner = Annotated[None, Depends(require_owner_identity)]
 
 
-def _conversation_response(
-    record: ConversationRecord, settings: Settings
-) -> ConversationResponse:
+def _conversation_response(record: ConversationRecord, settings: Settings) -> ConversationResponse:
     """会话只记 Provider 的 id；名字与默认模型在这里解引用。
 
     Profile 出了数据库之后 id 可能悬空（用户删掉了 profile）。那种情况按"没选
@@ -58,12 +60,14 @@ def _conversation_response(
                 for key in (
                     "id",
                     "title",
+                    "active_run_id",
                     "message_count",
                     "latest_message",
                     "last_message_at",
                     "provider_profile_id",
                     "unattended",
                     "approval_mode",
+                    "persona_name",
                     "archived_at",
                     "created_at",
                     "updated_at",
@@ -132,6 +136,17 @@ async def put_conversation_runtime(
             raise HTTPException(status_code=404, detail="Provider 不存在")
         if not profile.enabled:
             raise HTTPException(status_code=422, detail="Provider 已停用")
+    current = await get_conversation(session, conversation_id=conversation_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    roots = await list_session_roots(session, conversation_id=conversation_id)
+    try:
+        persona = load_persona_catalog(
+            settings,
+            project_roots=tuple(Path(item.canonical_path) for item in roots),
+        ).get(request.persona_name)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     try:
         updated = await update_conversation_runtime(
             session,
@@ -139,7 +154,14 @@ async def put_conversation_runtime(
             provider_profile_id=request.provider_profile_id,
             model_override=request.model_override,
             unattended=request.unattended,
-            approval_mode=request.approval_mode,
+            # 选择 Persona 是一次显式产品动作；它的默认审批档在这里落进会话，之后用户
+            # 仍可单独切换。运行时 Persona 本身没有越过审批边界的能力。
+            approval_mode=approval_mode_for_persona_change(
+                current_name=current.persona_name,
+                requested_mode=request.approval_mode,
+                selected=persona,
+            ),
+            persona_name=persona.name,
         )
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
@@ -229,9 +251,13 @@ async def get_context_usage(
     )
     if conversation is None:
         raise HTTPException(status_code=404, detail="会话不存在")
+    settings = get_settings()
+    # RAG 实现在入口这一层装配：`app.cowork` 不许 import `app.rag`，估算侧的工具面
+    # 必须和 worker 那次装配用同一个 `RagService`，否则占用条量的不是真正发出去的东西。
     usage = await get_cowork_context_usage(
         session,
         conversation_id=conversation_id,
-        settings=get_settings(),
+        settings=settings,
+        rag=local_kb_service(settings),
     )
     return ConversationContextUsageResponse.model_validate(usage)

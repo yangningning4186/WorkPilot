@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -438,6 +439,9 @@ async def test_outline_and_search_and_read_agree_on_locators(
     )
     assert "位置编码" in read.output["content"]
     assert read.output["locators"] == [locator]
+    assert read.evidence[0]["kind"] == "reading"
+    assert read.evidence[0]["locator"] == locator
+    assert "位置编码" in read.evidence[0]["quote"]
 
 
 @pytest.mark.asyncio
@@ -457,6 +461,7 @@ async def test_goto_with_a_real_quote_returns_highlight_geometry_is_empty_for_te
     assert result.output["reader_action"] == "goto"
     assert result.output["quote"] == "完全基于注意力机制"
     assert result.output["locations"] == []
+    assert result.evidence[0]["verified"] is True
 
 
 @pytest.mark.asyncio
@@ -522,6 +527,64 @@ async def test_material_cache_reparses_after_the_file_changes(tmp_path: Path) ->
 
     assert "改过之后的内容" in second.units[0].text
     assert second.material_id != first.material_id
+
+
+@pytest.mark.asyncio
+async def test_material_cache_coalesces_concurrent_parses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同一文件的并发工具调用只解析一次，完成后也不遗留同步对象。"""
+
+    import app.cowork.reading.materials as materials_module
+
+    paper = tmp_path / "paper.md"
+    paper.write_text("# 一\n\n并发内容\n", encoding="utf-8")
+    cache = MaterialCache()
+    settings = Settings()
+    original = materials_module._build_material
+    calls = 0
+
+    async def delayed_build(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(materials_module, "_build_material", delayed_build)
+    first, second = await asyncio.gather(
+        cache.load(paper, settings=settings),
+        cache.load(paper, settings=settings),
+    )
+
+    assert first is second
+    assert calls == 1
+    assert cache._inflight == {}
+
+
+@pytest.mark.asyncio
+async def test_material_cache_drops_failed_inflight_parse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """解析失败不能按路径永久积累锁/任务；修好文件后必须能重试。"""
+
+    import app.cowork.reading.materials as materials_module
+
+    paper = tmp_path / "paper.md"
+    paper.write_text("# 一\n\n内容\n", encoding="utf-8")
+    cache = MaterialCache()
+    settings = Settings()
+
+    async def failed_build(*args, **kwargs):
+        raise ReadingError("模拟解析失败")
+
+    monkeypatch.setattr(materials_module, "_build_material", failed_build)
+    with pytest.raises(ReadingError, match="模拟解析失败"):
+        await cache.load(paper, settings=settings)
+    await asyncio.sleep(0)
+
+    assert cache._inflight == {}
 
 
 def test_search_material_reports_loose_matches_as_loose() -> None:

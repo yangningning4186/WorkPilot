@@ -51,9 +51,10 @@ def test_scope_binding_is_derived_not_supplied() -> None:
     assert resolve_binding(
         "conversation", conversation_id=conversation_id, workspace_path="/x"
     ) == (conversation_id, None)
-    assert resolve_binding(
-        "workspace", conversation_id=conversation_id, workspace_path="/x"
-    ) == (None, "/x")
+    assert resolve_binding("workspace", conversation_id=conversation_id, workspace_path="/x") == (
+        None,
+        "/x",
+    )
     with pytest.raises(MemoryScopeError):
         resolve_binding("workspace", conversation_id=conversation_id, workspace_path=None)
 
@@ -104,9 +105,7 @@ def test_memory_lives_in_the_stable_prefix_and_todos_do_not() -> None:
 async def test_keyed_remember_updates_instead_of_piling_up(db_session: AsyncSession) -> None:
     """同 key 的修正必须替换：新旧并存会让模型无从判断哪个还算数。"""
 
-    conversation_id = await ensure_conversation(
-        db_session, title="Memory upsert"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Memory upsert")
 
     first, replaced = await remember(
         db_session,
@@ -137,9 +136,7 @@ async def test_forget_is_soft_and_idempotent_and_restore_brings_it_back(
 ) -> None:
     """撤销依赖软删除；硬删掉就没有第二次机会了。"""
 
-    conversation_id = await ensure_conversation(
-        db_session, title="Memory forget"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Memory forget")
     record, _ = await remember(
         db_session,
         conversation_id=conversation_id,
@@ -155,9 +152,9 @@ async def test_forget_is_soft_and_idempotent_and_restore_brings_it_back(
 
     restored, _ = await update_memory(db_session, memory_id=record.id, restore=True)
     assert restored.forgotten_at is None
-    assert [item.id for item in await load_visible_memories(
-        db_session, conversation_id=conversation_id
-    )] == [record.id]
+    assert [
+        item.id for item in await load_visible_memories(db_session, conversation_id=conversation_id)
+    ] == [record.id]
 
     with pytest.raises(MemoryNotFoundError):
         await update_memory(db_session, memory_id=uuid4(), content="不存在")
@@ -181,15 +178,9 @@ async def test_visibility_never_leaks_across_conversations_or_workspaces(
         access_mode="read_write",
     )
 
-    await remember(
-        db_session, conversation_id=mine, scope="global", content="全局偏好"
-    )
-    await remember(
-        db_session, conversation_id=mine, scope="conversation", content="本会话笔记"
-    )
-    await remember(
-        db_session, conversation_id=theirs, scope="conversation", content="别的会话笔记"
-    )
+    await remember(db_session, conversation_id=mine, scope="global", content="全局偏好")
+    await remember(db_session, conversation_id=mine, scope="conversation", content="本会话笔记")
+    await remember(db_session, conversation_id=theirs, scope="conversation", content="别的会话笔记")
     await remember(
         db_session,
         conversation_id=mine,
@@ -205,9 +196,9 @@ async def test_visibility_never_leaks_across_conversations_or_workspaces(
         workspace_path=str(other_root.resolve()),
     )
 
-    visible = {item.content for item in await load_visible_memories(
-        db_session, conversation_id=mine
-    )}
+    visible = {
+        item.content for item in await load_visible_memories(db_session, conversation_id=mine)
+    }
 
     assert visible == {"全局偏好", "本会话笔记", "本目录约定"}
 
@@ -215,17 +206,13 @@ async def test_visibility_never_leaks_across_conversations_or_workspaces(
 async def test_list_memories_can_include_forgotten_for_the_panel(
     db_session: AsyncSession,
 ) -> None:
-    conversation_id = await ensure_conversation(
-        db_session, title="Memory panel"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Memory panel")
     record, _ = await remember(
         db_session, conversation_id=conversation_id, scope="global", content="已 retire"
     )
     await forget_memory(db_session, memory_id=record.id)
 
-    active = await list_memories(
-        db_session, conversation_id=conversation_id, workspace_paths=[]
-    )
+    active = await list_memories(db_session, conversation_id=conversation_id, workspace_paths=[])
     archived = await list_memories(
         db_session,
         conversation_id=conversation_id,
@@ -239,14 +226,10 @@ async def test_list_memories_can_include_forgotten_for_the_panel(
 
 
 async def test_content_length_is_bounded(db_session: AsyncSession) -> None:
-    conversation_id = await ensure_conversation(
-        db_session, title="Memory bounds"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Memory bounds")
 
     with pytest.raises(MemoryScopeError):
-        await remember(
-            db_session, conversation_id=conversation_id, scope="global", content="   "
-        )
+        await remember(db_session, conversation_id=conversation_id, scope="global", content="   ")
     with pytest.raises(MemoryScopeError):
         await remember(
             db_session,

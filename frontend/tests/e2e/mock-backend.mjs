@@ -14,7 +14,6 @@
  */
 
 import { createServer } from "node:http";
-import { createHash } from "node:crypto";
 import { deflateSync } from "node:zlib";
 
 import {
@@ -29,6 +28,22 @@ import {
 } from "./fixtures/scenarios.mjs";
 
 const PORT = Number(process.env.MOCK_BACKEND_PORT ?? 8787);
+const READER_PAGE_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+
+/**
+ * 两页、每页一句英文的真 PDF。
+ *
+ * 必须是真能被 pdf.js 解析的字节，不能是占位符：阅读器现在的主路径是"取原始 PDF →
+ * 画布 + 文本层"，喂一个假文件只会让它一路退回旧的 PNG 分支，于是这条验收永远测不到
+ * 真正在跑的那条路。
+ */
+const READER_PDF = Buffer.from(
+  "JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFIvSW5mbzw8L1Byb2R1Y2VyKE11UERGIDEuMjguMik+Pj4+CmVuZG9iagoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0NvdW50IDIvS2lkc1s0IDAgUiA4IDAgUl0+PgplbmRvYmoKCjMgMCBvYmoKPDwvRm9udDw8L2hlbHYgNSAwIFI+Pj4+CmVuZG9iagoKNCAwIG9iago8PC9UeXBlL1BhZ2UvTWVkaWFCb3hbMCAwIDMwNiAzOTZdL1JvdGF0ZSAwL1Jlc291cmNlcyAzIDAgUi9QYXJlbnQgMiAwIFIvQ29udGVudHNbNiAwIFJdPj4KZW5kb2JqCgo1IDAgb2JqCjw8L1R5cGUvRm9udC9TdWJ0eXBlL1R5cGUxL0Jhc2VGb250L0hlbHZldGljYS9FbmNvZGluZy9XaW5BbnNpRW5jb2Rpbmc+PgplbmRvYmoKCjYgMCBvYmoKPDwvTGVuZ3RoIDk1L0ZpbHRlci9GbGF0ZURlY29kZT4+CnN0cmVhbQp42g2KsQqAMAxE93xF/sCmTS8I4iC4uAndxKm0OOjg4vcbDh73jqOXlkLCwSOcwCkql4eGq90fi/fOx6RiaoqM5hzR0WLAaMkpqKgxmK+W3Zu/MnQ+y0ZroZ1+NY8WSQplbmRzdHJlYW0KZW5kb2JqCgo3IDAgb2JqCjw8L0ZvbnQ8PC9oZWx2IDUgMCBSPj4+PgplbmRvYmoKCjggMCBvYmoKPDwvVHlwZS9QYWdlL01lZGlhQm94WzAgMCAzMDYgMzk2XS9Sb3RhdGUgMC9SZXNvdXJjZXMgNyAwIFIvUGFyZW50IDIgMCBSL0NvbnRlbnRzWzkgMCBSXT4+CmVuZG9iagoKOSAwIG9iago8PC9MZW5ndGggOTUvRmlsdGVyL0ZsYXRlRGVjb2RlPj4Kc3RyZWFtCnja4yrkcgrhMlQwAEJDBWMzBWMjE4WQXC79jNScMgVDIDtNIdrG1MAszdzYzNLcxMzSLM0s1czQLNnIwMwUyDIG8kGiqWbmRgZANaZmxjBVdrEhXlyuIVyBXACfMxeUCmVuZHN0cmVhbQplbmRvYmoKCnhyZWYKMCAxMAowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwNDIgMDAwMDAgbiAKMDAwMDAwMDEyMCAwMDAwMCBuIAowMDAwMDAwMTc4IDAwMDAwIG4gCjAwMDAwMDAyMTkgMDAwMDAgbiAKMDAwMDAwMDMyNiAwMDAwMCBuIAowMDAwMDAwNDE1IDAwMDAwIG4gCjAwMDAwMDA1NzggMDAwMDAgbiAKMDAwMDAwMDYxOSAwMDAwMCBuIAowMDAwMDAwNzI2IDAwMDAwIG4gCgp0cmFpbGVyCjw8L1NpemUgMTAvUm9vdCAxIDAgUi9JRFs8MTgyMkMzODRDMzgzMUE3NEMzODMwMEMyQTQ1NjQyQzI+PEFENjMwMkM3MUNCQjAzNEZBNDlGRDRDNjZENkJBNTMwPl0+PgpzdGFydHhyZWYKODg5CiUlRU9GCg==",
+  "base64",
+);
 
 /** run_id → 运行态。进程内存即可，验收进程和被测进程都是一次性的。 */
 const runs = new Map();
@@ -38,63 +53,14 @@ const sessions = new Map();
 const requestLog = [];
 /** 已签发的 admin token。真后端存在 Redis，这里内存等价。 */
 const adminTokens = new Set();
-/** owner session token → 工作台写权限过期时间。 */
-const editorPermissions = new Map();
 /** owner Cowork 会话的目录权限与交付物。 */
 const coworkRoots = new Map();
 const coworkArtifacts = new Map();
 const coworkEventLogs = new Map();
+/** conversation_id → 当前会话挂载的知识库；run 创建时会把这个值冻结进 run。 */
+const conversationKnowledgeBases = new Map();
 /** 后端是否配了 DEMO_ADMIN_PASSWORD_HASH；关掉用来验收 503 的提示文案。 */
 let adminConfigured = true;
-
-let workspaceFiles = new Map();
-
-function workspaceHash(content) {
-  return createHash("sha256").update(content).digest("hex");
-}
-
-function resetWorkspaceFiles() {
-  const definitions = [
-    {
-      file_id: "mock-word-file",
-      name: "项目简报.docx",
-      source_name: "文档资料",
-      source_uri: "office/项目简报.docx",
-      kind: "word",
-      size_bytes: 18432,
-      updated_at_ns: 1787010000000000000,
-      content: "[段落 0] 项目简报\n\n[段落 1] 当前进展需要进一步整理。",
-    },
-    {
-      file_id: "mock-excel-file",
-      name: "季度预算.xlsx",
-      source_name: "文档资料",
-      source_uri: "office/季度预算.xlsx",
-      kind: "excel",
-      size_bytes: 12600,
-      updated_at_ns: 1787009000000000000,
-      content: "工作表：预算\n[预算!A1] 项目\n[预算!B1] 金额\n[预算!A2] 模型\n[预算!B2] 1000",
-    },
-    {
-      file_id: "mock-markdown-file",
-      name: "检索评测笔记.md",
-      source_name: "文档资料",
-      source_uri: "notes/检索评测笔记.md",
-      kind: "markdown",
-      size_bytes: MD_FILE_CONTENT.length,
-      updated_at_ns: 1787008000000000000,
-      content: MD_FILE_CONTENT,
-    },
-  ];
-  workspaceFiles = new Map(
-    definitions.map((file) => [
-      file.file_id,
-      { ...file, baseline_sha256: workspaceHash(file.content), editable: true },
-    ]),
-  );
-}
-
-resetWorkspaceFiles();
 
 let memoryCounter = 10;
 let memories = [];
@@ -182,21 +148,15 @@ function currentSession(request) {
   return session === undefined ? null : { token, ...session };
 }
 
+function firstSession() {
+  const first = sessions.entries().next().value;
+  return first === undefined ? null : { token: first[0], ...first[1] };
+}
+
 /** 与真后端一致：admin 凭据只认 httpOnly cookie，前端 JS 读不到。 */
 function isAdmin(request) {
   const token = cookies(request).workpilot_admin_session;
   return token !== undefined && adminTokens.has(token);
-}
-
-function adminToken(request) {
-  const token = cookies(request).workpilot_admin_session;
-  return token !== undefined && adminTokens.has(token) ? token : null;
-}
-
-function hasEditorPermission(request) {
-  const token = adminToken(request);
-  if (token === null) return false;
-  return (editorPermissions.get(token) ?? 0) > Date.now();
 }
 
 function createSession() {
@@ -207,7 +167,19 @@ function createSession() {
   const session = {
     conversation_id: conversationId,
     conversations: new Map([
-      [conversationId, { id: conversationId, title: null, created_at: new Date().toISOString() }],
+      [conversationId, {
+        id: conversationId,
+        title: null,
+        provider_profile_id: "mock-provider",
+        provider_name: "本地测试模型",
+        provider: "openai",
+        selected_model: "mock-cowork",
+        unattended: false,
+        approval_mode: "interactive",
+        persona_name: "general",
+        archived_at: null,
+        created_at: new Date().toISOString(),
+      }],
     ]),
     versions: new Set(),
   };
@@ -232,10 +204,37 @@ function conversationMessages(session, conversationId) {
       content: run.goal,
       status: "completed",
       run_id: run.id,
+      attachments: [],
       citations: [],
       answer_mode: run.answer_mode,
       created_at: "2026-08-18T01:00:00Z",
     });
+    if (run.workflow_type === "cowork") {
+      const events = coworkEventLogs.get(run.id) ?? [];
+      const done = events.findIndex((event) => event.type === "message.done") + 1;
+      if (done > 0 && run.last_sent_seq >= done) {
+        const snapshots = events
+          .filter((event, index) => index < done && event.type === "message.snapshot")
+          .map((event) => event.data.text);
+        const content = snapshots.at(-1) ?? events
+          .filter((event, index) => index < done && event.type === "message.delta")
+          .map((event) => event.data.text)
+          .join("");
+        items.push({
+          id: `${run.id}-assistant`,
+          seq: baseSeq + 1,
+          role: "assistant",
+          content,
+          status: "completed",
+          run_id: run.id,
+          attachments: [],
+          citations: [],
+          answer_mode: run.answer_mode,
+          created_at: "2026-08-18T01:00:01Z",
+        });
+      }
+      continue;
+    }
     const scenario = SCENARIOS[run.scenario];
     const done = scenario.events.findIndex((event) => event.type === "message.done") + 1;
     if (done > 0 && run.last_sent_seq >= done) {
@@ -253,6 +252,7 @@ function conversationMessages(session, conversationId) {
         content,
         status: "completed",
         run_id: run.id,
+        attachments: [],
         citations,
         answer_mode: run.answer_mode,
         created_at: "2026-08-18T01:00:01Z",
@@ -439,6 +439,66 @@ async function streamEvents(request, response, run) {
   response.end();
 }
 
+async function streamCoworkEvents(request, response, run) {
+  const url = new URL(request.url, "http://mock");
+  let cursor = run.cowork_replay_on_reconnect
+    ? 0
+    : Number.parseInt(url.searchParams.get("after_seq") ?? "0", 10) || 0;
+  response.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+  response.write("retry: 250\n\n");
+  let closed = false;
+  response.on("close", () => { closed = true; });
+  while (!closed) {
+    const events = coworkEventLogs.get(run.id) ?? [];
+    while (!closed && cursor < events.length) {
+      const event = events[cursor];
+      // 已经发过的是历史回放，应立即补齐；只有新产生的事件保留剧本时序。
+      if (cursor >= run.last_sent_seq) await sleep(event.delay_ms ?? 12);
+      if (closed) return;
+      cursor += 1;
+      response.write(sseFrame(run.id, cursor, event.type, event.data));
+      run.last_sent_seq = Math.max(run.last_sent_seq, cursor);
+      if (event.type === "citation" && typeof event.data.version_id === "string") {
+        sessions.get(run.session_token)?.versions.add(event.data.version_id);
+      }
+      if (run.cowork_drop_after_seq === cursor && !run.dropped) {
+        run.dropped = true;
+        response.destroy();
+        return;
+      }
+      if (event.type === "run.done") {
+        run.status = event.data.status ?? "done";
+        response.end();
+        return;
+      }
+      if (event.type === "error") {
+        run.status = event.data.code === "cancelled" ? "cancelled" : "failed";
+        response.end();
+        return;
+      }
+    }
+    await sleep(40);
+    if (!closed) response.write(": keepalive\n\n");
+  }
+}
+
+/** 已下线的独立 RAG 页面用例迁到 Cowork 后，仍复用这些确定性事件剧本。 */
+function coworkFixtureScenario(goal) {
+  if (goal.includes("这段回答的排版")) return "markdownRender";
+  if (goal.includes("思维链不进入正文")) return "reasoningLeak";
+  if (goal.includes("会在中途断线")) return "drop";
+  if (goal.includes("重连后会重放")) return "replay";
+  if (goal.includes("会报错")) return "error";
+  if (goal.includes("markdown 笔记")) return "markdown";
+  if (goal.includes("混合检索为什么比单路召回")) return "pdf";
+  return null;
+}
+
 // ---------------------------------------------------------------- 路由
 
 const server = createServer((request, response) => {
@@ -456,18 +516,29 @@ const server = createServer((request, response) => {
     return;
   }
 
+  if (path === "/__runs") {
+    json(response, 200, {
+      runs: [...runs.values()].map((run) => ({
+        id: run.id,
+        conversation_id: run.conversation_id,
+        status: run.status,
+        kb_slug: run.kb_slug ?? null,
+      })),
+    });
+    return;
+  }
+
   if (path === "/__reset" && request.method === "POST") {
     runs.clear();
     sessions.clear();
     conversationCounter = 0;
     adminTokens.clear();
-    editorPermissions.clear();
     coworkRoots.clear();
     coworkArtifacts.clear();
     coworkEventLogs.clear();
+    conversationKnowledgeBases.clear();
     adminConfigured = true;
     resetMemories();
-    resetWorkspaceFiles();
     requestLog.length = 0;
     json(response, 200, { status: "reset" });
     return;
@@ -530,13 +601,41 @@ const server = createServer((request, response) => {
 
   // ------------------------------------------------------------ 多轮会话
 
+  if (path === "/api/v1/providers" && request.method === "GET") {
+    const now = "2026-08-18T03:00:00Z";
+    json(response, 200, {
+      items: [
+        {
+          id: "mock-provider",
+          name: "本地测试模型",
+          provider: "openai",
+          base_url: "http://127.0.0.1:9999/v1",
+          default_model: "mock-cowork",
+          context_window_tokens: 128000,
+          enabled: true,
+          has_api_key: true,
+          metadata: {},
+          created_at: now,
+          updated_at: now,
+        },
+      ],
+    });
+    return;
+  }
+
   if (path === "/api/v1/conversations" && request.method === "GET") {
     const existing = currentSession(request);
-    const session = existing ?? createSession();
+    // 页面会并行请求活跃与归档列表。首屏还没有 cookie 时，两条请求必须共用同一个
+    // 匿名 session；各建一份会让后返回的 Set-Cookie 指向另一份会话，后续加载即 404。
+    const session = existing ?? firstSession() ?? createSession();
     const items = [...session.conversations.values()].map((conversation) => {
       const messages = conversationMessages(session, conversation.id);
       return {
         ...conversation,
+        active_run_id: ([...runs.values()].find((run) =>
+          run.conversation_id === conversation.id
+          && ["queued", "executing", "waiting_human", "sleeping"].includes(run.status)
+        )?.id ?? null),
         message_count: messages.length,
         latest_message: messages.at(-1)?.content ?? null,
         last_message_at: messages.at(-1)?.created_at ?? null,
@@ -565,9 +664,18 @@ const server = createServer((request, response) => {
       const created = {
         id,
         title: typeof body.title === "string" ? body.title : "新会话",
+        active_run_id: null,
         message_count: 0,
         latest_message: null,
         last_message_at: null,
+        provider_profile_id: null,
+        provider_name: null,
+        provider: null,
+        selected_model: null,
+        unattended: false,
+        approval_mode: "interactive",
+        persona_name: "general",
+        archived_at: null,
         created_at: createdAt,
         updated_at: createdAt,
       };
@@ -584,6 +692,34 @@ const server = createServer((request, response) => {
             }
           : {},
       );
+    });
+    return;
+  }
+
+  const conversationRuntimeMatch = path.match(/^\/api\/v1\/conversations\/([^/]+)\/runtime$/);
+  if (conversationRuntimeMatch && request.method === "PUT") {
+    void readBody(request).then((body) => {
+      const session = currentSession(request);
+      const conversationId = conversationRuntimeMatch[1];
+      const current = session?.conversations.get(conversationId);
+      if (session === null || current === undefined) {
+        json(response, 404, { detail: "会话不存在" });
+        return;
+      }
+      const usesMockProvider = body.provider_profile_id === "mock-provider";
+      const updated = {
+        ...current,
+        provider_profile_id: usesMockProvider ? "mock-provider" : null,
+        provider_name: usesMockProvider ? "本地测试模型" : null,
+        provider: usesMockProvider ? "openai" : null,
+        selected_model: usesMockProvider ? (body.model_override ?? "mock-cowork") : null,
+        unattended: body.unattended === true,
+        approval_mode: body.approval_mode ?? "interactive",
+        persona_name: body.persona_name ?? "general",
+        updated_at: new Date().toISOString(),
+      };
+      session.conversations.set(conversationId, updated);
+      json(response, 200, updated);
     });
     return;
   }
@@ -607,6 +743,7 @@ const server = createServer((request, response) => {
       return;
     }
     session.conversations.delete(conversationId);
+    conversationKnowledgeBases.delete(conversationId);
     for (const [runId, run] of runs) {
       if (run.session_token === session.token && run.conversation_id === conversationId) {
         runs.delete(runId);
@@ -633,7 +770,126 @@ const server = createServer((request, response) => {
     return;
   }
 
+  const conversationContextMatch = path.match(
+    /^\/api\/v1\/conversations\/([^/]+)\/context-usage$/,
+  );
+  if (conversationContextMatch && request.method === "GET") {
+    const session = currentSession(request);
+    const conversationId = conversationContextMatch[1];
+    if (session === null || !session.conversations.has(conversationId)) {
+      json(response, 404, { detail: "会话不存在" });
+      return;
+    }
+    const hasRun = [...runs.values()].some((run) => run.conversation_id === conversationId);
+    json(response, 200, {
+      used_tokens: 37400,
+      context_window_tokens: 102400,
+      max_input_tokens: 93208,
+      trigger_tokens: 79226,
+      trigger_ratio: 0.85,
+      auto_compaction: true,
+      compaction_revision: 0,
+      compaction_mode: "none",
+      model: "mock-cowork",
+      run_status: hasRun ? "done" : null,
+      estimated: true,
+      breakdown: {
+        system: 4096,
+        tool_manifest: 1536,
+        tools: 31768,
+        loaded_tools: 0,
+        messages: 0,
+        tool_activity: 0,
+      },
+    });
+    return;
+  }
+
+  // ------------------------------------------------------------ 本地知识库挂载
+
+  if (path === "/api/v1/cowork/knowledge-bases" && request.method === "GET") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    json(response, 200, {
+      items: [
+        {
+          slug: "papers",
+          name: "论文资料库",
+          description: "前端挂载时序测试",
+          document_count: 3,
+          is_indexed: true,
+          embedding: "bge-m3:latest",
+          active_version: "v1",
+          versions: [],
+          needs_migration: false,
+          documents: [],
+        },
+        {
+          slug: "agent-research",
+          name: "Agent 研究库",
+          description: "切换挂载测试",
+          document_count: 2,
+          is_indexed: true,
+          embedding: "bge-m3:latest",
+          active_version: "v1",
+          versions: [],
+          needs_migration: false,
+          documents: [],
+        },
+      ],
+    });
+    return;
+  }
+
+  const conversationKnowledgeBaseMatch = path.match(
+    /^\/api\/v1\/cowork\/sessions\/([^/]+)\/knowledge-base$/,
+  );
+  if (conversationKnowledgeBaseMatch && request.method === "GET") {
+    const session = currentSession(request);
+    const conversationId = conversationKnowledgeBaseMatch[1];
+    if (session === null || !session.conversations.has(conversationId)) {
+      json(response, 404, { detail: "会话不存在" });
+      return;
+    }
+    json(response, 200, { slug: conversationKnowledgeBases.get(conversationId) ?? null });
+    return;
+  }
+  if (conversationKnowledgeBaseMatch && request.method === "PUT") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    void readBody(request).then((body) => {
+      const session = currentSession(request);
+      const conversationId = conversationKnowledgeBaseMatch[1];
+      if (session === null || !session.conversations.has(conversationId)) {
+        json(response, 404, { detail: "会话不存在" });
+        return;
+      }
+      const slug = body.slug === null ? null : String(body.slug ?? "");
+      if (slug !== null && !["papers", "agent-research"].includes(slug)) {
+        json(response, 404, { detail: `知识库 ${slug} 不存在` });
+        return;
+      }
+      conversationKnowledgeBases.set(conversationId, slug);
+      json(response, 200, { slug });
+    });
+    return;
+  }
+
   // ------------------------------------------------------------ owner 私有记忆
+
+  const coworkMemoriesMatch = path.match(/^\/api\/v1\/cowork\/sessions\/([^/]+)\/memories$/);
+  if (coworkMemoriesMatch && request.method === "GET") {
+    if (!isAdmin(request)) {
+      json(response, 401, { detail: "需要先登录 owner" });
+      return;
+    }
+    json(response, 200, { items: [] });
+    return;
+  }
 
   const coworkRootsMatch = path.match(/^\/api\/v1\/cowork\/sessions\/([^/]+)\/roots$/);
   if (coworkRootsMatch && request.method === "GET") {
@@ -701,7 +957,7 @@ const server = createServer((request, response) => {
   const coworkGrantsMatch = path.match(/^\/api\/v1\/cowork\/sessions\/([^/]+)\/grants$/);
   if (coworkGrantsMatch && request.method === "GET") {
     const roots = coworkRoots.get(coworkGrantsMatch[1]) ?? [];
-    const capabilities = ["filesystem.read", "filesystem.write", "office.word.edit", "office.excel.edit"];
+    const capabilities = ["filesystem.read", "filesystem.write"];
     json(response, 200, {
       items: roots.flatMap((root, rootIndex) => capabilities.map((capability, index) => ({
         id: `8b0e4c55-0000-4d00-8000-${String(rootIndex * 10 + index + 1).padStart(12, "0")}`,
@@ -719,9 +975,117 @@ const server = createServer((request, response) => {
     return;
   }
 
+  const readingMaterialMatch = path.match(
+    /^\/api\/v1\/cowork\/sessions\/([^/]+)\/reading\/material$/,
+  );
+  if (readingMaterialMatch && request.method === "GET") {
+    const materialPath = url.searchParams.get("path") ?? "/Users/demo/Documents/Quarterly/paper.pdf";
+    json(response, 200, {
+      path: materialPath,
+      material_id: "mock-reader-material-v1",
+      filename: materialPath.split("/").at(-1) ?? "paper.pdf",
+      title: "Mock Paper",
+      unit: "page",
+      unit_count: 2,
+      parser: "pymupdf",
+      has_page_image: true,
+      outline: [{ locator: 1, title: "Introduction", level: 1, synthesised: false }],
+    });
+    return;
+  }
+
+  const readingAnnotationsMatch = path.match(
+    /^\/api\/v1\/cowork\/sessions\/([^/]+)\/reading\/annotations$/,
+  );
+  if (readingAnnotationsMatch && request.method === "GET") {
+    json(response, 200, {
+      material_id: "mock-reader-material-v1",
+      items: [],
+      stale_count: 0,
+    });
+    return;
+  }
+
+  const readingFileMatch = path.match(
+    /^\/api\/v1\/cowork\/sessions\/([^/]+)\/reading\/file$/,
+  );
+  if (readingFileMatch && request.method === "GET") {
+    response.writeHead(200, {
+      "cache-control": "private, max-age=3600",
+      "content-length": String(READER_PDF.length),
+      "content-type": "application/pdf",
+    });
+    response.end(READER_PDF);
+    return;
+  }
+
+  const readingAnnotationCreateMatch = path.match(
+    /^\/api\/v1\/cowork\/sessions\/([^/]+)\/reading\/annotations$/,
+  );
+  if (readingAnnotationCreateMatch && request.method === "POST") {
+    void readBody(request).then((body) => {
+      json(response, 201, {
+        annotation: {
+          id: "mock-annotation-1",
+          locator: body.locator ?? 1,
+          quote: body.quote ?? "",
+          note: body.note ?? "",
+          color: body.color ?? "yellow",
+          locations: [],
+          created_at: new Date().toISOString(),
+        },
+        verified: true,
+      });
+    });
+    return;
+  }
+
+  const readingPageMatch = path.match(
+    /^\/api\/v1\/cowork\/sessions\/([^/]+)\/reading\/pages\/(\d+)\.png$/,
+  );
+  if (readingPageMatch && request.method === "GET") {
+    response.writeHead(200, {
+      "cache-control": "private, max-age=3600",
+      "content-length": String(READER_PAGE_PNG.length),
+      "content-type": "image/png",
+    });
+    response.end(READER_PAGE_PNG);
+    return;
+  }
+
   const coworkArtifactsMatch = path.match(/^\/api\/v1\/cowork\/sessions\/([^/]+)\/artifacts$/);
   if (coworkArtifactsMatch && request.method === "GET") {
     json(response, 200, { items: coworkArtifacts.get(coworkArtifactsMatch[1]) ?? [] });
+    return;
+  }
+
+  const artifactPreviewMatch = path.match(/^\/api\/v1\/cowork\/artifacts\/([^/]+)\/preview$/);
+  if (artifactPreviewMatch && request.method === "GET") {
+    response.writeHead(200, {
+      "cache-control": "no-store",
+      "content-type": "text/html; charset=utf-8",
+      "x-workpilot-preview-mode": "structure",
+    });
+    response.end("<!doctype html><meta charset='utf-8'><h1>季度汇报</h1><p>管理层摘要</p>");
+    return;
+  }
+
+  const artifactDiffMatch = path.match(/^\/api\/v1\/cowork\/artifacts\/([^/]+)\/diff$/);
+  if (artifactDiffMatch && request.method === "GET") {
+    json(response, 200, {
+      schema_version: 1,
+      available: true,
+      format: "unified",
+      view: "semantic",
+      created: false,
+      before_sha256: "a".repeat(64),
+      after_sha256: "b".repeat(64),
+      added_lines: 2,
+      removed_lines: 1,
+      truncated: false,
+      text: "--- 修改前\n+++ 修改后\n@@ -1 +1,2 @@\n-季度总结\n+管理层季度总结\n+关键结论",
+      reason: null,
+    });
     return;
   }
 
@@ -913,35 +1277,73 @@ const server = createServer((request, response) => {
       const artifactId = "8c0e4c55-0000-4d00-8000-000000000001";
       const finalAnswer = "已将季度汇报改为管理层语气，并保留原有数据。";
       const waitsForCancel = body.goal.includes("保持运行直到我停止");
+      const fixtureScenarioName = coworkFixtureScenario(body.goal);
+      const conversationTitle = fixtureScenarioName === null
+        ? "优化季度汇报管理层表达"
+        : body.goal.slice(0, 36);
       const initialEvents = [
         { type: "plan", data: { workflow_type: "cowork", mode: "dynamic_tool_loop", tools: [] } },
-        { type: "step.update", data: { step_id: `${runId}-step-0`, step_idx: 0, tool: "list_office_files", status: "pending" } },
+        { type: "step.update", data: { step_id: `${runId}-step-0`, step_idx: 0, tool: "list_files", status: "pending", activity: { title: "列出文件", summary: "查看 *.docx", target: "/Users/demo/Documents/Quarterly", target_kind: "path" } } },
       ];
-      const events = waitsForCancel ? initialEvents : [
+      const standardEvents = waitsForCancel ? initialEvents : [
         ...initialEvents,
-        { type: "tool.start", data: { step_id: `${runId}-step-0`, step_idx: 0, tool: "list_office_files" } },
-        { type: "tool.result", data: { step_id: `${runId}-step-0`, step_idx: 0, tool: "list_office_files", reused: false, effect_ref: null } },
-        { type: "step.update", data: { step_id: `${runId}-step-1`, step_idx: 1, tool: "inspect_office_file", status: "pending" } },
-        { type: "tool.result", data: { step_id: `${runId}-step-1`, step_idx: 1, tool: "inspect_office_file", reused: false, effect_ref: null } },
-        { type: "step.update", data: { step_id: `${runId}-step-2`, step_idx: 2, tool: "edit_word", status: "pending" } },
-        { type: "tool.start", data: { step_id: `${runId}-step-2`, step_idx: 2, tool: "edit_word" } },
-        { type: "tool.result", data: { step_id: `${runId}-step-2`, step_idx: 2, tool: "edit_word", reused: false, effect_ref: "file:/Users/demo/Documents/Quarterly/季度汇报.docx#sha256=abc" } },
+        { type: "tool.start", data: { step_id: `${runId}-step-0`, step_idx: 0, tool: "list_files", activity: { title: "列出文件", summary: "查看 *.docx", target: "/Users/demo/Documents/Quarterly", target_kind: "path" } } },
+        { type: "tool.result", data: { step_id: `${runId}-step-0`, step_idx: 0, tool: "list_files", reused: false, effect_ref: null } },
+        { type: "step.update", data: { step_id: `${runId}-step-1`, step_idx: 1, tool: "load_skill", status: "pending", activity: { title: "加载格式 Skill", summary: "读取这项 Skill 的执行规范", target: "office-deliverable", target_kind: "text" } } },
+        { type: "tool.result", data: { step_id: `${runId}-step-1`, step_idx: 1, tool: "load_skill", reused: false, effect_ref: null } },
+        { type: "step.update", data: { step_id: `${runId}-step-2`, step_idx: 2, tool: "write_text_file", status: "pending", activity: { title: "写入文本", summary: "创建或更新文本文件", target: "/Users/demo/Documents/Quarterly/brief.md", target_kind: "path" } } },
+        { type: "tool.result", data: { step_id: `${runId}-step-2`, step_idx: 2, tool: "write_text_file", reused: false, effect_ref: null } },
+        { type: "step.update", data: { step_id: `${runId}-step-3`, step_idx: 3, tool: "run_shell", status: "pending", activity: { title: "执行 Shell 命令", summary: "渲染并验证 Word 交付物", target: "python render_docx.py 季度汇报.docx", target_kind: "code" } } },
+        { type: "tool.start", data: { step_id: `${runId}-step-3`, step_idx: 3, tool: "run_shell", activity: { title: "执行 Shell 命令", summary: "渲染并验证 Word 交付物", target: "python render_docx.py 季度汇报.docx", target_kind: "code" } } },
+        { type: "tool.result", data: { step_id: `${runId}-step-3`, step_idx: 3, tool: "run_shell", reused: false, effect_ref: "file:/Users/demo/Documents/Quarterly/季度汇报.docx#sha256=abc" } },
         { type: "artifact", data: { kind: "file", title: "季度汇报.docx", artifact_id: artifactId, effect_ref: "file:/Users/demo/Documents/Quarterly/季度汇报.docx#sha256=abc" } },
-        { type: "step.update", data: { status: "done", summary: finalAnswer } },
-        { type: "message.delta", data: { text: finalAnswer } },
+        { type: "step.update", data: { status: "done", summary: "" } },
+        { type: "message.snapshot", data: { text: finalAnswer } },
         { type: "message.done", data: { message_id: `${runId}-message`, status: "completed" } },
+        { type: "conversation.title", data: { conversation_id: conversationId, title: conversationTitle } },
         { type: "run.done", data: { workflow_type: "cowork", status: "done" } },
       ];
+      const fixtureEvents = fixtureScenarioName === null
+        ? null
+        : SCENARIOS[fixtureScenarioName].events;
+      const events = fixtureEvents === null
+        ? standardEvents
+        : [
+            { type: "plan", data: { workflow_type: "cowork", mode: "dynamic_tool_loop", tools: [] } },
+            ...fixtureEvents,
+            { type: "conversation.title", data: { conversation_id: conversationId, title: conversationTitle } },
+            ...(fixtureEvents.some((event) => event.type === "error")
+              ? []
+              : [{ type: "run.done", data: { workflow_type: "cowork", status: "done" } }]),
+          ];
       coworkEventLogs.set(runId, events);
+      const session = currentSession(request);
+      const conversation = session?.conversations.get(conversationId);
+      if (conversation !== undefined) {
+        session.conversations.set(conversationId, {
+          ...conversation,
+          title: conversationTitle,
+          updated_at: new Date().toISOString(),
+        });
+      }
       runs.set(runId, {
         id: runId,
         conversation_id: conversationId,
-        session_token: null,
+        session_token: session?.token ?? null,
         goal: body.goal,
+        // 与真后端一致：创建 run 的这一刻读取一次会话挂载，之后会话切换不回写旧 run。
+        kb_slug: conversationKnowledgeBases.get(conversationId) ?? null,
         answer_mode: "grounded",
         workflow_type: "cowork",
-        status: waitsForCancel ? "executing" : "done",
+        status: waitsForCancel || fixtureScenarioName !== null ? "executing" : "done",
+        started_at: Date.now(),
         cancelled: false,
+        cowork_drop_after_seq: fixtureScenarioName === null
+          ? (body.goal.includes("断线续传") ? 4 : null)
+          : (SCENARIOS[fixtureScenarioName].drop_after_seq ?? null),
+        cowork_replay_on_reconnect: fixtureScenarioName !== null
+          && SCENARIOS[fixtureScenarioName].replay_on_reconnect === true,
+        dropped: false,
         last_sent_seq: 0,
       });
       coworkArtifacts.set(conversationId, [
@@ -959,7 +1361,13 @@ const server = createServer((request, response) => {
           updated_at: "2026-08-18T03:10:00Z",
         },
       ]);
-      json(response, 202, { run_id: runId, conversation_id: conversationId, status: "queued", workflow_type: "cowork" });
+      json(response, 202, {
+        run_id: runId,
+        conversation_id: conversationId,
+        conversation_title: conversationTitle,
+        status: "queued",
+        workflow_type: "cowork",
+      });
     });
     return;
   }
@@ -967,14 +1375,20 @@ const server = createServer((request, response) => {
   const coworkEventLogMatch = path.match(/^\/api\/v1\/runs\/([^/]+)\/event-log$/);
   if (coworkEventLogMatch && request.method === "GET") {
     const runId = coworkEventLogMatch[1];
+    const run = runs.get(runId);
+    const startedAt = run?.started_at ?? Date.now();
     const afterSeq = Number.parseInt(url.searchParams.get("after_seq") ?? "0", 10);
     const items = (coworkEventLogs.get(runId) ?? [])
+      // 断线用例模拟真实生产时序：断开时库里只有已经发送的前缀，
+      // event-log 先补这部分，客户端再带游标重连 SSE 继续收。
+      .slice(0, run?.cowork_drop_after_seq ? run.last_sent_seq : undefined)
       .map((event, index) => ({
         id: `${runId}:${index + 1}`,
         run_id: runId,
         seq: String(index + 1),
         type: event.type,
         data: event.data,
+        created_at: new Date(startedAt + index * 3000).toISOString(),
       }))
       .filter((event) => Number(event.seq) > afterSeq);
     json(response, 200, { items });
@@ -1096,11 +1510,13 @@ const server = createServer((request, response) => {
   const eventsMatch = path.match(/^\/api\/v1\/runs\/([^/]+)\/events$/);
   if (eventsMatch && request.method === "GET") {
     const run = runs.get(eventsMatch[1]);
-    if (run === undefined || currentSession(request)?.token !== run.session_token) {
+    const coworkAuthorized = run?.workflow_type === "cowork" && isAdmin(request);
+    if (run === undefined || (!coworkAuthorized && currentSession(request)?.token !== run.session_token)) {
       json(response, 404, { detail: "run 不存在" });
       return;
     }
-    void streamEvents(request, response, run);
+    if (run.workflow_type === "cowork") void streamCoworkEvents(request, response, run);
+    else void streamEvents(request, response, run);
     return;
   }
 
@@ -1138,132 +1554,6 @@ const server = createServer((request, response) => {
     return;
   }
 
-  // ------------------------------------------------------------ 办公工作台
-
-  if (path === "/api/v1/editor/permission" && request.method === "GET") {
-    const token = adminToken(request);
-    if (token === null) {
-      json(response, 401, { detail: "需要先登录 owner" });
-      return;
-    }
-    const expiresAt = editorPermissions.get(token) ?? 0;
-    json(response, 200, {
-      granted: expiresAt > Date.now(),
-      scope: "local_office_write",
-      expires_in_s: Math.max(0, Math.floor((expiresAt - Date.now()) / 1000)),
-    });
-    return;
-  }
-
-  if (path === "/api/v1/editor/permission" && request.method === "POST") {
-    const token = adminToken(request);
-    if (token === null) {
-      json(response, 401, { detail: "需要先登录 owner" });
-      return;
-    }
-    editorPermissions.set(token, Date.now() + 60 * 60 * 1000);
-    json(response, 200, {
-      granted: true,
-      scope: "local_office_write",
-      expires_in_s: 3600,
-    });
-    return;
-  }
-
-  if (path === "/api/v1/editor/permission" && request.method === "DELETE") {
-    const token = adminToken(request);
-    if (token === null) {
-      json(response, 401, { detail: "需要先登录 owner" });
-      return;
-    }
-    editorPermissions.delete(token);
-    response.writeHead(204);
-    response.end();
-    return;
-  }
-
-  if (path === "/api/v1/editor/files" && request.method === "GET") {
-    if (!isAdmin(request)) {
-      json(response, 401, { detail: "需要先登录 owner" });
-      return;
-    }
-    const items = [...workspaceFiles.values()].map((file) => ({
-      file_id: file.file_id,
-      name: file.name,
-      source_name: file.source_name,
-      source_uri: file.source_uri,
-      kind: file.kind,
-      size_bytes: file.size_bytes,
-      updated_at_ns: file.updated_at_ns,
-    }));
-    json(response, 200, { items });
-    return;
-  }
-
-  const workspaceExecuteMatch = path.match(/^\/api\/v1\/editor\/files\/([^/]+)\/execute$/);
-  if (workspaceExecuteMatch && request.method === "POST") {
-    if (!isAdmin(request)) {
-      json(response, 401, { detail: "需要先登录 owner" });
-      return;
-    }
-    if (!hasEditorPermission(request)) {
-      json(response, 403, { detail: "尚未授予本地办公文档写权限" });
-      return;
-    }
-    void readBody(request).then((body) => {
-      const file = workspaceFiles.get(workspaceExecuteMatch[1]);
-      if (file === undefined) {
-        json(response, 404, { detail: "办公文档不存在" });
-        return;
-      }
-      if (body.baseline_sha256 !== file.baseline_sha256) {
-        json(response, 409, { detail: { code: "document_conflict" } });
-        return;
-      }
-      const instruction = typeof body.instruction === "string" ? body.instruction : "";
-      let content;
-      if (file.kind === "word") {
-        content = `[段落 0] 项目简报\n\n[段落 1] 已由 WorkPilot 直接修改：${instruction}`;
-      } else if (file.kind === "excel") {
-        content = `${file.content}\n[预算!C2] =B2*2`;
-      } else {
-        content = `# 检索评测笔记\n\n已由 WorkPilot 直接修改：${instruction}`;
-      }
-      const changed = {
-        ...file,
-        content,
-        size_bytes: Buffer.byteLength(content),
-        baseline_sha256: workspaceHash(content),
-        updated_at_ns: Date.now() * 1_000_000,
-      };
-      workspaceFiles.set(file.file_id, changed);
-      json(response, 200, {
-        file: changed,
-        summary: "已按指令直接修改办公文档",
-        change_count: 1,
-        model: "fake-office-model",
-        provider: "deterministic_test",
-        backup_uri: `.workpilot-backups/mock/${file.source_uri}`,
-      });
-    });
-    return;
-  }
-
-  const workspaceFileMatch = path.match(/^\/api\/v1\/editor\/files\/([^/]+)$/);
-  if (workspaceFileMatch && request.method === "GET") {
-    if (!isAdmin(request)) {
-      json(response, 401, { detail: "需要先登录 owner" });
-      return;
-    }
-    const file = workspaceFiles.get(workspaceFileMatch[1]);
-    if (file === undefined) {
-      json(response, 404, { detail: "办公文档不存在" });
-      return;
-    }
-    json(response, 200, file);
-    return;
-  }
-
   const cancelMatch = path.match(/^\/api\/v1\/runs\/([^/]+)\/cancel$/);
   if (cancelMatch && request.method === "POST") {
     const run = runs.get(cancelMatch[1]);
@@ -1280,7 +1570,7 @@ const server = createServer((request, response) => {
         run.status = "cancelled";
         const events = coworkEventLogs.get(run.id) ?? [];
         events.push(
-          { type: "step.update", data: { step_id: `${run.id}-step-0`, step_idx: 0, tool: "list_office_files", status: "skipped", summary: "用户停止，未执行此步骤" } },
+          { type: "step.update", data: { step_id: `${run.id}-step-0`, step_idx: 0, tool: "list_files", status: "skipped", summary: "用户停止，未执行此步骤" } },
           { type: "error", data: { code: "cancelled", retryable: true, user_message: "Cowork 任务已停止。已完成的文件修改会保留。" } },
           { type: "run.done", data: { workflow_type: "cowork", status: "cancelled" } },
         );

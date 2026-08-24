@@ -112,9 +112,7 @@ def test_exhausted_job_is_archived_instead_of_blocking_the_queue(tmp_path: Path)
     )
     for _ in range(2):
         assert (
-            claim_skill_job(
-                tmp_path, run_id=run_id, worker_id="w", lease_s=300, max_attempts=2
-            )
+            claim_skill_job(tmp_path, run_id=run_id, worker_id="w", lease_s=300, max_attempts=2)
             is not None
         )
         retry_or_fail_skill_job(

@@ -7,6 +7,7 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -32,6 +33,12 @@ from app.cowork_store.routing import cowork_store
 # 内联进 SQL 的常量白名单, 不接受外部输入。
 _TERMINAL_SQL = "(" + ", ".join(f"'{status}'" for status in sorted(TERMINAL_RUN_STATUSES)) + ")"
 MESSAGE_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+
+@dataclass(frozen=True)
+class ScheduledRunRetry:
+    attempt: int
+    wake_at: datetime
 
 
 _RUN_COLUMNS = """
@@ -77,6 +84,7 @@ async def create_run(
     schedule_id: UUID | None = None,
     unattended: bool = False,
     run_trigger: Literal["manual", "schedule", "catchup"] = "manual",
+    initializing: bool = False,
 ) -> RunRecord:
     if not goal.strip():
         raise ValueError("run 目标不能为空")
@@ -104,11 +112,14 @@ async def create_run(
         schedule_id=schedule_id,
         unattended=unattended,
         run_trigger=run_trigger,
+        initializing=initializing,
     )
 
 
 async def get_run(session: AsyncSession, run_id: UUID) -> RunRecord | None:
     return await cowork_store().get_run(run_id)
+
+
 async def get_run_for_identity(
     session: AsyncSession,
     *,
@@ -117,6 +128,8 @@ async def get_run_for_identity(
     """读取 run。身份只剩 owner 一种，隔离不再需要额外条件。"""
 
     return await cowork_store().get_run(run_id)
+
+
 async def append_events(
     session: AsyncSession,
     *,
@@ -148,7 +161,7 @@ async def list_events(
     if not 1 <= limit <= 1000:
         raise ValueError("limit 必须位于 1 到 1000")
     store = cowork_store()
-    return (await store.list_events(run_id=run_id, after_seq=after_seq))[:limit]
+    return await store.list_events(run_id=run_id, after_seq=after_seq, limit=limit)
 
 
 async def claim_run(
@@ -232,6 +245,32 @@ async def finish_run(
     )
 
 
+async def finish_run_with_events(
+    session: AsyncSession,
+    *,
+    run_id: UUID,
+    status: str,
+    events: Sequence[tuple[str, dict[str, Any]]],
+    worker_id: str | None = None,
+    error: str | None = None,
+    used_tokens: int = 0,
+    used_calls: int = 0,
+) -> tuple[bool, list[RunEvent]]:
+    """原子落 run 终态与终态事件；只有状态转换成功才写事件。"""
+
+    if status not in TERMINAL_RUN_STATUSES:
+        raise ValueError(f"不是终态: {status}")
+    return await cowork_store().finish_run_with_events(
+        run_id=run_id,
+        status=status,
+        events=events,
+        worker_id=worker_id,
+        error=error,
+        used_tokens=used_tokens,
+        used_calls=used_calls,
+    )
+
+
 async def request_cancel(
     session: AsyncSession,
     *,
@@ -245,6 +284,35 @@ async def request_cancel(
 
     store = cowork_store()
     return await store.request_cancel(run_id=run_id)
+
+
+async def schedule_run_retry(
+    session: AsyncSession,
+    *,
+    run_id: UUID,
+    worker_id: str,
+    max_recovery: int,
+    base_delay_s: float,
+    max_delay_s: float,
+) -> ScheduledRunRetry | None:
+    """把瞬时故障的 Cowork run 停在最新 checkpoint，并持久化退避唤醒时间。"""
+
+    del session  # 本地控制面由 Cowork store 持有独立的短事务。
+    if max_recovery < 0:
+        raise ValueError("自动恢复次数上限不能为负")
+    if base_delay_s <= 0 or max_delay_s <= 0 or base_delay_s > max_delay_s:
+        raise ValueError("重试退避必须满足 0 < base_delay_s <= max_delay_s")
+    scheduled = await cowork_store().schedule_run_retry(
+        run_id=run_id,
+        worker_id=worker_id,
+        max_recovery=max_recovery,
+        base_delay_s=base_delay_s,
+        max_delay_s=max_delay_s,
+    )
+    if scheduled is None:
+        return None
+    attempt, wake_at = scheduled
+    return ScheduledRunRetry(attempt=attempt, wake_at=wake_at)
 
 
 @dataclass(frozen=True)
@@ -418,5 +486,9 @@ async def finalize_message(
                 citations=current.citations if citations is None else tuple(citations),
             )
         )
-        await store.update_message_status(record_id=message_id, status=status)
+        await store.update_message_status(
+            record_id=message_id,
+            status=status,
+            content_preview=current.content if content is None else content,
+        )
         return

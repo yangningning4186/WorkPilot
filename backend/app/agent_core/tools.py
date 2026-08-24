@@ -193,7 +193,6 @@ class ToolRegistry[SpecT: RegistryToolSpec]:
                 scored.append((score, name, spec))
         scored.sort(key=lambda item: (-item[0], item[1]))
         selected = scored[:max_results]
-        self.activate_tools({name for _, name, _ in selected})
         return [spec.catalog_entry() for _, _, spec in selected]
 
     def parallel_safe(self, names: list[str]) -> bool:
@@ -236,9 +235,7 @@ class ToolRegistry[SpecT: RegistryToolSpec]:
                 Draft202012Validator.check_schema(spec.input_schema)
                 Draft202012Validator(spec.input_schema).validate(arguments)
             except (SchemaError, JsonSchemaValidationError) as error:
-                raise self._error(
-                    f"工具 {name} 参数不符合 MCP schema：{error.message}"
-                ) from error
+                raise self._error(f"工具 {name} 参数不符合 MCP schema：{error.message}") from error
         try:
             parsed = spec.args_model.model_validate(arguments)
         except ValidationError as error:

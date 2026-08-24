@@ -134,7 +134,7 @@ export default function McpPage() {
   const eligibleCount = status?.servers.reduce((sum, server) => sum + server.eligible_read_tools, 0) ?? 0;
 
   return (
-    <WorkdeskAppShell icon="mcp" sectionTitle="MCP">
+    <WorkdeskAppShell icon="mcp" sectionTitle="连接器 · Custom MCP">
       <section className="integration-page workdesk-route-surface">
         <header className="integration-hero">
           <div className="integration-hero-mark"><WorkdeskIcon name="mcp" /></div>

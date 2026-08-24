@@ -46,9 +46,7 @@ async def bind_thread_session(
     )
 
 
-async def get_thread_session(
-    session: AsyncSession, *, target: str
-) -> ThreadSessionRecord | None:
+async def get_thread_session(session: AsyncSession, *, target: str) -> ThreadSessionRecord | None:
     store = cowork_store()
     return await store.get_thread_session(target=target)
 

@@ -1,11 +1,24 @@
 /** 后端 HTTP 客户端。字段保持 snake_case，与后端契约一致。 */
 
-import type { CitationPayload, StreamEnvelope } from "./run-protocol";
+import type { CitationPayload, ReadingLocation, StreamEnvelope } from "./run-protocol";
 import { getDesktopContext } from "./desktop";
 
 // 默认走 Next.js 同源 rewrite，浏览器不再直接跨域访问后端。
 // NEXT_PUBLIC_API_BASE 仅保留给明确需要直连 API 的部署方式。
 export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "").replace(/\/$/, "");
+
+/** OAuth 控制台必须登记绝对回调地址；桌面端优先使用当前 sidecar 的真实 API 地址。 */
+export async function connectorOAuthCallbackUrl(): Promise<string> {
+  const desktop = await getDesktopContext();
+  const configuredBase = desktop?.api_base ?? API_BASE;
+  const browserOrigin = typeof window === "undefined" ? "" : window.location.origin;
+  const base = configuredBase
+    ? configuredBase.startsWith("http://") || configuredBase.startsWith("https://")
+      ? configuredBase
+      : `${browserOrigin}${configuredBase}`
+    : browserOrigin;
+  return `${base.replace(/\/$/, "")}/api/v1/connectors/oauth/callback`;
+}
 
 /** grounded = 依据资料库回答；general = 用户在拒答后显式选择的通用知识回答。 */
 export type AnswerMode = "grounded" | "general";
@@ -14,6 +27,7 @@ export type WorkflowType = "answer" | "literature_review" | "cowork";
 export interface CreateRunResponse {
   run_id: string;
   conversation_id: string;
+  conversation_title: string | null;
   status: string;
   workflow_type: WorkflowType;
 }
@@ -21,6 +35,8 @@ export interface CreateRunResponse {
 export interface ConversationSummary {
   id: string;
   title: string | null;
+  /** 非终态 run。切换会话仅断开当前订阅，切回后用它继续回放。 */
+  active_run_id: string | null;
   message_count: number;
   latest_message: string | null;
   last_message_at: string | null;
@@ -30,6 +46,7 @@ export interface ConversationSummary {
   selected_model: string | null;
   unattended: boolean;
   approval_mode: "interactive" | "auto";
+  persona_name: string;
   archived_at: string | null;
   created_at: string;
   updated_at: string;
@@ -41,6 +58,24 @@ export interface ConversationRuntimeUpdate {
   unattended: boolean;
   /** 自主权上限。默认必须是 interactive：漏传这个字段不该把会话悄悄升级成免审批。 */
   approval_mode: "interactive" | "auto";
+  persona_name: string;
+}
+
+export interface Persona {
+  name: string;
+  label: string;
+  description: string;
+  tool_patterns: string[];
+  default_approval_mode: "interactive" | "auto";
+  recommended_connectors: ConnectorKind[];
+  recommended_work_mode: CoworkWorkMode;
+  origin: "builtin" | "user" | "project";
+}
+
+export interface PersonaListResponse {
+  items: Persona[];
+  errors: string[];
+  project_paths: string[];
 }
 
 /** 一条常驻审批规则。只能在审批卡片上产生，没有创建接口。 */
@@ -50,7 +85,7 @@ export interface ApprovalRule {
   scope: "conversation" | "schedule";
   schedule_id: string | null;
   tool: string;
-  match_kind: "tool" | "target" | "command_prefix";
+  match_kind: "action_target" | "argv_pattern" | "tool" | "target" | "command_prefix";
   target: string | null;
   created_by: string;
   revoked_at: string | null;
@@ -103,7 +138,9 @@ export interface ConversationContextUsage {
   estimated: boolean;
   breakdown: {
     system: number;
+    tool_manifest: number;
     tools: number;
+    loaded_tools: number;
     messages: number;
     tool_activity: number;
   };
@@ -243,6 +280,13 @@ export function updateConversationRuntime(
   });
 }
 
+export function fetchPersonas(conversationId?: string): Promise<PersonaListResponse> {
+  const query = conversationId === undefined
+    ? ""
+    : `?conversation_id=${encodeURIComponent(conversationId)}`;
+  return request<PersonaListResponse>(`/api/v1/personas${query}`);
+}
+
 export function fetchConversationMessages(
   conversationId: string,
 ): Promise<ConversationMessageListResponse> {
@@ -279,7 +323,7 @@ export interface CoworkInteractionResponse {
    * 记住这次批准的粒度。默认 once：漏传这个字段只授权这一次，不会留下常驻规则。
    * command 只对没有 shell 操作符的命令有效；target 只对声明了目标字段的工具有效。
    */
-  remember?: "once" | "tool" | "command" | "target";
+  remember?: "once" | "command" | "target";
 }
 
 export function fetchApprovalRules(conversationId: string): Promise<{ items: ApprovalRule[] }> {
@@ -341,12 +385,25 @@ export interface CreateCoworkRunRequest {
   goal: string;
   conversation_id: string;
   attachment_ids?: string[];
+  /** 系统选择器点名的本机原文件；所在目录须已明确授予当前会话。 */
+  workspace_files?: string[];
   /** 计划模式：只放行只读工具，先出方案等你批准再动手。 */
   plan_mode?: boolean;
   /** 开场界面选的玩法。与 plan_mode 正交：论文阅读也可以先出计划。 */
   work_mode?: CoworkWorkMode;
   /** 论文阅读模式下打开的文档路径；边界仍由每次工具调用的目录授权把关。 */
   reading_path?: string | null;
+  /**
+   * 发送这一刻阅读器停在哪、用户划着哪一句。阅读器 → 模型的反向通道：没有它，
+   * "这段是什么意思"在模型那里无法解析，它只能猜最近提过的那一处。
+   */
+  reading_viewport?: ReadingViewportPayload | null;
+}
+
+export interface ReadingViewportPayload {
+  locator?: number;
+  selection?: string;
+  unit?: "page" | "section";
 }
 
 /** 用户在开场界面选的那一档。后端 `app/cowork_contracts.py` 是同一份定义。 */
@@ -374,7 +431,16 @@ export type CoworkCapability =
   | "network.read"
   | "browser.control"
   | "shell.execute"
-  | "external.action";
+  | "external.action"
+  | "network.fetch"
+  | "browser.read"
+  | "browser.write"
+  | "browser.destructive"
+  | "sandbox.execute"
+  | "host.execute"
+  | "external.read"
+  | "external.write"
+  | "external.destructive";
 
 export interface CoworkRoot {
   id: string;
@@ -393,6 +459,7 @@ export interface CoworkGrant {
   conversation_id: string;
   session_root_id: string | null;
   capability: CoworkCapability;
+  resource_scope: string | null;
   grant_source: string;
   expires_at: string | null;
   revoked_at: string | null;
@@ -525,6 +592,21 @@ export interface ArtifactPreviewPayload {
   mode: "quicklook" | "libreoffice" | "native-pdf" | "structure" | "text" | "unknown";
 }
 
+export interface ArtifactDiffPayload {
+  schema_version: 1;
+  available: boolean;
+  format: "unified";
+  view: "text" | "semantic" | "unavailable";
+  created: boolean;
+  before_sha256: string | null;
+  after_sha256: string | null;
+  added_lines: number;
+  removed_lines: number;
+  truncated: boolean;
+  text: string;
+  reason: string | null;
+}
+
 export async function fetchArtifactPreview(artifactId: string): Promise<ArtifactPreviewPayload> {
   const response = await apiFetch(`/api/v1/cowork/artifacts/${artifactId}/preview`);
   if (!response.ok) throw new ApiError(response.status, await response.text());
@@ -532,6 +614,10 @@ export async function fetchArtifactPreview(artifactId: string): Promise<Artifact
   const modes = new Set(["quicklook", "libreoffice", "native-pdf", "structure", "text"]);
   const mode = modes.has(rawMode) ? rawMode as ArtifactPreviewPayload["mode"] : "unknown";
   return { blob: await response.blob(), mode };
+}
+
+export function fetchArtifactDiff(artifactId: string): Promise<ArtifactDiffPayload> {
+  return request<ArtifactDiffPayload>(`/api/v1/cowork/artifacts/${artifactId}/diff`);
 }
 
 export function fetchRunEventLog(
@@ -642,15 +728,24 @@ export interface SkillSummary {
   anti_trigger: string[];
   tools: string[];
   sha256: string;
+  origin: SkillOrigin;
 }
 
 export interface SkillsStatusResponse {
   source_path: string;
+  /** 出厂 Skill 的安装位；随应用发布，只读。 */
+  builtin_path: string;
+  /** 当前会话已授权工作区里的 project Skill 目录。 */
+  project_paths: string[];
   snapshot_sha256: string;
   skills: SkillSummary[];
   errors: string[];
+  /** 被同名用户 Skill 盖住的出厂 Skill 名字。 */
+  shadowed: string[];
   installed: ManagedSkill[];
 }
+
+export type SkillOrigin = "builtin" | "user" | "project";
 
 export interface ManagedSkill {
   name: string;
@@ -659,6 +754,15 @@ export interface ManagedSkill {
   sha256: string | null;
   resources: string[];
   error: string | null;
+  /**
+   * `builtin` 随产品出厂。名字在两层里可以重复，所以列表的 key 必须是
+   * `origin + name`，而不是 name。
+   */
+  origin: SkillOrigin;
+  /** 出厂 Skill 被同名用户 Skill 盖住；仍然列出来，否则 fork 过这件事看不出来。 */
+  shadowed: boolean;
+  /** 出厂 Skill 不可卸载，只能停用或 fork。 */
+  removable: boolean;
 }
 
 export interface SkillCandidate {
@@ -753,8 +857,11 @@ export interface McpProbeResponse {
   tools: McpProbeTool[];
 }
 
-export function fetchSkillsStatus(): Promise<SkillsStatusResponse> {
-  return request<SkillsStatusResponse>("/api/v1/integrations/skills");
+export function fetchSkillsStatus(conversationId?: string): Promise<SkillsStatusResponse> {
+  const query = conversationId === undefined
+    ? ""
+    : `?conversation_id=${encodeURIComponent(conversationId)}`;
+  return request<SkillsStatusResponse>(`/api/v1/integrations/skills${query}`);
 }
 
 export function fetchSkillCandidates(): Promise<SkillCandidatesResponse> {
@@ -870,7 +977,6 @@ export interface ProviderInput {
   base_url: string;
   default_model: string;
   api_key?: string;
-  context_window_tokens: number;
   enabled: boolean;
   metadata: Record<string, unknown>;
 }
@@ -906,12 +1012,8 @@ export function probeProvider(
   return request(`/api/v1/providers/${id}/probe`, { method: "POST" });
 }
 
-export type ConnectorKind =
-  | "github"
-  | "feishu"
-  | "wecom"
-  | "wechat_official"
-  | "tencent_docs";
+/** 平台集合由后端 Connector Descriptor catalog 决定，不在客户端维护第二份 union。 */
+export type ConnectorKind = string;
 
 export interface ConnectorAccount {
   id: string;
@@ -921,6 +1023,7 @@ export interface ConnectorAccount {
   status: "configured" | "authorizing" | "connected" | "expired" | "error";
   config: Record<string, unknown>;
   scopes: string[];
+  capabilities: string[];
   external_account_id: string | null;
   external_account_name: string | null;
   expires_at: string | null;
@@ -930,6 +1033,18 @@ export interface ConnectorAccount {
   has_secrets: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface ConnectorDescriptor {
+  kind: ConnectorKind;
+  label: string;
+  blurb: string;
+  logo: string;
+  brand_color: string;
+  category: "china_office" | "developer";
+  auth_types: Array<"oauth2" | "token" | "app_credentials">;
+  default_scopes: string[];
+  capabilities: string[];
 }
 
 export interface ConnectorInput {
@@ -947,6 +1062,10 @@ export interface ConnectorInput {
 
 export function fetchConnectors(): Promise<{ items: ConnectorAccount[] }> {
   return request<{ items: ConnectorAccount[] }>("/api/v1/connectors");
+}
+
+export function fetchConnectorCatalog(): Promise<{ items: ConnectorDescriptor[] }> {
+  return request<{ items: ConnectorDescriptor[] }>("/api/v1/connectors/catalog");
 }
 
 export function createConnector(body: ConnectorInput): Promise<ConnectorAccount> {
@@ -979,76 +1098,6 @@ export function startConnectorOAuth(
   });
 }
 
-
-/** 办公工作台：权限按 owner session 限时授予，文件范围固定在已注册本地资料目录。 */
-export interface EditorPermission {
-  granted: boolean;
-  scope: "local_office_write";
-  expires_in_s: number;
-}
-
-export type WorkspaceFileKind = "markdown" | "word" | "excel";
-
-export interface WorkspaceFileSummary {
-  file_id: string;
-  name: string;
-  source_name: string;
-  source_uri: string;
-  kind: WorkspaceFileKind;
-  size_bytes: number;
-  updated_at_ns: number;
-}
-
-export interface WorkspaceFile extends WorkspaceFileSummary {
-  content: string;
-  baseline_sha256: string;
-  editable: boolean;
-}
-
-export interface WorkspaceInstructionResponse {
-  file: WorkspaceFile;
-  summary: string;
-  change_count: number;
-  model: string;
-  provider: string;
-  backup_uri: string | null;
-}
-
-export function fetchEditorPermission(): Promise<EditorPermission> {
-  return request<EditorPermission>("/api/v1/editor/permission");
-}
-
-export function grantEditorPermission(): Promise<EditorPermission> {
-  return request<EditorPermission>("/api/v1/editor/permission", { method: "POST" });
-}
-
-export function revokeEditorPermission(): Promise<void> {
-  return requestVoid("/api/v1/editor/permission", { method: "DELETE" });
-}
-
-export function fetchWorkspaceFiles(): Promise<{ items: WorkspaceFileSummary[] }> {
-  return request<{ items: WorkspaceFileSummary[] }>("/api/v1/editor/files");
-}
-
-export function fetchWorkspaceFile(fileId: string): Promise<WorkspaceFile> {
-  return request<WorkspaceFile>(`/api/v1/editor/files/${encodeURIComponent(fileId)}`);
-}
-
-export function executeWorkspaceInstruction(
-  fileId: string,
-  body: {
-    baseline_sha256: string;
-    instruction: string;
-    content?: string;
-    selection_start?: number;
-    selection_end?: number;
-  },
-): Promise<WorkspaceInstructionResponse> {
-  return request<WorkspaceInstructionResponse>(
-    `/api/v1/editor/files/${encodeURIComponent(fileId)}/execute`,
-    { method: "POST", body: JSON.stringify(body) },
-  );
-}
 
 /** owner 私有长期记忆；匿名 demo 永远不能读取这些字段。 */
 export type MemoryCategory = "preference" | "profile" | "interest" | "fact";
@@ -1232,20 +1281,116 @@ export function fetchReadingUnit(
   );
 }
 
+export interface ReadingAnnotation {
+  id: string;
+  locator: number;
+  quote: string;
+  note: string;
+  color: "yellow" | "green" | "blue" | "pink";
+  /** 约束 3 的完整几何。空数组表示这条批注只锚在 locator 上（非 PDF 材料）。 */
+  locations: ReadingLocation[];
+  created_at: string;
+}
+
+export interface ReadingAnnotations {
+  material_id: string;
+  items: ReadingAnnotation[];
+  /**
+   * 同一路径上属于**别的**内容版本的批注条数。它们不显示——几何可能已经指向别的
+   * 文字。但也不能静默消失：改了一版 PDF 之后批注全没了却查不到为什么，
+   * 是最糟的那种失败。
+   */
+  stale_count: number;
+}
+
+export function fetchReadingAnnotations(
+  conversationId: string,
+  path: string,
+): Promise<ReadingAnnotations> {
+  return request<ReadingAnnotations>(
+    `/api/v1/cowork/sessions/${conversationId}/reading/annotations`
+      + `?path=${encodeURIComponent(path)}`,
+  );
+}
+
+/** 删除只开放给用户；模型没有对应的工具，它不知道哪一条是用户自己留的。 */
+export function deleteReadingAnnotation(
+  conversationId: string,
+  path: string,
+  annotationId: string,
+): Promise<void> {
+  return requestVoid(
+    `/api/v1/cowork/sessions/${conversationId}/reading/annotations/${annotationId}`
+      + `?path=${encodeURIComponent(path)}`,
+    { method: "DELETE" },
+  );
+}
+
 /**
- * 页面图地址。
+ * 用户自己划出来的批注。
  *
- * 带上 material_id 只为让 URL 随文件内容变化：它是内容哈希，文件一改 URL 就变，
- * 浏览器缓存自然失效，后端才敢给这个响应挂长缓存。
+ * 只送 `quote` 和 `locator`，**不送浏览器量出来的矩形**：几何由后端从解析结果里取
+ * （约束 3），这样同一份文件上模型留的高亮和用户划的高亮在同一套坐标里。返回的
+ * `verified` 说明这段引文有没有逐字对上——没对上照样存，只是画不出框。
  */
-export function readingPageUrl(
+export function createReadingAnnotation(
+  conversationId: string,
+  body: {
+    path: string;
+    locator: number;
+    quote: string;
+    note?: string;
+    color?: ReadingAnnotation["color"];
+  },
+): Promise<{ annotation: ReadingAnnotation; verified: boolean }> {
+  return request<{ annotation: ReadingAnnotation; verified: boolean }>(
+    `/api/v1/cowork/sessions/${conversationId}/reading/annotations`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+/**
+ * 取原始 PDF 字节，交给 pdf.js 在浏览器里渲染。
+ *
+ * 取代了"每页一张 PNG"：图片没有文本层，用户选不中、复制不了，也没法把"这一段"
+ * 交给模型——阅读器因此只能是单向的。授权是同一条，后端每次都重跑目录检查。
+ */
+export async function fetchReadingFile(
+  conversationId: string,
+  path: string,
+  materialId: string,
+): Promise<ArrayBuffer> {
+  const response = await apiFetch(
+    `/api/v1/cowork/sessions/${conversationId}/reading/file`
+      + `?path=${encodeURIComponent(path)}&v=${encodeURIComponent(materialId)}`,
+  );
+  if (!response.ok) throw new ApiError(response.status, await response.text());
+  return response.arrayBuffer();
+}
+
+/**
+ * 读取 PDF 原页图片。
+ *
+ * 不能把 URL 直接交给 img：桌面端 sidecar 端口每次随机，而且所有请求都必须带启动令牌，
+ * img 无法添加这个 header。统一经过 apiFetch 取 Blob，Web 端仍会自然携带 owner Cookie。
+ * material_id 是内容哈希，只用于让浏览器缓存随文件版本失效。
+ */
+export async function fetchReadingPage(
   conversationId: string,
   path: string,
   locator: number,
   materialId: string,
-): string {
-  return `${API_BASE}/api/v1/cowork/sessions/${conversationId}/reading/pages/${locator}.png`
-    + `?path=${encodeURIComponent(path)}&v=${encodeURIComponent(materialId)}`;
+): Promise<Blob> {
+  const response = await apiFetch(
+    `/api/v1/cowork/sessions/${conversationId}/reading/pages/${locator}.png`
+      + `?path=${encodeURIComponent(path)}&v=${encodeURIComponent(materialId)}`,
+  );
+  if (!response.ok) throw new ApiError(response.status, await response.text());
+  const contentType = response.headers.get("content-type")?.split(";", 1).at(0)?.trim();
+  if (contentType !== "image/png") {
+    throw new Error(`阅读器页面返回了意外格式：${contentType ?? "未知"}`);
+  }
+  return response.blob();
 }
 
 
@@ -1343,6 +1488,20 @@ export interface KnowledgeBaseDocument {
   title: string;
   parser: string;
   char_count: number;
+  content_hash: string;
+  snapshot_path: string | null;
+  snapshot_available: boolean;
+}
+
+export interface KnowledgeBaseVersion {
+  version_id: string;
+  label: string;
+  embedding: string;
+  engine: "hybrid" | "dense" | "bm25";
+  retrieval: string;
+  node_count: number;
+  stale: boolean;
+  is_active: boolean;
 }
 
 export interface KnowledgeBase {
@@ -1354,6 +1513,10 @@ export interface KnowledgeBase {
   is_indexed: boolean;
   /** 用哪个 embedding 建的。换模型后会和当前配置对不上，检索随即拒绝服务。 */
   embedding: string | null;
+  active_version: string | null;
+  versions: KnowledgeBaseVersion[];
+  /** 旧的单索引布局只可重建迁移，不会被静默认领成一个缺配置的版本。 */
+  needs_migration: boolean;
   documents: KnowledgeBaseDocument[];
 }
 
@@ -1405,6 +1568,41 @@ export function rebuildKnowledgeBase(slug: string): Promise<KnowledgeBaseIndexin
   return request<KnowledgeBaseIndexingJob>(
     `/api/v1/cowork/knowledge-bases/${encodeURIComponent(slug)}/rebuild`,
     { method: "POST" },
+  );
+}
+
+export function createKnowledgeBaseVersion(
+  slug: string,
+  body: {
+    version_id: string | null;
+    label: string;
+    engine: "hybrid" | "dense" | "bm25";
+    activate: boolean;
+  },
+): Promise<KnowledgeBaseIndexingJob> {
+  return request<KnowledgeBaseIndexingJob>(
+    `/api/v1/cowork/knowledge-bases/${encodeURIComponent(slug)}/versions`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function activateKnowledgeBaseVersion(
+  slug: string,
+  versionId: string,
+): Promise<KnowledgeBase> {
+  return request<KnowledgeBase>(
+    `/api/v1/cowork/knowledge-bases/${encodeURIComponent(slug)}/versions/${encodeURIComponent(versionId)}/activate`,
+    { method: "POST" },
+  );
+}
+
+export function deleteKnowledgeBaseVersion(
+  slug: string,
+  versionId: string,
+): Promise<KnowledgeBase> {
+  return request<KnowledgeBase>(
+    `/api/v1/cowork/knowledge-bases/${encodeURIComponent(slug)}/versions/${encodeURIComponent(versionId)}`,
+    { method: "DELETE" },
   );
 }
 

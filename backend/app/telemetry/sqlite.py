@@ -267,9 +267,7 @@ class SqliteTelemetryStore:
                 (day,),
             ).fetchone()
             headroom = (
-                budget["limit_micro_usd"]
-                - budget["reserved_micro_usd"]
-                - budget["spent_micro_usd"]
+                budget["limit_micro_usd"] - budget["reserved_micro_usd"] - budget["spent_micro_usd"]
             )
             if estimated > headroom:
                 raise BudgetExceededError("今日模型费用额度已用尽")
@@ -428,8 +426,7 @@ class SqliteTelemetryStore:
             ).fetchall()
         )
         return [
-            {**dict(row), "cost_usd": Decimal(row["cost_micro_usd"] or 0) / MICRO}
-            for row in rows
+            {**dict(row), "cost_usd": Decimal(row["cost_micro_usd"] or 0) / MICRO} for row in rows
         ]
 
 

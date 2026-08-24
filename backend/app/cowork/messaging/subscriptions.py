@@ -52,9 +52,7 @@ async def list_channel_subscriptions(
     channel: tuple[MessagingPlatform, str] | None = None,
 ) -> list[ChannelSubscriptionRecord]:
     store = cowork_store()
-    return await store.list_channel_subscriptions(
-        conversation_id=conversation_id, channel=channel
-    )
+    return await store.list_channel_subscriptions(conversation_id=conversation_id, channel=channel)
 
 
 async def unsubscribe_channel(

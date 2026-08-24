@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import UUID
 
 from app.core.config import Settings
@@ -17,11 +18,13 @@ from app.core.db import DbSession as AsyncSession
 from app.core.queue import RunQueue
 from app.core.run_bus import RunBus
 from app.cowork.extensions import register_skill_tools
-from app.cowork.permissions import ensure_default_session_root
+from app.cowork.permissions import ensure_default_session_root, list_session_roots
+from app.cowork.personas import load_persona_catalog
 from app.cowork.runtime import initialize_cowork_state
 from app.cowork.tools import build_default_cowork_registry
 from app.cowork_store.routing import cowork_store
-from app.runstore.runs import append_message, create_run
+from app.runstore.conversations import get_conversation
+from app.runstore.runs import append_message, create_run, finish_run_with_events
 
 
 async def active_run_id(session: AsyncSession, *, conversation_id: UUID) -> UUID | None:
@@ -61,6 +64,7 @@ async def start_cowork_run(
         budget_wall_ms=settings.run_budget_wall_ms,
         workflow_type="cowork",
         run_trigger="manual",
+        initializing=True,
     )
     await append_message(
         session,
@@ -72,8 +76,49 @@ async def start_cowork_run(
         trace_id="messaging",
     )
     registry = build_default_cowork_registry()
-    register_skill_tools(registry, settings)
-    await initialize_cowork_state(session, run_id=run.id, registry=registry, bus=bus)
-    await session.commit()
-    await queue.enqueue_cowork_run(run.id)
+    roots = await list_session_roots(session, conversation_id=conversation_id)
+    register_skill_tools(
+        registry,
+        settings,
+        project_roots=tuple(Path(item.canonical_path) for item in roots),
+    )
+    conversation = await get_conversation(session, conversation_id=conversation_id)
+    if conversation is None:  # pragma: no cover - run 已创建
+        raise LookupError("Cowork 会话不存在")
+    persona = load_persona_catalog(
+        settings, project_roots=tuple(Path(item.canonical_path) for item in roots)
+    ).get(conversation.persona_name)
+    try:
+        await initialize_cowork_state(
+            session,
+            run_id=run.id,
+            registry=registry,
+            bus=bus,
+            settings=settings,
+            persona=persona,
+        )
+    except Exception as error:
+        await finish_run_with_events(
+            session,
+            run_id=run.id,
+            status="failed",
+            error=f"messaging run initialization failed: {error}",
+            events=[
+                (
+                    "error",
+                    {
+                        "code": "run_initialization_failed",
+                        "retryable": True,
+                        "user_message": f"任务初始化失败：{error}",
+                    },
+                )
+            ],
+        )
+        await bus.publish(run.id)
+        raise
+    try:
+        await queue.enqueue_cowork_run(run.id)
+    except Exception:
+        # SQLite queued 状态由 dispatcher 补偿；内存通知失败不能把持久化任务判死。
+        await bus.publish(run.id)
     return run.id

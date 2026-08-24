@@ -110,7 +110,6 @@ async def test_fully_priced_totals_are_ok(store: SqliteTelemetryStore) -> None:
     assert totals.unpriced_count == 0
 
 
-
 async def test_cache_hits_count_for_hit_rate_but_not_for_tokens(
     store: SqliteTelemetryStore,
 ) -> None:
@@ -186,7 +185,6 @@ async def test_task_type_breakdown_shows_which_tier_answered(
     assert ("grounded_answer", "main") in pairs
 
 
-
 async def test_overview_endpoint_requires_admin() -> None:
     """成本页暴露的是运营信息——档位分布、模型与用量画像，必须要求 owner 登录。"""
 
@@ -201,9 +199,7 @@ async def test_overview_endpoint_requires_admin() -> None:
 async def test_window_excludes_older_calls(store: SqliteTelemetryStore) -> None:
     await store.record(_record())
     await store._write(
-        lambda c: c.execute(
-            "UPDATE llm_calls SET created_at = datetime('now', '-60 days')"
-        )
+        lambda c: c.execute("UPDATE llm_calls SET created_at = datetime('now', '-60 days')")
     )
 
     overview = await get_cost_overview(store, settings=_Settings(), days=30)  # type: ignore[arg-type]

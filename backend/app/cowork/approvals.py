@@ -7,22 +7,20 @@
 - **同一条命令被问二十遍。** 用户第三次点"允许"之后，第四次弹窗提供的已经不是安全，
   而是疲劳——疲劳会让人开始不看内容就点允许，那才是真正的风险。
 
-所以这里给出三种匹配粒度，全部由**用户**在审批那一刻选择，模型无权创建规则：
+所以新规则只有两种匹配粒度，全部由**用户**在审批那一刻选择，模型无权创建规则：
 
-- ``tool``：这只工具的任何调用（`ALWAYS_TOOL`）。
-- ``target``：精确目标一致才算数，比如同一个连接器的同一个 API path。
-- ``command_prefix``：`run_shell` 专用，argv 前缀命中且命令里没有 shell 操作符
-  （`|`、`&&`、`;`、重定向……）。少了后半个条件，`npm test` 的授权就能被
-  `npm test && rm -rf ~` 白嫖走。
+- ``action_target``：动作和目标的规范化 JSON 必须同时精确一致。
+- ``argv_pattern``：`run_shell` 的完整 argv（及可选 cwd）必须精确一致，且命令不能带
+  shell 操作符。它叫 pattern 是为了协议可演进；v1 刻意没有通配符和前缀语义。
 
 **规则不放大能力。** capability 闸门在注册表入口，规则只作用于"要不要再问一次人"。
-没有 `shell.execute` 的会话，攒再多规则也跑不了命令。
+没有 `host.execute` 的会话，攒再多规则也跑不了命令。历史 ``tool`` / ``target`` /
+``command_prefix`` 记录只允许查看和撤销，匹配器对它们 fail closed。
 """
 
 from __future__ import annotations
 
 import json
-import shlex
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
@@ -41,10 +39,6 @@ _COLUMNS = """
     id, conversation_id, scope, schedule_id, tool, match_kind, target,
     created_by, revoked_at, created_at
 """
-
-# 一条 argv 前缀最多记这么多个词。再长就不是"这一类命令"而是"这一条命令"了，
-# 而那种情况本来就该逐次审批。
-MAX_COMMAND_PREFIX_WORDS = 4
 
 
 class ApprovalRuleError(ValueError):
@@ -84,39 +78,47 @@ def _as_datetime(value: Any) -> Any:
     return datetime.fromisoformat(str(value))
 
 
-def command_prefix(argv: Sequence[str], *, words: int = 2) -> str:
-    """把一条命令收敛成可复用的 argv 前缀。
-
-    用 `shlex.join` 而不是空格拼接：`git commit -m "两个词"` 直接拼出来的字符串再被
-    `shlex.split` 解析回去就不是同一条命令了，规则会静默错配。
-    """
+def argv_pattern(argv: Sequence[str], *, cwd: str) -> str:
+    """生成 v1 完整 argv 模式；没有通配符、前缀或 shell 字符串再解析。"""
 
     if not argv:
         raise ApprovalRuleError("命令为空，无法生成常驻规则")
-    limit = max(1, min(words, MAX_COMMAND_PREFIX_WORDS))
-    return shlex.join(list(argv[:limit]))
+    if len(argv) > 256 or any(not item or len(item) > 4096 for item in argv):
+        raise ApprovalRuleError("命令参数过多、为空或单个参数过长")
+    if not cwd or not cwd.startswith("/") or any(token in cwd for token in ("\x00", "\n", "\r")):
+        raise ApprovalRuleError("常驻命令规则必须绑定规范化绝对 cwd")
+    return json.dumps(
+        {"version": 1, "argv": list(argv), "cwd": cwd},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
-def command_matches_prefix(argv: Sequence[str], prefix: str, *, has_operators: bool) -> bool:
-    """argv 前缀匹配。
-
-    `has_operators` 为真时一律不匹配：一条允许过的命令加上 `&&` 就变成了两条，而后一条
-    从没被任何人看过。这与部署级 allowlist 用的是同一条不变量。
-    """
-
+def argv_matches_pattern(
+    argv: Sequence[str], pattern: str, *, has_operators: bool, cwd: str | None = None
+) -> bool:
     if has_operators:
         return False
     try:
-        expected = shlex.split(prefix)
-    except ValueError:
+        expected = json.loads(pattern)
+    except (TypeError, ValueError):
         return False
-    if not expected or len(argv) < len(expected):
+    if not isinstance(expected, dict) or expected.get("version") != 1:
         return False
-    return list(argv[: len(expected)]) == expected
+    expected_argv = expected.get("argv")
+    expected_cwd = expected.get("cwd")
+    return (
+        isinstance(expected_argv, list)
+        and all(isinstance(item, str) for item in expected_argv)
+        and list(argv) == expected_argv
+        and isinstance(expected_cwd, str)
+        and expected_cwd == cwd
+    )
 
 
-def call_target(tool: str, arguments: Mapping[str, Any], *, fields: Sequence[str]) -> str:
-    """一次调用的规范化目标串。
+def action_target(tool: str, arguments: Mapping[str, Any], *, fields: Sequence[str]) -> str:
+    """一次调用的规范化 action + target 串。
 
     只取工具自己声明的那几个"决定后果落在哪里"的参数——连接器的 account + method +
     path、上传的目标文件。正文（`body`、文件内容）**不**进目标：把它算进去等于每次调用
@@ -124,9 +126,15 @@ def call_target(tool: str, arguments: Mapping[str, Any], *, fields: Sequence[str
     只适合那些"目标定了、后果就定了"的工具。
     """
 
-    payload = {field: arguments.get(field) for field in sorted(fields)}
+    action_field = (
+        "action" if "action" in arguments else "method" if "method" in arguments else None
+    )
+    action = arguments.get(action_field) if action_field is not None else tool
+    payload = {
+        field: arguments.get(field) for field in sorted(fields) if field not in {"action", "method"}
+    }
     return json.dumps(
-        {"tool": tool, "target": payload},
+        {"version": 1, "tool": tool, "action": action, "target": payload},
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -144,9 +152,9 @@ async def create_approval_rule(
     schedule_id: UUID | None = None,
     created_by: str = "user",
 ) -> ApprovalRuleRecord:
-    if match_kind == "tool":
-        target = None
-    elif not (target or "").strip():
+    if match_kind not in {"action_target", "argv_pattern"}:
+        raise ApprovalRuleError(f"历史规则类型 {match_kind} 已停用，不能新建")
+    if not (target or "").strip():
         raise ApprovalRuleError(f"{match_kind} 规则必须带目标")
     if (scope == "schedule") != (schedule_id is not None):
         raise ApprovalRuleError("scope=schedule 必须且只能带 schedule_id")
@@ -176,9 +184,7 @@ async def revoke_approval_rule(
     session: AsyncSession, *, conversation_id: UUID, rule_id: UUID
 ) -> bool:
     store = cowork_store()
-    return await store.revoke_approval_rule(
-        conversation_id=conversation_id, rule_id=rule_id
-    )
+    return await store.revoke_approval_rule(conversation_id=conversation_id, rule_id=rule_id)
 
 
 async def find_matching_rule(
@@ -190,6 +196,7 @@ async def find_matching_rule(
     target: str | None = None,
     argv: Sequence[str] | None = None,
     has_operators: bool = False,
+    cwd: str | None = None,
 ) -> ApprovalRuleRecord | None:
     """这次调用有没有被某条常驻规则覆盖。
 
@@ -202,15 +209,18 @@ async def find_matching_rule(
             continue
         if rule.scope == "schedule" and rule.schedule_id != schedule_id:
             continue
-        if rule.match_kind == "tool":
-            return rule
-        if rule.match_kind == "target" and target is not None and rule.target == target:
+        if rule.match_kind == "action_target" and target is not None and rule.target == target:
             return rule
         if (
-            rule.match_kind == "command_prefix"
+            rule.match_kind == "argv_pattern"
             and argv is not None
             and rule.target is not None
-            and command_matches_prefix(argv, rule.target, has_operators=has_operators)
+            and argv_matches_pattern(
+                argv,
+                rule.target,
+                has_operators=has_operators,
+                cwd=cwd,
+            )
         ):
             return rule
     return None

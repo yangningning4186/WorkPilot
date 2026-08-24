@@ -12,6 +12,7 @@ from uuid import UUID
 from app.agent_core.contracts import InvocationLease, RunEvent, RunRecord, WorkflowType
 from app.cowork_contracts import (
     AccessMode,
+    AnnotationColor,
     ApprovalMatchKind,
     ApprovalMode,
     ApprovalRuleRecord,
@@ -30,6 +31,7 @@ from app.cowork_contracts import (
     MemoryExtractionJob,
     MemoryScope,
     PathAuthorization,
+    ReadingAnnotationRecord,
     ScheduleKind,
     ScheduleRecord,
     ScheduleView,
@@ -59,6 +61,14 @@ class CoworkStore(Protocol):
 
     async def conversation_exists(self, conversation_id: UUID) -> bool: ...
 
+    async def compare_and_set_conversation_title(
+        self,
+        *,
+        conversation_id: UUID,
+        expected_title: str | None,
+        title: str,
+    ) -> bool: ...
+
     async def allocate_message(
         self,
         *,
@@ -72,7 +82,13 @@ class CoworkStore(Protocol):
 
     async def list_streaming_message_ids(self, *, run_id: UUID) -> list[UUID]: ...
 
-    async def update_message_status(self, *, record_id: UUID, status: str) -> None: ...
+    async def update_message_status(
+        self,
+        *,
+        record_id: UUID,
+        status: str,
+        content_preview: str | None = None,
+    ) -> None: ...
 
     async def get_message_conversation_id(self, *, record_id: UUID) -> UUID | None: ...
 
@@ -84,9 +100,7 @@ class CoworkStore(Protocol):
         limit: int = 100,
     ) -> list[dict[str, Any]]: ...
 
-    async def set_conversation_archived(
-        self, *, conversation_id: UUID, archived: bool
-    ) -> bool: ...
+    async def set_conversation_archived(self, *, conversation_id: UUID, archived: bool) -> bool: ...
 
     async def update_conversation_runtime(
         self,
@@ -96,6 +110,7 @@ class CoworkStore(Protocol):
         model_override: str | None,
         unattended: bool,
         approval_mode: ApprovalMode,
+        persona_name: str,
     ) -> bool: ...
 
     async def delete_conversation(self, *, conversation_id: UUID) -> bool: ...
@@ -114,9 +129,21 @@ class CoworkStore(Protocol):
         schedule_id: UUID | None = None,
         unattended: bool = False,
         run_trigger: Literal["manual", "schedule", "catchup"] = "manual",
+        initializing: bool = False,
     ) -> RunRecord: ...
 
+    async def initialize_run(
+        self,
+        *,
+        run_id: UUID,
+        state: dict[str, Any],
+        checkpoint_id: str,
+        events: Sequence[tuple[str, dict[str, Any]]],
+    ) -> tuple[RunRecord, StoredCheckpoint, list[RunEvent]]: ...
+
     async def get_run(self, run_id: UUID) -> RunRecord | None: ...
+
+    async def get_runs(self, run_ids: Sequence[UUID]) -> list[RunRecord]: ...
 
     async def get_latest_run(self, *, conversation_id: UUID) -> RunRecord | None: ...
 
@@ -134,7 +161,13 @@ class CoworkStore(Protocol):
         self, *, run_id: UUID, events: Sequence[tuple[str, dict[str, Any]]]
     ) -> list[RunEvent]: ...
 
-    async def list_events(self, *, run_id: UUID, after_seq: int = 0) -> list[RunEvent]: ...
+    async def list_events(
+        self,
+        *,
+        run_id: UUID,
+        after_seq: int = 0,
+        limit: int | None = None,
+    ) -> list[RunEvent]: ...
 
     async def save_checkpoint(
         self,
@@ -144,6 +177,21 @@ class CoworkStore(Protocol):
         parent_id: str | None,
         checkpoint_id: str | None = None,
     ) -> StoredCheckpoint: ...
+
+    async def commit_checkpoint(
+        self,
+        *,
+        run_id: UUID,
+        state: dict[str, Any],
+        parent_id: str | None,
+        checkpoint_id: str,
+        used_tokens: int,
+        used_calls: int,
+        events: Sequence[tuple[str, dict[str, Any]]],
+        worker_id: str | None = None,
+        transition_to: Literal["queued", "waiting_human", "sleeping"] | None = None,
+        wake_at: datetime | None = None,
+    ) -> tuple[StoredCheckpoint, list[RunEvent]]: ...
 
     async def load_latest_checkpoint(self, *, run_id: UUID) -> StoredCheckpoint | None: ...
 
@@ -195,6 +243,7 @@ class CoworkStore(Protocol):
         conversation_id: UUID,
         capability: Capability,
         session_root_id: UUID | None = None,
+        resource_scope: str | None = None,
         grant_source: Literal["user", "policy"] = "user",
         expires_in_s: int | None = None,
     ) -> CapabilityGrantRecord: ...
@@ -227,9 +276,7 @@ class CoworkStore(Protocol):
 
     async def get_conversation_inbox(self, *, conversation_id: UUID) -> str | None: ...
 
-    async def set_conversation_kb(
-        self, *, conversation_id: UUID, kb_slug: str | None
-    ) -> bool: ...
+    async def set_conversation_kb(self, *, conversation_id: UUID, kb_slug: str | None) -> bool: ...
 
     async def get_conversation_kb(self, *, conversation_id: UUID) -> str | None: ...
 
@@ -266,9 +313,7 @@ class CoworkStore(Protocol):
 
     async def get_thread_session(self, *, target: str) -> ThreadSessionRecord | None: ...
 
-    async def list_thread_sessions(
-        self, *, conversation_id: UUID
-    ) -> list[ThreadSessionRecord]: ...
+    async def list_thread_sessions(self, *, conversation_id: UUID) -> list[ThreadSessionRecord]: ...
 
     async def record_unrouted(
         self,
@@ -282,6 +327,29 @@ class CoworkStore(Protocol):
     ) -> UnroutedRecord: ...
 
     async def list_unrouted(self, *, limit: int) -> list[UnroutedRecord]: ...
+
+    async def create_reading_annotation(
+        self,
+        *,
+        material_id: str,
+        path: str,
+        locator: int,
+        quote: str,
+        note: str,
+        color: AnnotationColor,
+        locations: Sequence[dict[str, Any]],
+        conversation_id: UUID | None,
+        run_id: UUID | None,
+        max_per_material: int,
+    ) -> ReadingAnnotationRecord: ...
+
+    async def list_reading_annotations(
+        self, *, material_id: str
+    ) -> list[ReadingAnnotationRecord]: ...
+
+    async def count_stale_reading_annotations(self, *, path: str, material_id: str) -> int: ...
+
+    async def delete_reading_annotation(self, *, annotation_id: UUID) -> bool: ...
 
     async def set_workspace_trust(self, *, canonical_path: str, trusted: bool) -> bool: ...
 
@@ -309,6 +377,10 @@ class CoworkStore(Protocol):
 
     async def authorize_capability(
         self, *, conversation_id: UUID, capability: Capability
+    ) -> CapabilityGrantRecord: ...
+
+    async def authorize_scoped_capability(
+        self, *, conversation_id: UUID, capability: Capability, target: str
     ) -> CapabilityGrantRecord: ...
 
     async def authorize_path(
@@ -539,6 +611,16 @@ class CoworkStore(Protocol):
         self, *, run_id: UUID, worker_id: str, wake_at: datetime
     ) -> bool: ...
 
+    async def schedule_run_retry(
+        self,
+        *,
+        run_id: UUID,
+        worker_id: str,
+        max_recovery: int,
+        base_delay_s: float,
+        max_delay_s: float,
+    ) -> tuple[int, datetime] | None: ...
+
     async def claim_due_sleeping_runs(self, *, now: datetime, limit: int) -> list[UUID]: ...
 
     async def requeue_waiting_run(self, *, run_id: UUID) -> bool: ...
@@ -555,6 +637,18 @@ class CoworkStore(Protocol):
         used_tokens: int = 0,
         used_calls: int = 0,
     ) -> bool: ...
+
+    async def finish_run_with_events(
+        self,
+        *,
+        run_id: UUID,
+        status: str,
+        events: Sequence[tuple[str, dict[str, Any]]],
+        worker_id: str | None = None,
+        error: str | None = None,
+        used_tokens: int = 0,
+        used_calls: int = 0,
+    ) -> tuple[bool, list[RunEvent]]: ...
 
     async def request_cancel(self, *, run_id: UUID) -> RunRecord: ...
 

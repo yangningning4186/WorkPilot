@@ -5,7 +5,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-ConnectorKind = Literal["github", "feishu", "wecom", "wechat_official", "tencent_docs"]
+from app.cowork.connector_descriptors import ConnectorKind as ConnectorKind
+from app.cowork.connector_descriptors import connector_kinds
+
 ConnectorAuthType = Literal["oauth2", "token", "app_credentials"]
 ConnectorStatus = Literal["configured", "authorizing", "connected", "expired", "error"]
 
@@ -22,6 +24,13 @@ class ConnectorAccountCreate(BaseModel):
     scopes: list[str] = Field(default_factory=list, max_length=100)
     config: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
+
+    @field_validator("kind")
+    @classmethod
+    def validate_kind(cls, value: str) -> str:
+        if value not in connector_kinds():
+            raise ValueError(f"不支持的连接器类型: {value}")
+        return value
 
     @field_validator("name")
     @classmethod
@@ -82,6 +91,7 @@ class ConnectorAccountResponse(BaseModel):
     status: ConnectorStatus
     config: dict[str, Any]
     scopes: list[str]
+    capabilities: list[str] = Field(default_factory=list)
     external_account_id: str | None
     external_account_name: str | None
     expires_at: datetime | None
@@ -95,6 +105,22 @@ class ConnectorAccountResponse(BaseModel):
 
 class ConnectorAccountListResponse(BaseModel):
     items: list[ConnectorAccountResponse]
+
+
+class ConnectorDescriptorResponse(BaseModel):
+    kind: ConnectorKind
+    label: str
+    blurb: str
+    logo: str
+    brand_color: str
+    category: Literal["china_office", "developer"]
+    auth_types: list[ConnectorAuthType]
+    default_scopes: list[str]
+    capabilities: list[str]
+
+
+class ConnectorDescriptorListResponse(BaseModel):
+    items: list[ConnectorDescriptorResponse]
 
 
 class OAuthStartRequest(BaseModel):

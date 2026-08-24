@@ -8,6 +8,7 @@ from app.cowork.browser_tools import (
     _BrowserSession,
     register_browser_tools,
 )
+from app.cowork.permissions import CapabilityDeniedError
 from app.cowork.tools import CoworkToolError, build_default_cowork_registry
 
 
@@ -19,26 +20,94 @@ class _ClosingBrowserContext:
         self.closed = True
 
 
-def test_browser_navigation_uses_session_grant_and_only_upload_needs_approval() -> None:
+class _FakeRequest:
+    def __init__(self, url: str) -> None:
+        self.url = url
+
+
+class _FakeRoute:
+    def __init__(self, url: str) -> None:
+        self.request = _FakeRequest(url)
+        self.aborted = False
+        self.continued = False
+
+    async def abort(self, _: str) -> None:
+        self.aborted = True
+
+    async def continue_(self) -> None:
+        self.continued = True
+
+
+class _FakePage:
+    def __init__(self) -> None:
+        self.guard: Any = None
+        self.routes: list[_FakeRoute] = []
+
+    async def goto(self, _: str, **__: Any) -> None:
+        for url in (
+            "https://allowed.example/",
+            "https://exfil.example/pixel?secret=private",
+        ):
+            route = _FakeRoute(url)
+            self.routes.append(route)
+            await self.guard(route)
+
+
+class _FakeBrowserContext(_ClosingBrowserContext):
+    def __init__(self) -> None:
+        super().__init__()
+        self.page = _FakePage()
+
+    async def new_page(self) -> _FakePage:
+        return self.page
+
+    async def route(self, _: str, guard: Any) -> None:
+        self.page.guard = guard
+
+    async def route_web_socket(self, *_: Any) -> None:
+        return None
+
+
+class _FakeBrowser:
+    def __init__(self) -> None:
+        self.context = _FakeBrowserContext()
+
+    async def new_context(self, **_: Any) -> _FakeBrowserContext:
+        return self.context
+
+    def is_connected(self) -> bool:
+        return True
+
+
+class _ScopedNetworkStore:
+    def __init__(self) -> None:
+        self.targets: list[str] = []
+
+    async def authorize_scoped_capability(self, *, target: str, **_: Any) -> None:
+        self.targets.append(target)
+        if "exfil.example" in target:
+            raise CapabilityDeniedError("未授权 origin")
+
+
+def test_browser_navigation_splits_action_levels_and_consequential_approval() -> None:
     registry = build_default_cowork_registry()
     register_browser_tools(registry)
 
-    for name in (
-        "browser_open",
-        "browser_click",
-        "browser_back",
-        "browser_type",
-        "browser_select",
-    ):
+    for name in ("browser_open", "browser_back", "browser_type", "browser_select"):
         spec = registry.get(name)
-        assert spec.capability == "browser.control"
         assert spec.approval_required is False
         assert spec.exclusive is True
         assert spec.effect != "none"
 
+    assert registry.get("browser_open").capability == "browser.read"
+    assert registry.get("browser_back").capability == "browser.read"
+    assert registry.get("browser_type").capability == "browser.write"
+    assert registry.get("browser_select").capability == "browser.write"
+    assert registry.get("browser_click").capability == "browser.destructive"
+    assert registry.get("browser_click").approval_required is True
     assert registry.get("browser_upload").approval_required is True
     assert registry.get("browser_upload").exclusive is True
-    assert registry.get("browser_download").approval_required is False
+    assert registry.get("browser_download").extra_capabilities == ("browser.destructive",)
     assert registry.get("browser_download").exclusive is True
     assert registry.get("browser_screenshot").approval_required is False
     assert registry.get("browser_snapshot").effect == "none"
@@ -59,6 +128,35 @@ def test_readonly_subagent_cannot_receive_browser_actions() -> None:
     assert "browser_click" not in names
     assert "browser_type" not in names
     assert "browser_upload" not in names
+
+
+async def test_browser_scope_guard_checks_subresources_and_blocks_exfiltration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _ScopedNetworkStore()
+    browser = _FakeBrowser()
+    manager = PlaywrightBrowserManager()
+    manager._browser = cast(Any, browser)
+
+    async def public_target(_: str) -> None:
+        return None
+
+    monkeypatch.setattr("app.cowork.browser_tools.cowork_store", lambda: store)
+    monkeypatch.setattr("app.cowork.browser_tools.assert_public_target", public_target)
+
+    _, session = await manager.open(
+        "https://allowed.example/",
+        conversation_id=uuid7(),
+        timeout_s=1,
+    )
+
+    assert store.targets == [
+        "https://allowed.example/",
+        "https://exfil.example/pixel?secret=private",
+    ]
+    assert browser.context.page.routes[0].continued is True
+    assert browser.context.page.routes[1].aborted is True
+    assert session.blocked_url == "https://exfil.example/pixel?secret=private"
 
 
 async def test_browser_session_is_bound_to_conversation_and_expires() -> None:

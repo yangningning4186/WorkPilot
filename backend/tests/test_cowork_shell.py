@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from app.cowork.sandbox import CoworkSandboxError, SandboxLimits, build_sandbox_argv
 from app.cowork.shell import (
     CoworkShellCancelledError,
     CoworkShellError,
@@ -32,14 +33,51 @@ def test_shell_allowlist_uses_exact_argv_prefix_and_operators_never_match() -> N
         compile_allowlist(["git status && echo unsafe"])
 
 
+def test_sandbox_backend_has_hard_isolation_flags_and_never_falls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("app.cowork.sandbox.shutil.which", lambda name: f"/usr/bin/{name}")
+    limits = SandboxLimits(
+        runtime="docker",
+        image="alpine:3.20",
+        memory_mb=256,
+        pids_limit=64,
+        cpus=0.5,
+    )
+    argv = build_sandbox_argv(
+        command="printf ok; touch output.txt",
+        cwd=tmp_path,
+        limits=limits,
+    )
+
+    assert argv[0] == "/usr/bin/docker"
+    assert "--network=none" in argv
+    assert "--read-only" in argv
+    assert "--cap-drop=ALL" in argv
+    assert "--security-opt=no-new-privileges" in argv
+    assert f"type=bind,source={tmp_path.resolve()},target=/workspace" in argv
+    assert argv[-3:] == ("/bin/sh", "-lc", "printf ok; touch output.txt")
+
+    with pytest.raises(CoworkSandboxError, match="不能降级"):
+        build_sandbox_argv(
+            command="true",
+            cwd=tmp_path,
+            limits=SandboxLimits(
+                runtime="disabled",
+                image="alpine:3.20",
+                memory_mb=256,
+                pids_limit=64,
+                cpus=0.5,
+            ),
+        )
+
+
 async def test_shell_execution_caps_output_and_does_not_inherit_secrets(tmp_path: Path) -> None:
     os.environ["WORKPILOT_TEST_SECRET"] = "must-not-reach-child"
     try:
         command = parse_shell_command(
             f"{shlex.quote(sys.executable)} -c "
-            + shlex.quote(
-                "import os; print(os.getenv('WORKPILOT_TEST_SECRET')); print('x'*5000)"
-            )
+            + shlex.quote("import os; print(os.getenv('WORKPILOT_TEST_SECRET')); print('x'*5000)")
         )
         result = await execute_shell_command(
             command,

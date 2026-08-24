@@ -86,18 +86,33 @@ def render_roots_block(roots: Sequence[WorkspaceRoot]) -> str:
     )
 
 
-def render_capabilities_block(
-    granted: Sequence[str], available: Sequence[str]
-) -> str:
+def render_workspace_files_block(paths: Sequence[str]) -> str:
+    """用户在系统选择器中点名的工作文件；一次 run 内保持不变。"""
+
+    normalized = [path.strip() for path in paths if path.strip()]
+    if not normalized:
+        return ""
+    lines = "\n".join(f"{index}. {path}" for index, path in enumerate(normalized, start=1))
+    return (
+        "<selected_workspace_files>\n"
+        "用户明确选定下面这些原文件作为本轮主要输入/编辑目标。优先处理它们；除非任务确实需要，"
+        "不要因为所在目录已授权就扫描无关的同级文件。\n"
+        f"{lines}\n"
+        "</selected_workspace_files>"
+    )
+
+
+def render_capabilities_block(granted: Sequence[str], available: Sequence[str]) -> str:
     """当前已授予与尚未授予的能力。每轮重算——用户可能刚批准了一项。
 
-    不注入的代价在评测里量到过：`network.read` 已经授权，模型仍然先调
+    不注入的代价在评测里量到过：网络能力已经授权，模型仍然先调
     `request_capability` 去要它，run 停在等人批准，任务就此失败。模型无从知道自己
     手上有什么，保守的猜法就是先要权限——它猜得没错，错的是我们没告诉它。
     """
 
     held = sorted(set(granted))
-    missing = sorted(set(available) - set(held))
+    held_capabilities = {item.split(" [", 1)[0] for item in held}
+    missing = sorted(set(available) - held_capabilities)
     if not held and not missing:
         return ""
     lines = [
@@ -107,9 +122,9 @@ def render_capabilities_block(
         + ("、".join(missing) or "无"),
         "已授予不等于免审批：有副作用的动作仍可能逐次征求用户确认，那是另一道边界。",
         # 能力是按工具划的, 不是按后果划的。模型会自己推断"删文件属于写"从而去要
-        # filesystem.write, 而 run_shell 实际只校验 shell.execute——评测里它就是这样
+        # filesystem.write, 而 run_shell 实际校验 host.execute——评测里它就是这样
         # 停在一次多余的授权请求上的。这条边界只有我们知道, 不说它就只能靠猜。
-        "能力按工具划分而不按后果划分：run_shell 只校验 shell.execute，"
+        "能力按执行边界划分：run_shell 需要 host.execute，run_sandbox 需要 sandbox.execute，"
         "命令自身造成的读写不再单独要 filesystem.* ；"
         "filesystem.* 管的是 read_text_file / write_text_file 这类文件工具。",
         "</capabilities>",

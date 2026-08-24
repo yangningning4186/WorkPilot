@@ -32,6 +32,7 @@ from app.agent_core.idempotency import (
     invocation_identity,
 )
 from app.cowork_contracts import (
+    AnnotationColor,
     ApprovalMatchKind,
     ApprovalMode,
     ApprovalRuleRecord,
@@ -52,6 +53,7 @@ from app.cowork_contracts import (
     MemoryNotFoundError,
     PathAuthorization,
     PinnedMemoryError,
+    ReadingAnnotationRecord,
     ScheduleRecord,
     ScheduleView,
     SessionRootNotFoundError,
@@ -64,8 +66,12 @@ from app.cowork_contracts import (
 from app.cowork_policy import (
     ALL_CAPABILITIES,
     GLOBAL_CAPABILITIES,
+    LEGACY_CAPABILITY_FALLBACKS,
     PATH_CAPABILITIES,
+    SCOPED_CAPABILITIES,
     canonicalize_root,
+    network_scope_allows,
+    normalize_network_scope,
     resolve_target_within_root,
 )
 from app.cowork_store.base import StoredCheckpoint
@@ -83,6 +89,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     unattended INTEGER NOT NULL DEFAULT 0 CHECK (unattended IN (0, 1)),
     approval_mode TEXT NOT NULL DEFAULT 'interactive'
         CHECK (approval_mode IN ('interactive', 'auto')),
+    persona_name TEXT NOT NULL DEFAULT 'general',
     -- 路由到哪个命名 Inbox；空表示 "default"。
     inbox_name TEXT,
     -- 这个会话挂载了哪个本地知识库（KB slug）；空表示没挂。
@@ -103,6 +110,9 @@ CREATE TABLE IF NOT EXISTS conversation_message_index (
     run_id TEXT,
     jsonl_offset INTEGER,
     jsonl_length INTEGER,
+    -- 会话列表只需要一小段摘要。正文仍以 JSONL 为准；这里避免每次打开列表都重扫
+    -- 最多 100 份完整对话文件。
+    content_preview TEXT,
     created_at TEXT NOT NULL,
     UNIQUE (conversation_id, seq)
 );
@@ -141,6 +151,15 @@ CREATE INDEX IF NOT EXISTS idx_local_runs_dispatch
 ON agent_runs(status, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_local_runs_lease
 ON agent_runs(status, lease_until);
+CREATE INDEX IF NOT EXISTS idx_local_runs_conversation_latest
+ON agent_runs(conversation_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_local_runs_conversation_active
+ON agent_runs(conversation_id, created_at DESC, id DESC)
+WHERE status IN ('initializing','queued','executing','waiting_human','sleeping');
+CREATE INDEX IF NOT EXISTS idx_local_conversations_recent
+ON conversations(archived_at, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_local_messages_run_status
+ON conversation_message_index(run_id, status, seq);
 
 CREATE TABLE IF NOT EXISTS run_events (
     run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
@@ -230,15 +249,13 @@ CREATE TABLE IF NOT EXISTS capability_grants (
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     session_root_id TEXT REFERENCES session_roots(id) ON DELETE CASCADE,
     capability TEXT NOT NULL,
+    resource_scope TEXT,
     grant_source TEXT NOT NULL DEFAULT 'user',
     expires_at TEXT,
     revoked_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS uq_local_active_grant
-ON capability_grants(conversation_id, IFNULL(session_root_id, ''), capability)
-WHERE revoked_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS artifacts (
     id TEXT PRIMARY KEY,
@@ -396,6 +413,28 @@ CREATE TABLE IF NOT EXISTS cowork_steering_messages (
     consumed_at TEXT
 );
 
+-- 持久化批注。锚在 material_id（文件内容哈希）上而不是路径：文件改名后批注还在，
+-- 文件内容变了则不再出现——locator 与字符区间都可能已经指向别的文字。旧版本的行
+-- 不删，按 path 仍可数出来，界面据此说清楚"有 N 条属于旧版本"，而不是静默消失。
+CREATE TABLE IF NOT EXISTS cowork_reading_annotations (
+    id TEXT PRIMARY KEY,
+    material_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    locator INTEGER NOT NULL CHECK (locator >= 1),
+    quote TEXT NOT NULL,
+    note TEXT NOT NULL,
+    color TEXT NOT NULL CHECK (color IN ('yellow','green','blue','pink')),
+    locations TEXT NOT NULL,
+    conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+    run_id TEXT,
+    created_at TEXT NOT NULL,
+    deleted_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_local_reading_annotations_material
+ON cowork_reading_annotations(material_id, locator) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS ix_local_reading_annotations_path
+ON cowork_reading_annotations(path) WHERE deleted_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS cowork_memories (
     id TEXT PRIMARY KEY,
     scope TEXT NOT NULL CHECK (scope IN ('global','workspace','conversation')),
@@ -426,14 +465,6 @@ CREATE TABLE IF NOT EXISTS cowork_memories (
         OR (scope = 'conversation' AND conversation_id IS NOT NULL AND workspace_path IS NULL)
     )
 );
-CREATE INDEX IF NOT EXISTS ix_local_cowork_memories_active
-ON cowork_memories(scope, updated_at) WHERE forgotten_at IS NULL AND invalid_at IS NULL;
-CREATE INDEX IF NOT EXISTS ix_local_cowork_memories_history
-ON cowork_memories(invalid_at DESC) WHERE invalid_at IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS uq_local_cowork_memories_key
-ON cowork_memories(scope, IFNULL(conversation_id, ''), IFNULL(workspace_path, ''), key)
-WHERE key IS NOT NULL AND forgotten_at IS NULL AND invalid_at IS NULL;
-
 -- 记忆抽取作业。和记忆写在同一个库里，所以"提炼出一条记忆"与"把作业标记完成"
 -- 可以在同一个事务里，不会出现记了却没结算、或结算了没记的半截状态。
 -- 来源快照（消息内容、会话、时间）随作业一起存：claim 时不必回查会话，
@@ -459,7 +490,17 @@ CREATE TABLE IF NOT EXISTS memory_extraction_jobs (
 CREATE INDEX IF NOT EXISTS ix_local_memory_jobs_dispatch
 ON memory_extraction_jobs(available_at, id) WHERE status IN ('queued','running');
 
-PRAGMA user_version = 8;
+PRAGMA user_version = 11;
+"""
+
+_MEMORY_INDEX_SCHEMA = """
+CREATE INDEX IF NOT EXISTS ix_local_cowork_memories_active
+ON cowork_memories(scope, updated_at) WHERE forgotten_at IS NULL AND invalid_at IS NULL;
+CREATE INDEX IF NOT EXISTS ix_local_cowork_memories_history
+ON cowork_memories(invalid_at DESC) WHERE invalid_at IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_local_cowork_memories_key
+ON cowork_memories(scope, IFNULL(conversation_id, ''), IFNULL(workspace_path, ''), key)
+WHERE key IS NOT NULL AND forgotten_at IS NULL AND invalid_at IS NULL;
 """
 
 
@@ -494,6 +535,11 @@ class SqliteCoworkStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = self._connect()
         try:
+            database_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            if database_version > 12:
+                raise RuntimeError(
+                    f"cowork.db schema v{database_version} 高于当前应用支持的 v12，拒绝降级打开"
+                )
             connection.executescript(_SCHEMA)
             conversation_columns = {
                 str(row["name"])
@@ -503,13 +549,19 @@ class SqliteCoworkStore:
                 connection.execute("ALTER TABLE conversations ADD COLUMN archived_at TEXT")
             inbox_columns = {
                 str(row["name"])
-                for row in connection.execute(
-                    "PRAGMA table_info(cowork_inbox_items)"
-                ).fetchall()
+                for row in connection.execute("PRAGMA table_info(cowork_inbox_items)").fetchall()
             }
             if "delivery_ref" not in inbox_columns:
+                connection.execute("ALTER TABLE cowork_inbox_items ADD COLUMN delivery_ref TEXT")
+            message_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(conversation_message_index)"
+                ).fetchall()
+            }
+            if "content_preview" not in message_columns:
                 connection.execute(
-                    "ALTER TABLE cowork_inbox_items ADD COLUMN delivery_ref TEXT"
+                    "ALTER TABLE conversation_message_index ADD COLUMN content_preview TEXT"
                 )
             if "inbox_name" not in conversation_columns:
                 connection.execute("ALTER TABLE conversations ADD COLUMN inbox_name TEXT")
@@ -521,6 +573,11 @@ class SqliteCoworkStore:
                 )
             if "kb_slug" not in conversation_columns:
                 connection.execute("ALTER TABLE conversations ADD COLUMN kb_slug TEXT")
+            if "persona_name" not in conversation_columns:
+                connection.execute(
+                    "ALTER TABLE conversations ADD COLUMN persona_name TEXT "
+                    "NOT NULL DEFAULT 'general'"
+                )
             run_columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(agent_runs)").fetchall()
@@ -531,6 +588,23 @@ class SqliteCoworkStore:
                 )
             if "wake_at" not in run_columns:
                 connection.execute("ALTER TABLE agent_runs ADD COLUMN wake_at TEXT")
+            grant_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(capability_grants)").fetchall()
+            }
+            if "resource_scope" not in grant_columns:
+                connection.execute("ALTER TABLE capability_grants ADD COLUMN resource_scope TEXT")
+            # 旧索引会把同一 capability 的不同网络 origin 错当成一条授权。
+            connection.execute("DROP INDEX IF EXISTS uq_local_active_grant")
+            connection.execute(
+                """CREATE UNIQUE INDEX uq_local_active_grant
+                   ON capability_grants(
+                       conversation_id,
+                       IFNULL(session_root_id, ''),
+                       capability,
+                       IFNULL(resource_scope, '')
+                   ) WHERE revoked_at IS NULL"""
+            )
             memory_columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(cowork_memories)").fetchall()
@@ -551,13 +625,33 @@ class SqliteCoworkStore:
                 ("run_id", "TEXT"),
             ):
                 if column not in memory_columns:
-                    connection.execute(
-                        f"ALTER TABLE cowork_memories ADD COLUMN {column} {ddl}"
-                    )
+                    connection.execute(f"ALTER TABLE cowork_memories ADD COLUMN {column} {ddl}")
             connection.execute(
                 "UPDATE cowork_memories SET valid_from = created_at WHERE valid_from IS NULL"
             )
-            connection.execute("PRAGMA user_version = 8")
+            # 这些索引引用记忆合并后新增的 invalid_at。必须等旧库补完列再创建，
+            # 否则 executescript 会先报 no such column，迁移代码永远没有机会执行。
+            connection.executescript(_MEMORY_INDEX_SCHEMA)
+            # v12: run 创建先落 initializing，checkpoint 与初始事件同事务完成后才可派发。
+            # 旧版进程如果在初始化途中退出，新的 sidecar 不可能继续那条 HTTP 调用；启动时
+            # 明确标失败，避免会话永远被一条不可执行的活跃 run 卡住。
+            timestamp = _iso()
+            connection.execute(
+                """UPDATE agent_runs SET status = 'failed',
+                          error = COALESCE(error, 'run initialization interrupted'),
+                          finished_at = COALESCE(finished_at, ?), updated_at = ?
+                   WHERE status = 'initializing'""",
+                (timestamp, timestamp),
+            )
+            connection.execute("DROP INDEX IF EXISTS idx_local_runs_conversation_active")
+            connection.execute(
+                """CREATE INDEX idx_local_runs_conversation_active
+                   ON agent_runs(conversation_id, created_at DESC, id DESC)
+                   WHERE status IN (
+                       'initializing','queued','executing','waiting_human','sleeping'
+                   )"""
+            )
+            connection.execute("PRAGMA user_version = 12")
         finally:
             connection.close()
         try:
@@ -742,6 +836,34 @@ class SqliteCoworkStore:
             )
         )
 
+    async def compare_and_set_conversation_title(
+        self,
+        *,
+        conversation_id: UUID,
+        expected_title: str | None,
+        title: str,
+    ) -> bool:
+        normalized = " ".join(title.split())[:120]
+        if not normalized:
+            raise ValueError("会话标题不能为空")
+
+        def operation(connection: sqlite3.Connection) -> bool:
+            if expected_title is None:
+                cursor = connection.execute(
+                    """UPDATE conversations SET title = ?
+                       WHERE id = ? AND title IS NULL""",
+                    (normalized, str(conversation_id)),
+                )
+            else:
+                cursor = connection.execute(
+                    """UPDATE conversations SET title = ?
+                       WHERE id = ? AND title = ?""",
+                    (normalized, str(conversation_id), expected_title),
+                )
+            return cursor.rowcount > 0
+
+        return await self._write(operation)
+
     async def allocate_message(
         self,
         *,
@@ -763,8 +885,9 @@ class SqliteCoworkStore:
             seq = int(row["seq"])
             connection.execute(
                 """INSERT INTO conversation_message_index(
-                       record_id, conversation_id, seq, role, status, run_id, created_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       record_id, conversation_id, seq, role, status, run_id,
+                       content_preview, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     str(record_id),
                     str(conversation_id),
@@ -772,13 +895,14 @@ class SqliteCoworkStore:
                     role,
                     status,
                     None if run_id is None else str(run_id),
+                    title_source[:160],
                     timestamp,
                 ),
             )
             if role == "user":
                 connection.execute(
                     """UPDATE conversations SET
-                           title = CASE WHEN title IS NULL OR title = '新会话' THEN ? ELSE title END,
+                           title = CASE WHEN title IS NULL THEN ? ELSE title END,
                            updated_at = ? WHERE id = ?""",
                     (title_source.strip()[:80], timestamp, str(conversation_id)),
                 )
@@ -803,11 +927,23 @@ class SqliteCoworkStore:
             ]
         )
 
-    async def update_message_status(self, *, record_id: UUID, status: str) -> None:
+    async def update_message_status(
+        self,
+        *,
+        record_id: UUID,
+        status: str,
+        content_preview: str | None = None,
+    ) -> None:
         await self._write(
             lambda connection: connection.execute(
-                "UPDATE conversation_message_index SET status = ? WHERE record_id = ?",
-                (status, str(record_id)),
+                """UPDATE conversation_message_index
+                   SET status = ?, content_preview = COALESCE(?, content_preview)
+                   WHERE record_id = ?""",
+                (
+                    status,
+                    None if content_preview is None else content_preview[:160],
+                    str(record_id),
+                ),
             )
         )
 
@@ -848,7 +984,29 @@ class SqliteCoworkStore:
             where = "" if not clauses else "WHERE " + " AND ".join(clauses)
             parameters.append(limit)
             rows = connection.execute(
-                f"""SELECT * FROM conversations {where}
+                f"""SELECT conversations.*,
+                           (SELECT COUNT(*) FROM conversation_message_index AS messages
+                            WHERE messages.conversation_id = conversations.id
+                              AND messages.role IN ('user', 'assistant')) AS message_count,
+                           (SELECT messages.content_preview
+                            FROM conversation_message_index AS messages
+                            WHERE messages.conversation_id = conversations.id
+                              AND messages.role IN ('user', 'assistant')
+                              AND messages.content_preview IS NOT NULL
+                              AND messages.content_preview <> ''
+                            ORDER BY messages.seq DESC LIMIT 1) AS latest_message,
+                           (SELECT messages.created_at
+                            FROM conversation_message_index AS messages
+                            WHERE messages.conversation_id = conversations.id
+                              AND messages.role IN ('user', 'assistant')
+                            ORDER BY messages.seq DESC LIMIT 1) AS last_message_at,
+                           (SELECT runs.id FROM agent_runs AS runs
+                            WHERE runs.conversation_id = conversations.id
+                              AND runs.status IN (
+                                  'initializing','queued','executing','waiting_human','sleeping'
+                              )
+                            ORDER BY runs.created_at DESC, runs.id DESC LIMIT 1) AS active_run_id
+                    FROM conversations {where}
                     ORDER BY updated_at DESC, id DESC LIMIT ?""",
                 tuple(parameters),
             ).fetchall()
@@ -856,9 +1014,7 @@ class SqliteCoworkStore:
 
         return await self._read(operation)
 
-    async def set_conversation_archived(
-        self, *, conversation_id: UUID, archived: bool
-    ) -> bool:
+    async def set_conversation_archived(self, *, conversation_id: UUID, archived: bool) -> bool:
         def operation(connection: sqlite3.Connection) -> bool:
             active = connection.execute(
                 """SELECT 1 FROM agent_runs WHERE conversation_id = ?
@@ -887,17 +1043,20 @@ class SqliteCoworkStore:
         model_override: str | None,
         unattended: bool,
         approval_mode: ApprovalMode,
+        persona_name: str,
     ) -> bool:
         return await self._write(
             lambda connection: (
                 connection.execute(
                     """UPDATE conversations SET provider_profile_id = ?, model_override = ?,
-                          unattended = ?, approval_mode = ?, updated_at = ? WHERE id = ?""",
+                          unattended = ?, approval_mode = ?, persona_name = ?, updated_at = ?
+                       WHERE id = ?""",
                     (
                         None if provider_profile_id is None else str(provider_profile_id),
                         model_override,
                         int(unattended),
                         approval_mode,
+                        persona_name,
                         _iso(),
                         str(conversation_id),
                     ),
@@ -940,6 +1099,7 @@ class SqliteCoworkStore:
         schedule_id: UUID | None = None,
         unattended: bool = False,
         run_trigger: Literal["manual", "schedule", "catchup"] = "manual",
+        initializing: bool = False,
     ) -> RunRecord:
         if not goal.strip():
             raise ValueError("run 目标不能为空")
@@ -947,6 +1107,7 @@ class SqliteCoworkStore:
             raise ValueError("retrieval_top_k 必须位于 1 到 20")
         run_id = uuid7()
         timestamp = _iso()
+        initial_status = "initializing" if initializing else "queued"
 
         def operation(connection: sqlite3.Connection) -> RunRecord:
             connection.execute(
@@ -956,12 +1117,13 @@ class SqliteCoworkStore:
                     budget_wall_ms, answer_mode, workflow_type, schedule_id, unattended, run_trigger,
                     retrieval_top_k,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(run_id),
                     str(conversation_id),
                     goal.strip(),
+                    initial_status,
                     budget_tokens,
                     budget_calls,
                     budget_wall_ms,
@@ -983,12 +1145,83 @@ class SqliteCoworkStore:
 
         return await self._write(operation)
 
+    async def initialize_run(
+        self,
+        *,
+        run_id: UUID,
+        state: dict[str, Any],
+        checkpoint_id: str,
+        events: Sequence[tuple[str, dict[str, Any]]],
+    ) -> tuple[RunRecord, StoredCheckpoint, list[RunEvent]]:
+        """原子写入初始 checkpoint/event，并把 initializing run 变为 queued。
+
+        兼容测试和离线 runner 直接创建的 queued run；它们没有并发 dispatcher，但仍复用
+        同一份 checkpoint/event 事务语义。
+        """
+
+        checkpoint = StoredCheckpoint(run_id, checkpoint_id, None, state)
+
+        def operation(
+            connection: sqlite3.Connection,
+        ) -> tuple[RunRecord, StoredCheckpoint, list[RunEvent]]:
+            row = connection.execute(
+                "SELECT status FROM agent_runs WHERE id = ?", (str(run_id),)
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"run 不存在: {run_id}")
+            status = str(row["status"])
+            if status not in {"initializing", "queued"}:
+                raise RuntimeError(f"run 当前状态不能初始化: {status}")
+            if connection.execute(
+                "SELECT 1 FROM agent_checkpoints WHERE run_id = ? LIMIT 1", (str(run_id),)
+            ).fetchone():
+                raise RuntimeError("run 已存在初始 checkpoint")
+            connection.execute(
+                """INSERT INTO agent_checkpoints(
+                           run_id, checkpoint_id, parent_id, state, created_at
+                       ) VALUES (?, ?, NULL, ?, ?)""",
+                (str(run_id), checkpoint_id, canonical_json(state), _iso()),
+            )
+            stored_events = self._append_events_transaction(connection, run_id, events)
+            if status == "initializing":
+                changed = connection.execute(
+                    """UPDATE agent_runs SET status = 'queued', updated_at = ?
+                       WHERE id = ? AND status = 'initializing'""",
+                    (_iso(), str(run_id)),
+                ).rowcount
+                if changed != 1:  # pragma: no cover - 同一 BEGIN IMMEDIATE 内不可并发漂移
+                    raise RuntimeError("run 初始化状态发生并发漂移")
+            refreshed = connection.execute(
+                "SELECT * FROM agent_runs WHERE id = ?", (str(run_id),)
+            ).fetchone()
+            assert refreshed is not None
+            return self._run_record(refreshed), checkpoint, stored_events
+
+        return await self._write(operation)
+
     async def get_run(self, run_id: UUID) -> RunRecord | None:
         def operation(connection: sqlite3.Connection) -> RunRecord | None:
             row = connection.execute(
                 "SELECT * FROM agent_runs WHERE id = ?", (str(run_id),)
             ).fetchone()
             return None if row is None else self._run_record(row)
+
+        return await self._read(operation)
+
+    async def get_runs(self, run_ids: Sequence[UUID]) -> list[RunRecord]:
+        unique_ids = tuple(dict.fromkeys(run_ids))
+        if not unique_ids:
+            return []
+        if len(unique_ids) > 500:
+            raise ValueError("单次 run 批量读取上限为 500")
+
+        def operation(connection: sqlite3.Connection) -> list[RunRecord]:
+            placeholders = ", ".join("?" for _ in unique_ids)
+            rows = connection.execute(
+                f"SELECT * FROM agent_runs WHERE id IN ({placeholders})",
+                tuple(str(run_id) for run_id in unique_ids),
+            ).fetchall()
+            return [self._run_record(row) for row in rows]
 
         return await self._read(operation)
 
@@ -1021,7 +1254,9 @@ class SqliteCoworkStore:
             lambda connection: (
                 connection.execute(
                     """SELECT 1 FROM agent_runs WHERE conversation_id = ?
-                   AND status IN ('queued','executing','waiting_human','sleeping') LIMIT 1""",
+                   AND status IN (
+                       'initializing','queued','executing','waiting_human','sleeping'
+                   ) LIMIT 1""",
                     (str(conversation_id),),
                 ).fetchone()
                 is not None
@@ -1083,39 +1318,69 @@ class SqliteCoworkStore:
             return []
 
         def operation(connection: sqlite3.Connection) -> list[RunEvent]:
-            row = connection.execute(
-                "SELECT next_seq FROM agent_runs WHERE id = ?", (str(run_id),)
-            ).fetchone()
-            if row is None:
-                raise LookupError(f"run 不存在: {run_id}")
-            first_seq = int(row["next_seq"])
-            created_at = _iso()
-            output: list[RunEvent] = []
-            for offset, (event_type, payload) in enumerate(events):
-                seq = first_seq + offset
-                connection.execute(
-                    "INSERT INTO run_events(run_id, seq, type, payload, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (str(run_id), seq, event_type, canonical_json(payload), created_at),
-                )
-                output.append(
-                    RunEvent(
-                        run_id, seq, event_type, payload, cast(datetime, _datetime(created_at))
-                    )
-                )
-            connection.execute(
-                "UPDATE agent_runs SET next_seq = ?, updated_at = ? WHERE id = ?",
-                (first_seq + len(events), created_at, str(run_id)),
-            )
-            return output
+            return self._append_events_transaction(connection, run_id, events)
 
         return await self._write(operation)
 
-    async def list_events(self, *, run_id: UUID, after_seq: int = 0) -> list[RunEvent]:
+    def _append_events_transaction(
+        self,
+        connection: sqlite3.Connection,
+        run_id: UUID,
+        events: Sequence[tuple[str, dict[str, Any]]],
+    ) -> list[RunEvent]:
+        if not events:
+            return []
+        row = connection.execute(
+            "SELECT next_seq FROM agent_runs WHERE id = ?", (str(run_id),)
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"run 不存在: {run_id}")
+        first_seq = int(row["next_seq"])
+        created_at = _iso()
+        timestamp = cast(datetime, _datetime(created_at))
+        encoded = [
+            (
+                str(run_id),
+                first_seq + offset,
+                event_type,
+                canonical_json(payload),
+                created_at,
+            )
+            for offset, (event_type, payload) in enumerate(events)
+        ]
+        connection.executemany(
+            "INSERT INTO run_events(run_id, seq, type, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+            encoded,
+        )
+        output = [
+            RunEvent(run_id, first_seq + offset, event_type, payload, timestamp)
+            for offset, (event_type, payload) in enumerate(events)
+        ]
+        connection.execute(
+            "UPDATE agent_runs SET next_seq = ?, updated_at = ? WHERE id = ?",
+            (first_seq + len(events), created_at, str(run_id)),
+        )
+        return output
+
+    async def list_events(
+        self,
+        *,
+        run_id: UUID,
+        after_seq: int = 0,
+        limit: int | None = None,
+    ) -> list[RunEvent]:
+        if after_seq < 0:
+            raise ValueError("after_seq 不能为负数")
+        if limit is not None and limit < 1:
+            raise ValueError("event limit 必须为正")
+
         def operation(connection: sqlite3.Connection) -> list[RunEvent]:
-            rows = connection.execute(
-                "SELECT * FROM run_events WHERE run_id = ? AND seq > ? ORDER BY seq",
-                (str(run_id), after_seq),
-            ).fetchall()
+            sql = "SELECT * FROM run_events WHERE run_id = ? AND seq > ? ORDER BY seq"
+            parameters: tuple[object, ...] = (str(run_id), after_seq)
+            if limit is not None:
+                sql += " LIMIT ?"
+                parameters = (*parameters, limit)
+            rows = connection.execute(sql, parameters).fetchall()
             return [
                 RunEvent(
                     run_id=UUID(row["run_id"]),
@@ -1154,6 +1419,96 @@ class SqliteCoworkStore:
                 ),
             )
             return checkpoint
+
+        return await self._write(operation)
+
+    async def commit_checkpoint(
+        self,
+        *,
+        run_id: UUID,
+        state: dict[str, Any],
+        parent_id: str | None,
+        checkpoint_id: str,
+        used_tokens: int,
+        used_calls: int,
+        events: Sequence[tuple[str, dict[str, Any]]],
+        worker_id: str | None = None,
+        transition_to: Literal["queued", "waiting_human", "sleeping"] | None = None,
+        wake_at: datetime | None = None,
+    ) -> tuple[StoredCheckpoint, list[RunEvent]]:
+        if used_tokens < 0 or used_calls < 0:
+            raise ValueError("run 用量增量不能为负")
+        if transition_to == "sleeping" and wake_at is None:
+            raise ValueError("sleeping checkpoint 必须提供 wake_at")
+        if transition_to != "sleeping" and wake_at is not None:
+            raise ValueError("只有 sleeping checkpoint 可以提供 wake_at")
+        checkpoint = StoredCheckpoint(run_id, checkpoint_id, parent_id, state)
+
+        def operation(
+            connection: sqlite3.Connection,
+        ) -> tuple[StoredCheckpoint, list[RunEvent]]:
+            row = connection.execute(
+                "SELECT status, worker_id FROM agent_runs WHERE id = ?", (str(run_id),)
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"run 不存在: {run_id}")
+            if (
+                transition_to != "queued"
+                and worker_id is not None
+                and (str(row["status"]) != "executing" or row["worker_id"] != worker_id)
+            ):
+                raise RuntimeError("当前 worker 已不再持有 run 租约")
+            if transition_to is not None:
+                if transition_to == "queued":
+                    if worker_id is not None:
+                        raise ValueError("恢复 waiting_human run 不应携带 worker_id")
+                    changed = connection.execute(
+                        """UPDATE agent_runs SET status = 'queued', worker_id = NULL,
+                                  lease_until = NULL, heartbeat_at = NULL, wake_at = NULL,
+                                  updated_at = ?
+                           WHERE id = ? AND status = 'waiting_human'
+                             AND cancel_requested_at IS NULL""",
+                        (_iso(), str(run_id)),
+                    ).rowcount
+                else:
+                    if worker_id is None:
+                        raise ValueError("暂停 run 必须提供 worker_id")
+                    changed = connection.execute(
+                        """UPDATE agent_runs SET status = ?, worker_id = NULL,
+                                  lease_until = NULL, heartbeat_at = NULL, wake_at = ?, updated_at = ?
+                           WHERE id = ? AND worker_id = ? AND status = 'executing'
+                             AND cancel_requested_at IS NULL""",
+                        (
+                            transition_to,
+                            None if wake_at is None else _iso(wake_at),
+                            _iso(),
+                            str(run_id),
+                            worker_id,
+                        ),
+                    ).rowcount
+                if changed != 1:
+                    raise RuntimeError("run 状态转换发生并发漂移")
+            if used_tokens or used_calls:
+                connection.execute(
+                    """UPDATE agent_runs
+                       SET used_tokens = used_tokens + ?, used_calls = used_calls + ?, updated_at = ?
+                       WHERE id = ?""",
+                    (used_tokens, used_calls, _iso(), str(run_id)),
+                )
+            connection.execute(
+                """INSERT INTO agent_checkpoints(
+                           run_id, checkpoint_id, parent_id, state, created_at
+                       ) VALUES (?, ?, ?, ?, ?)""",
+                (
+                    str(run_id),
+                    checkpoint_id,
+                    parent_id,
+                    canonical_json(state),
+                    _iso(),
+                ),
+            )
+            stored_events = self._append_events_transaction(connection, run_id, events)
+            return checkpoint, stored_events
 
         return await self._write(operation)
 
@@ -1406,7 +1761,7 @@ class SqliteCoworkStore:
             )
             allowed = ["filesystem.read"]
             if access_mode == "read_write":
-                allowed += ["filesystem.write", "office.word.edit", "office.excel.edit"]
+                allowed.append("filesystem.write")
             else:
                 connection.execute(
                     """
@@ -1522,6 +1877,7 @@ class SqliteCoworkStore:
         conversation_id: UUID,
         capability: str,
         session_root_id: UUID | None = None,
+        resource_scope: str | None = None,
         grant_source: Literal["user", "policy"] = "user",
         expires_in_s: int | None = None,
     ) -> Any:
@@ -1531,6 +1887,12 @@ class SqliteCoworkStore:
             raise ValueError("文件 capability 必须绑定会话目录")
         if capability in GLOBAL_CAPABILITIES and session_root_id is not None:
             raise ValueError("网络/Shell/外部操作 capability 不能继承目录授权")
+        if capability in SCOPED_CAPABILITIES:
+            if resource_scope is None:
+                raise ValueError(f"{capability} 必须绑定资源 scope")
+            resource_scope = normalize_network_scope(resource_scope)
+        elif resource_scope is not None:
+            raise ValueError(f"{capability} 不能绑定资源 scope")
         now = _now()
         expires_at = None if expires_in_s is None else now + timedelta(seconds=expires_in_s)
 
@@ -1556,7 +1918,8 @@ class SqliteCoworkStore:
             connection.execute(
                 """UPDATE capability_grants SET revoked_at = ?, updated_at = ?
                    WHERE conversation_id = ? AND IFNULL(session_root_id, '') = IFNULL(?, '')
-                     AND capability = ? AND revoked_at IS NULL
+                     AND capability = ? AND IFNULL(resource_scope, '') = IFNULL(?, '')
+                     AND revoked_at IS NULL
                      AND expires_at IS NOT NULL AND expires_at <= ?""",
                 (
                     timestamp,
@@ -1564,31 +1927,35 @@ class SqliteCoworkStore:
                     str(conversation_id),
                     None if session_root_id is None else str(session_root_id),
                     capability,
+                    resource_scope,
                     timestamp,
                 ),
             )
             row = connection.execute(
                 """SELECT * FROM capability_grants
                    WHERE conversation_id = ? AND IFNULL(session_root_id, '') = IFNULL(?, '')
-                     AND capability = ? AND revoked_at IS NULL""",
+                     AND capability = ? AND IFNULL(resource_scope, '') = IFNULL(?, '')
+                     AND revoked_at IS NULL""",
                 (
                     str(conversation_id),
                     None if session_root_id is None else str(session_root_id),
                     capability,
+                    resource_scope,
                 ),
             ).fetchone()
             if row is None:
                 grant_id = uuid7()
                 connection.execute(
                     """INSERT INTO capability_grants(
-                           id, conversation_id, session_root_id, capability, grant_source,
-                           expires_at, created_at, updated_at
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                           id, conversation_id, session_root_id, capability, resource_scope,
+                           grant_source, expires_at, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         str(grant_id),
                         str(conversation_id),
                         None if session_root_id is None else str(session_root_id),
                         capability,
+                        resource_scope,
                         grant_source,
                         None if expires_at is None else _iso(expires_at),
                         timestamp,
@@ -1720,9 +2087,7 @@ class SqliteCoworkStore:
 
     async def get_conversation_inbox(self, *, conversation_id: UUID) -> str | None:
         return await self._read(
-            lambda connection: (
-                lambda row: None if row is None else row[0]
-            )(
+            lambda connection: (lambda row: None if row is None else row[0])(
                 connection.execute(
                     "SELECT inbox_name FROM conversations WHERE id = ?",
                     (str(conversation_id),),
@@ -1743,9 +2108,7 @@ class SqliteCoworkStore:
 
     async def get_conversation_kb(self, *, conversation_id: UUID) -> str | None:
         return await self._read(
-            lambda connection: (
-                lambda row: None if row is None else row[0]
-            )(
+            lambda connection: (lambda row: None if row is None else row[0])(
                 connection.execute(
                     "SELECT kb_slug FROM conversations WHERE id = ?",
                     (str(conversation_id),),
@@ -1884,9 +2247,7 @@ class SqliteCoworkStore:
 
         return await self._read(operation)
 
-    async def list_thread_sessions(
-        self, *, conversation_id: UUID
-    ) -> list[ThreadSessionRecord]:
+    async def list_thread_sessions(self, *, conversation_id: UUID) -> list[ThreadSessionRecord]:
         return await self._read(
             lambda connection: [
                 self._thread_session_record(row)
@@ -1950,6 +2311,125 @@ class SqliteCoworkStore:
             ]
         )
 
+    # --- 阅读批注 ----------------------------------------------------------
+
+    def _annotation_record(self, row: sqlite3.Row) -> ReadingAnnotationRecord:
+        return ReadingAnnotationRecord(
+            id=UUID(str(row["id"])),
+            material_id=str(row["material_id"]),
+            path=str(row["path"]),
+            locator=int(row["locator"]),
+            quote=str(row["quote"]),
+            note=str(row["note"]),
+            color=cast(AnnotationColor, str(row["color"])),
+            locations=tuple(json.loads(str(row["locations"]))),
+            conversation_id=(UUID(str(row["conversation_id"])) if row["conversation_id"] else None),
+            run_id=UUID(str(row["run_id"])) if row["run_id"] else None,
+            created_at=datetime.fromisoformat(str(row["created_at"])),
+        )
+
+    async def create_reading_annotation(
+        self,
+        *,
+        material_id: str,
+        path: str,
+        locator: int,
+        quote: str,
+        note: str,
+        color: AnnotationColor,
+        locations: Sequence[dict[str, Any]],
+        conversation_id: UUID | None,
+        run_id: UUID | None,
+        max_per_material: int,
+    ) -> ReadingAnnotationRecord:
+        """写入一条批注；同一份材料上超过上限即拒绝。
+
+        上限在**写事务里**判定而不是先查后写：一轮里模型可以并行调多次，
+        先查后写会让"最多 N 条"变成"大约 N 条"。
+        """
+
+        def operation(connection: sqlite3.Connection) -> ReadingAnnotationRecord:
+            existing = connection.execute(
+                """SELECT COUNT(*) FROM cowork_reading_annotations
+                   WHERE material_id = ? AND deleted_at IS NULL""",
+                (material_id,),
+            ).fetchone()[0]
+            if int(existing) >= max_per_material:
+                raise ValueError(
+                    f"这份文档上的批注已达上限 {max_per_material} 条，"
+                    "先让用户在阅读器里删掉一些再继续标注。"
+                )
+            annotation_id = str(uuid7())
+            connection.execute(
+                """INSERT INTO cowork_reading_annotations(
+                       id, material_id, path, locator, quote, note, color,
+                       locations, conversation_id, run_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    annotation_id,
+                    material_id,
+                    path,
+                    locator,
+                    quote,
+                    note,
+                    color,
+                    json.dumps(list(locations), ensure_ascii=False),
+                    str(conversation_id) if conversation_id else None,
+                    str(run_id) if run_id else None,
+                    _iso(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM cowork_reading_annotations WHERE id = ?",
+                (annotation_id,),
+            ).fetchone()
+            return self._annotation_record(row)
+
+        return await self._write(operation)
+
+    async def list_reading_annotations(self, *, material_id: str) -> list[ReadingAnnotationRecord]:
+        return await self._read(
+            lambda connection: [
+                self._annotation_record(row)
+                for row in connection.execute(
+                    """SELECT * FROM cowork_reading_annotations
+                       WHERE material_id = ? AND deleted_at IS NULL
+                       ORDER BY locator, created_at""",
+                    (material_id,),
+                ).fetchall()
+            ]
+        )
+
+    async def count_stale_reading_annotations(self, *, path: str, material_id: str) -> int:
+        """同一路径上属于**别的**内容版本的批注条数。
+
+        它们不显示——几何可能已经指向别的文字。但也不能静默消失：
+        用户改了一版 PDF 之后看到批注全没了却查不到为什么，是最糟的那种失败。
+        """
+
+        return await self._read(
+            lambda connection: int(
+                connection.execute(
+                    """SELECT COUNT(*) FROM cowork_reading_annotations
+                       WHERE path = ? AND material_id <> ? AND deleted_at IS NULL""",
+                    (path, material_id),
+                ).fetchone()[0]
+            )
+        )
+
+    async def delete_reading_annotation(self, *, annotation_id: UUID) -> bool:
+        def operation(connection: sqlite3.Connection) -> bool:
+            return (
+                connection.execute(
+                    """UPDATE cowork_reading_annotations SET deleted_at = ?
+                       WHERE id = ? AND deleted_at IS NULL""",
+                    (_iso(), str(annotation_id)),
+                ).rowcount
+                == 1
+            )
+
+        return await self._write(operation)
+
     async def set_workspace_trust(self, *, canonical_path: str, trusted: bool) -> bool:
         def operation(connection: sqlite3.Connection) -> bool:
             if trusted:
@@ -1974,12 +2454,14 @@ class SqliteCoworkStore:
 
     async def is_workspace_trusted(self, *, canonical_path: str) -> bool:
         return await self._read(
-            lambda connection: connection.execute(
-                """SELECT 1 FROM cowork_workspace_trust
+            lambda connection: (
+                connection.execute(
+                    """SELECT 1 FROM cowork_workspace_trust
                    WHERE canonical_path = ? AND revoked_at IS NULL""",
-                (canonical_path,),
-            ).fetchone()
-            is not None
+                    (canonical_path,),
+                ).fetchone()
+                is not None
+            )
         )
 
     async def list_workspace_trust(self) -> list[str]:
@@ -2088,19 +2570,60 @@ class SqliteCoworkStore:
     async def authorize_capability(self, *, conversation_id: UUID, capability: str) -> Any:
         if capability not in GLOBAL_CAPABILITIES:
             raise ValueError("路径 capability 必须通过 authorize_path 校验")
+        if capability in SCOPED_CAPABILITIES:
+            raise ValueError("带资源 scope 的 capability 必须通过 authorize_scoped_capability 校验")
         now = _iso()
+        candidates = (capability, *LEGACY_CAPABILITY_FALLBACKS.get(capability, ()))
+        placeholders = ", ".join("?" for _ in candidates)
 
         def operation(connection: sqlite3.Connection) -> Any:
             row = connection.execute(
-                """SELECT * FROM capability_grants
-                   WHERE conversation_id = ? AND capability = ? AND session_root_id IS NULL
+                f"""SELECT * FROM capability_grants
+                   WHERE conversation_id = ? AND capability IN ({placeholders})
+                     AND session_root_id IS NULL AND resource_scope IS NULL
                      AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
                    ORDER BY created_at DESC LIMIT 1""",
-                (str(conversation_id), capability, now),
+                (str(conversation_id), *candidates, now),
             ).fetchone()
             if row is None:
                 raise CapabilityDeniedError(f"尚未授予 {capability} 权限")
             return self._grant_record(row, CapabilityGrantRecord)
+
+        return await self._read(operation)
+
+    async def authorize_scoped_capability(
+        self, *, conversation_id: UUID, capability: str, target: str
+    ) -> Any:
+        if capability not in SCOPED_CAPABILITIES:
+            raise ValueError("该 capability 不支持资源 scope")
+        now = _iso()
+
+        def operation(connection: sqlite3.Connection) -> Any:
+            rows = connection.execute(
+                """SELECT * FROM capability_grants
+                   WHERE conversation_id = ? AND capability = ? AND session_root_id IS NULL
+                     AND resource_scope IS NOT NULL AND revoked_at IS NULL
+                     AND (expires_at IS NULL OR expires_at > ?)
+                   ORDER BY created_at DESC""",
+                (str(conversation_id), capability, now),
+            ).fetchall()
+            for row in rows:
+                if network_scope_allows(str(row["resource_scope"]), target):
+                    return self._grant_record(row, CapabilityGrantRecord)
+
+            # 迁移期兼容既有无 scope 的 network.read；新 API 无法再创建它。
+            for legacy in LEGACY_CAPABILITY_FALLBACKS.get(capability, ()):
+                row = connection.execute(
+                    """SELECT * FROM capability_grants
+                       WHERE conversation_id = ? AND capability = ?
+                         AND session_root_id IS NULL AND resource_scope IS NULL
+                         AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+                       ORDER BY created_at DESC LIMIT 1""",
+                    (str(conversation_id), legacy, now),
+                ).fetchone()
+                if row is not None:
+                    return self._grant_record(row, CapabilityGrantRecord)
+            raise CapabilityDeniedError(f"目标 {target} 尚未获得 {capability} 权限")
 
         return await self._read(operation)
 
@@ -2113,7 +2636,8 @@ class SqliteCoworkStore:
 
         def operation(connection: sqlite3.Connection) -> Any:
             rows = connection.execute(
-                """SELECT roots.id, roots.canonical_path, roots.access_mode
+                """SELECT roots.id, roots.canonical_path, roots.access_mode,
+                          grants.id AS grant_id
                    FROM session_roots AS roots
                    JOIN capability_grants AS grants ON grants.session_root_id = roots.id
                    WHERE roots.conversation_id = ? AND roots.enabled = 1
@@ -2141,6 +2665,7 @@ class SqliteCoworkStore:
                     target_path=resolved,
                     access_mode=row["access_mode"],
                     capability=capability,  # type: ignore[arg-type]
+                    grant_id=UUID(row["grant_id"]),
                 )
             raise CapabilityDeniedError(f"目标路径未获得 {capability} 权限")
 
@@ -2844,6 +3369,51 @@ class SqliteCoworkStore:
             )
         )
 
+    async def schedule_run_retry(
+        self,
+        *,
+        run_id: UUID,
+        worker_id: str,
+        max_recovery: int,
+        base_delay_s: float,
+        max_delay_s: float,
+    ) -> tuple[int, datetime] | None:
+        """从最新 checkpoint 安排一次持久化退避重试。
+
+        状态、次数和 wake_at 在同一个 SQLite 写事务里更新。只有当前持租约的 worker
+        能安排，且没有 checkpoint 时拒绝重投，避免从头重放已发生的外部副作用。
+        """
+
+        def operation(connection: sqlite3.Connection) -> tuple[int, datetime] | None:
+            row = connection.execute(
+                """SELECT recovery_count,
+                          EXISTS(SELECT 1 FROM agent_checkpoints AS checkpoints
+                                 WHERE checkpoints.run_id = runs.id) AS has_checkpoint
+                   FROM agent_runs AS runs
+                   WHERE runs.id = ? AND runs.worker_id = ? AND runs.status = 'executing'
+                     AND runs.cancel_requested_at IS NULL""",
+                (str(run_id), worker_id),
+            ).fetchone()
+            if row is None or not bool(row["has_checkpoint"]):
+                return None
+            recovery = int(row["recovery_count"])
+            if recovery >= max_recovery:
+                return None
+            attempt = recovery + 1
+            delay_s = min(max_delay_s, base_delay_s * (2**recovery))
+            wake_at = _now() + timedelta(seconds=delay_s)
+            updated = connection.execute(
+                """UPDATE agent_runs SET status = 'sleeping', recovery_count = ?,
+                          worker_id = NULL, lease_until = NULL, heartbeat_at = NULL,
+                          wake_at = ?, updated_at = ?
+                   WHERE id = ? AND worker_id = ? AND status = 'executing'
+                     AND cancel_requested_at IS NULL""",
+                (attempt, _iso(wake_at), _iso(), str(run_id), worker_id),
+            ).rowcount
+            return (attempt, wake_at) if updated == 1 else None
+
+        return await self._write(operation)
+
     async def claim_due_sleeping_runs(self, *, now: datetime, limit: int) -> list[UUID]:
         """把到期的 sleeping run 转成 queued 并返回它们。
 
@@ -2929,6 +3499,53 @@ class SqliteCoworkStore:
                 ).rowcount
                 == 1
             )
+
+        return await self._write(operation)
+
+    async def finish_run_with_events(
+        self,
+        *,
+        run_id: UUID,
+        status: str,
+        events: Sequence[tuple[str, dict[str, Any]]],
+        worker_id: str | None = None,
+        error: str | None = None,
+        used_tokens: int = 0,
+        used_calls: int = 0,
+    ) -> tuple[bool, list[RunEvent]]:
+        if status not in TERMINAL_RUN_STATUSES:
+            raise ValueError(f"不是终态: {status}")
+        if used_tokens < 0 or used_calls < 0:
+            raise ValueError("run 用量增量不能为负")
+
+        def operation(connection: sqlite3.Connection) -> tuple[bool, list[RunEvent]]:
+            owner_sql = "" if worker_id is None else "AND worker_id = ?"
+            parameters: list[Any] = [
+                status,
+                error,
+                used_tokens,
+                used_calls,
+                _iso(),
+                _iso(),
+                str(run_id),
+                status,
+            ]
+            if worker_id is not None:
+                parameters.append(worker_id)
+            changed = (
+                connection.execute(
+                    f"""UPDATE agent_runs SET status = ?, error = ?,
+                               used_tokens = used_tokens + ?, used_calls = used_calls + ?,
+                               finished_at = ?, lease_until = NULL, heartbeat_at = NULL,
+                               worker_id = NULL, updated_at = ?
+                        WHERE id = ? AND status <> ? {owner_sql}""",
+                    parameters,
+                ).rowcount
+                == 1
+            )
+            if not changed:
+                return False, []
+            return True, self._append_events_transaction(connection, run_id, events)
 
         return await self._write(operation)
 
@@ -3031,9 +3648,7 @@ class SqliteCoworkStore:
             platform=row["platform"],
             chat_id=row["chat_id"],
             connector_account_id=(
-                None
-                if row["connector_account_id"] is None
-                else UUID(row["connector_account_id"])
+                None if row["connector_account_id"] is None else UUID(row["connector_account_id"])
             ),
             enabled=bool(row["enabled"]),
             created_at=cast(datetime, _datetime(row["created_at"])),
@@ -3047,9 +3662,7 @@ class SqliteCoworkStore:
             platform=row["platform"],
             chat_id=str(row["chat_id"]),
             connector_account_id=(
-                None
-                if row["connector_account_id"] is None
-                else UUID(row["connector_account_id"])
+                None if row["connector_account_id"] is None else UUID(row["connector_account_id"])
             ),
             created_at=cast(datetime, _datetime(row["created_at"])),
             revoked_at=_datetime(row["revoked_at"]),
@@ -3102,6 +3715,7 @@ class SqliteCoworkStore:
             if row["session_root_id"] is None
             else UUID(row["session_root_id"]),
             capability=row["capability"],
+            resource_scope=row["resource_scope"],
             grant_source=str(row["grant_source"]),
             expires_at=_datetime(row["expires_at"]),
             revoked_at=_datetime(row["revoked_at"]),
@@ -3413,15 +4027,11 @@ class SqliteCoworkStore:
 
         await self._write(operation)
 
-    async def list_cowork_memories_by_validity(
-        self, *, active: bool, limit: int
-    ) -> list[Any]:
+    async def list_cowork_memories_by_validity(self, *, active: bool, limit: int) -> list[Any]:
         """记忆面板的两个视图：当前生效 / 已失效的历史。"""
 
         clause = (
-            "forgotten_at IS NULL AND invalid_at IS NULL"
-            if active
-            else "invalid_at IS NOT NULL"
+            "forgotten_at IS NULL AND invalid_at IS NULL" if active else "invalid_at IS NOT NULL"
         )
         order = "pinned DESC, valid_from DESC, id DESC" if active else "invalid_at DESC, id DESC"
 
@@ -3619,9 +4229,7 @@ class SqliteCoworkStore:
             pinned=bool(row["pinned"]),
             valid_from=_datetime(row["valid_from"]) or _datetime(row["created_at"]),
             invalid_at=_datetime(row["invalid_at"]),
-            superseded_by=(
-                None if row["superseded_by"] is None else UUID(row["superseded_by"])
-            ),
+            superseded_by=(None if row["superseded_by"] is None else UUID(row["superseded_by"])),
             access_count=int(row["access_count"]),
             last_used_at=_datetime(row["last_used_at"]),
             source_message_id=(

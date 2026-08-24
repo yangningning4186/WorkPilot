@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import stat as stat_module
 from collections import OrderedDict
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -56,8 +57,10 @@ class MaterialCache:
     """进程内的材料缓存，按 stat 三元组失效。"""
 
     def __init__(self, *, max_entries: int = MAX_CACHED_MATERIALS) -> None:
+        if max_entries < 1:
+            raise ValueError("材料缓存容量必须大于 0")
         self._entries: OrderedDict[_CacheKey, Material] = OrderedDict()
-        self._locks: dict[_CacheKey, asyncio.Lock] = {}
+        self._inflight: dict[_CacheKey, asyncio.Task[Material]] = {}
         self._max_entries = max_entries
 
     async def load(self, path: Path, *, settings: Settings) -> Material:
@@ -72,20 +75,39 @@ class MaterialCache:
             self._entries.move_to_end(key)
             return cached
 
-        lock = self._locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            # 等锁期间可能已经有人解析完了。
-            cached = self._entries.get(key)
-            if cached is not None:
-                self._entries.move_to_end(key)
-                return cached
-            material = await _build_material(path, settings=settings, byte_size=key[2])
-            self._entries[key] = material
-            self._entries.move_to_end(key)
-            while len(self._entries) > self._max_entries:
-                self._entries.popitem(last=False)
-        self._locks.pop(key, None)
+        task = self._inflight.get(key)
+        if task is None:
+            task = asyncio.create_task(
+                self._build_and_cache(key, path, settings),
+                name=f"material-cache-{path.name}",
+            )
+            self._inflight[key] = task
+            task.add_done_callback(partial(self._finish, key))
+
+        # 一个 HTTP/run 请求被取消，不应该顺手取消其他等待者共用的 PDF 解析。解析继续完成
+        # 后还会进入缓存；下一次读取可以直接命中，而不是再付一次解析成本。
+        return await asyncio.shield(task)
+
+    async def _build_and_cache(
+        self,
+        key: _CacheKey,
+        path: Path,
+        settings: Settings,
+    ) -> Material:
+        material = await _build_material(path, settings=settings, byte_size=key[2])
+        self._entries[key] = material
+        self._entries.move_to_end(key)
+        while len(self._entries) > self._max_entries:
+            self._entries.popitem(last=False)
         return material
+
+    def _finish(self, key: _CacheKey, task: asyncio.Task[Material]) -> None:
+        if self._inflight.get(key) is task:
+            self._inflight.pop(key, None)
+        # 如果唯一的等待者先被取消，失败的后台解析就没有人读取异常。显式取一次，避免
+        # asyncio 在 worker 日志里产生 "Task exception was never retrieved" 噪声。
+        if not task.cancelled():
+            task.exception()
 
 
 def _cache_key(path: Path, settings: Settings) -> _CacheKey:

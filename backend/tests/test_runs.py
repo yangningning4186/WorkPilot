@@ -1,11 +1,14 @@
 import asyncio
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.api.runs import cancel_run
 from app.core.db import DbSession as AsyncSession
 from app.core.db import session_factory
+from app.core.run_bus import InMemoryRunBus
 from app.runstore.runs import (
     append_events,
     append_message,
@@ -18,6 +21,7 @@ from app.runstore.runs import (
     reap_expired_runs,
     renew_lease,
     request_cancel,
+    schedule_run_retry,
 )
 from tests.conftest import iso_ago
 
@@ -54,6 +58,7 @@ async def test_events_get_monotonic_seq_and_replay_from_cursor(db_session: Async
     # seq 以字符串出信封, 避免 JS number 精度问题。
     assert first[0].envelope()["seq"] == "1"
     assert first[0].envelope()["data"] == {"message_id": "m1"}
+    assert first[0].envelope()["created_at"] == first[0].created_at.isoformat()
 
     replayed = await list_events(db_session, run_id=run.id, after_seq=2)
     assert [event.seq for event in replayed] == [3]
@@ -94,7 +99,8 @@ async def test_lease_renewal_fails_after_takeover(db_session: AsyncSession) -> N
 
 
 async def test_an_expired_lease_is_reclaimed_through_the_watchdog_not_by_stealing(
-    db_session: AsyncSession, store_sql,
+    db_session: AsyncSession,
+    store_sql,
 ) -> None:
     """租约过期不等于可以直接抢。
 
@@ -121,7 +127,9 @@ async def test_an_expired_lease_is_reclaimed_through_the_watchdog_not_by_stealin
     assert await claim_run(db_session, run_id=run.id, worker_id="worker-b", lease_s=60) is None
 
 
-async def test_watchdog_fails_expired_runs_and_marks_message(db_session: AsyncSession, store_sql, message_status) -> None:
+async def test_watchdog_fails_expired_runs_and_marks_message(
+    db_session: AsyncSession, store_sql, message_status
+) -> None:
     """普通流式回答不自动重试: 是否已计费无法确认, 静默重放等于重复计费。"""
 
     run = await _new_run(db_session)
@@ -153,9 +161,7 @@ async def test_watchdog_fails_expired_runs_and_marks_message(db_session: AsyncSe
     assert events[0].payload["code"] == "worker_lease_expired"
     assert events[0].payload["retryable"] is True
 
-    status = (
-        await message_status(run.conversation_id, run.id, "assistant")
-    )[0]
+    status = (await message_status(run.conversation_id, run.id, "assistant"))[0]
     assert status == "failed"
 
 
@@ -181,8 +187,22 @@ async def test_cancel_is_immediate_only_before_pickup(db_session: AsyncSession) 
     assert requested.cancel_requested is True
 
 
+async def test_concurrent_cancel_only_emits_one_terminal_pair(
+    db_session: AsyncSession,
+) -> None:
+    run = await _new_run(db_session)
+    bus = InMemoryRunBus()
+
+    responses = await asyncio.gather(*(cancel_run(run.id, db_session, bus, None) for _ in range(3)))
+
+    assert {response.status for response in responses} == {"cancelled"}
+    events = await list_events(db_session, run_id=run.id)
+    assert [event.type for event in events] == ["error", "run.done"]
+
+
 async def test_watchdog_finalizes_cancelled_run_after_worker_disappears(
-    db_session: AsyncSession, store_sql,
+    db_session: AsyncSession,
+    store_sql,
 ) -> None:
     run = await _new_run(db_session)
     await claim_run(db_session, run_id=run.id, worker_id="worker-a", lease_s=60)
@@ -217,7 +237,9 @@ async def test_finish_run_requires_matching_worker(db_session: AsyncSession) -> 
     assert refreshed.is_terminal
 
 
-async def test_messages_get_sequential_seq_per_conversation(db_session: AsyncSession, store_sql) -> None:
+async def test_messages_get_sequential_seq_per_conversation(
+    db_session: AsyncSession, store_sql
+) -> None:
     conversation_id = await ensure_conversation(db_session)
     await append_message(db_session, conversation_id=conversation_id, role="user", content="一")
     await append_message(
@@ -234,9 +256,7 @@ async def test_messages_get_sequential_seq_per_conversation(db_session: AsyncSes
     assert seqs == [1, 2]
 
 
-async def _expired_run(
-    session: AsyncSession, store_sql, *, with_checkpoint: bool = True
-) -> UUID:
+async def _expired_run(session: AsyncSession, store_sql, *, with_checkpoint: bool = True) -> UUID:
     """一个租约已过期、worker 消失了的 Cowork run。
 
     checkpoint 用裸 SQL 插，不走 `initialize_cowork_state`：watchdog 判定"可不可恢复"
@@ -269,7 +289,8 @@ async def _expired_run(
 
 
 async def test_watchdog_recovers_a_checkpointed_run_instead_of_failing_it(
-    db_session: AsyncSession, store_sql,
+    db_session: AsyncSession,
+    store_sql,
 ) -> None:
     """带 checkpoint 的 run 被 SIGKILL 后应重新入队，而不是判死。"""
 
@@ -291,7 +312,8 @@ async def test_watchdog_recovers_a_checkpointed_run_instead_of_failing_it(
 
 
 async def test_watchdog_fails_a_run_without_checkpoint(
-    db_session: AsyncSession, store_sql,
+    db_session: AsyncSession,
+    store_sql,
 ) -> None:
     """没有 checkpoint 就没有可恢复的进度，重跑等于从头再烧一遍预算。"""
 
@@ -303,7 +325,8 @@ async def test_watchdog_fails_a_run_without_checkpoint(
 
 
 async def test_watchdog_stops_recovering_after_the_cap(
-    db_session: AsyncSession, store_sql,
+    db_session: AsyncSession,
+    store_sql,
 ) -> None:
     """稳定把 worker 拖垮的 run 必须停下来交给人，不能无限重投。"""
 
@@ -321,3 +344,64 @@ async def test_watchdog_stops_recovering_after_the_cap(
     exhausted = await reap_expired_runs(db_session, max_recovery=2)
     assert exhausted.recovered_cowork == []
     assert exhausted.failed == [run_id]
+
+
+async def test_transient_retry_uses_checkpointed_exponential_backoff_and_shared_cap(
+    db_session: AsyncSession,
+    store_sql,
+) -> None:
+    run_id = await _expired_run(db_session, store_sql)
+    # _expired_run 只为造 checkpoint；恢复成一个由当前 worker 正常持有的 executing run。
+    store_sql(
+        """UPDATE agent_runs SET status = 'queued', worker_id = NULL,
+                  lease_until = NULL, heartbeat_at = NULL WHERE id = ?""",
+        (str(run_id),),
+    )
+    assert await claim_run(db_session, run_id=run_id, worker_id="retry-worker", lease_s=60)
+
+    first = await schedule_run_retry(
+        db_session,
+        run_id=run_id,
+        worker_id="retry-worker",
+        max_recovery=2,
+        base_delay_s=2,
+        max_delay_s=10,
+    )
+    assert first is not None and first.attempt == 1
+    first_delay = (first.wake_at - datetime.now(UTC)).total_seconds()
+    assert 1 <= first_delay <= 2.1
+
+    store_sql(
+        """UPDATE agent_runs SET status = 'queued', wake_at = NULL WHERE id = ?""",
+        (str(run_id),),
+    )
+    assert await claim_run(db_session, run_id=run_id, worker_id="retry-worker", lease_s=60)
+    second = await schedule_run_retry(
+        db_session,
+        run_id=run_id,
+        worker_id="retry-worker",
+        max_recovery=2,
+        base_delay_s=2,
+        max_delay_s=10,
+    )
+    assert second is not None and second.attempt == 2
+    second_delay = (second.wake_at - datetime.now(UTC)).total_seconds()
+    assert 3 <= second_delay <= 4.1
+
+    store_sql(
+        """UPDATE agent_runs SET status = 'queued', wake_at = NULL WHERE id = ?""",
+        (str(run_id),),
+    )
+    assert await claim_run(db_session, run_id=run_id, worker_id="retry-worker", lease_s=60)
+    exhausted = await schedule_run_retry(
+        db_session,
+        run_id=run_id,
+        worker_id="retry-worker",
+        max_recovery=2,
+        base_delay_s=2,
+        max_delay_s=10,
+    )
+    assert exhausted is None
+    rows = store_sql("SELECT status, recovery_count FROM agent_runs WHERE id = ?", (str(run_id),))
+    assert rows[0]["status"] == "executing"
+    assert rows[0]["recovery_count"] == 2

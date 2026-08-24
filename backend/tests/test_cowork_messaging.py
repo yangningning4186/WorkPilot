@@ -115,9 +115,7 @@ def test_signature_verification_rejects_a_forged_event() -> None:
 def _expected_signature(timestamp: str, nonce: str, key: str, body: bytes) -> str:
     import hashlib
 
-    return hashlib.sha256(
-        timestamp.encode() + nonce.encode() + key.encode() + body
-    ).hexdigest()
+    return hashlib.sha256(timestamp.encode() + nonce.encode() + key.encode() + body).hexdigest()
 
 
 def test_message_events_anchor_on_the_thread_root_not_the_parent() -> None:
@@ -230,9 +228,7 @@ def _item(*, kind: str, request: dict) -> InboxRecord:
 async def test_a_conversation_without_a_binding_delivers_nothing(
     db_session: AsyncSession,
 ) -> None:
-    conversation_id = await ensure_conversation(
-        db_session, title="No binding"
-    )
+    conversation_id = await ensure_conversation(db_session, title="No binding")
     assert (
         await resolve_inbox_for_conversation(db_session, conversation_id=conversation_id)
     ) is None
@@ -242,29 +238,19 @@ async def test_a_conversation_without_a_binding_delivers_nothing(
 async def test_delivery_falls_back_to_the_default_inbox_and_honours_the_override(
     db_session: AsyncSession,
 ) -> None:
-    conversation_id = await ensure_conversation(
-        db_session, title="Routing"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Routing")
     await upsert_inbox_binding(
         db_session, name=DEFAULT_INBOX_NAME, platform="feishu", chat_id="oc_default"
     )
-    await upsert_inbox_binding(
-        db_session, name="oncall", platform="feishu", chat_id="oc_oncall"
-    )
+    await upsert_inbox_binding(db_session, name="oncall", platform="feishu", chat_id="oc_oncall")
     await db_session.commit()
 
-    binding = await resolve_inbox_for_conversation(
-        db_session, conversation_id=conversation_id
-    )
+    binding = await resolve_inbox_for_conversation(db_session, conversation_id=conversation_id)
     assert binding is not None and binding.chat_id == "oc_default"
 
-    await set_conversation_inbox(
-        db_session, conversation_id=conversation_id, inbox_name="oncall"
-    )
+    await set_conversation_inbox(db_session, conversation_id=conversation_id, inbox_name="oncall")
     await db_session.commit()
-    binding = await resolve_inbox_for_conversation(
-        db_session, conversation_id=conversation_id
-    )
+    binding = await resolve_inbox_for_conversation(db_session, conversation_id=conversation_id)
     assert binding is not None and binding.chat_id == "oc_oncall"
 
 
@@ -272,9 +258,7 @@ async def test_delivery_falls_back_to_the_default_inbox_and_honours_the_override
 async def test_a_failing_sender_never_fails_the_run(db_session: AsyncSession) -> None:
     """item 已经在应用内 Inbox 里。让一次网络抖动把运行拖失败，换来的不是安全而是中断。"""
 
-    conversation_id = await ensure_conversation(
-        db_session, title="Sender failure"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Sender failure")
     await upsert_inbox_binding(
         db_session, name=DEFAULT_INBOX_NAME, platform="feishu", chat_id="oc_1"
     )
@@ -379,9 +363,7 @@ async def test_a_mention_in_an_unsubscribed_channel_opens_a_session_that_owns_th
 async def test_a_busy_conversation_is_steered_instead_of_started_again(
     db_session: AsyncSession,
 ) -> None:
-    conversation_id = await ensure_conversation(
-        db_session, title="Busy"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Busy")
     await subscribe_channel(
         db_session, conversation_id=conversation_id, platform="feishu", chat_id="oc_busy"
     )
@@ -442,9 +424,7 @@ async def test_a_message_with_nowhere_to_go_becomes_a_dead_letter(
 
 @pytest.mark.integration
 async def test_unsubscribing_stops_delivery(db_session: AsyncSession) -> None:
-    conversation_id = await ensure_conversation(
-        db_session, title="Unsub"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Unsub")
     subscription = await subscribe_channel(
         db_session, conversation_id=conversation_id, platform="feishu", chat_id="oc_x"
     )
@@ -453,9 +433,7 @@ async def test_unsubscribing_stops_delivery(db_session: AsyncSession) -> None:
         db_session, conversation_id=conversation_id, subscription_id=subscription.id
     )
     await db_session.commit()
-    assert (
-        await list_channel_subscriptions(db_session, channel=("feishu", "oc_x"))
-    ) == []
+    assert (await list_channel_subscriptions(db_session, channel=("feishu", "oc_x"))) == []
 
 
 async def _seed_run(session: AsyncSession, *, conversation_id: UUID) -> UUID:

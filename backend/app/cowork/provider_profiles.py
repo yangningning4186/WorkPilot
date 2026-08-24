@@ -25,7 +25,7 @@ from app.core.config import Settings
 from app.core.db import DbSession as AsyncSession
 from app.core.db import SessionFactory
 from app.core.private_json import read_private_json, write_private_json
-from app.llm_bootstrap import build_custom_model_gateway, build_model_gateway
+from app.llm_bootstrap import build_custom_model_gateway
 from app.security.secret_store import LocalSecretStore
 from app.telemetry import default_telemetry_store
 from app.telemetry.model_budget import build_cost_guard
@@ -83,6 +83,10 @@ class ProviderProfileRecord:
 
 class ProviderNameTakenError(ValueError):
     """名称唯一由这里保证——原来那条 `lower(name)` 唯一索引没有了。"""
+
+
+class ProviderSelectionRequiredError(RuntimeError):
+    """会话没有可用的用户配置 Provider；禁止回落到部署级默认模型。"""
 
 
 def store_path(settings: Settings) -> Path:
@@ -289,11 +293,11 @@ async def build_conversation_gateway(
     session_factory: SessionFactory,
     run_id: UUID,
 ) -> ModelGateway:
-    """按会话选定的 Provider 造网关；没选就用默认路由。
+    """按会话选定的 Provider 造网关；没有显式选择就拒绝运行。
 
     Profile 出了数据库之后这里少了两条 `LEFT JOIN provider_profiles`——会话记的
     只是一个 id，解引用在内存里做。代价是 id 可能悬空（用户删掉了 profile），
-    所以下面按"没选 Provider"处理：回落到默认网关，而不是让这次运行失败。
+    所以必须把"未选择"和"已删除"都报成可操作错误，不能悄悄切到部署级模型。
     """
 
     from app.cowork_store.routing import cowork_store
@@ -306,30 +310,20 @@ async def build_conversation_gateway(
             conversation_id=conversation_id, archived=None, limit=1
         )
     )
-    selection = (
-        local_metadata[0]["provider_profile_id"],
-        local_metadata[0]["model_override"],
-    )
+    if not local_metadata:
+        raise ProviderSelectionRequiredError("当前会话不存在，无法读取模型配置")
+    selection = (local_metadata[0]["provider_profile_id"], local_metadata[0]["model_override"])
     raw_profile_id, model_override = selection
-    profile = (
-        None
-        if raw_profile_id is None
-        else get_provider_profile(settings, UUID(str(raw_profile_id)))
-    )
+    if raw_profile_id is None:
+        raise ProviderSelectionRequiredError(
+            "当前会话尚未选择模型服务，请先在“模型与密钥”中添加并选择 Provider"
+        )
+    profile = get_provider_profile(settings, UUID(str(raw_profile_id)))
+    if profile is None:
+        raise ProviderSelectionRequiredError("当前会话选择的模型服务已被删除，请重新选择 Provider")
     telemetry = default_telemetry_store()
     audit = telemetry
     budget = build_cost_guard(settings, telemetry)
-    # 审计库换成 SQLite 之后没有指向 agent_runs 的外键了，本地 run_id 可以照常写进去。
-    if profile is None:
-        cowork_settings = settings.model_copy(
-            update={"model_timeout_s": settings.cowork_model_timeout_s}
-        )
-        return build_model_gateway(
-            cowork_settings,
-            audit_sink=audit,
-            budget_guard=budget,
-            run_id=run_id,
-        )
     if not profile.enabled:
         raise RuntimeError(f"会话选择的 Provider {profile.name} 已停用，请重新选择")
     secrets = LocalSecretStore(settings.secret_store_key_path).decrypt(profile.api_key_ciphertext)

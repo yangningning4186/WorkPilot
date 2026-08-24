@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -12,6 +13,8 @@ from croniter import croniter
 from app.core.config import Settings
 from app.core.db import DbSession as AsyncSession
 from app.cowork.extensions import register_skill_tools
+from app.cowork.permissions import list_session_roots
+from app.cowork.personas import load_persona_catalog
 from app.cowork.runtime import initialize_cowork_state
 from app.cowork.tools import build_default_cowork_registry
 from app.cowork_contracts import (
@@ -24,15 +27,14 @@ from app.cowork_contracts import (
     ScheduleView as ScheduleView,
 )
 from app.cowork_store.routing import cowork_store
+from app.runstore.conversations import get_conversation
 from app.runstore.runs import (
-    append_events,
     append_message,
     create_run,
-    finish_run,
+    finish_run_with_events,
 )
 
 RunTrigger = Literal["manual", "schedule", "catchup"]
-_ACTIVE_STATUSES = "('queued','executing','waiting_human','sleeping')"
 
 
 class ScheduleError(ValueError):
@@ -250,6 +252,7 @@ async def _create_schedule_run(
         schedule_id=schedule.id,
         unattended=True,
         run_trigger=trigger,
+        initializing=True,
     )
     await append_message(
         session,
@@ -261,16 +264,35 @@ async def _create_schedule_run(
         trace_id=f"scheduler:{schedule.id}",
     )
     registry = build_default_cowork_registry()
-    register_skill_tools(registry, settings)
+    roots = await list_session_roots(session, conversation_id=schedule.conversation_id)
+    register_skill_tools(
+        registry,
+        settings,
+        project_roots=tuple(Path(item.canonical_path) for item in roots),
+    )
+    conversation = await get_conversation(session, conversation_id=schedule.conversation_id)
+    if conversation is None:  # pragma: no cover - schedule 外键语义
+        raise LookupError("自动化会话不存在")
+    persona = load_persona_catalog(
+        settings, project_roots=tuple(Path(item.canonical_path) for item in roots)
+    ).get(conversation.persona_name)
     try:
         # 计划行锁、run/checkpoint 创建和 next_run_at 推进必须由外层同一事务提交。
         # 若这里提前 commit，会在计划仍显示到期时释放锁，形成重复派发窗口。
-        await initialize_cowork_state(session, run_id=run.id, registry=registry, commit=False)
-    except ValueError as error:
-        message = f"自动化未能启动：{error}"
-        await append_events(
+        await initialize_cowork_state(
             session,
             run_id=run.id,
+            registry=registry,
+            settings=settings,
+            persona=persona,
+        )
+    except ValueError as error:
+        message = f"自动化未能启动：{error}"
+        await finish_run_with_events(
+            session,
+            run_id=run.id,
+            status="failed",
+            error=message,
             events=[
                 (
                     "error",
@@ -278,7 +300,6 @@ async def _create_schedule_run(
                 )
             ],
         )
-        await finish_run(session, run_id=run.id, status="failed", error=message)
         return run.id, False
     return run.id, True
 
@@ -375,7 +396,5 @@ async def list_dispatchable_scheduled_runs(
 ) -> list[UUID]:
     store = cowork_store()
     return [
-        run.id
-        for run in await store.list_queued_runs(limit=limit)
-        if run.schedule_id is not None
+        run.id for run in await store.list_queued_runs(limit=limit) if run.schedule_id is not None
     ]

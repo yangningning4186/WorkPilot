@@ -7,6 +7,7 @@ import hashlib
 import os
 import shlex
 import signal
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -169,11 +170,9 @@ async def execute_shell_command(
 
     reader_timed_out = False
     try:
-        (stdout_bytes, stdout_truncated), (stderr_bytes, stderr_truncated) = (
-            await asyncio.wait_for(
-                asyncio.gather(stdout_task, stderr_task),
-                timeout=max(terminate_grace_s, 0.5),
-            )
+        (stdout_bytes, stdout_truncated), (stderr_bytes, stderr_truncated) = await asyncio.wait_for(
+            asyncio.gather(stdout_task, stderr_task),
+            timeout=max(terminate_grace_s, 0.5),
         )
     except TimeoutError:
         # 已脱离进程组的后代仍可能继承 stdout/stderr 管道。主进程即使退出，EOF
@@ -243,11 +242,18 @@ async def _terminate_process_group(process: asyncio.subprocess.Process, grace_s:
 
 
 def _minimal_environment() -> dict[str, str]:
+    # 开发版 sidecar 直接由 backend/.venv/bin/python 启动。把同一解释器目录放到 PATH
+    # 最前，格式 Skill 调用 python/python3 时才能稳定拿到随 WorkPilot 安装的
+    # python-docx/openpyxl/python-pptx/PyMuPDF，而不是随机落到系统 Python。
+    executable_dir = str(Path(sys.executable).resolve().parent)
+    inherited_path = os.environ.get("PATH", os.defpath)
     environment = {
-        "PATH": os.environ.get("PATH", os.defpath),
+        "PATH": os.pathsep.join((executable_dir, inherited_path)),
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
     }
+    if Path(sys.executable).name.casefold().startswith("python"):
+        environment["WORKPILOT_PYTHON"] = str(Path(sys.executable).resolve())
     for key in ("HOME", "TMPDIR"):
         value = os.environ.get(key)
         if value:

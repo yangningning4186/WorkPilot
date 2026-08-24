@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
 import socket
-from datetime import datetime
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
@@ -22,15 +24,22 @@ from app.core.run_bus import RunBus
 from app.cowork.automation_tools import register_scheduler_tools
 from app.cowork.browser_tools import PlaywrightBrowserManager, register_browser_tools
 from app.cowork.connector_tools import register_connector_tools
+from app.cowork.conversation_titles import (
+    fallback_conversation_title,
+    generate_conversation_title,
+    is_placeholder_title,
+)
 from app.cowork.extensions import register_mcp_tools, register_skill_tools
 from app.cowork.mcp.client import McpClientManager
 from app.cowork.mcp.config import McpConfiguration, load_mcp_configuration
 from app.cowork.mcp.credentials import hydrate_mcp_oauth_credentials
 from app.cowork.memory import schedule_memory_extraction
 from app.cowork.memory_tools import register_memory_tools
+from app.cowork.permissions import list_session_roots
 from app.cowork.provider_profiles import build_conversation_gateway
 from app.cowork.rag_tools import register_rag_tools
 from app.cowork.runtime import run_cowork_graph
+from app.cowork.shell_sessions import CoworkPersistentShellManager
 from app.cowork.shell_tasks import CoworkShellTaskManager
 from app.cowork.skills.candidate_store import schedule_skill_distillation
 from app.cowork.skills.distillation import successful_tool_names
@@ -39,16 +48,20 @@ from app.cowork.tools import CoworkToolRegistry, build_default_cowork_registry
 from app.cowork_store.factory import local_cowork_stores
 from app.knowledge_contracts import RagService
 from app.rag.kb import local_kb_service
+from app.runstore.conversations import compare_and_set_conversation_title, get_conversation
 from app.runstore.runs import (
     append_events,
     append_message,
     claim_run,
     finalize_message,
-    finish_run,
+    finish_run_with_events,
     get_run,
     renew_lease,
+    schedule_run_retry,
 )
 from app.security.secret_store import LocalSecretStore
+from app.worker.emitter import RunEventEmitter
+from workpilot_ai.errors import ProviderRouteTimeoutError
 from workpilot_ai.gateway import ModelGateway
 
 logger = structlog.get_logger(__name__)
@@ -103,6 +116,32 @@ def worker_identity() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
 
 
+class _CoworkStreamSink:
+    """把 runtime 的转播通知落成 run 事件。
+
+    合并与落库交给已有的 `RunEventEmitter`：逐 token 写库会把写入量放大一到两个数量级
+    （ADR-0007 代价 3），而用户对 50ms 一批和一 token 一批的感知没有区别。
+
+    `reasoning` 单独一路事件、**不落进 assistant 消息**：思考过程不是回答，不进 canonical
+    历史，也不该在刷新页面之后还留在那里。它由下一次 `reset` 清掉。
+    """
+
+    def __init__(self, emitter: RunEventEmitter) -> None:
+        self._emitter = emitter
+
+    async def reset(self) -> None:
+        await self._emitter.emit("message.reset", {})
+
+    async def text(self, delta: str) -> None:
+        await self._emitter.delta(delta)
+
+    async def reasoning(self, delta: str) -> None:
+        await self._emitter.reasoning(delta)
+
+    async def drain(self) -> None:
+        await self._emitter.drain()
+
+
 async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
     run_id = UUID(run_id_raw)
     settings: Settings = ctx.get("settings") or get_settings()
@@ -130,10 +169,10 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
         return
 
     local_user_message = None
+    title_expected: str | None = None
+    title_task: asyncio.Task[str] | None = None
     async with session_factory() as session:
-        conversation_messages = await local_cowork_stores().conversations.read(
-            run.conversation_id
-        )
+        conversation_messages = await local_cowork_stores().conversations.read(run.conversation_id)
         existing_message = next(
             (
                 item
@@ -150,6 +189,17 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
             ),
             None,
         )
+        user_messages = [
+            item for item in conversation_messages if item.role == "user" and item.content.strip()
+        ]
+        conversation = await get_conversation(session, conversation_id=run.conversation_id)
+        fallback_title = fallback_conversation_title(run.goal)
+        if (
+            len(user_messages) == 1
+            and conversation is not None
+            and (is_placeholder_title(conversation.title) or conversation.title == fallback_title)
+        ):
+            title_expected = conversation.title
         existing = None if existing_message is None else existing_message.record_id
         message_id = (
             UUID(str(existing))
@@ -206,6 +256,12 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                     session_factory=session_factory,
                     run_id=run_id,
                 )
+            if title_expected is not None:
+                # 与主任务并行生成：绝大多数长任务不会为标题多等一秒；失败只保留入口处
+                # 已写好的确定性短标题，绝不能反向影响 Cowork 运行状态。
+                title_task = asyncio.create_task(
+                    generate_conversation_title(raw_gateway, user_message=run.goal)
+                )
             budget: BudgetState = {
                 "max_tokens": run.budget_tokens,
                 "used_tokens": run.used_tokens,
@@ -224,14 +280,19 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
             # rag 给 KB 预检索用；ctx 里给了就用它们那份。
             injected_rag = ctx.get("cowork_rag")
             rag: RagService = (
-                injected_rag
-                if isinstance(injected_rag, RagService)
-                else local_kb_service(settings)
+                injected_rag if isinstance(injected_rag, RagService) else local_kb_service(settings)
             )
             configured_registry = ctx.get("cowork_registry")
             if configured_registry is None:
                 registry = build_default_cowork_registry()
-                register_skill_tools(registry, settings)
+                session_roots = await list_session_roots(
+                    session, conversation_id=run.conversation_id
+                )
+                register_skill_tools(
+                    registry,
+                    settings,
+                    project_roots=tuple(Path(item.canonical_path) for item in session_roots),
+                )
                 manager = ctx.get("mcp_manager")
                 if not isinstance(manager, McpClientManager):
                     configuration = hydrate_mcp_oauth_credentials(
@@ -266,6 +327,24 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                     terminate_grace_s=settings.cowork_shell_terminate_grace_s,
                 )
                 ctx["shell_task_manager"] = shell_tasks
+            shell_sessions = ctx.get("shell_session_manager")
+            if not isinstance(shell_sessions, CoworkPersistentShellManager):
+                shell_sessions = CoworkPersistentShellManager(
+                    state_path=settings.cowork_data_path.expanduser() / "shell_sessions.json",
+                    timeout_s=settings.cowork_shell_timeout_s,
+                    terminate_grace_s=settings.cowork_shell_terminate_grace_s,
+                    max_output_bytes=settings.cowork_shell_max_output_bytes,
+                )
+                ctx["shell_session_manager"] = shell_sessions
+            stream_sink = _CoworkStreamSink(
+                RunEventEmitter(
+                    session_factory,
+                    bus,
+                    run_id=run_id,
+                    flush_interval_s=settings.run_delta_flush_ms / 1000,
+                    flush_chars=settings.run_delta_flush_chars,
+                )
+            )
             state = await run_cowork_graph(
                 session,
                 run_id=run_id,
@@ -278,7 +357,9 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                 cancel_event=cancel_event,
                 session_factory=session_factory,
                 shell_tasks=shell_tasks,
+                shell_sessions=shell_sessions,
                 rag=rag,
+                stream_sink=stream_sink,
             )
 
         if state["status"] == "sleeping":
@@ -315,9 +396,13 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                 message_id=message_id,
                 status=message_status,
                 content=final_text,
+                citations=state["final_citations"],
             )
             events: list[tuple[str, dict[str, Any]]] = [
-                ("message.delta", {"text": final_text}),
+                *(("citation", item) for item in state["final_citations"]),
+                # 终态正文是一份原子快照：不先 reset 再发整段 delta，避免消费者
+                # 在两条事件之间闪成空白，也避免重连时把整段当成新增量动画。
+                ("message.snapshot", {"text": final_text}),
                 (
                     "message.done",
                     {"message_id": str(message_id), "status": message_status},
@@ -327,16 +412,49 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                     {"workflow_type": "cowork", "status": run_status},
                 ),
             ]
-            await append_events(session, run_id=run_id, events=events)
-            finished_run = await finish_run(
+            finished_run, _ = await finish_run_with_events(
                 session,
                 run_id=run_id,
                 status=run_status,
+                events=events,
                 worker_id=worker_id,
                 error=state["error"],
             )
             await session.commit()
         await bus.publish(run_id)
+        # 标题模型只取“主任务结束时已经完成”的结果。绝不在这里 await
+        # 仍在运行的生成：run.done 已经提交并通知订阅者，标题再慢也不会卡住回答。
+        if title_task is not None and title_expected is not None and title_task.done():
+            try:
+                generated_title = title_task.result()
+                if generated_title != title_expected:
+                    async with session_factory() as session:
+                        updated_title = await compare_and_set_conversation_title(
+                            session,
+                            conversation_id=run.conversation_id,
+                            expected_title=title_expected,
+                            title=generated_title,
+                        )
+                        if updated_title is not None:
+                            await append_events(
+                                session,
+                                run_id=run_id,
+                                events=[
+                                    (
+                                        "conversation.title",
+                                        {
+                                            "conversation_id": str(run.conversation_id),
+                                            "title": generated_title,
+                                        },
+                                    )
+                                ],
+                            )
+                        await session.commit()
+                    if updated_title is not None:
+                        await bus.publish(run_id)
+            except Exception:
+                # 标题是可选增强；回答此时已是成功终态，不能被它反向改成失败。
+                logger.exception("Cowork 标题后处理失败", run_id=str(run_id))
         # Skill 蒸馏的入队与存储后端无关：作业连同来源快照一起落进候选目录，
         # 不再需要 claim 时回查 agent_runs 和 checkpoint。写盘失败同样只能告警——
         # Cowork 主运行已经是成功终态，不能因为后处理反向改它。
@@ -376,6 +494,35 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
             except Exception:
                 # 作业已可靠落库，定时 dispatcher 会补偿；不能把已成功的 Cowork 改成失败。
                 logger.exception("Cowork 后处理作业首次入队失败", run_id=str(run_id))
+    except ProviderRouteTimeoutError as error:
+        error_detail = _cowork_error_detail(error)
+        scheduled = await _schedule_provider_timeout_retry(
+            session_factory,
+            bus,
+            settings=settings,
+            run_id=run_id,
+            worker_id=worker_id,
+            error=error_detail,
+        )
+        if scheduled:
+            logger.warning(
+                "Cowork 模型路由超时，已从 checkpoint 安排重试",
+                run_id=str(run_id),
+            )
+        else:
+            logger.exception(
+                "Cowork 模型路由超时且自动恢复次数已耗尽",
+                run_id=str(run_id),
+                exception_detail=error_detail,
+            )
+            await _fail_cowork(
+                session_factory,
+                bus,
+                run_id=run_id,
+                worker_id=worker_id,
+                message_id=message_id,
+                error=error_detail,
+            )
     except Exception as error:
         error_detail = _cowork_error_detail(error)
         logger.exception(
@@ -393,6 +540,10 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
             error=error_detail,
         )
     finally:
+        if title_task is not None and not title_task.done():
+            title_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await title_task
         if owns_gateway and raw_gateway is not None:
             await raw_gateway.aclose()
         heartbeat.cancel()
@@ -401,6 +552,56 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
             await asyncio.gather(heartbeat, cancel_watcher)
         except asyncio.CancelledError:
             pass
+
+
+async def _schedule_provider_timeout_retry(
+    session_factory: SessionFactory,
+    bus: RunBus,
+    *,
+    settings: Settings,
+    run_id: UUID,
+    worker_id: str,
+    error: str,
+) -> bool:
+    """整条模型路由超时时释放 worker，并从最近 checkpoint 有界恢复。"""
+
+    async with session_factory() as session:
+        scheduled = await schedule_run_retry(
+            session,
+            run_id=run_id,
+            worker_id=worker_id,
+            max_recovery=settings.run_max_recovery,
+            base_delay_s=settings.cowork_provider_timeout_retry_base_s,
+            max_delay_s=settings.cowork_provider_timeout_retry_max_s,
+        )
+        if scheduled is None:
+            return False
+        delay_s = max(0.0, (scheduled.wake_at - datetime.now(UTC)).total_seconds())
+        try:
+            await append_events(
+                session,
+                run_id=run_id,
+                events=[
+                    (
+                        "step.update",
+                        {
+                            "status": "recovering",
+                            "summary": (
+                                "主模型与 fallback 均响应超时，"
+                                f"约 {delay_s:.0f} 秒后从最近 checkpoint 继续"
+                                f"（第 {scheduled.attempt}/{settings.run_max_recovery} 次）。"
+                            ),
+                            "error": error,
+                        },
+                    )
+                ],
+            )
+            await session.commit()
+        except Exception:
+            # sleeping 状态与 wake_at 已可靠落库；事件写失败不能把可恢复 run 反向判死。
+            logger.exception("Cowork 超时重试事件写入失败", run_id=str(run_id))
+    await bus.publish(run_id)
+    return True
 
 
 async def _watch_cancel(
@@ -468,9 +669,12 @@ async def _fail_cowork(
                 status="failed",
                 content=user_message,
             )
-        await append_events(
+        _, _ = await finish_run_with_events(
             session,
             run_id=run_id,
+            status="failed",
+            worker_id=worker_id,
+            error=error,
             events=[
                 (
                     "error",
@@ -481,13 +685,6 @@ async def _fail_cowork(
                     },
                 )
             ],
-        )
-        await finish_run(
-            session,
-            run_id=run_id,
-            status="failed",
-            worker_id=worker_id,
-            error=error,
         )
         await session.commit()
     await bus.publish(run_id)

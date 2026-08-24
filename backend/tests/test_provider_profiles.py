@@ -8,7 +8,12 @@ import pytest
 
 from app.core.config import Settings
 from app.cowork.provider_probe import probe_provider_profile
-from app.cowork.provider_profiles import ProviderProfileRecord, build_conversation_gateway
+from app.cowork.provider_profiles import (
+    ProviderProfileRecord,
+    ProviderSelectionRequiredError,
+    build_conversation_gateway,
+)
+from app.schemas.providers import ProviderProfileCreate
 from app.security.secret_store import LocalSecretStore, SecretStoreError
 from workpilot_ai.provider_factory import ChatProviderConfig, build_chat_provider
 
@@ -47,39 +52,37 @@ def test_provider_factory_keeps_provider_identity() -> None:
     assert provider.name == "deepseek"
 
 
+def test_provider_context_window_is_system_managed_when_client_omits_it() -> None:
+    request = ProviderProfileCreate.model_validate(
+        {
+            "name": "用户配置模型",
+            "provider": "openai",
+            "base_url": "https://api.example.com/v1",
+            "default_model": "model-from-user",
+            "api_key": "secret",
+        }
+    )
+
+    assert request.context_window_tokens == 128_000
+
+
 @pytest.mark.asyncio
-async def test_sqlite_cowork_gateway_records_the_local_run_id(
+async def test_cowork_gateway_requires_an_explicit_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class LocalStore:
         async def list_conversation_metadata(self, **_: object) -> list[dict[str, object]]:
             return [{"provider_profile_id": None, "model_override": None}]
 
-    captured: dict[str, object] = {}
-
-    def fake_build_model_gateway(settings: Settings, **kwargs: object) -> object:
-        captured.update(kwargs)
-        return object()
-
-    monkeypatch.setattr(
-        "app.cowork_store.routing.cowork_store", lambda: LocalStore()
-    )
-    monkeypatch.setattr(
-        "app.cowork.provider_profiles.build_model_gateway", fake_build_model_gateway
-    )
-    run_id = uuid4()
-    await build_conversation_gateway(
-        AsyncMock(),
-        conversation_id=uuid4(),
-        settings=Settings(cowork_store_backend="sqlite"),
-        session_factory=AsyncMock(),
-        run_id=run_id,
-    )
-
-    # 审计库以前在 PostgreSQL，有一条指向 agent_runs 的外键，所以 SQLite 的 Cowork run
-    # 只能把 run_id 丢掉——成本因此归不到具体任务上。审计换成 SQLite 之后没有那条外键了，
-    # 本地 run_id 必须原样记进去。
-    assert captured["run_id"] == run_id
+    monkeypatch.setattr("app.cowork_store.routing.cowork_store", lambda: LocalStore())
+    with pytest.raises(ProviderSelectionRequiredError, match="尚未选择模型服务"):
+        await build_conversation_gateway(
+            AsyncMock(),
+            conversation_id=uuid4(),
+            settings=Settings(),
+            session_factory=AsyncMock(),
+            run_id=uuid4(),
+        )
 
 
 @pytest.mark.asyncio
@@ -90,7 +93,9 @@ async def test_probe_gemini_model_catalog() -> None:
         requests.append(request)
         return httpx.Response(
             200,
-            json={"models": [{"name": "models/gemini-2.5-pro"}, {"name": "models/gemini-2.5-flash"}]},
+            json={
+                "models": [{"name": "models/gemini-2.5-pro"}, {"name": "models/gemini-2.5-flash"}]
+            },
         )
 
     async with httpx.AsyncClient(

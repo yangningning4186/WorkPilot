@@ -20,13 +20,12 @@ from uuid6 import uuid7
 
 from app.core.config import Settings
 from app.core.private_json import read_private_json, write_private_json
+from app.cowork.connector_descriptors import connector_kinds
 from app.schemas.connectors import ConnectorAuthType, ConnectorKind, ConnectorStatus
 from app.security.secret_store import LocalSecretStore
 
 _STORE_FILE = "connector_accounts.json"
-_KINDS: frozenset[str] = frozenset(
-    {"github", "feishu", "wecom", "wechat_official", "tencent_docs"}
-)
+_KINDS = connector_kinds()
 _AUTH_TYPES: frozenset[str] = frozenset({"oauth2", "token", "app_credentials"})
 _STATUSES: frozenset[str] = frozenset(
     {"configured", "authorizing", "connected", "expired", "error"}
@@ -123,7 +122,7 @@ def _record(account_id: str, value: dict[str, Any]) -> ConnectorAccountRecord | 
         scopes = value.get("scopes")
         return ConnectorAccountRecord(
             id=UUID(account_id),
-            kind=kind,  # type: ignore[arg-type]
+            kind=kind,
             name=str(value["name"]),
             auth_type=auth_type,  # type: ignore[arg-type]
             status=status,  # type: ignore[arg-type]

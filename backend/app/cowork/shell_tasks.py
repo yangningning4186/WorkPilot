@@ -4,11 +4,10 @@
 在这个模型下要么撞超时，要么把整个 run 卡住。后台任务把"启动"和"取输出"拆成两步，
 模型可以先去做别的事，再回来轮询。
 
-**进程活在 worker 进程里，不落库。** 这不是偷懒：真正的持久 shell（保留 cd、venv、
-环境变量的交互式会话）在我们的架构里给不出正确语义——run 会在 `waiting_human` 处暂停，
-恢复时可能落到另一个 worker，那边的 PTY 里 cwd 是错的，而命令照样会跑，错得悄无声息。
-后台任务同样活不过重启，但失败是**显式**的：`shell_task_output` 会直截了当地说任务不在了。
-两者的区别就是这一点，也是这里只做后台任务、不做持久 shell 的理由。
+**后台进程活在 worker 进程里，不落库。** 它和 `persistent_session=true` 的 PTY 是两种
+不同工具：后台任务适合 dev server、watch 与长构建；持久 PTY 适合需要连续 `cd`、
+`export` 或激活 venv 的一串短命令。PTY 重启后会从最后 cwd 重建并明确报告 env 丢失；
+后台任务则不会重放，`shell_task_output` 会直接说任务不在了，避免重复外部副作用。
 
 任务按 conversation 隔离：拿着别的会话的 task_id 读不到输出，和浏览器 session 同一个道理。
 """
@@ -59,6 +58,7 @@ class _ShellTask:
     # 已经交给模型的字节数：轮询只回增量，否则每次都把整段历史再塞一遍上下文。
     delivered: int = 0
     readers: tuple[asyncio.Task[None], ...] = ()
+    expiry: asyncio.Task[None] | None = None
 
     @property
     def running(self) -> bool:
@@ -98,10 +98,25 @@ class CoworkShellTaskManager:
         output_max_bytes: int,
         hard_ttl_s: float,
         terminate_grace_s: float,
+        max_tasks_total: int | None = None,
+        max_retained_tasks: int | None = None,
     ) -> None:
+        if max_tasks_per_conversation < 1:
+            raise ValueError("每会话后台任务上限必须大于 0")
+        derived_total = max(8, max_tasks_per_conversation * 4)
+        resolved_total = derived_total if max_tasks_total is None else max_tasks_total
+        if resolved_total < max_tasks_per_conversation:
+            raise ValueError("后台任务全局上限不能小于每会话上限")
+        resolved_retained = (
+            max(16, resolved_total * 4) if max_retained_tasks is None else max_retained_tasks
+        )
+        if resolved_retained < resolved_total:
+            raise ValueError("后台任务保留上限不能小于全局运行上限")
         self._tasks: dict[str, _ShellTask] = {}
         self._lock = asyncio.Lock()
         self._max_tasks = max_tasks_per_conversation
+        self._max_tasks_total = resolved_total
+        self._max_retained_tasks = resolved_retained
         self._output_max_bytes = output_max_bytes
         self._hard_ttl_s = hard_ttl_s
         self._terminate_grace_s = terminate_grace_s
@@ -115,6 +130,7 @@ class CoworkShellTaskManager:
     ) -> ShellTaskSnapshot:
         async with self._lock:
             await self._reap_locked()
+            self._prune_completed_locked(reserve=1)
             live = [
                 task
                 for task in self._tasks.values()
@@ -123,6 +139,12 @@ class CoworkShellTaskManager:
             if len(live) >= self._max_tasks:
                 raise ShellTaskError(
                     f"本会话同时运行的后台任务已达上限 {self._max_tasks}，"
+                    "请先用 shell_task_kill 结束不再需要的任务"
+                )
+            live_total = sum(task.running for task in self._tasks.values())
+            if live_total >= self._max_tasks_total:
+                raise ShellTaskError(
+                    f"后台任务全局运行数已达上限 {self._max_tasks_total}，"
                     "请先用 shell_task_kill 结束不再需要的任务"
                 )
             process = await self._spawn(command, cwd)
@@ -142,6 +164,12 @@ class CoworkShellTaskManager:
                 if stream is not None
             )
             self._tasks[task.task_id] = task
+            # hard TTL 必须主动触发。只在下一次 start 时顺手清理，会让“启动后再也不操作”
+            # 的 dev server 永久活着，名义上的上限因此形同虚设。
+            task.expiry = asyncio.create_task(
+                self._expire(task),
+                name=f"cowork-shell-expiry-{task.task_id}",
+            )
             return task.snapshot(incremental=True)
 
     async def read(
@@ -175,9 +203,7 @@ class CoworkShellTaskManager:
         if cancel_event is not None:
             waiters.append(asyncio.ensure_future(cancel_event.wait()))
         try:
-            await asyncio.wait(
-                waiters, timeout=timeout_s, return_when=asyncio.FIRST_COMPLETED
-            )
+            await asyncio.wait(waiters, timeout=timeout_s, return_when=asyncio.FIRST_COMPLETED)
         finally:
             for waiter in waiters:
                 waiter.cancel()
@@ -211,11 +237,16 @@ class CoworkShellTaskManager:
         async with self._lock:
             tasks = list(self._tasks.values())
             self._tasks.clear()
+        expiry_tasks = [task.expiry for task in tasks if task.expiry is not None]
+        reader_tasks = [reader for task in tasks for reader in task.readers]
         for task in tasks:
+            if task.expiry is not None:
+                task.expiry.cancel()
             if task.running:
                 await _terminate_process_group(task.process, self._terminate_grace_s)
             for reader in task.readers:
                 reader.cancel()
+        await asyncio.gather(*expiry_tasks, *reader_tasks, return_exceptions=True)
 
     def _require(self, conversation_id: UUID, task_id: str) -> _ShellTask:
         task = self._tasks.get(task_id)
@@ -237,11 +268,43 @@ class CoworkShellTaskManager:
                 await _terminate_process_group(task.process, self._terminate_grace_s)
             for reader in task.readers:
                 reader.cancel()
+            if task.expiry is not None and task.expiry is not asyncio.current_task():
+                task.expiry.cancel()
             del self._tasks[task_id]
 
-    async def _spawn(
-        self, command: ShellCommand, cwd: Path
-    ) -> asyncio.subprocess.Process:
+    def _prune_completed_locked(self, *, reserve: int) -> None:
+        """为新任务留位置；只淘汰已结束快照，绝不拿保留上限杀活进程。"""
+
+        overflow = len(self._tasks) + reserve - self._max_retained_tasks
+        if overflow <= 0:
+            return
+        completed = sorted(
+            (task for task in self._tasks.values() if not task.running),
+            key=lambda task: (task.started_at, task.task_id),
+        )
+        for task in completed[:overflow]:
+            self._tasks.pop(task.task_id, None)
+            if task.expiry is not None:
+                task.expiry.cancel()
+            for reader in task.readers:
+                reader.cancel()
+
+    async def _expire(self, task: _ShellTask) -> None:
+        try:
+            delay = max(0.0, task.started_at + self._hard_ttl_s - time.monotonic())
+            await asyncio.sleep(delay)
+            async with self._lock:
+                if self._tasks.get(task.task_id) is not task:
+                    return
+                del self._tasks[task.task_id]
+            if task.running:
+                await _terminate_process_group(task.process, self._terminate_grace_s)
+            for reader in task.readers:
+                reader.cancel()
+        except asyncio.CancelledError:
+            return
+
+    async def _spawn(self, command: ShellCommand, cwd: Path) -> asyncio.subprocess.Process:
         environment = _minimal_environment()
         argv = ("/bin/sh", "-c", command.raw) if command.has_operators else command.argv
         return await asyncio.create_subprocess_exec(

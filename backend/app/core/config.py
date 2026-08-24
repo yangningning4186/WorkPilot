@@ -17,14 +17,12 @@ class Settings(BaseSettings):
     )
 
     app_env: Literal["development", "test", "production"] = "development"
-    annotation_tool_enabled: bool = True
     log_level: str = "INFO"
-    # Web/集群部署继续使用 Arq + Redis；桌面 sidecar 使用同进程队列，任务真相仍在
-    # 持久化 store 中，并由轮询 dispatcher 补偿进程退出时丢失的内存唤醒。
+    # API 与 worker 同进程运行；内存队列只负责低延迟唤醒，任务真相始终在本地 store，
+    # dispatcher 会轮询补偿进程退出时丢失的通知。
     admin_cookie_name: str = "workpilot_admin_session"
     admin_session_ttl_s: int = Field(default=8 * 60 * 60, ge=300, le=7 * 24 * 60 * 60)
     demo_admin_password_hash: str = ""
-    demo_session_question_limit: int = Field(default=20, ge=1, le=10_000)
     daily_cost_limit_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
     cost_budget_timezone: str = "Asia/Shanghai"
     cost_reservation_ttl_s: int = Field(default=900, ge=60, le=7200)
@@ -45,13 +43,12 @@ class Settings(BaseSettings):
     local_library_path: Path = Path("../data/library")
     # Agent 写回与资料库导入目录物理隔离；output_path 只能是该根目录内的相对 .md 路径。
     agent_output_path: Path = Path("../data/agent-output")
-    # 办公工作台只加载受控大小的 Markdown；AI 改写进一步限制单次选区，避免把整本书
-    # 塞进 light 档或让一个异常 replacement 撑爆浏览器。
+    # Office 工具只加载受控大小的 Markdown；AI 改写进一步限制单次选区，避免把整本书
+    # 塞进 light 档或让一个异常 replacement 撑爆运行上下文。
     editor_max_document_chars: int = Field(default=500_000, ge=1_000, le=5_000_000)
     editor_max_selection_chars: int = Field(default=12_000, ge=100, le=100_000)
     editor_max_replacement_chars: int = Field(default=50_000, ge=100, le=500_000)
     editor_rewrite_max_tokens: int = Field(default=4_096, ge=64, le=32_768)
-    editor_permission_ttl_s: int = Field(default=3_600, ge=300, le=8 * 60 * 60)
     workspace_max_file_bytes: int = Field(default=20 * 1024 * 1024, ge=1_024, le=200 * 1024 * 1024)
     workspace_max_files: int = Field(default=2_000, ge=1, le=20_000)
     workspace_max_scan_entries: int = Field(default=50_000, ge=100, le=2_000_000)
@@ -71,20 +68,28 @@ class Settings(BaseSettings):
     # Cowork 是现有 answer/review 运行时上的第三种工作流。目录授权与 artifact API
     # 可先独立上线；真正的通用工具循环仍可用此总开关紧急关闭。
     cowork_enabled: bool = True
-    # Cowork 本地存储采用兼容迁移：postgres 是现有实现，sqlite 是新的桌面实现。
-    # RAG 的 documents/chunks/pgvector 不受这个开关影响。
-    cowork_store_backend: Literal["postgres", "sqlite"] = "sqlite"
+    # Cowork 控制面的落点。原来这里还有一个 `cowork_store_backend` 开关，
+    # ADR-0012 退役 PostgreSQL 之后它只剩一个合法值——留着比删掉更危险：
+    # 唯一的读者是启动时那句 `if backend == "sqlite"`，填成 "postgres"
+    # 不会报错，只会静默跳过本地 store 初始化，然后每一次请求都撞
+    # 「Cowork 本地 store 尚未初始化」。隔离改由 cowork_data_path 承担
+    # （评测跑批把它指到自己的包目录里，见 eval/cowork_runner.py）。
     cowork_data_path: Path = Path("~/.workpilot")
-    # 本地知识库的根目录，一个 KB 一个子目录。放在 data/ 之外是刻意的：这里存的是
-    # 解析产物与 FAISS 索引（派生数据，可重建），不是约束 7 说的语料本身——语料仍留在
-    # 用户自己的目录里，清单只记它的绝对路径。
+    # 本地知识库的根目录，一个 KB 一个子目录。索引版一经发布不可变；每篇文档还会把
+    # 原始字节按内容哈希固化到该 KB 的 sources/，因此源路径移动或覆盖后仍可重建和审计。
+    # 这些都是用户本机私有数据，绝不进入仓库的 data/ 目录。
     knowledge_base_path: Path = Path("~/.workpilot/kb")
     cowork_dispatch_poll_s: float = Field(default=1.0, gt=0, le=30)
-    cowork_max_steps: int = Field(default=30, ge=1, le=50)
+    # 仅用于上下文压缩、run 计量和费用预留。Cowork 主循环对支持省略该参数的 Provider
+    # 不再下发 max_tokens，避免 reasoning 把客户端额度耗尽后留不出正文。
     cowork_decision_max_tokens: int = Field(default=8_192, ge=128, le=16_384)
     # Cowork 的一次决策会携带工具 schema、网页结果和跨轮历史，明显比普通聊天更重。
     # 独立配置避免为了复杂任务放宽 Provider 探测等短请求的超时。
     cowork_model_timeout_s: float = Field(default=120.0, gt=0, le=600)
+    # 整条模型路由都超时时不丢弃长任务：释放 worker/租约，到点后从最新 checkpoint
+    # 继续。次数与 worker 失联恢复共用 run_max_recovery，避免两种故障交替造成无限重投。
+    cowork_provider_timeout_retry_base_s: float = Field(default=5.0, gt=0, le=300)
+    cowork_provider_timeout_retry_max_s: float = Field(default=60.0, gt=0, le=900)
     cowork_tool_result_max_chars: int = Field(default=20_000, ge=1_000, le=100_000)
     cowork_file_read_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1_024, le=100 * 1024 * 1024)
     cowork_file_write_max_bytes: int = Field(
@@ -93,6 +98,9 @@ class Settings(BaseSettings):
     cowork_file_max_lines: int = Field(default=2_000, ge=1, le=50_000)
     cowork_search_max_results: int = Field(default=200, ge=1, le=2_000)
     cowork_pdf_text_max_chars: int = Field(default=60_000, ge=1_000, le=500_000)
+    # 一份文档上最多留多少条持久化批注。上限存在的理由不是磁盘，是可读性：
+    # 一页里几十个高亮等于没有高亮，而模型在长文里逐句标注是很容易发生的。
+    cowork_reading_max_annotations: int = Field(default=200, ge=1, le=2_000)
     cowork_web_timeout_s: float = Field(default=30.0, gt=0, le=300)
     cowork_web_max_redirects: int = Field(default=5, ge=0, le=10)
     cowork_web_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1_024, le=100 * 1024 * 1024)
@@ -118,8 +126,10 @@ class Settings(BaseSettings):
     cowork_mcp_call_timeout_s: float = Field(default=60.0, gt=0, le=600)
     cowork_mcp_result_max_chars: int = Field(default=20_000, ge=1_000, le=100_000)
     cowork_skills_path: Path = Path("../skills")
-    # 蒸馏候选与它的作业队列都是目录，和已安装 Skill 同构（openworker 的 folder-is-truth）。
-    cowork_skill_candidates_path: Path = Path("../skills-candidates")
+    # 蒸馏候选与它的作业队列属于本机运行数据，不是仓库源码。旧默认
+    # `../skills-candidates` 会让 pytest 与桌面端共用一条队列，最终把测试 run 当成真实
+    # 用户证据；放进 ~/.workpilot 后由测试夹具随 cowork_data_path 一起显式隔离。
+    cowork_skill_candidates_path: Path = Path("~/.workpilot/skills-candidates")
     # 长期记忆：注入块整体有上限，单条超过 preview 就截断并让模型按需 memory_read，
     # 避免一条几千字的记忆吃掉整个上下文预算。
     cowork_memory_max_items: int = Field(default=200, ge=1, le=500)
@@ -154,6 +164,16 @@ class Settings(BaseSettings):
     cowork_shell_timeout_s: float = Field(default=120.0, gt=0, le=3_600)
     cowork_shell_terminate_grace_s: float = Field(default=2.0, ge=0, le=30)
     cowork_shell_max_output_bytes: int = Field(default=64 * 1024, ge=1_024, le=4 * 1024 * 1024)
+    # sandbox.execute 使用真实 Docker/Podman 隔离：无网络、只读 rootfs、drop capabilities。
+    # auto 只探测已安装后端；镜像不存在会直接失败，绝不回退到 host.execute。
+    cowork_sandbox_runtime: Literal["auto", "disabled", "docker", "podman"] = "auto"
+    cowork_sandbox_image: str = "alpine:3.20"
+    cowork_sandbox_memory_mb: int = Field(default=512, ge=64, le=16_384)
+    cowork_sandbox_pids_limit: int = Field(default=128, ge=16, le=4_096)
+    cowork_sandbox_cpus: float = Field(default=1.0, gt=0, le=16)
+    # 前台 Shell 完成后只对这批候选做格式校验与 Artifact 登记。扫描条目总量仍受
+    # workspace_max_scan_entries 约束，两个上限分别控制磁盘遍历和 UI 产物洪泛。
+    cowork_shell_artifact_max_files: int = Field(default=100, ge=1, le=2_000)
     # 后台 shell 任务。进程活在 worker 内存里，所以三个上限都是硬约束而不是建议：
     # 没人来收的后台进程会一直占着这台机器。
     cowork_shell_background_max_tasks: int = Field(default=4, ge=1, le=32)
@@ -248,10 +268,11 @@ class Settings(BaseSettings):
     pdf_mineru_timeout_s: float = Field(default=1800.0, gt=0, le=7200)
     pdf_mineru_fallback_enabled: bool = True
     pdf_mineru_processing_window_size: int = Field(default=4, ge=1, le=64)
-    # run 预算上限(约束 5): 任一超限即熔断, 防止反思循环烧钱。
-    run_budget_tokens: int = Field(default=200_000, ge=0)
-    run_budget_calls: int = Field(default=40, ge=0)
-    run_budget_wall_ms: int = Field(default=300_000, ge=1_000)
+    # 单次 run 的可选安全上限；0 表示不限制但仍持续记账。桌面 Cowork 默认允许长任务，
+    # 由取消、重复调用刹车、上下文压缩与每日费用上限兜底。无人值守部署可按需设正数。
+    run_budget_tokens: int = Field(default=0, ge=0)
+    run_budget_calls: int = Field(default=0, ge=0)
+    run_budget_wall_ms: int = Field(default=0, ge=0)
     run_lease_s: int = Field(default=60, ge=5, le=3600)
     # 心跳必须明显短于租约, 否则正常执行中的 run 会被 watchdog 误判为失联。
     run_heartbeat_s: float = Field(default=15.0, gt=0)
@@ -259,12 +280,6 @@ class Settings(BaseSettings):
     run_max_recovery: int = Field(default=3, ge=0, le=20)
     run_delta_flush_ms: int = Field(default=50, ge=10, le=1000)
     run_delta_flush_chars: int = Field(default=120, ge=1, le=4000)
-    # pgvector 扫描参数(docs/03 §4.1)。部分索引只覆盖 strategy + is_searchable,
-    # 其余过滤(embedding 身份、doc_type)仍在索引内进行, 靠迭代扫描兜底候选不足。
-    hnsw_iterative_scan: Literal["off", "relaxed_order", "strict_order"] = "relaxed_order"
-    hnsw_max_scan_tuples: int = Field(default=20_000, ge=1_000, le=1_000_000)
-    # ef_search 必须不小于 top_k, 否则召回会被候选队列长度截断。
-    hnsw_ef_search: int = Field(default=100, ge=1, le=1000)
     # 数值分数门必须绑定明确的排序器分数。默认关闭，因为现有 0.35 只在历史
     # 混合报告上扫过，而 dense cosine、RRF 与 cross-encoder 并不共享量纲；
     # 关闭时仍保留 fail-closed 的证据充分性门控。
@@ -277,9 +292,6 @@ class Settings(BaseSettings):
     evidence_gate_max_chars: int = Field(default=3000, ge=500, le=20000)
     rerank_evidence_gate_max_chars: int = Field(default=6000, ge=500, le=20000)
     evidence_gate_max_tokens: int = Field(default=300, ge=64, le=2048)
-    query_decomposition_enabled: bool = False
-    query_decomposition_max_subqueries: int = Field(default=4, ge=2, le=8)
-    query_decomposition_max_tokens: int = Field(default=300, ge=64, le=2048)
     # 当前会话的短期上下文。只取已完成问答轮次；长期记忆仍是 owner 级跨会话层。
     conversation_context_enabled: bool = True
     # 原文历史不再固定卡在 6 回合 / 6000 字符；上限由当前回答模型的完整 token 窗口
@@ -307,17 +319,18 @@ class Settings(BaseSettings):
     # 只在 query_decomposition 确实返回 >=2 个子问题时介入，简单题逐位回退原 RRF。
     coverage_selection_enabled: bool = False
     coverage_rank_cutoff: int = Field(default=10, ge=1, le=50)
+    # 文件系统 KB 的本地 cross-encoder 精排。服务不可用时保留 RRF 原排序，不影响可用性。
+    # 默认仍关闭：桌面包尚未内置约 2.3GB 的模型；开发/高级用户启动本机服务后显式开启。
     rerank_enabled: bool = False
-    # 统一候选池深度：dense/lexical 各臂取候选后先做 RRF，并截到该深度；
-    # 无论 rerank 是否开启都生效，避免线上 Top-5 与评测 Top-50 跑成两条链。
-    # 字段名保留 rerank_candidate_k 以兼容已有部署环境变量。
-    rerank_candidate_k: int = Field(default=50, ge=2, le=50)
+    # 线上默认返回 Top-5；实验表明 RRF Top-10 → rerank → Top-5 在基本不增加证据 token 的
+    # 前提下显著改善排序，而历史 Top-50 会把纯精排延迟重新推到约 4 秒。
+    rerank_candidate_k: int = Field(default=10, ge=2, le=50)
     reranker_base_url: str = "http://127.0.0.1:8011"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
-    reranker_timeout_s: float = Field(default=10.0, gt=0, le=120)
+    reranker_timeout_s: float = Field(default=3.0, gt=0, le=120)
     rerank_max_candidate_chars: int = Field(default=1200, ge=100, le=8000)
     rerank_candidate_text_mode: Literal["title_heading_content", "heading_content", "content"] = (
-        "title_heading_content"
+        "content"
     )
     lexical_rrf_enabled: bool = True
     lexical_mode: Literal["ts_rank", "coverage", "ts_rank_cd"] = "ts_rank"
@@ -344,6 +357,8 @@ class Settings(BaseSettings):
         token = self.desktop_launch_token.get_secret_value()
         if self.desktop_mode_enabled and len(token) < 32:
             raise ValueError("desktop 模式要求至少 32 字符的随机 launch token")
+        if self.cowork_provider_timeout_retry_base_s > self.cowork_provider_timeout_retry_max_s:
+            raise ValueError("Cowork Provider 超时重试的基础退避不能大于最大退避")
         return self
 
 

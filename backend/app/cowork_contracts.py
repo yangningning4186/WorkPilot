@@ -24,12 +24,33 @@ Capability = Literal[
     "browser.control",
     "shell.execute",
     "external.action",
+    "network.fetch",
+    "browser.read",
+    "browser.write",
+    "browser.destructive",
+    "sandbox.execute",
+    "host.execute",
+    "external.read",
+    "external.write",
+    "external.destructive",
+]
+ActiveCapability = Literal[
+    "knowledge.read",
+    "filesystem.read",
+    "filesystem.write",
+    "network.fetch",
+    "browser.read",
+    "browser.write",
+    "browser.destructive",
+    "sandbox.execute",
+    "host.execute",
+    "external.read",
+    "external.write",
+    "external.destructive",
 ]
 MemoryScope = Literal["global", "workspace", "conversation"]
 MemoryCategory = Literal["preference", "profile", "interest", "fact"]
-MEMORY_CATEGORIES: frozenset[str] = frozenset(
-    {"preference", "profile", "interest", "fact"}
-)
+MEMORY_CATEGORIES: frozenset[str] = frozenset({"preference", "profile", "interest", "fact"})
 ArtifactKind = Literal["file", "report", "diff", "table"]
 AttachmentKind = Literal["image", "pdf", "text"]
 InteractionKind = Literal[
@@ -44,7 +65,7 @@ InteractionStatus = Literal["pending", "answered", "approved", "rejected", "canc
 ScheduleKind = Literal["once", "cron"]
 # 常驻审批规则。`once` 不落库——它就是现在这套一次性 call-id 集合，留在这里只是为了让
 # API 的取值是闭合的。
-ApprovalRememberScope = Literal["once", "tool", "command", "target"]
+ApprovalRememberScope = Literal["once", "command", "target"]
 # 会话的自主权上限。`interactive` 是默认：写入与命令逐次问人。`auto` 由用户在会话设置里
 # 显式打开，模型无权切换；它只免掉"再问一次"，capability 与目录边界照旧生效。
 # 计划模式是第三档，但它是 run 级的开关（`CoworkState["mode"]`），不放在这里——
@@ -58,8 +79,14 @@ UnroutedKind = Literal["inbound", "background_turn"]
 # 规则归谁所有：会话级由用户在审批卡片上勾选；计划级在 create_schedule 被批准的那一刻
 # 派生，随计划一起被删除。
 ApprovalRuleScope = Literal["conversation", "schedule"]
-# 怎么匹配一次调用：整只工具、精确目标、或 shell 的 argv 前缀。
-ApprovalMatchKind = Literal["tool", "target", "command_prefix"]
+# 旧值只为读取/撤销历史记录；匹配器 fail closed，不再让它们放行任何调用。
+ApprovalMatchKind = Literal[
+    "action_target",
+    "argv_pattern",
+    "tool",
+    "target",
+    "command_prefix",
+]
 
 
 class ConversationBusyError(RuntimeError):
@@ -185,6 +212,7 @@ class CapabilityGrantRecord:
     conversation_id: UUID
     session_root_id: UUID | None
     capability: Capability
+    resource_scope: str | None
     grant_source: str
     expires_at: datetime | None
     revoked_at: datetime | None
@@ -272,6 +300,39 @@ class ThreadSessionRecord:
     created_at: datetime
 
 
+#: 批注的颜色只是展示语义，不参与匹配。收敛成枚举而不是自由字符串，是为了让面板
+#: 有一组确定的样式，也免得模型发明出 "light-ish yellow" 这种前端无法渲染的值。
+AnnotationColor = Literal["yellow", "green", "blue", "pink"]
+
+
+@dataclass(frozen=True)
+class ReadingAnnotationRecord:
+    """一条持久化批注。
+
+    **锚在 material_id（文件内容哈希）上，不锚路径。** 文件改名或移动之后批注还在；
+    文件**内容**变了，批注就不再出现——locator 与字符区间都可能已经指向别的文字，
+    此时把高亮照画出来比不画更糟（约束 8 的同一条理由）。旧版本的批注不删除，
+    仍然按路径可数，界面据此说清楚"这份文件有 N 条批注属于它的旧版本"。
+
+    与 ``reader_goto`` 的对称性是刻意的：跳转在引文对不上时降级成只翻页不高亮，
+    批注则**直接拒绝**——它会留在磁盘上，下次打开还在，是比一次跳转强得多的承诺。
+    """
+
+    id: UUID
+    material_id: str
+    path: str
+    locator: int
+    quote: str
+    note: str
+    color: AnnotationColor
+    # 约束 3 的完整几何，写入时从命中的 ParsedBlock 原样取。为空表示这条批注只落在
+    # locator 上（非 PDF 材料没有 bbox），面板据此只滚动不画框。
+    locations: tuple[dict[str, Any], ...]
+    conversation_id: UUID | None
+    run_id: UUID | None
+    created_at: datetime
+
+
 @dataclass(frozen=True)
 class UnroutedRecord:
     """死信：无处投递的入站消息、以及失败的后台轮次。
@@ -307,6 +368,7 @@ class PathAuthorization:
     target_path: Path
     access_mode: AccessMode
     capability: Capability
+    grant_id: UUID | None = None
 
 
 @dataclass(frozen=True)

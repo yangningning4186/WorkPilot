@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 AccessMode = Literal["read_only", "read_write"]
 Capability = Literal[
@@ -15,6 +15,29 @@ Capability = Literal[
     "browser.control",
     "shell.execute",
     "external.action",
+    "network.fetch",
+    "browser.read",
+    "browser.write",
+    "browser.destructive",
+    "sandbox.execute",
+    "host.execute",
+    "external.read",
+    "external.write",
+    "external.destructive",
+]
+GrantableCapability = Literal[
+    "knowledge.read",
+    "filesystem.read",
+    "filesystem.write",
+    "network.fetch",
+    "browser.read",
+    "browser.write",
+    "browser.destructive",
+    "sandbox.execute",
+    "host.execute",
+    "external.read",
+    "external.write",
+    "external.destructive",
 ]
 
 
@@ -41,15 +64,19 @@ class SessionRootListResponse(BaseModel):
 
 
 class CapabilityGrantCreate(BaseModel):
-    capability: Capability
+    capability: GrantableCapability
     session_root_id: UUID | None = None
+    resource_scope: str | None = Field(default=None, min_length=1, max_length=2048)
     expires_in_s: int | None = Field(default=None, ge=300, le=30 * 24 * 60 * 60)
 
     @model_validator(mode="after")
     def validate_scope(self) -> "CapabilityGrantCreate":
-        path_capability = self.capability.startswith(("filesystem.", "office."))
+        path_capability = self.capability.startswith("filesystem.")
         if path_capability != (self.session_root_id is not None):
             raise ValueError("文件能力必须绑定目录，网络/Shell/外部能力不能绑定目录")
+        scoped = self.capability == "network.fetch"
+        if scoped != (self.resource_scope is not None):
+            raise ValueError("network.fetch 必须绑定 origin/domain scope，其他能力不能带网络 scope")
         return self
 
 
@@ -58,6 +85,7 @@ class CapabilityGrantResponse(BaseModel):
     conversation_id: UUID
     session_root_id: UUID | None
     capability: Capability
+    resource_scope: str | None
     grant_source: str
     expires_at: datetime | None
     revoked_at: datetime | None
@@ -76,7 +104,13 @@ class ApprovalRuleResponse(BaseModel):
     scope: Literal["conversation", "schedule"]
     schedule_id: UUID | None
     tool: str
-    match_kind: Literal["tool", "target", "command_prefix"]
+    match_kind: Literal[
+        "action_target",
+        "argv_pattern",
+        "tool",
+        "target",
+        "command_prefix",
+    ]
     target: str | None
     created_by: str
     revoked_at: datetime | None
@@ -163,6 +197,23 @@ class ArtifactListResponse(BaseModel):
     items: list[ArtifactResponse]
 
 
+class ArtifactDiffResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    available: bool
+    format: Literal["unified"] = "unified"
+    view: Literal["text", "semantic", "unavailable"]
+    created: bool = False
+    before_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    after_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    added_lines: int = Field(default=0, ge=0)
+    removed_lines: int = Field(default=0, ge=0)
+    truncated: bool = False
+    text: str = Field(default="", max_length=50_000)
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class AttachmentResponse(BaseModel):
     id: UUID
     conversation_id: UUID
@@ -203,12 +254,78 @@ class ReadingUnitResponse(BaseModel):
     text: str
 
 
+class ReadingAnnotationResponse(BaseModel):
+    id: UUID
+    locator: int
+    quote: str
+    note: str
+    color: Literal["yellow", "green", "blue", "pink"]
+    # 约束 3 的完整几何，原样来自解析结果。空列表表示这条批注只锚在 locator 上。
+    locations: list[dict[str, Any]]
+    created_at: datetime
+
+
+class ReadingAnnotationCreate(BaseModel):
+    """用户自己划出来的批注。
+
+    与模型的 `reader_annotate` 走**同一张表、同一套几何来源**，只有引文对不上时的处理
+    不同：模型被拒绝，用户被降级成"只记不画"。理由是引文的来源不一样——模型给的
+    quote 可能是它自己的翻译或复述，拒绝挡的正是一个凭空捏造的锚点；用户的 quote 是
+    从文本层里逐字划下来的，对不上说明是我们的归一化没跟上 PDF 的硬换行/连字，
+    这时候拒绝等于拿自己的短板去驳用户。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=4096)
+    locator: int = Field(ge=1)
+    quote: str = Field(min_length=1, max_length=2_000)
+    # 备注可以为空：划一段高亮本身就是一条信息，逼用户写点什么才肯存下来是没道理的。
+    note: str = Field(default="", max_length=2_000)
+    color: Literal["yellow", "green", "blue", "pink"] = "yellow"
+
+
+class ReadingAnnotationCreated(BaseModel):
+    annotation: ReadingAnnotationResponse
+    # 引文有没有逐字命中。false 表示这条批注只锚在 locator 上、画不出框——界面据此
+    # 说清楚"记下了，但没能定位到具体位置"，而不是让用户对着一条不出现的高亮发呆。
+    verified: bool
+
+
+class ReadingAnnotationsResponse(BaseModel):
+    material_id: str
+    items: list[ReadingAnnotationResponse]
+    # 这个路径上属于**别的**内容版本的批注条数。它们不显示（几何可能已经指向别的
+    # 文字），但也不能静默消失——改了一版 PDF 之后批注全没了却查不到为什么，
+    # 是最糟的那种失败。
+    stale_count: int
+
+
+class KnowledgeBaseVersionResponse(BaseModel):
+    """一版索引。同一批文档上可以并存多版，界面据此做切换与 A/B。"""
+
+    version_id: str
+    label: str
+    embedding: str
+    engine: Literal["hybrid", "dense", "bm25"]
+    retrieval: str
+    node_count: int
+    # 这一版建出来之后 KB 又加过文档：仍然可用，只是覆盖不到新的那几篇。不自动重建，
+    # 否则"加一篇文档"会变成几分钟的全量作业，还会悄悄改掉评测已经引用过的版本。
+    stale: bool
+    is_active: bool
+
+
 class KnowledgeBaseDocumentResponse(BaseModel):
     doc_id: str
     filename: str
     title: str
     parser: str
     char_count: int
+    content_hash: str
+    # 相对 KB 目录，避免把内部 data root 暴露给客户端；空表示旧库尚待首次安全迁移。
+    snapshot_path: str | None
+    snapshot_available: bool
 
 
 class KnowledgeBaseResponse(BaseModel):
@@ -219,8 +336,14 @@ class KnowledgeBaseResponse(BaseModel):
     # 没建过索引 / 建到一半失败的库都会是 False。挂载允许，但检索会给出"请重建"的错误——
     # 让用户在列表里先看见这个状态，比在回答里看见一句检索失败要早得多。
     is_indexed: bool
-    # 用哪个 embedding 建的。换模型之后这一行会和当前配置对不上，检索随即拒绝服务。
+    # active 那一版用哪个 embedding 建的。换模型之后这一行会和当前配置对不上，
+    # 检索随即拒绝服务（约束 10）。
     embedding: str | None
+    active_version: str | None
+    versions: list[KnowledgeBaseVersionResponse]
+    # 旧的单索引布局，还没迁到版本化布局。检索会显式拒绝并指向 rebuild——不做静默兼容，
+    # 因为那意味着给这一版编一组它其实没用过的检索配置，A/B 从此不可比。
+    needs_migration: bool
     documents: list[KnowledgeBaseDocumentResponse]
 
 
@@ -240,11 +363,20 @@ class KnowledgeBaseCreate(BaseModel):
     description: str = Field(default="", max_length=500)
 
 
+class KnowledgeBaseVersionCreate(BaseModel):
+    """在现有文档集合上构建一版索引；建好前旧版本始终可用。"""
+
+    version_id: str | None = Field(default=None, min_length=1, max_length=63)
+    label: str = Field(default="", max_length=64)
+    engine: Literal["hybrid", "dense", "bm25"] = "hybrid"
+    activate: bool = True
+
+
 class KnowledgeBaseAddDocuments(BaseModel):
     """按本机路径导入。目录会递归展开成里面支持的格式。
 
-    走路径而不是上传：这是本机桌面应用，资料本来就在磁盘上。上传意味着把它们再复制一份进
-    WorkPilot 的目录，占双份空间，而且清单里"按源路径重建"这条就断了。
+    走路径而不是浏览器上传：这是本机桌面应用。服务会在导入时把原始字节复制进
+    WorkPilot 的内容寻址快照目录，之后重建不再依赖这个外部路径。
     """
 
     paths: list[str] = Field(min_length=1, max_length=50)

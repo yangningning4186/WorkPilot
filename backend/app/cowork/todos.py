@@ -121,7 +121,8 @@ def render_todo_block(todos: list[TodoItem]) -> str:
     return (
         "<current_todos>\n"
         "这是你自己通过 todo_write 维护的任务清单，是当前进度的唯一事实来源。\n"
-        "完成一项就重发完整清单更新状态，不要在正文里口头声称已完成。\n"
+        "只有动作已有成功结果且必要验证通过，才能标为 done；计划、发起调用或口头说明都不算完成。\n"
+        "完成一项就重发完整清单更新状态，同一时刻恰好一项 in_progress；不要只在正文里口头更新。\n"
         f"{lines}\n"
         "</current_todos>"
     )

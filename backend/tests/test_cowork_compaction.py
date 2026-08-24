@@ -76,9 +76,17 @@ def test_ephemeral_suffix_rides_at_the_tail_and_never_touches_canonical() -> Non
 
     canonical = [
         {"role": "user", "content": "整理这些表"},
-        {"role": "assistant", "content": "", "tool_calls": [
-            {"id": "c1", "type": "function", "function": {"name": "list_files", "arguments": "{}"}}
-        ]},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "list_files", "arguments": "{}"},
+                }
+            ],
+        },
         {"role": "tool", "tool_call_id": "c1", "content": '{"ok":true}'},
     ]
     compaction = normalize_compaction_state(None, message_count=len(canonical))
@@ -101,6 +109,25 @@ def test_ephemeral_suffix_rides_at_the_tail_and_never_touches_canonical() -> Non
         canonical, compaction, system_prompt="SYS", prompts=COWORK_COMPACTION_PROMPTS
     )
     assert len(plain) == len(view) - 1
+
+
+def test_legacy_canonical_system_is_folded_into_the_leading_system() -> None:
+    canonical = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "draft"},
+        {"role": "system", "content": "<citation_repair>repair</citation_repair>"},
+    ]
+
+    view = build_outbound_messages(
+        canonical,
+        default_compaction_state(),
+        system_prompt="SYS",
+        prompts=COWORK_COMPACTION_PROMPTS,
+    )
+
+    assert [item.role for item in view] == ["system", "user", "assistant"]
+    assert view[0].content.startswith("SYS")
+    assert "citation_repair" in view[0].content
 
 
 def test_summary_prompt_mandates_the_sections_that_get_dropped_first() -> None:

@@ -11,11 +11,11 @@ from app.api.connectors import router as connectors_router
 from app.api.conversations import router as conversations_router
 from app.api.cost import router as cost_router
 from app.api.cowork import router as cowork_router
-from app.api.editor import router as editor_router
 from app.api.health import router as health_router
 from app.api.integrations import router as integrations_router
 from app.api.memory import router as memory_router
 from app.api.messaging import router as messaging_router
+from app.api.personas import router as personas_router
 from app.api.providers import router as providers_router
 from app.api.runs import router as runs_router
 from app.core.config import Settings, get_settings
@@ -25,6 +25,7 @@ from app.core.logging import configure_logging
 from app.core.queue import close_run_queue
 from app.core.trace import TraceIdMiddleware
 from app.cowork_store.factory import close_local_cowork_stores, initialize_local_cowork_stores
+from app.telemetry import initialize_telemetry_store
 from app.worker.local_runtime import EmbeddedWorkerRuntime
 
 
@@ -33,8 +34,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level)
     embedded_worker: EmbeddedWorkerRuntime | None = None
-    if settings.cowork_store_backend == "sqlite":
-        await initialize_local_cowork_stores(settings)
+    await initialize_local_cowork_stores(settings)
+    # worker 的费用闸门与 Skill/记忆后处理会立刻访问 telemetry.db。必须先建表再启动
+    # consumer，否则旧库/空库上的后台作业会以 no such table: llm_calls 进入重试风暴。
+    await initialize_telemetry_store()
     embedded_worker = await EmbeddedWorkerRuntime.start(settings)
     app.state.embedded_worker = embedded_worker
     yield
@@ -79,8 +82,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(conversations_router)
     app.include_router(connectors_router)
     app.include_router(connector_callback_router)
+    app.include_router(personas_router)
     app.include_router(cowork_router)
-    app.include_router(editor_router)
     app.include_router(health_router)
     app.include_router(integrations_router)
     app.include_router(memory_router)

@@ -1,8 +1,9 @@
-"""Agent run 的 token / 调用数 / 墙钟三维预算与熔断（约束 5）。
+"""Agent run 的 token / 调用数 / 墙钟计量与可选熔断。
 
 与 `app.telemetry.cost_budget` 的每日金额上限是两件不同的事：那一条护的是钱包总量，
-这一条护的是**单个 run 不许失控**——固定综述的抽卡节点按文档数循环调用模型，
-将来接反思循环后更是天然会自我放大。两者都触发时先撞到哪条就报哪条。
+这一层首先负责持续记账。部署方可把任一上限设为正数以启用对应熔断；0 表示不限制。
+桌面 Cowork 默认不启用单次 run 上限，长任务依靠用户取消、重复调用刹车、上下文压缩
+与每日费用保护收敛，而不是因为累计工作量较大被判成失败。
 
 计量口径：
 - **调用数**与**墙钟**在调用前精确判定，不会超出上限；
@@ -13,7 +14,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Literal, Protocol, cast
 
 from app.agent_core.contracts import BudgetState
@@ -24,7 +25,14 @@ from workpilot_ai.errors import (
 )
 from workpilot_ai.gateway import PromptBudget, request_character_count
 from workpilot_ai.pricing import estimate_tokens
-from workpilot_ai.types import CompletionResult, EmbeddingResult, Message, ToolDefinition, Usage
+from workpilot_ai.types import (
+    CompletionChunk,
+    CompletionResult,
+    EmbeddingResult,
+    Message,
+    ToolDefinition,
+    Usage,
+)
 
 BudgetDimension = Literal["tokens", "calls", "wall_ms"]
 
@@ -80,6 +88,19 @@ class ToolCompletionClient(Protocol):
         max_tokens: int = 1024,
         temperature: float = 0.0,
     ) -> CompletionResult: ...
+
+
+class StreamingToolCompletionClient(Protocol):
+    def stream_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool = True,
+        task_type: str = "generate",
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> AsyncIterator[CompletionChunk]: ...
 
 
 class EmbeddingClient(Protocol):
@@ -145,23 +166,26 @@ class BudgetMeter:
         self._segment_started_ms = now
 
     def check_wall(self) -> None:
-        """只查墙钟。用在不产生模型调用、但可能长时间执行的节点入口。"""
+        """检查可选墙钟上限。0 表示只计量、不熔断。"""
 
         elapsed = self.elapsed_ms()
-        if elapsed > self._budget["max_wall_ms"]:
+        limit = self._budget["max_wall_ms"]
+        if limit > 0 and elapsed > limit:
             raise RunBudgetExceededError("wall_ms", used=elapsed, limit=self._budget["max_wall_ms"])
 
     def reserve(self, *, projected_tokens: int) -> None:
         """调用前预留。任一维度超限立即抛，且抛之前不记任何消耗。"""
 
         self.check_wall()
-        if self._budget["used_calls"] + 1 > self._budget["max_calls"]:
+        call_limit = self._budget["max_calls"]
+        if call_limit > 0 and self._budget["used_calls"] + 1 > call_limit:
             raise RunBudgetExceededError(
-                "calls", used=self._budget["used_calls"] + 1, limit=self._budget["max_calls"]
+                "calls", used=self._budget["used_calls"] + 1, limit=call_limit
             )
         projected = self._budget["used_tokens"] + projected_tokens
-        if projected > self._budget["max_tokens"]:
-            raise RunBudgetExceededError("tokens", used=projected, limit=self._budget["max_tokens"])
+        token_limit = self._budget["max_tokens"]
+        if token_limit > 0 and projected > token_limit:
+            raise RunBudgetExceededError("tokens", used=projected, limit=token_limit)
 
     def settle(self, usage: Usage) -> None:
         """调用成功后按实际用量结算。"""
@@ -280,6 +304,57 @@ class BudgetedGateway:
             raise
         self._meter.settle(result.usage)
         return result
+
+    async def stream_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool = True,
+        task_type: str = "generate",
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> AsyncIterator[CompletionChunk]:
+        """`complete_with_tools` 的流式版本，计量口径逐字相同。
+
+        **预留在第一块之前、结算在终块之后**，和非流式一样：中途按已产出的 delta 边流边
+        记账听起来更精确，实际上会让同一次调用在预算里出现好几次，恢复与重放时对不上。
+
+        失败路径也保持一致——包括"流已经吐了一半才断"这种非流式没有的情形：它同样按
+        保守估算结算，因为那些 token 已经产生、已经计费。
+        """
+
+        gateway = cast("StreamingToolCompletionClient", self._gateway)
+        projected = self._meter.project_tokens(messages, max_tokens=max_tokens, tools=tools)
+        self._meter.reserve(projected_tokens=projected)
+        settled = False
+        try:
+            async for chunk in gateway.stream_with_tools(
+                messages,
+                tools=tools,
+                parallel_tool_calls=parallel_tool_calls,
+                task_type=task_type,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            ):
+                if chunk.result is not None:
+                    self._meter.settle(chunk.result.usage)
+                    settled = True
+                yield chunk
+        except (ProviderNotDispatchedError, ModelContextOverflowError):
+            raise
+        except ProviderContextOverflowError:
+            self._meter.settle_rejected()
+            raise
+        except Exception:
+            if not settled:
+                self._meter.settle_conservative(projected_tokens=projected)
+            raise
+        if not settled:
+            # 流正常结束却没有终块：网关的契约要求终块存在，走到这里说明有实现违约了。
+            # 不记账地放过去会让这一轮凭空免费, 所以按保守估算落账再抛。
+            self._meter.settle_conservative(projected_tokens=projected)
+            raise RuntimeError("流式补全没有给出终块，无法确定这一轮的结果与用量")
 
     async def embed(
         self,

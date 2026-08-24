@@ -1,10 +1,16 @@
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from uuid6 import uuid7
 
+from app.core.config import Settings
 from app.cowork.skills.distillation import SkillDistillationError, parse_distilled_skill
 from app.cowork.skills.lifecycle import install_auto_distilled_skill, install_skill
+from app.worker import skill_distillation_run
 
 
 def _candidate(**updates: object) -> str:
@@ -40,17 +46,13 @@ def test_distilled_skill_rejects_unobserved_or_high_risk_tools() -> None:
             successful_tools={"read_text_file"},
         )
     with pytest.raises(SkillDistillationError, match="禁止自动晋升"):
-        parse_distilled_skill(
-            _candidate(tools=["run_shell"]), successful_tools={"run_shell"}
-        )
+        parse_distilled_skill(_candidate(tools=["run_shell"]), successful_tools={"run_shell"})
 
 
 def test_auto_distilled_install_never_overwrites_manual_skill(tmp_path: Path) -> None:
     root = tmp_path / "skills"
     manual = _candidate()
-    parsed = parse_distilled_skill(
-        manual, successful_tools={"read_text_file", "create_artifact"}
-    )
+    parsed = parse_distilled_skill(manual, successful_tools={"read_text_file", "create_artifact"})
     assert parsed is not None
     manual_md = parsed.skill_md.replace("origin: auto_distilled", "origin: manual")
     install_skill(
@@ -70,3 +72,43 @@ def test_auto_distilled_install_never_overwrites_manual_skill(tmp_path: Path) ->
             skill_md=parsed.skill_md,
             max_bytes=64_000,
         )
+
+
+async def test_distillation_worker_reuses_the_source_conversation_provider(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_id = uuid7()
+    conversation_id = uuid7()
+    source = SimpleNamespace(goal="整理报告", final_message="已完成", successful_tools=[])
+    monkeypatch.setattr(skill_distillation_run, "claim_skill_job", lambda *args, **kwargs: source)
+    monkeypatch.setattr(skill_distillation_run, "complete_skill_job", lambda *args, **kwargs: True)
+    store = SimpleNamespace(
+        get_run=AsyncMock(return_value=SimpleNamespace(conversation_id=conversation_id))
+    )
+    monkeypatch.setattr(skill_distillation_run, "cowork_store", lambda: store)
+    gateway = AsyncMock()
+    build_gateway = AsyncMock(return_value=gateway)
+    monkeypatch.setattr(skill_distillation_run, "build_conversation_gateway", build_gateway)
+    monkeypatch.setattr(
+        skill_distillation_run,
+        "distill_skill_candidate",
+        AsyncMock(return_value=None),
+    )
+
+    @asynccontextmanager
+    async def fake_session_factory():
+        yield object()
+
+    await skill_distillation_run.skill_distillation_job(
+        {
+            "settings": Settings(
+                skill_distillation_enabled=True,
+                cowork_skill_candidates_path=tmp_path / "candidates",
+            ),
+            "session_factory": fake_session_factory,
+        },
+        str(run_id),
+    )
+
+    assert build_gateway.await_args.kwargs["conversation_id"] == conversation_id
+    gateway.aclose.assert_awaited_once()

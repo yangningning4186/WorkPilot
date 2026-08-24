@@ -14,6 +14,7 @@ from app.core.queue import InProcessRunQueue, QueuedTask, get_in_process_run_que
 from app.core.run_bus import in_memory_run_bus
 from app.cowork.browser_tools import PlaywrightBrowserManager
 from app.cowork.mcp.client import McpClientManager
+from app.cowork.shell_sessions import CoworkPersistentShellManager
 from app.cowork_store.factory import local_cowork_stores
 from app.worker.cowork_run import cowork_run
 from app.worker.maintenance import (
@@ -47,13 +48,19 @@ class EmbeddedWorkerRuntime:
             "run_queue": queue,
         }
         self._tasks: list[asyncio.Task[None]] = []
+        self._active_foreground = 0
 
     @classmethod
     async def start(cls, settings: Settings) -> EmbeddedWorkerRuntime:
         runtime = cls(settings, await get_in_process_run_queue())
         runtime._tasks.extend(
-            asyncio.create_task(runtime._consume(), name=f"embedded-worker-{index}")
+            asyncio.create_task(runtime._consume_foreground(), name=f"embedded-foreground-{index}")
             for index in range(4)
+        )
+        # 后处理只有一个专用槽位。它不会占用四个用户任务 consumer，并且开始执行前
+        # 还要经过 foreground idle 门控。
+        runtime._tasks.append(
+            asyncio.create_task(runtime._consume_background(), name="embedded-background")
         )
         runtime._tasks.append(
             asyncio.create_task(runtime._dispatch_queued_runs(), name="embedded-run-dispatcher")
@@ -78,7 +85,11 @@ class EmbeddedWorkerRuntime:
                 ),
             ]
         )
-        logger.info("桌面嵌入式 worker 已启动", concurrency=4)
+        logger.info(
+            "桌面嵌入式 worker 已启动",
+            foreground_concurrency=4,
+            background_concurrency=1,
+        )
         return runtime
 
     async def stop(self) -> None:
@@ -94,11 +105,15 @@ class EmbeddedWorkerRuntime:
                 manager for manager in cached.values() if isinstance(manager, McpClientManager)
             }
             await asyncio.gather(*(manager.aclose() for manager in managers))
+        shell_sessions = self.ctx.get("shell_session_manager")
+        if isinstance(shell_sessions, CoworkPersistentShellManager):
+            await shell_sessions.aclose()
         logger.info("桌面嵌入式 worker 已停止")
 
-    async def _consume(self) -> None:
+    async def _consume_foreground(self) -> None:
         while True:
-            task = await self.queue.get()
+            task = await self.queue.get_foreground()
+            self._active_foreground += 1
             try:
                 await self._execute(task)
             except asyncio.CancelledError:
@@ -107,12 +122,48 @@ class EmbeddedWorkerRuntime:
                 # 各执行体负责把已 claim 的状态收敛为可恢复/终态；这里不做无条件重试，
                 # 避免模型请求或外部副作用重复执行。
                 logger.exception(
-                    "嵌入式 worker 任务异常",
+                    "嵌入式前台 worker 任务异常",
+                    task=task.name,
+                    object_id=str(task.object_id),
+                )
+            finally:
+                self._active_foreground -= 1
+                self.queue.task_done(task)
+
+    async def _consume_background(self) -> None:
+        while True:
+            task = await self.queue.get_background()
+            try:
+                await self._wait_for_foreground_idle()
+                await self._execute(task)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "嵌入式后台 worker 任务异常",
                     task=task.name,
                     object_id=str(task.object_id),
                 )
             finally:
                 self.queue.task_done(task)
+
+    async def _wait_for_foreground_idle(self) -> None:
+        """后台作业只能从真正空闲的前台边界开始。
+
+        内存队列之外还查一次 SQLite：API 可能已经把 run 持久化、dispatcher 尚未来得及
+        放进内存队列。后台后处理宁可晚 100ms，也不能钻这个窗口抢在用户任务前面。
+        """
+
+        poll_s = min(self.settings.cowork_dispatch_poll_s, 0.1)
+        while True:
+            queued_runs = await local_cowork_stores().state.list_queued_runs(limit=1)
+            if (
+                self._active_foreground == 0
+                and not self.queue.has_foreground_work()
+                and not queued_runs
+            ):
+                return
+            await asyncio.sleep(poll_s)
 
     async def _execute(self, task: QueuedTask) -> None:
         raw_id = str(task.object_id)
@@ -120,8 +171,10 @@ class EmbeddedWorkerRuntime:
             await cowork_run(self.ctx, raw_id)
         elif task.name == "memory_extraction_job":
             await memory_extraction_job(self.ctx, raw_id)
-        else:
+        elif task.name == "skill_distillation_job":
             await skill_distillation_job(self.ctx, raw_id)
+        else:  # pragma: no cover - QueueTaskName 已封闭
+            raise ValueError(f"未知的本地任务类型: {task.name}")
 
     async def _dispatch_queued_runs(self) -> None:
         while True:

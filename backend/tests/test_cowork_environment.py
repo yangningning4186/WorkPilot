@@ -47,9 +47,7 @@ def test_roots_block_marks_the_default_output_directory() -> None:
 def test_capabilities_block_tells_the_model_what_it_already_holds() -> None:
     """已授权却仍去 request_capability，run 会停在等人批准上——任务就此失败。"""
 
-    block = render_capabilities_block(
-        ["network.read", "filesystem.read"], sorted(ALL_CAPABILITIES)
-    )
+    block = render_capabilities_block(["network.read", "filesystem.read"], sorted(ALL_CAPABILITIES))
 
     assert "<capabilities>" in block
     assert "network.read" in block
@@ -63,7 +61,7 @@ def test_capabilities_block_tells_the_model_what_it_already_holds() -> None:
 def test_capabilities_block_keeps_approval_separate_from_authorization() -> None:
     """有授权不等于免审批：run_shell 拿到 shell.execute 之后仍要逐次确认。"""
 
-    block = render_capabilities_block(["shell.execute"], sorted(ALL_CAPABILITIES))
+    block = render_capabilities_block(["host.execute"], sorted(ALL_CAPABILITIES))
 
     assert "已授予不等于免审批" in block
 
@@ -75,10 +73,10 @@ def test_capabilities_block_is_empty_when_there_is_nothing_to_say() -> None:
 def test_capabilities_block_says_shell_covers_its_own_side_effects() -> None:
     """能力按工具划分而不按后果划分——不说清楚，模型会自己推断错。
 
-    评测里 cowork-core-040 已授权 shell.execute，模型仍去要 filesystem.write，
+    评测里已授权 host.execute，模型仍去要 filesystem.write，
     理由是"删文件属于写"。推断合理，但和 run_shell 的实际校验不符，run 白停一次。
     """
 
-    block = render_capabilities_block(["shell.execute"], sorted(ALL_CAPABILITIES))
+    block = render_capabilities_block(["host.execute"], sorted(ALL_CAPABILITIES))
 
-    assert "run_shell 只校验 shell.execute" in block
+    assert "run_shell 需要 host.execute" in block

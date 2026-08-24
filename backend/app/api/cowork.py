@@ -46,8 +46,10 @@ from app.cowork.permissions import (
 from app.cowork.reading import (
     Material,
     ReadingError,
+    block_locations,
     default_material_cache,
     render_units,
+    verify_quote,
 )
 from app.cowork.workspace_trust import (
     WorkspaceTrustError,
@@ -55,15 +57,18 @@ from app.cowork.workspace_trust import (
     read_workspace_allowlist,
     set_workspace_trust,
 )
+from app.cowork_store.routing import cowork_store
 from app.ingest.pdf_render import PdfRenderError, render_pdf_page
 from app.knowledge_contracts import KnowledgeUnavailableError
-from app.rag.kb import KbManifest, local_kb_service
+from app.rag.kb import KbManifest, KbNotFoundError, local_kb_service
 from app.rag.kb.jobs import IndexingJob, default_indexing_jobs
+from app.rag.kb.paths import validate_version_id
 from app.rag.kb.service import SkippedSource, expand_sources
 from app.runstore.conversations import get_conversation_kb, set_conversation_kb
 from app.schemas.cowork import (
     ApprovalRuleListResponse,
     ApprovalRuleResponse,
+    ArtifactDiffResponse,
     ArtifactListResponse,
     ArtifactResponse,
     AttachmentResponse,
@@ -78,10 +83,16 @@ from app.schemas.cowork import (
     KnowledgeBaseListResponse,
     KnowledgeBaseResponse,
     KnowledgeBaseSkipped,
+    KnowledgeBaseVersionCreate,
+    KnowledgeBaseVersionResponse,
     MemoryCreate,
     MemoryListResponse,
     MemoryPatch,
     MemoryResponse,
+    ReadingAnnotationCreate,
+    ReadingAnnotationCreated,
+    ReadingAnnotationResponse,
+    ReadingAnnotationsResponse,
     ReadingMaterialResponse,
     ReadingOutlineEntry,
     ReadingUnitResponse,
@@ -236,6 +247,7 @@ async def post_capability_grant(
             conversation_id=conversation_id,
             capability=request.capability,
             session_root_id=request.session_root_id,
+            resource_scope=request.resource_scope,
             expires_in_s=request.expires_in_s,
         )
     except ConversationNotFoundError as error:
@@ -536,6 +548,34 @@ async def get_artifact_preview(
     )
 
 
+@router.get("/artifacts/{artifact_id}/diff", response_model=ArtifactDiffResponse)
+async def get_artifact_diff(artifact_id: UUID, session: DbSession) -> ArtifactDiffResponse:
+    """返回登记时冻结的有界 diff；不会在查看时重新读取任意备份路径。"""
+
+    try:
+        resolved = await resolve_artifact_file(session, artifact_id=artifact_id)
+    except ArtifactRegistrationError as error:
+        raise HTTPException(status_code=410, detail=str(error)) from error
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="交付物不存在")
+    artifact, _ = resolved
+    payload = artifact.meta.get("diff")
+    if not isinstance(payload, dict):
+        return ArtifactDiffResponse(
+            available=False,
+            view="unavailable",
+            reason="这份旧交付物没有执行前差异快照",
+        )
+    try:
+        return ArtifactDiffResponse.model_validate(payload)
+    except ValueError:
+        return ArtifactDiffResponse(
+            available=False,
+            view="unavailable",
+            reason="交付物差异快照格式已失效",
+        )
+
+
 def _docx_preview(path: Path) -> str:
     document = Document(str(path))
     blocks: list[str] = []
@@ -690,6 +730,178 @@ async def get_reading_unit(
     return ReadingUnitResponse(locator=locator, unit=material.unit, text=rendered.text)
 
 
+@router.get(
+    "/sessions/{conversation_id}/reading/annotations",
+    response_model=ReadingAnnotationsResponse,
+)
+async def get_reading_annotations(
+    conversation_id: UUID,
+    path: str,
+    session: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ReadingAnnotationsResponse:
+    """一份材料上的持久化批注。
+
+    仍然要过一次目录授权：批注里存着原文引文，能读批注就等于能读那句原文。
+    """
+
+    material = await _authorized_material(
+        session, conversation_id=conversation_id, path=path, settings=settings
+    )
+    store = cowork_store()
+    items = await store.list_reading_annotations(material_id=material.material_id)
+    stale = await store.count_stale_reading_annotations(
+        path=str(material.path), material_id=material.material_id
+    )
+    return ReadingAnnotationsResponse(
+        material_id=material.material_id,
+        items=[
+            ReadingAnnotationResponse(
+                id=item.id,
+                locator=item.locator,
+                quote=item.quote,
+                note=item.note,
+                color=item.color,
+                locations=list(item.locations),
+                created_at=item.created_at,
+            )
+            for item in items
+        ],
+        stale_count=stale,
+    )
+
+
+@router.post(
+    "/sessions/{conversation_id}/reading/annotations",
+    response_model=ReadingAnnotationCreated,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_reading_annotation(
+    conversation_id: UUID,
+    request: ReadingAnnotationCreate,
+    session: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ReadingAnnotationCreated:
+    """用户在阅读器里划出来的批注。
+
+    几何仍然来自解析结果（约束 3），**不是**浏览器量出来的那几个像素框：同一份文件的
+    高亮必须和模型留下的那些用同一套坐标，否则换一个渲染倍率、换一次解析器，两批批注
+    就会各偏各的。代价是引文得能在解析文本里对上。
+
+    对不上的时候降级而不是拒绝——这一点和 `reader_annotate` 刻意相反，理由写在
+    `ReadingAnnotationCreate` 的 docstring 里：这条批注照样存下来，只是 `locations`
+    为空、画不出框，`verified=False` 让界面把这件事说清楚。
+    """
+
+    material = await _authorized_material(
+        session, conversation_id=conversation_id, path=request.path, settings=settings
+    )
+    if request.locator > material.unit_count:
+        raise HTTPException(
+            status_code=422,
+            detail=f"这份材料只有 1..{material.unit_count}，没有第 {request.locator} 个位置。",
+        )
+    quote = request.quote.strip()
+    if not quote:
+        raise HTTPException(status_code=422, detail="选中的内容是空的。")
+    check = verify_quote(material, request.locator, quote)
+    # 命中在别的 locator 上就以命中处为准：跨页拖选时用户的起点页未必是文字真正所在页。
+    target = check.found_locator or request.locator
+    locations = block_locations(check.blocks) if check.verified else []
+    try:
+        record = await cowork_store().create_reading_annotation(
+            material_id=material.material_id,
+            path=str(material.path),
+            locator=target,
+            quote=quote,
+            note=request.note.strip(),
+            color=request.color,
+            locations=locations,
+            conversation_id=conversation_id,
+            # 用户手动划的，不属于任何一次 run。
+            run_id=None,
+            max_per_material=settings.cowork_reading_max_annotations,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return ReadingAnnotationCreated(
+        annotation=ReadingAnnotationResponse(
+            id=record.id,
+            locator=record.locator,
+            quote=record.quote,
+            note=record.note,
+            color=record.color,
+            locations=list(record.locations),
+            created_at=record.created_at,
+        ),
+        verified=check.verified,
+    )
+
+
+@router.delete(
+    "/sessions/{conversation_id}/reading/annotations/{annotation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_reading_annotation(
+    conversation_id: UUID,
+    annotation_id: UUID,
+    path: str,
+    session: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    """删除只开放给用户，模型没有对应的工具。
+
+    模型加一条批注是增量的；替用户删掉一条是在改他自己的阅读视图，
+    而它并不知道那条是不是用户后来自己留的。
+    """
+
+    await _authorized_material(
+        session, conversation_id=conversation_id, path=path, settings=settings
+    )
+    if not await cowork_store().delete_reading_annotation(annotation_id=annotation_id):
+        raise HTTPException(status_code=404, detail="批注不存在或已删除")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/sessions/{conversation_id}/reading/file")
+async def get_reading_file(
+    conversation_id: UUID,
+    path: str,
+    session: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    """原始 PDF 字节，交给前端的 pdf.js 渲染。
+
+    **为什么不继续用每页一张 PNG。** 图片没有文本层：用户选不中、复制不了、也没法把
+    "这一段"交给模型——阅读器因此只能是单向的，模型推给用户看，用户无从指回来。
+    pdf.js 在浏览器里渲染同一份字节，画布之上叠一层可选中的文字，两件事同时解决。
+
+    授权是同一条：`_authorized_material` 每次都重跑目录授权与符号链接检查，所以这个
+    接口不会比阅读工具多给出任何一个字节。只放 PDF——文本材料走 units 接口，把任意
+    本机文件原样吐出来是另一回事。
+    """
+
+    material = await _authorized_material(
+        session, conversation_id=conversation_id, path=path, settings=settings
+    )
+    if material.unit != "page":
+        raise HTTPException(status_code=409, detail="这份材料不是 PDF，请读文本视图")
+    try:
+        content = await asyncio.to_thread(material.path.read_bytes)
+    except OSError as error:
+        raise HTTPException(status_code=404, detail="文件读不到了，可能刚被移动或删除。") from error
+    return Response(
+        content,
+        media_type="application/pdf",
+        headers={
+            # material_id 是内容哈希，文件一改就换 ETag，所以可以放心长缓存。
+            "Cache-Control": "private, max-age=3600",
+            "ETag": f'"{material.material_id}"',
+            "Content-Disposition": "inline",
+        },
+    )
+
+
 @router.get("/sessions/{conversation_id}/reading/pages/{locator}.png")
 async def get_reading_page(
     conversation_id: UUID,
@@ -722,7 +934,23 @@ def _kb_response(manifest: KbManifest) -> KnowledgeBaseResponse:
         description=manifest.description,
         document_count=len(manifest.documents),
         is_indexed=manifest.is_indexed,
-        embedding=None if manifest.embedding is None else manifest.embedding.describe(),
+        embedding=None if manifest.active is None else manifest.active.embedding.describe(),
+        active_version=manifest.active_version,
+        versions=[
+            KnowledgeBaseVersionResponse(
+                version_id=version.version_id,
+                label=version.label,
+                embedding=version.embedding.describe(),
+                engine=version.retrieval.engine,
+                retrieval=version.retrieval.describe(),
+                node_count=version.node_count,
+                # 这一版建出来之后 KB 又加了文档：它仍然可用，只是覆盖不到新的那几篇。
+                stale=not version.covers(manifest.document_hashes),
+                is_active=version.version_id == manifest.active_version,
+            )
+            for version in manifest.versions
+        ],
+        needs_migration=manifest.has_legacy_layout,
         documents=[
             KnowledgeBaseDocumentResponse(
                 doc_id=document.doc_id,
@@ -730,6 +958,9 @@ def _kb_response(manifest: KbManifest) -> KnowledgeBaseResponse:
                 title=document.title,
                 parser=document.parser,
                 char_count=document.char_count,
+                content_hash=document.content_hash,
+                snapshot_path=document.snapshot_path or None,
+                snapshot_available=bool(document.snapshot_path),
             )
             for document in manifest.documents
         ],
@@ -810,8 +1041,7 @@ def _job_response(job: IndexingJob) -> KnowledgeBaseIndexingJob:
         added=job.added,
         error=job.error,
         skipped=[
-            KnowledgeBaseSkipped(filename=item.filename, reason=item.reason)
-            for item in job.skipped
+            KnowledgeBaseSkipped(filename=item.filename, reason=item.reason) for item in job.skipped
         ],
     )
 
@@ -899,9 +1129,7 @@ async def add_knowledge_base_documents(
     ) -> tuple[int, tuple[SkippedSource, ...]]:
         # skip_failures=True：一整个文件夹里混进一个扫描件，把另外二十九篇一起退回去
         # 是最没用的行为。跳过并逐条报告。
-        result = await service.add_documents(
-            slug, sources, skip_failures=True, progress=progress
-        )
+        result = await service.add_documents(slug, sources, skip_failures=True, progress=progress)
         return len(result.added), result.skipped
 
     try:
@@ -920,7 +1148,7 @@ async def rebuild_knowledge_base(
     slug: str,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> KnowledgeBaseIndexingJob:
-    """按清单里的源路径重新解析并建索引。换了 embedding 模型之后必须做这一步。"""
+    """按 KB 内不可变原文快照建一个新版本。换 embedding 模型后用这一步。"""
     service = local_kb_service(settings)
     try:
         manifest = await asyncio.to_thread(service.get, slug)
@@ -940,6 +1168,97 @@ async def rebuild_knowledge_base(
     except KnowledgeUnavailableError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return _job_response(job)
+
+
+@router.post(
+    "/knowledge-bases/{slug}/versions",
+    response_model=KnowledgeBaseIndexingJob,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_knowledge_base_version(
+    slug: str,
+    payload: KnowledgeBaseVersionCreate,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> KnowledgeBaseIndexingJob:
+    """在当前文档集合上另建一版索引；旧版本不覆盖，构建过程走后台作业。"""
+
+    service = local_kb_service(settings)
+    requested_id = payload.version_id.strip() if payload.version_id is not None else None
+    try:
+        manifest = await asyncio.to_thread(service.get, slug)
+        if not manifest.documents:
+            raise ValueError("这个知识库还没有文档，没有可索引的内容。")
+        if requested_id is not None:
+            requested_id = validate_version_id(requested_id)
+            if manifest.version(requested_id) is not None:
+                raise ValueError(f"索引版本 {requested_id!r} 已存在，换一个标识。")
+    except KbNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (KnowledgeUnavailableError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    async def work(
+        progress: Callable[[str, int, int], None],
+    ) -> tuple[int, tuple[SkippedSource, ...]]:
+        updated, _version = await service.create_version(
+            slug,
+            label=payload.label,
+            engine=payload.engine,
+            version_id=requested_id,
+            activate=payload.activate,
+            progress=progress,
+        )
+        return len(updated.documents), ()
+
+    try:
+        job = default_indexing_jobs().start(slug, work, stage="准备创建索引版本")
+    except KnowledgeUnavailableError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return _job_response(job)
+
+
+@router.post(
+    "/knowledge-bases/{slug}/versions/{version_id}/activate",
+    response_model=KnowledgeBaseResponse,
+)
+async def activate_knowledge_base_version(
+    slug: str,
+    version_id: str,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> KnowledgeBaseResponse:
+    if default_indexing_jobs().is_running(slug):
+        raise HTTPException(status_code=409, detail=f"知识库 {slug} 正在建索引，等它完成再切换。")
+    try:
+        manifest = await asyncio.to_thread(
+            local_kb_service(settings).activate_version, slug, version_id
+        )
+    except KbNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (KnowledgeUnavailableError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return _kb_response(manifest)
+
+
+@router.delete(
+    "/knowledge-bases/{slug}/versions/{version_id}",
+    response_model=KnowledgeBaseResponse,
+)
+async def delete_knowledge_base_version(
+    slug: str,
+    version_id: str,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> KnowledgeBaseResponse:
+    if default_indexing_jobs().is_running(slug):
+        raise HTTPException(status_code=409, detail=f"知识库 {slug} 正在建索引，等它完成再删除。")
+    try:
+        manifest = await asyncio.to_thread(
+            local_kb_service(settings).delete_version, slug, version_id
+        )
+    except KbNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (KnowledgeUnavailableError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return _kb_response(manifest)
 
 
 @router.get(

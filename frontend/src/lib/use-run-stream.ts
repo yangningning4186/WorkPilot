@@ -4,47 +4,10 @@ import { useEffect, useState } from "react";
 
 import { fetchRunEventStream } from "./api";
 import { envelopeSeq, isTerminalEvent, parseEnvelope } from "./run-protocol";
+import { parseSseFrame, takeSseFrame, waitForStreamRetry } from "./run-sse";
 import { type RunState, applyEnvelope, initialRunState } from "./run-state";
 
 const DEFAULT_RETRY_MS = 1_000;
-
-interface ParsedSseFrame {
-  data: string | null;
-  retryMs: number | null;
-}
-
-function parseSseFrame(frame: string): ParsedSseFrame {
-  const data: string[] = [];
-  let retryMs: number | null = null;
-  for (const line of frame.split(/\r\n|\r|\n/)) {
-    if (line === "" || line.startsWith(":")) continue;
-    const separator = line.indexOf(":");
-    const field = separator < 0 ? line : line.slice(0, separator);
-    const value = separator < 0 ? "" : line.slice(separator + 1).replace(/^ /, "");
-    if (field === "data") data.push(value);
-    if (field === "retry" && /^\d+$/.test(value)) retryMs = Number(value);
-  }
-  return { data: data.length === 0 ? null : data.join("\n"), retryMs };
-}
-
-function takeFrame(buffer: string): [string, string] | null {
-  const boundary = /(?:\r\n|\r|\n){2}/.exec(buffer);
-  if (boundary?.index === undefined) return null;
-  const end = boundary.index + boundary[0].length;
-  return [buffer.slice(0, boundary.index), buffer.slice(end)];
-}
-
-function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const timeout = window.setTimeout(done, delayMs);
-    signal.addEventListener("abort", done, { once: true });
-    function done() {
-      window.clearTimeout(timeout);
-      signal.removeEventListener("abort", done);
-      resolve();
-    }
-  });
-}
 
 /**
  * 订阅一个 run 的事件流。
@@ -101,7 +64,7 @@ export function useRunStream(runId: string | null): RunState {
           while (!stopped) {
             const { done, value } = await reader.read();
             buffer += decoder.decode(value, { stream: !done });
-            let next = takeFrame(buffer);
+            let next = takeSseFrame(buffer);
             while (next !== null) {
               const [rawFrame, remaining] = next;
               buffer = remaining;
@@ -121,7 +84,7 @@ export function useRunStream(runId: string | null): RunState {
                   }
                 }
               }
-              next = takeFrame(buffer);
+              next = takeSseFrame(buffer);
             }
             if (done) break;
           }
@@ -131,7 +94,7 @@ export function useRunStream(runId: string | null): RunState {
           // 服务端中断走这里。
           void reason;
         }
-        if (!stopped) await waitForRetry(retryMs, controller.signal);
+        if (!stopped) await waitForStreamRetry(retryMs, controller.signal);
       }
     };
 

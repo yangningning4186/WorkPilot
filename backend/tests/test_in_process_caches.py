@@ -5,7 +5,6 @@ from unittest.mock import patch
 
 import pytest
 
-from app.rag.editor_permissions import InProcessEditorPermissionStore
 from workpilot_ai.cache import (
     InProcessCompletionCache,
     is_cacheable,
@@ -60,23 +59,3 @@ def test_cacheable_rules_survive_the_backend_swap(
 ) -> None:
     # 采样不缓存（否则等于偷偷变成贪心解码），评测不缓存（命中的那条根本没过模型）。
     assert is_cacheable(temperature=temperature, mode=mode) is expected
-
-
-async def test_editor_permission_expires_and_never_stores_the_raw_token() -> None:
-    store = InProcessEditorPermissionStore()
-    token = "owner-session-token"
-
-    assert await store.ttl(token) == -2  # 没授权，与原 Redis TTL 语义一致
-    await store.grant(token, ttl_s=120)
-    assert 0 < await store.ttl(token) <= 120
-    assert all(token not in key for key in store._expiry)
-
-    with patch("app.rag.editor_permissions.monotonic", return_value=monotonic() + 600):
-        assert await store.ttl(token) == -2
-    assert store._expiry == {}
-
-    await store.grant(token, ttl_s=120)
-    await store.revoke(token)
-    assert await store.ttl(token) == -2
-    with pytest.raises(ValueError, match="无效"):
-        await store.grant("x" * 300, ttl_s=120)

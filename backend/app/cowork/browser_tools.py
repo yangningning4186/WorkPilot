@@ -23,19 +23,21 @@ from playwright.async_api import (
 from playwright.async_api import Error as PlaywrightError
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.cowork.permissions import authorize_path
+from app.cowork.permissions import CapabilityDeniedError, authorize_path
 from app.cowork.tools import (
     CoworkToolContext,
     CoworkToolError,
     CoworkToolRegistry,
     CoworkToolResult,
     CoworkToolSpec,
+    _path_decision,
 )
 from app.cowork.web import (
     CoworkWebError,
     assert_public_target,
     normalize_public_url,
 )
+from app.cowork_store.routing import cowork_store
 
 _CONTROL_SELECTOR = (
     "a[href],button,input,textarea,select,[role=button],[role=link],"
@@ -123,6 +125,7 @@ class _BrowserSession:
     action_no: int = 0
     last_used: float = 0.0
     blocked_url: str | None = None
+    blocked_reason: str | None = None
 
     def expired(self, now: float) -> bool:
         return self.idle_expires_at <= now or self.hard_expires_at <= now
@@ -178,6 +181,10 @@ class PlaywrightBrowserManager:
                 if self._playwright is not None:
                     await self._playwright.stop()
                     self._playwright = None
+                if os.getenv("WORKPILOT_PACKAGED") == "true":
+                    raise CoworkToolError(
+                        "当前 WorkPilot 安装包缺少兼容的 Chromium 运行时；请重新安装完整桌面包。"
+                    ) from error
                 raise CoworkToolError(
                     "Chromium 尚未安装；请在 backend 目录运行 "
                     "`uv run playwright install chromium` 后重试"
@@ -217,8 +224,16 @@ class PlaywrightBrowserManager:
             try:
                 checked = normalize_public_url(request_url)
                 await assert_public_target(checked)
-            except CoworkWebError:
+                # 顶层导航、重定向、脚本、图片与 XHR 都必须命中 scope。只校验导航仍会
+                # 允许恶意页面用子资源 URL 把数据送往未授权域名。
+                await cowork_store().authorize_scoped_capability(
+                    conversation_id=conversation_id,
+                    capability="network.fetch",
+                    target=checked,
+                )
+            except (CoworkWebError, CapabilityDeniedError) as error:
                 session.blocked_url = request_url
+                session.blocked_reason = str(error)
                 await route.abort("blockedbyclient")
                 return
             await route.continue_()
@@ -236,7 +251,8 @@ class PlaywrightBrowserManager:
             await context.close()
             if session.blocked_url:
                 raise CoworkToolError(
-                    f"页面请求了本机或私有网络地址，已阻止：{session.blocked_url}"
+                    f"页面导航未获网络授权，已阻止：{session.blocked_url}；"
+                    f"{session.blocked_reason or '目标不是公网地址'}"
                 ) from error
             raise CoworkToolError(f"浏览器打开网页失败：{error}") from error
 
@@ -280,9 +296,7 @@ class PlaywrightBrowserManager:
             else:
                 # 空闲窗口按使用顺延，但绝不越过 hard_expires_at。
                 session.last_used = now
-                session.idle_expires_at = min(
-                    now + self.idle_ttl_s, session.hard_expires_at
-                )
+                session.idle_expires_at = min(now + self.idle_ttl_s, session.hard_expires_at)
                 return session
         assert expired is not None  # pragma: no cover - 锁内分支保证
         await expired.context.close()
@@ -478,6 +492,9 @@ def register_browser_tools(
             target_path=Path(args.path),
             capability="filesystem.read",
         )
+        context.authorization_annotations.append(
+            _path_decision(authorization, capability="filesystem.read")
+        )
         session = await active.get(
             args.session_id,
             conversation_id=context.conversation_id,
@@ -571,16 +588,19 @@ def register_browser_tools(
             name="browser_open",
             description=(
                 "在隔离 Chromium 中打开公网网页并返回可见 DOM 控件。"
-                "需要 network.read 与会话级 browser.control 两项授权，"
+                "需要目标 origin/domain 的 network.fetch 与 browser.read，"
                 "必须单独调用，但不逐次审批。"
             ),
             args_model=BrowserOpenArgs,
-            capability="browser.control",
-            extra_capabilities=("network.read",),
+            capability="browser.read",
+            extra_capabilities=("network.fetch",),
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=open_handler,
+            resource_target_resolver=lambda raw: (
+                BrowserOpenArgs.model_validate(raw.model_dump()).url
+            ),
             exclusive=True,
             search_aliases=("浏览网页", "playwright", "navigate"),
         ),
@@ -588,7 +608,7 @@ def register_browser_tools(
             name="browser_snapshot",
             description="读取当前页面文本和可交互 DOM 控件编号，不执行页面动作。",
             args_model=BrowserSessionArgs,
-            capability="network.read",
+            capability="browser.read",
             risk="read",
             effect="none",
             parallel_safe=False,
@@ -598,23 +618,26 @@ def register_browser_tools(
         CoworkToolSpec(
             name="browser_click",
             description=(
-                "点击一个已枚举的可见 DOM 控件。需要 browser.control，必须单独调用；"
+                "点击一个已枚举的可见 DOM 控件。按潜在提交/删除处理，需要 "
+                "browser.destructive 与本次批准；"
                 "页面变化后使用返回的新控件编号。"
             ),
             args_model=BrowserControlArgs,
-            capability="browser.control",
+            capability="browser.destructive",
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=click_handler,
+            approval_required=True,
+            approval_target_fields=("session_id", "control_index"),
             exclusive=True,
             search_aliases=("点击", "click"),
         ),
         CoworkToolSpec(
             name="browser_back",
-            description="让真实浏览器返回上一页。需要 browser.control，必须单独调用。",
+            description="让真实浏览器返回上一页。需要 browser.read，必须单独调用。",
             args_model=BrowserSessionArgs,
-            capability="browser.control",
+            capability="browser.read",
             risk="external",
             effect="external",
             parallel_safe=False,
@@ -624,11 +647,10 @@ def register_browser_tools(
         CoworkToolSpec(
             name="browser_type",
             description=(
-                "向已枚举的输入控件填写文字。需要 browser.control，必须单独调用；"
-                "填写不等于提交。"
+                "向已枚举的输入控件填写文字。需要 browser.write，必须单独调用；填写不等于提交。"
             ),
             args_model=BrowserTypeArgs,
-            capability="browser.control",
+            capability="browser.write",
             risk="external",
             effect="external",
             parallel_safe=False,
@@ -638,9 +660,9 @@ def register_browser_tools(
         ),
         CoworkToolSpec(
             name="browser_select",
-            description="选择下拉控件的值。需要 browser.control，必须单独调用。",
+            description="选择下拉控件的值。需要 browser.write，必须单独调用。",
             args_model=BrowserSelectArgs,
-            capability="browser.control",
+            capability="browser.write",
             risk="external",
             effect="external",
             parallel_safe=False,
@@ -651,7 +673,7 @@ def register_browser_tools(
             name="browser_upload",
             description="把已授权工作目录中的文件设置到网页上传控件；每次上传需要单独批准。",
             args_model=BrowserUploadArgs,
-            capability="external.action",
+            capability="browser.destructive",
             risk="external",
             effect="external",
             parallel_safe=False,
@@ -664,12 +686,12 @@ def register_browser_tools(
         CoworkToolSpec(
             name="browser_download",
             description=(
-                "点击控件并把下载保存到已授权工作目录；需要 network.read 与目标目录写授权，"
+                "点击控件并把下载保存到已授权工作目录；需要 browser.destructive 与目标目录写授权，"
                 "不逐次审批，但必须单独调用。"
             ),
             args_model=BrowserDownloadArgs,
             capability="filesystem.write",
-            extra_capabilities=("network.read",),
+            extra_capabilities=("browser.destructive",),
             risk="external",
             effect="filesystem",
             parallel_safe=False,
@@ -683,6 +705,7 @@ def register_browser_tools(
             description="把当前网页截图保存到已授权工作目录；依赖目录写授权，不逐次审批。",
             args_model=BrowserScreenshotArgs,
             capability="filesystem.write",
+            extra_capabilities=("browser.read",),
             risk="write",
             effect="filesystem",
             parallel_safe=False,
@@ -694,7 +717,7 @@ def register_browser_tools(
             name="browser_find",
             description="在当前真实页面的可见文本中查找关键词。",
             args_model=BrowserFindArgs,
-            capability="network.read",
+            capability="browser.read",
             risk="read",
             effect="none",
             parallel_safe=False,
@@ -704,7 +727,7 @@ def register_browser_tools(
             name="browser_close",
             description="关闭浏览器会话并释放本地资源。",
             args_model=BrowserCloseArgs,
-            capability="network.read",
+            capability="browser.read",
             risk="read",
             effect="none",
             parallel_safe=False,
@@ -712,15 +735,14 @@ def register_browser_tools(
         ),
     )
     for spec in specs:
-        registry.register(spec)
+        registry.register_deferred(spec, group="浏览器")
     registry.add_system_instructions(
         "需要真实网页交互时使用 browser_open/browser_snapshot 和编号控件工具。"
-        "浏览器同时需要 network.read 与 browser.control；缺哪个就先调用 request_capability，"
-        "两者都在当前会话内复用。"
+        "浏览器按 browser.read/browser.write/browser.destructive 拆分；打开或跨域导航还必须"
+        "命中目标 origin/domain 的 network.fetch。"
         "browser_open/click/back/type/select/upload/download 必须逐个调用，禁止放在同一批；"
         "禁止猜测 "
         "control_index，页面变化后使用动作返回的新快照或重新 snapshot。"
-        "只有把本地文件发往网页的 browser_upload 需要逐次审批；下载和截图只受目标目录写授权"
-        "约束。只读资料抓取仍优先 fetch_url。"
+        "browser_click、browser_upload 和触发下载按潜在外部副作用处理；只读资料抓取仍优先 fetch_url。"
     )
     return active

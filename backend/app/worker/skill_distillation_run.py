@@ -11,6 +11,7 @@ from uuid import UUID
 import structlog
 
 from app.core.config import Settings
+from app.cowork.provider_profiles import build_conversation_gateway
 from app.cowork.skills.candidate_store import (
     claim_skill_job,
     complete_skill_job,
@@ -20,9 +21,7 @@ from app.cowork.skills.candidate_store import (
 )
 from app.cowork.skills.distillation import DistilledSkill, distill_skill_candidate
 from app.cowork.skills.lifecycle import install_auto_distilled_skill
-from app.llm_bootstrap import build_model_gateway
-from app.telemetry import default_telemetry_store
-from app.telemetry.model_budget import build_cost_guard
+from app.cowork_store.routing import cowork_store
 
 logger = structlog.get_logger(__name__)
 
@@ -53,13 +52,19 @@ async def skill_distillation_job(ctx: dict[str, Any], run_id_raw: str) -> None:
         return
 
     try:
-        telemetry = default_telemetry_store()
-        gateway = build_model_gateway(
-            settings,
-            audit_sink=telemetry,
-            budget_guard=build_cost_guard(settings, telemetry),
-            run_id=run_id,
-        )
+        store = cowork_store()
+        run = None if store is None else await store.get_run(run_id)
+        if run is None:
+            raise RuntimeError("Skill 蒸馏作业缺少来源运行，无法解析用户选择的 Provider")
+        session_factory = ctx["session_factory"]
+        async with session_factory() as session:
+            gateway = await build_conversation_gateway(
+                session,
+                conversation_id=run.conversation_id,
+                settings=settings,
+                session_factory=session_factory,
+                run_id=run_id,
+            )
         try:
             distilled = await distill_skill_candidate(
                 gateway,

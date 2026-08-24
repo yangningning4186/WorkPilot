@@ -29,6 +29,11 @@ Read the source, identify the audience, then write a concise summary.
 """
 
 
+def _user_names(root: Path) -> list[str]:
+    catalog = load_skill_catalog(root, max_files=20, max_bytes=64_000, builtin_root=None)
+    return [skill.name for skill in catalog.skills]
+
+
 def test_skill_install_disable_enable_and_resource(tmp_path: Path) -> None:
     root = tmp_path / "skills"
     installed = install_skill(
@@ -41,15 +46,15 @@ def test_skill_install_disable_enable_and_resource(tmp_path: Path) -> None:
     )
 
     assert installed.enabled is True
-    assert [skill.name for skill in load_skill_catalog(root, max_files=20, max_bytes=64_000).skills] == [
-        "summarize"
-    ]
+    # builtin_root=None：这条用例查的是 user 层自己的生命周期，出厂层会一直在场，
+    # 混进来只会让每个断言都要先过滤一次。合并行为由 test_cowork_skills.py 覆盖。
+    assert _user_names(root) == ["summarize"]
 
     (root / "summarize" / "references").mkdir()
     (root / "summarize" / "references" / "style.md").write_text("Keep it short.", encoding="utf-8")
     disabled = set_skill_enabled(root, name="summarize", enabled=False, max_bytes=64_000)
     assert disabled.enabled is False
-    assert load_skill_catalog(root, max_files=20, max_bytes=64_000).skills == ()
+    assert _user_names(root) == []
 
     install_skill(
         root,

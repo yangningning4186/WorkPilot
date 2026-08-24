@@ -27,9 +27,7 @@ async def test_desktop_mode_rejects_requests_without_current_launch_token() -> N
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         missing = await client.get("/health/live")
-        invalid = await client.get(
-            "/health/live", headers={DESKTOP_LAUNCH_TOKEN_HEADER: "wrong"}
-        )
+        invalid = await client.get("/health/live", headers={DESKTOP_LAUNCH_TOKEN_HEADER: "wrong"})
         preflight = await client.options(
             "/api/v1/conversations",
             headers={
@@ -46,18 +44,13 @@ async def test_desktop_mode_rejects_requests_without_current_launch_token() -> N
                 "Access-Control-Request-Headers": DESKTOP_LAUNCH_TOKEN_HEADER,
             },
         )
-        accepted = await client.get(
-            "/health/live", headers={DESKTOP_LAUNCH_TOKEN_HEADER: token}
-        )
+        accepted = await client.get("/health/live", headers={DESKTOP_LAUNCH_TOKEN_HEADER: token})
 
     assert missing.status_code == invalid.status_code == 401
     assert preflight.status_code == 200
     assert preflight.headers["access-control-allow-origin"] == "tauri://localhost"
     assert dev_preflight.status_code == 200
-    assert (
-        dev_preflight.headers["access-control-allow-origin"]
-        == "http://127.0.0.1:3000"
-    )
+    assert dev_preflight.headers["access-control-allow-origin"] == "http://127.0.0.1:3000"
     assert accepted.status_code == 200
     assert accepted.json() == {"status": "ok"}
 

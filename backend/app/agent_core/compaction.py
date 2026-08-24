@@ -273,11 +273,11 @@ def build_outbound_messages(
     直接跟 user；Anthropic 适配器会把相邻同角色消息合并进同一轮。
     """
 
-    messages = [Message(role="system", content=system_prompt)]
+    prefix_messages: list[Message] = []
     boundary = compaction["summary_upto"]
     if boundary > 0 and canonical:
         if compaction["summary"]:
-            messages.append(
+            prefix_messages.append(
                 Message(
                     role="user",
                     content=(
@@ -297,6 +297,17 @@ def build_outbound_messages(
                 raw_suffix = [current_user]
     else:
         raw_suffix = canonical
+    # 旧 checkpoint 曾把 citation repair 记成 canonical system。不能把它原位下发：许多
+    # OpenAI-compatible 服务要求 system 只能出现在最前面。恢复时把所有遗留 system
+    # 折叠进唯一的第 0 条；新 checkpoint 已不再产生这种形状。
+    legacy_system = [
+        str(item.get("content", "")).strip()
+        for item in raw_suffix
+        if item.get("role") == "system" and str(item.get("content", "")).strip()
+    ]
+    leading_system = "\n\n".join([system_prompt, *legacy_system])
+    messages = [Message(role="system", content=leading_system), *prefix_messages]
+    raw_suffix = [item for item in raw_suffix if item.get("role") != "system"]
     messages.extend(_message_from_canonical(item) for item in raw_suffix)
     limit = compaction["tool_content_max_chars"]
     view = _limit_tool_contents(messages, limit) if limit > 0 else messages

@@ -12,6 +12,7 @@ import {
   rejectSkillCandidate,
   saveSkill,
   setSkillEnabled,
+  type ManagedSkill,
   type SkillsStatusResponse,
   type SkillCandidatesResponse,
 } from "@/lib/api";
@@ -34,8 +35,10 @@ export default function SkillsPage() {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
+      const conversationId = new URLSearchParams(window.location.search).get("conversation")
+        ?? undefined;
       const [skillStatus, candidateStatus] = await Promise.all([
-        fetchSkillsStatus(),
+        fetchSkillsStatus(conversationId),
         fetchSkillCandidates(),
       ]);
       setStatus(skillStatus);
@@ -74,14 +77,16 @@ export default function SkillsPage() {
     }
   };
 
-  const mutate = async (name: string, action: "toggle" | "delete") => {
-    const item = status?.installed.find((entry) => entry.name === name);
-    if (item === undefined) return;
-    if (action === "delete" && !window.confirm(`卸载 Skill“${name}”？其附带资源也会删除。`)) return;
-    setBusy(name);
+  // 两层之后同一个 name 可能有两条（出厂那份 + 盖住它的 fork），所以传整条记录，
+  // 不再按 name 去列表里反查——反查会拿到排在前面的那条，也就是出厂那份，
+  // 于是"停用"点在了实际没有生效的那一份上。
+  const mutate = async (item: ManagedSkill, action: "toggle" | "delete") => {
+    if (action === "delete" && !item.removable) return;
+    if (action === "delete" && !window.confirm(`卸载 Skill“${item.name}”？其附带资源也会删除。`)) return;
+    setBusy(`${item.origin}:${item.name}`);
     try {
-      if (action === "delete") await deleteSkill(name);
-      else await setSkillEnabled(name, !item.enabled);
+      if (action === "delete") await deleteSkill(item.name);
+      else await setSkillEnabled(item.name, !item.enabled);
       await reload();
     } catch (reason) {
       setError(skillError(reason));
@@ -113,12 +118,24 @@ export default function SkillsPage() {
         {status !== null && (
           <>
             <section className="integration-summary" aria-label="Skill 目录状态">
-              <div><strong>{status.installed.length}</strong><span>已安装</span></div>
+              <div><strong>{status.installed.filter((item) => item.origin === "builtin").length}</strong><span>出厂自带</span></div>
+              <div><strong>{status.installed.filter((item) => item.origin === "user").length}</strong><span>自己安装</span></div>
+              <div><strong>{status.skills.filter((item) => item.origin === "project").length}</strong><span>项目随附</span></div>
               <div><strong>{status.skills.length}</strong><span>已启用</span></div>
               <div><strong>{status.errors.length}</strong><span>目录错误</span></div>
               <div><strong>{candidates?.items.filter((item) => item.status === "collecting" || item.status === "needs_review").length ?? 0}</strong><span>蒸馏候选</span></div>
               <div className="wide"><span>来源目录</span><code>{status.source_path}</code></div>
+              <div className="wide"><span>出厂目录（只读）</span><code>{status.builtin_path}</code></div>
+              {status.project_paths.map((path) => <div className="wide" key={path}><span>项目目录</span><code>{path}</code></div>)}
             </section>
+
+            {status.skills.some((item) => item.origin === "project") && (
+              <section className="integration-notice">
+                <strong>当前会话的项目 Skills</strong>
+                <p>{status.skills.filter((item) => item.origin === "project").map((item) => item.name).join(" · ")}</p>
+                <small>它们来自已授权工作区的 .workpilot/skills，随仓库版本控制，并覆盖同名用户或出厂 Skill。</small>
+              </section>
+            )}
 
             {candidates !== null && (
               <section className="skill-distillation-panel">
@@ -159,15 +176,19 @@ export default function SkillsPage() {
             ) : (
               <section className="skill-grid" aria-label="Skills 列表">
                 {status.installed.map((managed) => {
-                  return <article className={`skill-card${managed.enabled ? "" : " disabled"}`} key={managed.name}>
-                    <header><span><WorkdeskIcon name="skill" /></span><div><h2>{managed.name}</h2><code>{managed.sha256?.slice(0, 10) ?? "invalid"}</code></div></header>
+                  const key = `${managed.origin}:${managed.name}`;
+                  const builtin = managed.origin === "builtin";
+                  return <article className={`skill-card${managed.enabled && !managed.shadowed ? "" : " disabled"}`} key={key}>
+                    <header><span><WorkdeskIcon name="skill" /></span><div><h2>{managed.name}</h2><code>{managed.sha256?.slice(0, 10) ?? "invalid"}</code></div><small className={`skill-origin ${managed.origin}`}>{builtin ? "出厂自带" : "自己安装"}</small></header>
                     <p>{managed.description ?? managed.error ?? "Skill 配置无效"}</p>
                     <dl>
-                      <div><dt>状态</dt><dd>{managed.enabled ? "运行时可用" : "已停用"}</dd></div>
+                      <div><dt>状态</dt><dd>{managed.shadowed ? "已被同名 Skill 覆盖" : managed.enabled ? "运行时可用" : "已停用"}</dd></div>
                       <div><dt>资源</dt><dd>{managed.resources.length} 个随附文件</dd></div>
                     </dl>
+                    {builtin && !managed.shadowed && <small className="skill-card-note">出厂 Skill 不能卸载。装一个同名 Skill 即可覆盖它的流程，删掉那份就会恢复。</small>}
                     <footer>
-                      <button disabled={busy !== null || managed.error !== null} onClick={() => void mutate(managed.name, "toggle")} type="button">{managed.enabled ? "停用" : "启用"}</button><button className="danger" disabled={busy !== null} onClick={() => void mutate(managed.name, "delete")} type="button">卸载</button>
+                      <button disabled={busy !== null || managed.error !== null || managed.shadowed} onClick={() => void mutate(managed, "toggle")} type="button">{managed.enabled ? "停用" : "启用"}</button>
+                      {managed.removable && <button className="danger" disabled={busy !== null} onClick={() => void mutate(managed, "delete")} type="button">卸载</button>}
                     </footer>
                   </article>;
                 })}

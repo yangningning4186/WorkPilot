@@ -109,8 +109,7 @@ def parse_event(payload: dict[str, Any], *, bot_open_id: str | None) -> InboundE
             text = ""
         mentions = message.get("mentions") or []
         mentioned = bot_open_id is not None and any(
-            str((item.get("id") or {}).get("open_id") or "") == bot_open_id
-            for item in mentions
+            str((item.get("id") or {}).get("open_id") or "") == bot_open_id for item in mentions
         )
         return InboundEvent(
             kind="message",

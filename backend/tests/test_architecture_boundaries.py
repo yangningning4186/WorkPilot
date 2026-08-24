@@ -1,6 +1,7 @@
 import ast
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, TypedDict
 
 import pytest
@@ -51,8 +52,15 @@ async def test_search_knowledge_returns_only_evidence_bundle_fields(
     assert registry.get("search_knowledge").capability == "knowledge.read"
     authorized: list[str] = []
 
-    async def authorize(_session: object, **kwargs: Any) -> None:
+    async def authorize(_session: object, **kwargs: Any) -> object:
         authorized.append(str(kwargs["capability"]))
+        return SimpleNamespace(
+            id=uuid7(),
+            capability=kwargs["capability"],
+            resource_scope=None,
+            grant_source="test",
+            expires_at=None,
+        )
 
     monkeypatch.setattr("app.cowork.tools.authorize_capability", authorize)
     run_id = uuid7()
@@ -100,15 +108,34 @@ async def test_agent_core_loop_is_product_neutral() -> None:
     initial: _LoopState = {"active": True, "pending": False, "count": 0}
     result = await run_tool_loop(
         initial,
-        state_schema=_LoopState,
         decide=decide,
         execute_tools=execute,
         is_active=lambda state: state["active"],
         has_pending_tools=lambda state: state["pending"],
-        recursion_limit=10,
     )
 
     assert result == {"active": False, "pending": False, "count": 2}
+
+
+@pytest.mark.asyncio
+async def test_agent_core_loop_supports_long_tasks_without_a_fixed_step_limit() -> None:
+    async def decide(state: _LoopState) -> _LoopState:
+        if state["count"] == 100:
+            return {**state, "active": False}
+        return {**state, "pending": True}
+
+    async def execute(state: _LoopState) -> _LoopState:
+        return {**state, "pending": False, "count": state["count"] + 1}
+
+    result = await run_tool_loop(
+        {"active": True, "pending": False, "count": 0},
+        decide=decide,
+        execute_tools=execute,
+        is_active=lambda state: state["active"],
+        has_pending_tools=lambda state: state["pending"],
+    )
+
+    assert result == {"active": False, "pending": False, "count": 100}
 
 
 def test_workpilot_ai_package_carries_no_application_imports() -> None:
@@ -158,7 +185,7 @@ def test_compaction_is_product_neutral() -> None:
     """
 
     prompts = CompactionPrompts(
-        system_prompt="把历史压成 {\"summary\": \"...\"}",
+        system_prompt='把历史压成 {"summary": "..."}',
         outbound_prefix="<digest_history>",
         outbound_suffix="</digest_history>",
         summary_task_type="digest_compaction",
@@ -227,9 +254,7 @@ def test_agent_core_carries_no_product_vocabulary() -> None:
                 targets = [node.target]
             if any(isinstance(t, ast.Name) and t.id in allowed for t in targets):
                 skip.update(
-                    id(child)
-                    for child in ast.walk(node)
-                    if isinstance(child, ast.Constant)
+                    id(child) for child in ast.walk(node) if isinstance(child, ast.Constant)
                 )
         for node in ast.walk(tree):
             name: str | None = None

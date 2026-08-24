@@ -41,10 +41,7 @@ async def ensure_plan(
             status=step["status"],
         )
     existing = await store.list_plan_steps(run_id=run_id)
-    expected = [
-        (step["id"], step["idx"], step["description"], step["tool"])
-        for step in steps
-    ]
+    expected = [(step["id"], step["idx"], step["description"], step["tool"]) for step in steps]
     actual = [
         (str(row["id"]), int(row["step_idx"]), str(row["description"]), row["tool"])
         for row in existing

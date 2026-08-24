@@ -1,8 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { PDF_CITATION_S1 } from "./fixtures/scenarios.mjs";
-import { answerCopy, ask, evidencePanel, expectHighlightMatchesBbox } from "./helpers";
-import { S1_BBOX_PAGE3 } from "./fixtures/scenarios.mjs";
+import { answerCopy, ask, MOCK_BASE } from "./helpers";
 
 /**
  * 回答正文的 Markdown 渲染。
@@ -11,6 +9,11 @@ import { S1_BBOX_PAGE3 } from "./fixtures/scenarios.mjs";
  * "加粗显示成粗体"只是其中最不重要的一条。
  */
 test.describe("回答 Markdown 渲染", () => {
+  test.beforeEach(async ({ request }) => {
+    const response = await request.post(`${MOCK_BASE}/__reset`);
+    expect(response.ok()).toBe(true);
+  });
+
   test("流式期间先到的块已经排好版，后到的表格随后补齐", async ({ page }) => {
     await ask(page, "帮我看看这段回答的排版");
 
@@ -28,30 +31,22 @@ test.describe("回答 Markdown 渲染", () => {
     await expect(answerCopy(page).locator("p code").first()).toHaveText("search(query)");
   });
 
-  test("正文里的 [S1] 是可点锚点，点了直接打开对应原文", async ({ page }) => {
-    await ask(page, "帮我看看这段回答的排版");
+  test("引用标记不会冒充可用证据，论文 locator 可以打开对应页", async ({ page }) => {
+    await ask(page, "帮我看看这段回答的排版", {
+      readingPath: "/Users/demo/Documents/Quarterly/paper.pdf",
+    });
     await expect(answerCopy(page).locator("table")).toHaveCount(1);
 
     const chips = answerCopy(page).locator(".citation-chip");
-    // 正文里出现两处引用锚点（S1、S2），代码块里那个不算。
+    // Cowork 没有旧 RAG 页的 citation payload 时，S1/S2 只能是静态标记，不能假装可点。
     await expect(chips).toHaveCount(2);
-    const first = chips.first();
-    await expect(first).toHaveText("S1");
-    await expect(first).toHaveAttribute("aria-label", "查看引用 S1 的原文");
+    await expect(chips.first()).toHaveClass(/static/);
+    await expect(chips.first()).not.toHaveAttribute("aria-label", /.+/);
 
-    await first.click();
-
-    const panel = evidencePanel(page);
-    await expect(panel).toBeVisible();
-    await expect(panel.locator(".eyebrow")).toContainText("原文证据 · S1");
-    await expect(first).toHaveAttribute("aria-pressed", "true");
-    // 点正文锚点和点下方引用卡片必须落到同一个高亮，不能是两套状态。
-    await expectHighlightMatchesBbox(
-      panel.locator(".pdf-canvas"),
-      panel.getByLabel("引用原文高亮"),
-      S1_BBOX_PAGE3,
-    );
-    await expect(panel.getByRole("heading", { level: 2 })).toHaveText(PDF_CITATION_S1.title);
+    const locator = answerCopy(page).getByRole("button", { name: "在阅读器中打开第 2 处" });
+    await expect(locator).toBeVisible();
+    await locator.click();
+    await expect(page.getByRole("complementary", { name: "阅读器" })).toContainText("第 2 / 2 页");
   });
 
   test("代码块里的 [S1] 保持字面量，不会被误认成引用", async ({ page }) => {
@@ -60,6 +55,14 @@ test.describe("回答 Markdown 渲染", () => {
 
     // 代码块内部一个 chip 都不该有：论文里出现 [S1] 字样是常事，误转会把代码改写掉。
     await expect(answerCopy(page).locator("pre .citation-chip")).toHaveCount(0);
+  });
+
+  test("旧事件中的跨片 think 块不会混入正文", async ({ page }) => {
+    await ask(page, "验证思维链不进入正文");
+
+    await expect(answerCopy(page)).toHaveText("我是 WorkPilot。");
+    await expect(answerCopy(page)).not.toContainText("内部推理");
+    await expect(answerCopy(page)).not.toContainText("</think>");
   });
 
   test("证据里的 HTML 与 javascript: 链接不会变成真元素", async ({ page }) => {

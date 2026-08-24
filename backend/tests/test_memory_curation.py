@@ -195,9 +195,7 @@ async def test_extraction_job_is_idempotent_and_recovers_after_a_lost_lease() ->
     )
     assert claimed is not None and claimed.attempts == 1
     assert (
-        await claim_memory_job(
-            job_id=first.id, worker_id="worker-2", lease_s=30, max_attempts=3
-        )
+        await claim_memory_job(job_id=first.id, worker_id="worker-2", lease_s=30, max_attempts=3)
         is None
     )
 
@@ -216,16 +214,12 @@ async def test_extraction_job_is_idempotent_and_recovers_after_a_lost_lease() ->
     # 重试耗尽的作业必须收敛成 failed，否则会永远挂在"看起来还在跑"的状态里。
     for _ in range(2):
         assert (
-            await claim_memory_job(
-                job_id=first.id, worker_id="w", lease_s=30, max_attempts=3
-            )
+            await claim_memory_job(job_id=first.id, worker_id="w", lease_s=30, max_attempts=3)
             is not None
         )
         await retry_or_fail_memory_job(
             job_id=first.id, worker_id="w", error="又失败了", max_attempts=3, retry_delay_s=0
         )
     assert await list_dispatchable_memory_jobs(max_attempts=3) == []
-    exhausted = await claim_memory_job(
-        job_id=first.id, worker_id="w", lease_s=30, max_attempts=3
-    )
+    exhausted = await claim_memory_job(job_id=first.id, worker_id="w", lease_s=30, max_attempts=3)
     assert exhausted is None

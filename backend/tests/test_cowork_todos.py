@@ -121,6 +121,17 @@ def test_todo_block_goes_to_the_ephemeral_tail_not_the_system_prompt() -> None:
     assert _ephemeral_context(mode="execute", todos=[]) == ""
 
 
+def test_loaded_tools_are_rendered_in_the_non_cached_session_tail() -> None:
+    tail = _ephemeral_context(
+        mode="execute",
+        todos=[],
+        loaded_tools=("web_search", "fetch_url", "web_search"),
+    )
+
+    assert "<loaded_tools>\nfetch_url\nweb_search\n</loaded_tools>" in tail
+    assert tail.startswith('<session_state note="WorkPilot 系统注入')
+
+
 async def test_todo_write_is_a_pure_read_tool_and_echoes_the_list() -> None:
     """handler 不持有可变状态：清单只经 output 交回 runtime，由 checkpoint 保存。"""
 

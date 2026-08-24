@@ -62,9 +62,7 @@ async def _sleeping_run(
 ):
     from app.runstore.runs import ensure_conversation
 
-    conversation_id = await ensure_conversation(
-        db_session, title="Cowork sleep"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Cowork sleep")
     await create_session_root(
         db_session,
         conversation_id=conversation_id,
@@ -95,6 +93,13 @@ async def _sleeping_run(
         [
             _tool_completion(
                 ToolCall(
+                    id="load-sleep",
+                    name="load_tools",
+                    arguments=json.dumps({"names": ["sleep"]}),
+                )
+            ),
+            _tool_completion(
+                ToolCall(
                     id="sleep-1",
                     name="sleep",
                     arguments=json.dumps(
@@ -107,7 +112,7 @@ async def _sleeping_run(
     )
     context = {
         "settings": get_settings().model_copy(
-            update={"cowork_max_steps": 6, "cowork_decision_max_tokens": 2048, "run_heartbeat_s": 60.0}
+            update={"cowork_decision_max_tokens": 2048, "run_heartbeat_s": 60.0}
         ),
         "session_factory": session_factory,
         "bus": bus,
@@ -139,7 +144,9 @@ async def test_sleep_parks_the_run_then_resumes_the_same_checkpoint(
     assert last["role"] == "tool" and last["tool_call_id"] == "sleep-1"
 
     # 还没到点：tick 不该把它捞出来。
-    assert await claim_due_sleeping_runs(db_session, now=datetime.now(UTC) - timedelta(hours=1)) == []
+    assert (
+        await claim_due_sleeping_runs(db_session, now=datetime.now(UTC) - timedelta(hours=1)) == []
+    )
 
     woken = await claim_due_sleeping_runs(db_session, now=datetime.now(UTC) + timedelta(minutes=5))
     await db_session.commit()
@@ -183,7 +190,9 @@ async def test_a_sleeping_run_can_still_be_cancelled(
     cancelled = await get_run(db_session, run.id)
     assert cancelled is not None and cancelled.status == "cancelled"
     # 已取消的 run 不该再被唤醒。
-    assert await claim_due_sleeping_runs(db_session, now=datetime.now(UTC) + timedelta(days=1)) == []
+    assert (
+        await claim_due_sleeping_runs(db_session, now=datetime.now(UTC) + timedelta(days=1)) == []
+    )
 
 
 async def test_wake_claim_is_atomic_so_a_run_is_never_queued_twice(
@@ -201,7 +210,7 @@ async def test_wake_claim_is_atomic_so_a_run_is_never_queued_twice(
 
     assert first == [run.id]
     assert second == []
-    remaining = store_sql(
-        "SELECT wake_at FROM agent_runs WHERE id = ?", (str(run.id),)
-    )[0]["wake_at"]
+    remaining = store_sql("SELECT wake_at FROM agent_runs WHERE id = ?", (str(run.id),))[0][
+        "wake_at"
+    ]
     assert remaining is None

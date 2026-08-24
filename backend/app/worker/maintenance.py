@@ -50,11 +50,7 @@ async def watchdog_tick(ctx: dict[str, Any]) -> int:
         logger.warning("回收失联 run", count=len(reaped.failed))
     if reaped.cancelled:
         logger.info("收敛已请求取消的 run", count=len(reaped.cancelled))
-    return (
-        len(reaped.failed)
-        + len(reaped.recovered_cowork)
-        + len(reaped.cancelled)
-    )
+    return len(reaped.failed) + len(reaped.recovered_cowork) + len(reaped.cancelled)
 
 
 async def cost_sweeper_tick(ctx: dict[str, Any]) -> int:
@@ -73,9 +69,7 @@ async def memory_dispatch_tick(ctx: dict[str, Any]) -> int:
     settings = ctx["settings"]
     if not settings.memory_extraction_enabled:
         return 0
-    jobs = await list_dispatchable_memory_jobs(
-        max_attempts=settings.memory_job_max_attempts
-    )
+    jobs = await list_dispatchable_memory_jobs(max_attempts=settings.memory_job_max_attempts)
     queue = ctx.get("run_queue") or await get_run_queue()
     for job_id, attempt in jobs:
         await queue.enqueue_memory_job(job_id, attempt=attempt)

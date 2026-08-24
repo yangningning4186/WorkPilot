@@ -49,8 +49,5 @@ def validate_human_resume(
     resume_token: object,
     tool_call_id: str,
 ) -> None:
-    if (
-        interrupt["resume_token"] != str(resume_token)
-        or interrupt["tool_call_id"] != tool_call_id
-    ):
+    if interrupt["resume_token"] != str(resume_token) or interrupt["tool_call_id"] != tool_call_id:
         raise HumanInterruptMismatchError("resume token 与当前 checkpoint 不匹配")

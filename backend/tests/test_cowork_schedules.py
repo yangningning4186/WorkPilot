@@ -229,7 +229,10 @@ async def test_automation_api_creates_lists_and_runs_unattended(
     conversation_id = await _owner_workspace(db_session, tmp_path)
     queue = RecordingQueue()
     bus = InMemoryRunBus()
-    settings = Settings(cowork_skills_path=tmp_path / "missing-skills")
+    settings = Settings(
+        cowork_skills_path=tmp_path / "missing-skills",
+        cowork_default_workspace_path=tmp_path / "default-workspace",
+    )
 
     async def override_session() -> AsyncIterator[AsyncSession]:
         yield db_session

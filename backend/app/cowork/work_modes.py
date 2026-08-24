@@ -8,27 +8,40 @@
 每轮把整段前缀重新计费。
 
 **为什么阅读模式的 playbook 不再由 `register_reading_tools` 无条件注入**：那样每一次
-Cowork run 的 system prompt 里都挂着一段跟本次任务无关的阅读须知。工具常驻是对的（模型
-随时可能需要读一份文档），但**玩法**只在用户选了这一档时才该说。
+Cowork run 的 system prompt 里都挂着一段跟本次任务无关的阅读须知。现在由
+`WorkCapability(name="reading")` 调这个纯渲染函数；工具仍注册在统一 registry，阅读档的
+`owned_tools` 保证它们首轮可见，但**玩法**只在用户选了这一档时才该说。
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.cowork_contracts import CoworkWorkMode
 
+# 选中文本进提示词的上限。比 reader_annotate 的 quote 上限（2000）小一档：这一块每轮
+# 都重发，而"用户指着哪里"只需要认得出是哪一段，不需要把整节正文抄进来。
+_SELECTION_MAX_CHARS = 600
+
+# `Material.unit` 的两个取值 → 提示词里的量词。写死成映射而不是让客户端直接给中文，
+# 是因为这是视口里唯一会被插进提示词的自由字符串位。
+_READING_UNITS = {"page": "页", "section": "节"}
+
 _READING_PLAYBOOK = """<reading_mode>
-用户选了论文阅读。他侧边有一个阅读器面板，你只能通过阅读工具看到那份文档。
+用户选了论文阅读。目标是让回答中的每个文档结论都能在侧边阅读器里定位到原文。
 
 工作方式：
-1. 先用 material_outline 看结构、或用 search_material 全文定位，两者都返回 locator。
-2. 下任何关于这份文档的论断之前，先用 read_material 读到原文。搜索返回的是开了窗口的
-   片段，可能从句子中间断开，照抄一句会产生和原文对不上的引用。**没读过就是不知道。**
-3. 每提到一处具体内容就调一次 reader_goto，把你即将引用的那句原话传进去，用户的阅读器
-   会滚过去并高亮，他因此能边看你的回答边看到依据。一处一次，不要攒到最后调一次。
-4. 紧跟结论标出处，写成 [p.12]；几处写 [p.12,17]，连续几处写 [p.12-14]。不论这份材料的
+1. 先用 material_outline 看结构，或用 search_material 定位；两者给的是 locator 和候选片段，
+   不是可直接引用的完整原文。
+2. 下任何关于这份文档的论断前，用 read_material 读对应 locator。搜索片段可能从句子中间
+   截断，不能据此补全含义或引文。**没读过就是不知道。**
+3. 每讲到一处具体内容就调用一次 reader_goto，把 read_material 中逐字出现的原文作为 quote；
+   一处一次，不要攒到最后。中文解释英文原文时，quote 仍传英文原句。
+4. 紧跟结论标出处，写成 [p.12]；几处写 [p.12,17]，连续几处写 [p.12-14]。不论材料的
    单位叫页还是节，一律写 [p.N]——阅读器把它渲染成可点的链接。
-5. 文档答不了的问题要直说答不了，并说清它讲了什么。补充文档之外的知识时必须标明那是
-   文档之外的。
+5. 只有用户明确要求“标注/高亮并留下备注”时才调用 reader_annotate。它会持久写盘，quote
+   必须逐字命中；普通阅读定位用 reader_goto，不要用批注代替解释或引用。
+6. 文档答不了的问题要直说，并说明已经查到什么、还缺什么；补充外部知识时显式标为文档之外。
 </reading_mode>"""
 
 _READING_OPEN = """<reading_material>
@@ -46,6 +59,88 @@ _READING_EMPTY = """<reading_material>
 
 不是关于文档的问题，正常回答。
 </reading_material>"""
+
+
+_READING_VIEWPORT = """<reading_viewport>
+{lines}
+</reading_viewport>"""
+
+
+def normalize_reading_viewport(value: object) -> dict[str, Any] | None:
+    """把客户端报上来的视口收成 state 里存得住的形状，非法就当没有。
+
+    这是**用户可控输入**，而且会原样进提示词，所以每一项都得自己收敛：locator 必须是
+    正整数（0 与负数表示"还没定位"，不是"第 0 页"），选中文本折成单行并截断，单位词只
+    认封闭的两个值——它是唯一一个会被直接插进提示词的字符串，放开就等于给了一条往
+    system 之外的块里写任意文字的路。全空返回 None 而不是 `{{}}`，因为下游只需要判一次
+    "有没有"。
+
+    刻意**不**在这里校验 locator 是否越界、选中文本是否真的出现在那一页：两者都要解析
+    整份文档，而这个函数跑在创建 run 的 HTTP 请求里。越界的后果也有限——提示词里明说了
+    这是阅读器报上来的位置，模型下论断前仍要 read_material。
+    """
+
+    if not isinstance(value, dict):
+        return None
+    raw_locator = value.get("locator")
+    locator = (
+        raw_locator if isinstance(raw_locator, int) and not isinstance(raw_locator, bool) else None
+    )
+    if locator is not None and locator < 1:
+        locator = None
+    raw_selection = value.get("selection")
+    selection = " ".join(str(raw_selection).split()) if isinstance(raw_selection, str) else ""
+    if len(selection) > _SELECTION_MAX_CHARS:
+        selection = selection[:_SELECTION_MAX_CHARS] + "…"
+    viewport: dict[str, Any] = {}
+    if locator is not None:
+        viewport["locator"] = locator
+    if selection:
+        viewport["selection"] = selection
+    if value.get("unit") in _READING_UNITS:
+        viewport["unit"] = value["unit"]
+    # 只有 unit 而没有位置也没有选中：那不是一个视口，是一次空报告。
+    if "locator" not in viewport and "selection" not in viewport:
+        return None
+    return viewport
+
+
+def render_reading_viewport_block(viewport: object) -> str:
+    """渲染"用户此刻在看哪里"。
+
+    这是阅读器 → 模型的**唯一**反向通道。没有它，`reader_goto` 是单向的：模型能把视口
+    推到某一页，却不知道用户正停在哪一页、手上划着哪一句——于是"这段是什么意思"这类
+    问题在模型那里根本无法解析，它只能猜最近提过的那一处。
+
+    **它属于末尾的临时块，不属于 system prompt。** 判据是 CLAUDE.md 那条：一次 run 内
+    会不会变。视口按定义每一轮都可能不同，放进稳定前缀等于每轮把整段前缀作废。
+
+    选中文本来自阅读器的文本层，不是解析口径的原文，所以块里必须明说这一点：PDF 的
+    文本层带着硬换行、连字与分栏顺序，直接当引文抄进回答就会对不上 `verify_quote`。
+    """
+
+    normalized = normalize_reading_viewport(viewport)
+    if normalized is None:
+        return ""
+    label = _READING_UNITS[normalized.get("unit", "page")]
+    locator = normalized.get("locator")
+    selection = normalized.get("selection", "")
+    lines: list[str] = []
+    if locator is not None:
+        lines.append(f"阅读器现在显示第 {locator} {label}。")
+    if selection:
+        lines.append(f"用户在阅读器里选中了这段文字：“{selection}”")
+        lines.append(
+            "他说的“这段 / 这里 / 这句 / 这个公式”指的就是它，不要去猜最近提到过的那一处。"
+        )
+        where = f"第 {locator} {label}" if locator is not None else "对应 locator"
+        lines.append(
+            "这段文字取自阅读器的文本层，带着 PDF 的硬换行、连字与分栏顺序，**不是**可直接"
+            f"引用的原文。要引用或下论断前先 read_material 读{where}，以那一份为准。"
+        )
+    elif locator is not None:
+        lines.append("他没有选中任何文字；问题里的指代如果落不到具体位置，就直接问他指的是哪一处。")
+    return _READING_VIEWPORT.format(lines="\n".join(lines))
 
 
 def render_work_mode_block(
@@ -75,4 +170,9 @@ def normalize_work_mode(value: object) -> CoworkWorkMode:
     return value if value in ("office", "reading") else "office"
 
 
-__all__ = ["normalize_work_mode", "render_work_mode_block"]
+__all__ = [
+    "normalize_reading_viewport",
+    "normalize_work_mode",
+    "render_reading_viewport_block",
+    "render_work_mode_block",
+]

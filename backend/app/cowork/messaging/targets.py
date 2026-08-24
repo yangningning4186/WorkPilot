@@ -30,9 +30,7 @@ def _validate_segment(value: str, *, field: str) -> str:
     return normalized
 
 
-def format_target(
-    platform: MessagingPlatform, chat_id: str, thread_id: str | None = None
-) -> str:
+def format_target(platform: MessagingPlatform, chat_id: str, thread_id: str | None = None) -> str:
     chat = _validate_segment(chat_id, field="chat_id")
     if thread_id is None:
         return f"{platform}:{chat}"

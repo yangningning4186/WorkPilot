@@ -19,9 +19,7 @@ pytestmark = pytest.mark.integration
 async def test_attachment_is_private_bound_and_loaded_into_canonical_message(
     db_session: AsyncSession, tmp_path: Path
 ) -> None:
-    conversation_id = await ensure_conversation(
-        db_session, title="附件测试"
-    )
+    conversation_id = await ensure_conversation(db_session, title="附件测试")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     settings = Settings(
@@ -78,9 +76,7 @@ async def test_attachment_is_private_bound_and_loaded_into_canonical_message(
 async def test_attachment_rejects_spoofed_and_reused_files(
     db_session: AsyncSession, tmp_path: Path
 ) -> None:
-    conversation_id = await ensure_conversation(
-        db_session, title="附件边界"
-    )
+    conversation_id = await ensure_conversation(db_session, title="附件边界")
     settings = Settings(
         app_env="test",
         cowork_attachment_path=tmp_path / "attachments",

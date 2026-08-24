@@ -95,9 +95,7 @@ async def remove_inbox(name: str, session: DbSession) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.put(
-    "/sessions/{conversation_id}/inbox", status_code=status.HTTP_204_NO_CONTENT
-)
+@router.put("/sessions/{conversation_id}/inbox", status_code=status.HTTP_204_NO_CONTENT)
 async def put_conversation_inbox(
     conversation_id: UUID, request: ConversationInboxUpdate, session: DbSession
 ) -> Response:
@@ -119,8 +117,7 @@ async def get_subscriptions(
     items = await list_channel_subscriptions(session, conversation_id=conversation_id)
     return ChannelSubscriptionListResponse(
         items=[
-            ChannelSubscriptionResponse.model_validate(item, from_attributes=True)
-            for item in items
+            ChannelSubscriptionResponse.model_validate(item, from_attributes=True) for item in items
         ]
     )
 
@@ -159,12 +156,8 @@ async def delete_subscription(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get(
-    "/sessions/{conversation_id}/threads", response_model=ThreadSessionListResponse
-)
-async def get_threads(
-    conversation_id: UUID, session: DbSession
-) -> ThreadSessionListResponse:
+@router.get("/sessions/{conversation_id}/threads", response_model=ThreadSessionListResponse)
+async def get_threads(conversation_id: UUID, session: DbSession) -> ThreadSessionListResponse:
     items = await list_thread_sessions(session, conversation_id=conversation_id)
     return ThreadSessionListResponse(
         items=[ThreadSessionResponse.model_validate(item, from_attributes=True) for item in items]

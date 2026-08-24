@@ -38,7 +38,9 @@ async def test_text_read_write_requires_baseline_and_keeps_bounded_backups(
     with pytest.raises(CoworkFileError, match="baseline_sha256"):
         await write_text_file(target, content="changed", baseline_sha256=None, settings=settings)
     with pytest.raises(CoworkFileError, match="发生变化"):
-        await write_text_file(target, content="changed", baseline_sha256="0" * 64, settings=settings)
+        await write_text_file(
+            target, content="changed", baseline_sha256="0" * 64, settings=settings
+        )
 
     result = await write_text_file(
         target,

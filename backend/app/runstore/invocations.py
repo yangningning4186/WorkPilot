@@ -2,7 +2,7 @@
 
 三个函数就是那条约束的全部实现：`acquire_invocation` 抢租约、`complete_invocation`
 落结果、`fail_invocation` 释放。**幂等落在这一层而不是 Agent 的 cursor 上**——
-LangGraph 从 interrupt 恢复会从节点开头重跑，状态恢复不等于副作用不重放。
+interrupt 或崩溃恢复可能重新进入尚未确认完成的执行片段，状态恢复不等于副作用不重放。
 
 与 `runs.py` / `checkpoints.py` 同层同形状：Postgres 为主，桌面 Cowork 走 SQLite 旁路。
 纯身份计算（`invocation_identity`）在 `app/agent_core/idempotency.py`，那部分无副作用、
@@ -66,5 +66,3 @@ async def fail_invocation(session: AsyncSession, *, key: str, worker_id: str, er
     store = cowork_store()
     await store.fail_invocation(key=key, worker_id=worker_id, error=error)
     return
-
-

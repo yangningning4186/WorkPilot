@@ -17,7 +17,11 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from app.cowork.knowledge_prepass import CITATION_PREFIX, render_knowledge_block
+from app.cowork.knowledge_prepass import (
+    CITATION_PREFIX,
+    knowledge_prepass_evidence,
+    render_knowledge_block,
+)
 from app.cowork.rag_tools import SearchKnowledgeArgs, register_rag_tools
 from app.cowork.runtime import _render_knowledge_block
 from app.cowork.tools import CoworkToolContext, CoworkToolRegistry
@@ -99,6 +103,17 @@ def test_block_carries_page_numbers_and_its_own_citation_prefix() -> None:
 
 def test_empty_bundle_renders_nothing() -> None:
     assert render_knowledge_block(_bundle(), kb_name="papers") == ""
+
+
+def test_prepass_text_and_structured_evidence_share_ids_and_quotes() -> None:
+    bundle = _bundle(_segment("S1", quote="RRF 在排名层面融合"))
+
+    block = render_knowledge_block(bundle, kb_name="papers")
+    evidence = knowledge_prepass_evidence(bundle)
+
+    assert f"[{evidence[0]['citation_id']}]" in block
+    assert evidence[0]["quote"] in block
+    assert evidence[0]["kind"] == "knowledge"
 
 
 def test_block_stays_within_its_character_budget() -> None:

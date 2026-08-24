@@ -10,7 +10,6 @@ from app.telemetry.sqlite import SqliteTelemetryStore
 _store: SqliteTelemetryStore | None = None
 
 
-
 def default_telemetry_store() -> "SqliteTelemetryStore":
     """进程内单例。
 
@@ -22,9 +21,7 @@ def default_telemetry_store() -> "SqliteTelemetryStore":
         from app.core.config import get_settings
 
         settings = get_settings()
-        _store = SqliteTelemetryStore(
-            settings.cowork_data_path.expanduser() / "telemetry.db"
-        )
+        _store = SqliteTelemetryStore(settings.cowork_data_path.expanduser() / "telemetry.db")
     return _store
 
 

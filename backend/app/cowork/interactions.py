@@ -176,17 +176,21 @@ async def resolve_inbox_item(
                 raise ValueError("能力请求缺少 capability")
             root_id_raw = item.request.get("session_root_id")
             root_id = UUID(root_id_raw) if isinstance(root_id_raw, str) else None
+            resource_scope_raw = item.request.get("resource_scope")
+            resource_scope = resource_scope_raw if isinstance(resource_scope_raw, str) else None
             grant = await grant_capability(
                 session,
                 conversation_id=item.conversation_id,
                 capability=cast("Capability", capability),
                 session_root_id=root_id,
+                resource_scope=resource_scope,
                 grant_source="user",
             )
             response.update(
                 {
                     "grant_id": str(grant.id),
                     "capability": grant.capability,
+                    "resource_scope": grant.resource_scope,
                     "session_root_id": (
                         str(grant.session_root_id) if grant.session_root_id is not None else None
                     ),
@@ -246,37 +250,30 @@ async def _remember_approval(
     if item.kind not in {"shell_approval", "external_approval"}:
         raise ValueError("这类请求不支持常驻授权")
     if remember == "command":
-        prefix = item.request.get("standing_command_prefix")
-        if not isinstance(prefix, str) or not prefix:
-            raise ValueError("这条命令不能常驻授权：它带 shell 操作符，放行前缀会连带放行后面的命令")
+        pattern = item.request.get("standing_argv_pattern")
+        if not isinstance(pattern, str) or not pattern:
+            raise ValueError("这条命令不能常驻授权：带 shell 操作符的命令只能逐次批准")
         return await create_approval_rule(
             session,
             conversation_id=item.conversation_id,
             tool="run_shell",
-            match_kind="command_prefix",
-            target=prefix,
+            match_kind="argv_pattern",
+            target=pattern,
         )
     tool = item.request.get("tool") if item.kind == "external_approval" else "run_shell"
     if not isinstance(tool, str) or not tool:
         raise ValueError("这条请求没有记录工具名，无法常驻授权")
-    if remember == "tool":
-        return await create_approval_rule(
-            session,
-            conversation_id=item.conversation_id,
-            tool=tool,
-            match_kind="tool",
-            target=None,
-        )
-    target = item.request.get("standing_target")
+    target = item.request.get("standing_action_target")
     if not isinstance(target, str) or not target:
-        raise ValueError("这只工具没有声明可复用的目标，只能逐次批准或整只授权")
+        raise ValueError("这只工具没有声明可复用的 action + target，只能逐次批准")
     return await create_approval_rule(
         session,
         conversation_id=item.conversation_id,
         tool=tool,
-        match_kind="target",
+        match_kind="action_target",
         target=target,
     )
+
 
 async def cancel_pending_interaction(session: AsyncSession, *, run_id: UUID) -> None:
     store = cowork_store()

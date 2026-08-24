@@ -1,5 +1,7 @@
 import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import pytest
 from uuid6 import uuid7
@@ -17,6 +19,7 @@ from app.cowork.memory_extraction import (
     process_memory_job_source,
 )
 from app.cowork_contracts import MemoryExtractionJob
+from app.worker import memory_run
 from app.worker.memory_run import memory_extraction_job
 from tests.fakes import DeterministicProvider
 from workpilot_ai.gateway import ModelGateway
@@ -134,3 +137,37 @@ async def test_processing_same_fact_adds_once_then_noops() -> None:
 async def test_disabled_extraction_worker_does_not_claim_queued_jobs() -> None:
     settings = get_settings().model_copy(update={"memory_extraction_enabled": False})
     await memory_extraction_job({"settings": settings}, str(uuid7()))
+
+
+async def test_extraction_worker_reuses_the_source_conversation_provider(monkeypatch) -> None:
+    conversation_id = uuid7()
+    job = await schedule_memory_extraction(
+        run_id=uuid7(),
+        conversation_id=conversation_id,
+        source_message_id=uuid7(),
+        content="请记住我偏好简洁回答",
+        source_created_at=datetime.now(UTC),
+    )
+    assert job is not None
+
+    gateway = AsyncMock()
+    build_gateway = AsyncMock(return_value=gateway)
+    process = AsyncMock()
+    monkeypatch.setattr(memory_run, "build_conversation_gateway", build_gateway)
+    monkeypatch.setattr(memory_run, "process_memory_job_source", process)
+
+    @asynccontextmanager
+    async def fake_session_factory():
+        yield object()
+
+    await memory_extraction_job(
+        {
+            "settings": get_settings(),
+            "session_factory": fake_session_factory,
+        },
+        str(job.id),
+    )
+
+    assert build_gateway.await_args.kwargs["conversation_id"] == conversation_id
+    process.assert_awaited_once()
+    gateway.aclose.assert_awaited_once()

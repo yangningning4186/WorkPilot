@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-import shlex
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.cowork.approvals import MAX_COMMAND_PREFIX_WORDS, create_approval_rule
+from app.cowork.approvals import (
+    action_target,
+    create_approval_rule,
+)
+from app.cowork.approvals import (
+    argv_pattern as encode_argv_pattern,
+)
 from app.cowork.permissions import list_session_roots
 from app.cowork.schedules import (
     ScheduleRecord,
@@ -44,32 +49,35 @@ class ScheduleStandingApproval(_StrictArgs):
     """
 
     tool: str = Field(min_length=1, max_length=120)
-    command_prefix: str | None = Field(
+    argv_pattern: list[str] | None = Field(
         default=None,
-        max_length=200,
+        max_length=256,
         description=(
-            "仅 run_shell 使用：要长期放行的 argv 前缀，例如 `npm test`。"
-            f"最多 {MAX_COMMAND_PREFIX_WORDS} 个词；命令里出现 shell 操作符时一律不匹配。"
+            "仅 run_shell 使用：要长期放行的完整 argv，例如 ['npm', 'test']。"
+            "逐参数精确匹配，不支持前缀、通配符或 shell 操作符。"
         ),
+    )
+    cwd: str | None = Field(default=None, max_length=4096)
+    action: str | None = Field(default=None, min_length=1, max_length=120)
+    target: dict[str, str | int | float | bool | None] = Field(
+        default_factory=dict,
+        max_length=32,
     )
 
     @model_validator(mode="after")
-    def validate_prefix(self) -> ScheduleStandingApproval:
-        if self.command_prefix is None:
-            return self
-        if self.tool != "run_shell":
-            raise ValueError("command_prefix 只能用于 run_shell")
-        try:
-            words = shlex.split(self.command_prefix)
-        except ValueError as error:
-            raise ValueError(f"command_prefix 不是合法的命令片段：{error}") from error
-        if not words:
-            raise ValueError("command_prefix 不能为空")
-        if len(words) > MAX_COMMAND_PREFIX_WORDS:
-            raise ValueError(
-                f"command_prefix 最多 {MAX_COMMAND_PREFIX_WORDS} 个词，"
-                "再长就不是一类命令而是一条命令了，那种情况请逐次批准"
-            )
+    def validate_pattern(self) -> ScheduleStandingApproval:
+        if self.tool == "run_shell":
+            if not self.argv_pattern or not self.cwd or self.action is not None or self.target:
+                raise ValueError("run_shell 常驻审批必须且只能提供完整 argv_pattern + cwd")
+            if any(not item or len(item) > 4096 for item in self.argv_pattern):
+                raise ValueError("argv_pattern 不能包含空参数或超长参数")
+        elif (
+            self.argv_pattern is not None
+            or self.cwd is not None
+            or not self.action
+            or not self.target
+        ):
+            raise ValueError("外部动作常驻审批必须提供 action + target，不能使用 argv_pattern")
         return self
 
 
@@ -101,6 +109,11 @@ class CreateScheduleArgs(_StrictArgs):
 class ManageScheduleArgs(_StrictArgs):
     schedule_id: UUID
     action: Literal["pause", "resume", "delete"]
+
+
+def _schedule_capability(raw: BaseModel) -> Literal["external.write", "external.destructive"]:
+    args = ManageScheduleArgs.model_validate(raw.model_dump())
+    return "external.destructive" if args.action == "delete" else "external.write"
 
 
 def _schedule_json(schedule: ScheduleRecord) -> dict[str, object]:
@@ -164,8 +177,16 @@ def register_scheduler_tools(registry: CoworkToolRegistry) -> None:
                 context.session,
                 conversation_id=context.conversation_id,
                 tool=item.tool,
-                match_kind="command_prefix" if item.command_prefix else "tool",
-                target=item.command_prefix,
+                match_kind="argv_pattern" if item.argv_pattern is not None else "action_target",
+                target=(
+                    encode_argv_pattern(item.argv_pattern, cwd=cast(str, item.cwd))
+                    if item.argv_pattern is not None
+                    else action_target(
+                        item.tool,
+                        {"action": item.action, **item.target},
+                        fields=tuple(item.target),
+                    )
+                ),
                 schedule_id=created.id,
                 created_by="schedule",
             )
@@ -207,7 +228,7 @@ def register_scheduler_tools(registry: CoworkToolRegistry) -> None:
             effect_ref=f"schedule:{updated.id}:{args.action}",
         )
 
-    registry.register(
+    registry.register_deferred(
         CoworkToolSpec(
             name="list_schedules",
             description="列出本机 Scheduler 计划、最近运行状态和待处理收件箱数量。只读。",
@@ -216,9 +237,10 @@ def register_scheduler_tools(registry: CoworkToolRegistry) -> None:
             effect="none",
             parallel_safe=True,
             handler=list_handler,
-        )
+        ),
+        group="自动化",
     )
-    for name, description, args_model, handler in (
+    for name, description, args_model, handler, capability, resolver, target_fields in (
         (
             "create_schedule",
             "创建单次或五段 cron 无人值守计划；会复用当前会话目录和能力，执行前必须批准。"
@@ -226,24 +248,33 @@ def register_scheduler_tools(registry: CoworkToolRegistry) -> None:
             "否则计划每次运行都会停在审批上，那就不是无人值守了。",
             CreateScheduleArgs,
             create_handler,
+            "external.write",
+            None,
+            ("title", "schedule_kind", "cron_expression", "run_at", "timezone"),
         ),
         (
             "manage_schedule",
             "暂停、恢复或删除无人值守计划；执行前必须批准。",
             ManageScheduleArgs,
             manage_handler,
+            None,
+            _schedule_capability,
+            ("schedule_id", "action"),
         ),
     ):
-        registry.register(
+        registry.register_deferred(
             CoworkToolSpec(
                 name=name,
                 description=description,
                 args_model=args_model,
-                capability="external.action",
+                capability=cast("Any", capability),
+                capability_resolver=resolver,
                 risk="external",
                 effect="external",
                 parallel_safe=False,
                 handler=handler,
                 approval_required=True,
-            )
+                approval_target_fields=target_fields,
+            ),
+            group="自动化",
         )

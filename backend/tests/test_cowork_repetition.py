@@ -26,7 +26,11 @@ from app.cowork.repetition import (
     normalize_counts,
     parse_arguments,
 )
-from app.cowork.runtime import initialize_cowork_state, load_cowork_checkpoint
+from app.cowork.runtime import (
+    _is_idempotent_load_query,
+    initialize_cowork_state,
+    load_cowork_checkpoint,
+)
 from app.cowork.tools import build_default_cowork_registry
 from app.runstore.runs import append_message, create_run, ensure_conversation, get_run
 from app.worker.cowork_run import cowork_run
@@ -87,15 +91,88 @@ def test_counts_survive_missing_or_corrupt_checkpoint_field() -> None:
     assert bump({"a": 2}, ["a", "c"]) == {"a": 3, "c": 1}
 
 
+def test_already_loaded_query_is_not_a_repetition_signature() -> None:
+    registry = build_default_cowork_registry()
+    call = ToolCall(
+        id="load-core",
+        name="load_tools",
+        arguments=json.dumps({"names": ["web_search", "fetch_url"]}),
+    )
+
+    assert _is_idempotent_load_query(call, registry) is True
+
+
+async def test_valid_textual_tool_call_reenters_the_normal_execution_pipeline(
+    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
+) -> None:
+    (tmp_path / "recovered.md").write_text("已恢复", encoding="utf-8")
+    conversation_id = await ensure_conversation(db_session, title="正文调用恢复")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="列出文件",
+        budget_tokens=50_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    await db_session.commit()
+
+    registry = build_default_cowork_registry()
+    bus = InMemoryRunBus()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    provider = NativeToolProvider(
+        [
+            _final_completion(
+                "查看目录。<tool_call><function=list_files>"
+                f"<parameter=path>{tmp_path}</parameter>"
+                "</function></tool_call>"
+            ),
+            _final_completion("目录中有 recovered.md。"),
+        ]
+    )
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    finished = await get_run(db_session, run.id)
+    assert finished is not None and finished.status == "done"
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
+    assert checkpoint is not None
+    assert any(
+        message.get("role") == "tool" and "recovered.md" in str(message.get("content"))
+        for message in checkpoint.state["messages"]
+    )
+
+
 async def test_repeated_call_is_refused_with_an_actionable_instruction(
     db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
 ) -> None:
     """第四次同样的调用不再执行，模型收到的是可执行的纠正指令而不是又一份相同结果。"""
 
     (tmp_path / "notes.md").write_text("内容", encoding="utf-8")
-    conversation_id = await ensure_conversation(
-        db_session, title="空转"
-    )
+    conversation_id = await ensure_conversation(db_session, title="空转")
     await create_session_root(
         db_session,
         conversation_id=conversation_id,
@@ -137,9 +214,7 @@ async def test_repeated_call_is_refused_with_an_actionable_instruction(
         ]
     )
     context = {
-        "settings": get_settings().model_copy(
-            update={"cowork_max_steps": 12, "run_heartbeat_s": 60.0}
-        ),
+        "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
         "session_factory": session_factory,
         "bus": bus,
         "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
@@ -154,13 +229,9 @@ async def test_repeated_call_is_refused_with_an_actionable_instruction(
     checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
     assert checkpoint is not None
     tool_messages = [
-        message
-        for message in checkpoint.state["messages"]
-        if message.get("role") == "tool"
+        message for message in checkpoint.state["messages"] if message.get("role") == "tool"
     ]
-    refused = [
-        message for message in tool_messages if "已经执行过" in str(message["content"])
-    ]
+    refused = [message for message in tool_messages if "已经执行过" in str(message["content"])]
     # 前 limit 次照常执行，之后的被拦下。
     assert len(tool_messages) - len(refused) == DEFAULT_REPEAT_LIMIT
     assert refused, "重复调用必须被拦下"
@@ -178,9 +249,7 @@ async def test_mixed_batch_keeps_the_call_that_still_makes_progress(
 
     (tmp_path / "a.md").write_text("甲", encoding="utf-8")
     (tmp_path / "b.md").write_text("乙", encoding="utf-8")
-    conversation_id = await ensure_conversation(
-        db_session, title="混批"
-    )
+    conversation_id = await ensure_conversation(db_session, title="混批")
     await create_session_root(
         db_session,
         conversation_id=conversation_id,
@@ -228,9 +297,7 @@ async def test_mixed_batch_keeps_the_call_that_still_makes_progress(
         ]
     )
     context = {
-        "settings": get_settings().model_copy(
-            update={"cowork_max_steps": 12, "run_heartbeat_s": 60.0}
-        ),
+        "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
         "session_factory": session_factory,
         "bus": bus,
         "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
@@ -264,9 +331,7 @@ async def test_stalling_takes_the_tools_away_instead_of_burning_the_budget(
     """
 
     (tmp_path / "notes.md").write_text("内容", encoding="utf-8")
-    conversation_id = await ensure_conversation(
-        db_session, title="空转熔断"
-    )
+    conversation_id = await ensure_conversation(db_session, title="空转熔断")
     await create_session_root(
         db_session,
         conversation_id=conversation_id,
@@ -309,9 +374,7 @@ async def test_stalling_takes_the_tools_away_instead_of_burning_the_budget(
         ]
     )
     context = {
-        "settings": get_settings().model_copy(
-            update={"cowork_max_steps": 20, "run_heartbeat_s": 60.0}
-        ),
+        "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
         "session_factory": session_factory,
         "bus": bus,
         "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
@@ -333,3 +396,69 @@ async def test_stalling_takes_the_tools_away_instead_of_burning_the_budget(
         if message.get("role") == "user" and "工具已经全部收回" in str(message["content"])
     ]
     assert stall_prompt, "必须显式告诉模型工具已被收回"
+
+
+async def test_textual_tool_call_after_stall_becomes_safe_fallback_without_execution(
+    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
+) -> None:
+    """工具已收回后，模型把伪调用写进正文也不能形成“已完成”的假成功。"""
+
+    (tmp_path / "notes.md").write_text("内容", encoding="utf-8")
+    conversation_id = await ensure_conversation(db_session, title="伪工具调用")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="看看有哪些文件",
+        budget_tokens=200_000,
+        budget_calls=60,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    await db_session.commit()
+
+    bus = InMemoryRunBus()
+    registry = build_default_cowork_registry()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    arguments = json.dumps({"path": str(tmp_path)}, ensure_ascii=False)
+    provider = NativeToolProvider(
+        [
+            *(
+                _tool_completion(
+                    ToolCall(id=f"list-{index}", name="list_files", arguments=arguments)
+                )
+                for index in range(DEFAULT_REPEAT_LIMIT + DEFAULT_STALL_ROUNDS)
+            ),
+        ],
+        regular_completions=[
+            "我再检查一次。\n<tool_call>\n<function=list_files>\n</function>\n</tool_call>"
+        ],
+    )
+    context = {
+        "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+        "session_factory": session_factory,
+        "bus": bus,
+        "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+        "cowork_registry": registry,
+    }
+
+    await cowork_run(context, str(run.id))
+
+    finished = await get_run(db_session, run.id)
+    assert finished is not None and finished.status == "done"
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
+    assert checkpoint is not None
+    assert "<tool_call>" not in checkpoint.state["final_message"]
+    assert "没有执行该调用" in checkpoint.state["final_message"]

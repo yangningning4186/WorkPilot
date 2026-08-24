@@ -4,6 +4,12 @@ import pytest
 from app.main import create_app
 
 
+def test_standalone_editor_routes_are_not_registered() -> None:
+    paths = {getattr(route, "path", "") for route in create_app().routes}
+
+    assert not any(path.startswith("/api/v1/editor") for path in paths)
+
+
 async def test_live_returns_trace_id() -> None:
     transport = httpx.ASGITransport(app=create_app())
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

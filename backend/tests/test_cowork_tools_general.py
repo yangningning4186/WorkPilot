@@ -40,9 +40,7 @@ async def test_general_tools_create_index_and_reuse_artifact_exactly_once(
     db_session: AsyncSession,
     tmp_path: Path,
 ) -> None:
-    conversation_id = await ensure_conversation(
-        db_session, title="General tools"
-    )
+    conversation_id = await ensure_conversation(db_session, title="General tools")
     await create_session_root(
         db_session,
         conversation_id=conversation_id,
@@ -103,6 +101,9 @@ async def test_general_tools_create_index_and_reuse_artifact_exactly_once(
     assert len(artifacts) == 1
     assert artifacts[0].kind == "report"
     assert artifacts[0].title == "Research report"
+    assert artifacts[0].meta["diff"]["available"] is True
+    assert artifacts[0].meta["diff"]["created"] is True
+    assert "+# Report" in artifacts[0].meta["diff"]["text"]
 
     read_result = await registry.execute(
         "read_text_file",

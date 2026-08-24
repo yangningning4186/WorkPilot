@@ -15,6 +15,7 @@ import {
   type InterruptPayload,
   type MessageDeltaPayload,
   type MessageDonePayload,
+  type MessageSnapshotPayload,
   type MessageStartPayload,
   type PlanPayload,
   type StepUpdatePayload,
@@ -100,6 +101,19 @@ export function applyEnvelope(state: RunState, envelope: StreamEnvelope): RunSta
     case "message.delta": {
       const data = envelope.data as MessageDeltaPayload;
       next.text = state.text + data.text;
+      next.phase = "streaming";
+      return next;
+    }
+    case "message.snapshot": {
+      const data = envelope.data as MessageSnapshotPayload;
+      next.text = data.text;
+      next.phase = "streaming";
+      return next;
+    }
+    case "message.reset": {
+      // 新一轮开写：清掉上一轮转播出去的正文。终态由原子 snapshot
+      // 钉住，所以重放到最后与落盘内容逐字一致。
+      next.text = "";
       next.phase = "streaming";
       return next;
     }

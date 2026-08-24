@@ -7,7 +7,16 @@
 export type RunEventType =
   | "message.start"
   | "message.delta"
+  // 终态正文的原子替换，用于对齐流式显示与落盘消息。
+  | "message.snapshot"
+  // 清掉此前 delta 累积出来的正文。Cowork 一轮可能先写一段话再调工具，下一轮再写一段；
+  // 没有这条，把每轮正文首尾相接之后显示的既不是最终回答，也不等于落盘的那条消息——
+  // 刷新一次页面内容就变了。
+  | "message.reset"
+  // 思考过程的增量。与 message.delta 分开：它不进消息、不落盘，由下一条 reset 清掉。
+  | "message.reasoning"
   | "citation"
+  | "citation.validation_failed"
   | "message.done"
   | "plan"
   | "step.update"
@@ -17,7 +26,11 @@ export type RunEventType =
   | "context.compacted"
   | "todo.update"
   | "memory.saved"
+  | "conversation.title"
   | "reading.goto"
+  | "reading.annotated"
+  // 只读子 Agent 的调查进度，挂在发起它的那次 explore 工具调用上。
+  | "subagent.progress"
   | "steering.queued"
   | "steering.applied"
   | "interrupt"
@@ -60,6 +73,19 @@ export interface MessageStartPayload {
 
 export interface MessageDeltaPayload {
   text: string;
+}
+
+export interface MessageSnapshotPayload {
+  text: string;
+}
+
+export interface MessageReasoningPayload {
+  text: string;
+}
+
+export interface ConversationTitlePayload {
+  conversation_id: string;
+  title: string;
 }
 
 export interface MessageDonePayload {
@@ -110,6 +136,19 @@ export interface CoworkToolCatalogEntry {
 }
 
 /**
+ * 工具调用在任务过程里的安全展示信息。
+ *
+ * 后端只从白名单字段提取并截断，不能用原始 arguments 代替：事件会持久化回放，参数里
+ * 可能含文件正文、连接器请求体或凭据。
+ */
+export interface ToolActivityPayload {
+  title: string;
+  summary?: string;
+  target?: string;
+  target_kind?: "text" | "code" | "path" | "url";
+}
+
+/**
  * step_id / step_idx 可缺省：watchdog 恢复失联 run 时发的是**run 级**通知
  * （"正在从 checkpoint 恢复"），它不属于任何一个计划步骤。
  */
@@ -120,6 +159,7 @@ export interface StepUpdatePayload {
   summary?: string;
   recovery_count?: number;
   tool?: string;
+  activity?: ToolActivityPayload;
 }
 
 export interface ToolEventPayload {
@@ -130,6 +170,8 @@ export interface ToolEventPayload {
   phase?: string;
   reused?: boolean;
   effect_ref?: string | null;
+  authorization_receipt?: Record<string, unknown> | null;
+  activity?: ToolActivityPayload;
 }
 
 export interface ContextCompactedPayload {
@@ -161,7 +203,7 @@ export interface ApprovalWaivedPayload {
   tool: string;
   reason: "approval_mode=auto" | "standing_rule" | "workspace_trust";
   rule_id?: string;
-  match_kind?: "tool" | "target" | "command_prefix";
+  match_kind?: "action_target" | "argv_pattern" | "tool" | "target" | "command_prefix";
   scope?: "conversation" | "schedule";
   allowlist_entry?: string;
   command?: string;
@@ -222,6 +264,21 @@ export interface ReadingGotoPayload {
   locations: ReadingLocation[];
 }
 
+export type AnnotationColor = "yellow" | "green" | "blue" | "pink";
+
+/**
+ * 模型调用 `reader_annotate` 的结果：在文档上留下一块**会持久保存**的高亮。
+ *
+ * 与 goto 分成两条事件而不是复用一条：面板对两者的反应不同。跳转要移动视口；批注只是
+ * 多出一块永久高亮，视口不该被拽走——用户可能正在读别的地方。另一半不对称在后端：
+ * 引文对不上时 goto 降级成只翻页，annotate 直接失败，因为它会留在磁盘上。
+ */
+export interface ReadingAnnotatedPayload extends ReadingGotoPayload {
+  annotation_id: string;
+  note: string;
+  color: AnnotationColor;
+}
+
 export interface MemorySavedPayload {
   action: "saved" | "updated" | "forgotten";
   memory: {
@@ -235,6 +292,35 @@ export interface MemorySavedPayload {
     updated_at: string;
   };
   previous_content: string | null;
+}
+
+/**
+ * 只读子 Agent（`explore`）的调查进度。
+ *
+ * 它一次要跑最多四轮模型调用加八次工具调用，期间时间线上只有一张不动的卡片——没有
+ * 这条事件，用户既看不出它在干什么，事后也查不到这次委派花了多少。`used_tokens` 是
+ * 子 Agent 自己那份账：花的仍是同一个 run 的预算，但要能单独看见。
+ */
+export interface SubagentProgressPayload {
+  step_id: string;
+  tool_call_id: string;
+  agent: "explore";
+  phase: "started" | "round" | "tool" | "finished";
+  round: number;
+  max_rounds: number;
+  calls_used: number;
+  used_tokens: number;
+  /** phase=started */
+  question?: string;
+  /** phase=round：这一轮模型点名要调的工具。 */
+  planned_tools?: string[];
+  /** phase=tool */
+  tool_name?: string;
+  ok?: boolean;
+  error?: string;
+  /** phase=finished：为什么停下来的。 */
+  status?: "answered" | "call_limit" | "round_limit" | "cancelled";
+  answer_chars?: number;
 }
 
 /** run 自己挂起到某个时间点：在等时间，不是在等人，不需要用户操作。 */
@@ -263,6 +349,8 @@ export interface RunDonePayload {
 export type RunEventData =
   | MessageStartPayload
   | MessageDeltaPayload
+  | MessageSnapshotPayload
+  | MessageReasoningPayload
   | CitationPayload
   | MessageDonePayload
   | PlanPayload
@@ -275,7 +363,10 @@ export type RunEventData =
   | ArtifactPayload
   | TodoUpdatePayload
   | MemorySavedPayload
+  | ConversationTitlePayload
   | ReadingGotoPayload
+  | ReadingAnnotatedPayload
+  | SubagentProgressPayload
   | RunSleepingPayload
   | RunDonePayload
   | ErrorPayload;
@@ -292,6 +383,8 @@ export interface StreamEnvelope<T extends RunEventData = RunEventData> {
   seq: string;
   type: RunEventType;
   data: T;
+  /** 后端持久化事件时间；旧 sidecar 可能不带，因此消费端要保留兼容回退。 */
+  created_at?: string;
 }
 
 export function envelopeSeq(envelope: StreamEnvelope): bigint {

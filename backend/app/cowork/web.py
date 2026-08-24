@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import re
 import socket
 import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from pathlib import Path
@@ -19,6 +21,9 @@ from app.cowork.files import PdfSnapshot, read_pdf_file
 
 class CoworkWebError(RuntimeError):
     pass
+
+
+NetworkAuthorizer = Callable[[str], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -52,16 +57,30 @@ class _ReadableHtmlParser(HTMLParser):
         self._link_href: str | None = None
         self._link_parts: list[str] = []
         self._link_class = ""
+        self._snippet_tag: str | None = None
+        self._snippet_same_tag_depth = 0
+        self._snippet_parts: list[str] = []
+        self.search_snippets: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         lowered = tag.casefold()
+        css_class = next((value or "" for name, value in attrs if name == "class"), "")
+        classes = frozenset(css_class.split())
+        if self._snippet_tag == lowered:
+            self._snippet_same_tag_depth += 1
+        elif self._snippet_tag is None and classes.intersection(
+            {"result__snippet", "result-snippet"}
+        ):
+            self._snippet_tag = lowered
+            self._snippet_same_tag_depth = 1
+            self._snippet_parts = []
         if lowered in {"script", "style", "noscript", "svg", "canvas"}:
             self._ignored_depth += 1
         elif lowered == "title":
             self._in_title = True
         elif lowered == "a":
             self._link_href = next((value for name, value in attrs if name == "href"), None)
-            self._link_class = next((value or "" for name, value in attrs if name == "class"), "")
+            self._link_class = css_class
             self._link_parts = []
         elif lowered in {"p", "div", "section", "article", "br", "li", "tr", "h1", "h2", "h3"}:
             self.text_parts.append("\n")
@@ -83,6 +102,16 @@ class _ReadableHtmlParser(HTMLParser):
             self._link_parts = []
         elif lowered in {"p", "div", "section", "article", "li", "tr", "h1", "h2", "h3"}:
             self.text_parts.append("\n")
+        if self._snippet_tag == lowered:
+            self._snippet_same_tag_depth -= 1
+            if self._snippet_same_tag_depth <= 0:
+                snippet = " ".join(" ".join(self._snippet_parts).split())
+                snippet = re.sub(r"\s+([.,!?;:，。！？；：])", r"\1", snippet)
+                if snippet:
+                    self.search_snippets.append(snippet)
+                self._snippet_tag = None
+                self._snippet_same_tag_depth = 0
+                self._snippet_parts = []
 
     def handle_data(self, data: str) -> None:
         if self._ignored_depth:
@@ -91,13 +120,23 @@ class _ReadableHtmlParser(HTMLParser):
             self.title_parts.append(data)
         if self._link_href is not None:
             self._link_parts.append(data)
+        if self._snippet_tag is not None:
+            self._snippet_parts.append(data)
         self.text_parts.append(data)
 
     def result(self) -> tuple[str, str, tuple[dict[str, str], ...]]:
         title = " ".join(" ".join(self.title_parts).split())
         lines = [" ".join(line.split()) for line in "".join(self.text_parts).splitlines()]
         text = "\n".join(line for line in lines if line)
-        return title, text, tuple(self.links[:500])
+        snippets = iter(self.search_snippets)
+        links: list[dict[str, str]] = []
+        for link in self.links:
+            item = dict(link)
+            classes = frozenset(item.get("class", "").split())
+            if classes.intersection({"result__a", "result-link"}):
+                item["snippet"] = next(snippets, "")
+            links.append(item)
+        return title, text, tuple(links[:500])
 
 
 def normalize_public_url(raw_url: str) -> str:
@@ -191,6 +230,7 @@ async def fetch_url(
     *,
     settings: Settings,
     client: httpx.AsyncClient | None = None,
+    authorize_target: NetworkAuthorizer | None = None,
 ) -> WebSnapshot:
     current_url = _normalized_url(raw_url)
     owned_client = client is None
@@ -202,6 +242,10 @@ async def fetch_url(
     )
     try:
         for redirect_count in range(settings.cowork_web_max_redirects + 1):
+            # 授权跟随真正将要访问的 origin，而不是最初 URL。跨域重定向必须再次命中
+            # network.fetch scope，避免可信站点被用作任意外传跳板。
+            if authorize_target is not None:
+                await authorize_target(current_url)
             addresses = await _assert_public_target(current_url)
             request_url, host_header, server_name = _pinned_request(current_url, addresses[0])
             try:
@@ -229,9 +273,9 @@ async def fetch_url(
                 raise CoworkWebError("网页读取超时") from error
             except httpx.HTTPError as error:
                 raise CoworkWebError("网页连接失败") from error
-            if content_type == "application/pdf" or urlsplit(
-                current_url
-            ).path.casefold().endswith(".pdf"):
+            if content_type == "application/pdf" or urlsplit(current_url).path.casefold().endswith(
+                ".pdf"
+            ):
                 pdf = await _parse_remote_pdf(body, settings=settings)
                 return WebSnapshot(
                     url=raw_url,
@@ -284,6 +328,7 @@ async def search_web(
     max_results: int,
     settings: Settings,
     client: httpx.AsyncClient | None = None,
+    authorize_target: NetworkAuthorizer | None = None,
 ) -> list[WebSearchResult]:
     normalized = " ".join(query.split())
     if not normalized:
@@ -294,6 +339,7 @@ async def search_web(
         f"https://html.duckduckgo.com/html/?q={quote_plus(normalized)}",
         settings=settings,
         client=client,
+        authorize_target=authorize_target,
     )
     results: list[WebSearchResult] = []
     seen: set[str] = set()
@@ -314,7 +360,13 @@ async def search_web(
         if result_url in seen or urlsplit(result_url).hostname == "duckduckgo.com":
             continue
         seen.add(result_url)
-        results.append(WebSearchResult(title=link["title"], url=result_url, snippet=""))
+        results.append(
+            WebSearchResult(
+                title=link["title"],
+                url=result_url,
+                snippet=" ".join(link.get("snippet", "").split()),
+            )
+        )
         if len(results) >= max_results:
             break
     return results

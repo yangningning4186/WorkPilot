@@ -16,9 +16,7 @@ from typing import Any, Literal, TypedDict, cast
 from app.agent_core.contracts import BudgetState as BudgetState
 
 PlanStepStatus = Literal["pending", "running", "done", "failed", "skipped"]
-PLAN_STEP_STATUSES: frozenset[str] = frozenset(
-    {"pending", "running", "done", "failed", "skipped"}
-)
+PLAN_STEP_STATUSES: frozenset[str] = frozenset({"pending", "running", "done", "failed", "skipped"})
 
 
 class PlanStepState(TypedDict):

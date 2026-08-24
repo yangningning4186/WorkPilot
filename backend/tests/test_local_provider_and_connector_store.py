@@ -29,10 +29,12 @@ from app.cowork.connectors import store_path as connector_store_path
 from app.cowork.oauth_connectors import (
     begin_oauth,
     complete_oauth,
+    reject_oauth,
     reset_pending_authorizations,
 )
 from app.cowork.provider_profiles import (
     ProviderNameTakenError,
+    ProviderSelectionRequiredError,
     build_conversation_gateway,
     create_provider_profile,
     delete_provider_profile,
@@ -148,7 +150,39 @@ def test_a_corrupt_entry_does_not_take_the_whole_list_down(settings: Settings) -
     assert [item.id for item in list_provider_profiles(settings)] == [good.id]
 
 
-async def test_dangling_profile_id_falls_back_to_the_default_gateway(
+async def test_selected_profile_gateway_keeps_the_local_run_id(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile(settings)
+
+    class LocalStore:
+        async def list_conversation_metadata(self, **_: object) -> list[dict[str, object]]:
+            return [{"provider_profile_id": str(profile.id), "model_override": None}]
+
+    captured: dict[str, object] = {}
+
+    def fake_build_custom_model_gateway(*_: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("app.cowork_store.routing.cowork_store", lambda: LocalStore())
+    monkeypatch.setattr(
+        "app.cowork.provider_profiles.build_custom_model_gateway",
+        fake_build_custom_model_gateway,
+    )
+    run_id = uuid4()
+    await build_conversation_gateway(
+        AsyncMock(),
+        conversation_id=uuid4(),
+        settings=settings,
+        session_factory=AsyncMock(),
+        run_id=run_id,
+    )
+
+    assert captured["run_id"] == run_id
+
+
+async def test_dangling_profile_id_requires_a_new_selection(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """外键没了，会话可能指着一个已删除的 profile。"""
@@ -160,28 +194,15 @@ async def test_dangling_profile_id_falls_back_to_the_default_gateway(
         async def list_conversation_metadata(self, **_: object) -> list[dict[str, object]]:
             return [{"provider_profile_id": str(deleted_id), "model_override": None}]
 
-    used_default = False
-
-    def fake_build_model_gateway(*_: object, **__: object) -> object:
-        nonlocal used_default
-        used_default = True
-        return object()
-
     monkeypatch.setattr("app.cowork_store.routing.cowork_store", lambda: LocalStore())
-    monkeypatch.setattr(
-        "app.cowork.provider_profiles.build_model_gateway", fake_build_model_gateway
-    )
-    await build_conversation_gateway(
-        AsyncMock(),
-        conversation_id=uuid4(),
-        settings=settings.model_copy(update={"cowork_store_backend": "sqlite"}),
-        session_factory=AsyncMock(),
-        run_id=uuid4(),
-    )
-
-    # 回落到默认网关，而不是让这次运行失败——否则删掉一个 Provider 会连带废掉
-    # 所有曾经选过它的会话。
-    assert used_default is True
+    with pytest.raises(ProviderSelectionRequiredError, match="已被删除"):
+        await build_conversation_gateway(
+            AsyncMock(),
+            conversation_id=uuid4(),
+            settings=settings,
+            session_factory=AsyncMock(),
+            run_id=uuid4(),
+        )
 
 
 def _account(settings: Settings, *, name: str = "主账号", kind: str = "github"):
@@ -313,3 +334,15 @@ async def test_expired_oauth_state_is_swept_and_rejected(
             trust_env=False,
         )
     assert module._pending == {}
+
+
+async def test_rejected_oauth_becomes_a_visible_terminal_state(settings: Settings) -> None:
+    account = _account(settings)
+    started = await begin_oauth(settings=settings, account=account, redirect_uri=None)
+
+    assert reject_oauth(settings=settings, state=started.state, reason="access_denied") is True
+    rejected = get_connector_account(settings, account.id)
+    assert rejected is not None
+    assert rejected.status == "error"
+    assert rejected.last_error == "OAuth 授权未完成：access_denied"
+    assert reject_oauth(settings=settings, state=started.state, reason="replay") is False

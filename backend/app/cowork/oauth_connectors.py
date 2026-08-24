@@ -23,6 +23,7 @@ from urllib.parse import urlencode
 import httpx
 
 from app.core.config import Settings
+from app.cowork.connector_descriptors import ConnectorDescriptor, get_connector_descriptor
 from app.cowork.connectors import (
     ConnectorAccountRecord,
     connector_secrets,
@@ -30,14 +31,6 @@ from app.cowork.connectors import (
     set_connector_status,
 )
 from app.security.secret_store import LocalSecretStore
-
-_AUTHORIZE_URLS = {
-    "github": "https://github.com/login/oauth/authorize",
-    "feishu": "https://accounts.feishu.cn/open-apis/authen/v1/authorize",
-    "wecom": "https://open.weixin.qq.com/connect/oauth2/authorize",
-    "wechat_official": "https://open.weixin.qq.com/connect/oauth2/authorize",
-    "tencent_docs": "https://docs.qq.com/oauth/v2/authorize",
-}
 
 
 @dataclass(frozen=True)
@@ -62,6 +55,24 @@ def reset_pending_authorizations() -> None:
 
     with _pending_lock:
         _pending.clear()
+
+
+def reject_oauth(*, settings: Settings, state: str, reason: str) -> bool:
+    """消费一次被用户/服务方拒绝的 flow，并让客户端轮询立即得到终态。"""
+
+    now = datetime.now(UTC)
+    with _pending_lock:
+        _sweep(now)
+        pending = _pending.pop(state, None)
+    if pending is None:
+        return False
+    set_connector_status(
+        settings,
+        account_id=pending.account_id,
+        status="error",
+        error=f"OAuth 授权未完成：{reason}"[:1000],
+    )
+    return True
 
 
 @dataclass(frozen=True)
@@ -166,21 +177,44 @@ async def complete_oauth(
 
 
 def _authorization_url(account: ConnectorAccountRecord, redirect_uri: str, state: str) -> str:
+    descriptor = get_connector_descriptor(account.kind)
+    builder = {
+        "github": _standard_authorization_url,
+        "feishu": _standard_authorization_url,
+        "tencent_docs": _standard_authorization_url,
+        "wecom": _wechat_authorization_url,
+        "wechat": _wechat_authorization_url,
+    }[descriptor.oauth_adapter]
+    return builder(descriptor, account, redirect_uri, state)
+
+
+def _wechat_authorization_url(
+    descriptor: ConnectorDescriptor,
+    account: ConnectorAccountRecord,
+    redirect_uri: str,
+    state: str,
+) -> str:
     client_id = str(account.config["client_id"])
-    if account.kind in {"wecom", "wechat_official"}:
-        params = {
-            "appid": client_id,
-            "redirect_uri": redirect_uri,
-            "response_type": "code",
-            "scope": "snsapi_base" if account.kind == "wecom" else "snsapi_userinfo",
-            "state": state,
-        }
-        if account.kind == "wecom" and account.config.get("agent_id"):
-            params["agentid"] = str(account.config["agent_id"])
-        return f"{_AUTHORIZE_URLS[account.kind]}?{urlencode(params)}#wechat_redirect"
-    scopes = account.scopes or (["read:user"] if account.kind == "github" else [])
-    if account.kind == "tencent_docs":
-        scopes = scopes or ["all"]
+    params = {
+        "appid": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "snsapi_base" if descriptor.oauth_adapter == "wecom" else "snsapi_userinfo",
+        "state": state,
+    }
+    if descriptor.oauth_adapter == "wecom" and account.config.get("agent_id"):
+        params["agentid"] = str(account.config["agent_id"])
+    return f"{descriptor.authorize_url}?{urlencode(params)}{descriptor.oauth_fragment}"
+
+
+def _standard_authorization_url(
+    descriptor: ConnectorDescriptor,
+    account: ConnectorAccountRecord,
+    redirect_uri: str,
+    state: str,
+) -> str:
+    client_id = str(account.config["client_id"])
+    scopes = account.scopes or list(descriptor.default_scopes)
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -189,7 +223,7 @@ def _authorization_url(account: ConnectorAccountRecord, redirect_uri: str, state
     }
     if scopes:
         params["scope"] = " ".join(scopes)
-    return f"{_AUTHORIZE_URLS[account.kind]}?{urlencode(params)}"
+    return f"{descriptor.authorize_url}?{urlencode(params)}{descriptor.oauth_fragment}"
 
 
 async def _exchange_code(
@@ -205,15 +239,15 @@ async def _exchange_code(
     owns_client = client is None
     runtime_client = client or httpx.AsyncClient(timeout=timeout_s, trust_env=trust_env)
     try:
-        if account.kind == "github":
-            return await _github_exchange(runtime_client, account, existing, code, redirect_uri)
-        if account.kind == "feishu":
-            return await _feishu_exchange(runtime_client, account, existing, code, redirect_uri)
-        if account.kind == "wecom":
-            return await _wecom_exchange(runtime_client, account, existing, code)
-        if account.kind == "wechat_official":
-            return await _wechat_exchange(runtime_client, account, existing, code)
-        return await _tencent_docs_exchange(runtime_client, account, existing, code, redirect_uri)
+        descriptor = get_connector_descriptor(account.kind)
+        exchange = {
+            "github": _github_exchange,
+            "feishu": _feishu_exchange,
+            "wecom": _wecom_exchange,
+            "wechat": _wechat_exchange,
+            "tencent_docs": _tencent_docs_exchange,
+        }[descriptor.oauth_adapter]
+        return await exchange(runtime_client, account, existing, code, redirect_uri)
     finally:
         if owns_client:
             await runtime_client.aclose()
@@ -291,7 +325,9 @@ async def _wecom_exchange(
     account: ConnectorAccountRecord,
     existing: dict[str, Any],
     code: str,
+    redirect_uri: str,
 ) -> OAuthIdentity:
+    del redirect_uri
     token_payload = await _get_json(
         client,
         "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
@@ -319,7 +355,9 @@ async def _wechat_exchange(
     account: ConnectorAccountRecord,
     existing: dict[str, Any],
     code: str,
+    redirect_uri: str,
 ) -> OAuthIdentity:
+    del redirect_uri
     payload = await _get_json(
         client,
         "https://api.weixin.qq.com/sns/oauth2/access_token",

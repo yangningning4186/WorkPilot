@@ -31,9 +31,7 @@ def call_signature(name: str, arguments: Any) -> str:
     """一次调用的稳定身份。参数相同即视为同一个调用。"""
 
     try:
-        canonical = json.dumps(
-            arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
+        canonical = json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     except (TypeError, ValueError):
         # 参数不可序列化时退化成 repr：宁可偶尔漏判，也不能让计数器抛异常打断 run。
         canonical = repr(arguments)

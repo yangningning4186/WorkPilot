@@ -52,15 +52,11 @@ async def test_polling_returns_only_new_output(tmp_path: Path) -> None:
         )
         assert started.running is True and started.exit_code is None
 
-        await _wait_until(
-            lambda: _has_text(manager, conversation_id, started.task_id, "one")
-        )
+        await _wait_until(lambda: _has_text(manager, conversation_id, started.task_id, "one"))
         first = await manager.read(conversation_id=conversation_id, task_id=started.task_id)
         assert "one" in first.output
 
-        await _wait_until(
-            lambda: _finished(manager, conversation_id, started.task_id)
-        )
+        await _wait_until(lambda: _finished(manager, conversation_id, started.task_id))
         second = await manager.read(conversation_id=conversation_id, task_id=started.task_id)
         # 增量：第二次读不该再带上第一次已经交付过的内容。
         assert "two" in second.output
@@ -77,16 +73,12 @@ async def test_polling_returns_only_new_output(tmp_path: Path) -> None:
 
 
 async def _has_text(manager, conversation_id, task_id, text: str) -> bool:
-    snapshot = await manager.read(
-        conversation_id=conversation_id, task_id=task_id, full=True
-    )
+    snapshot = await manager.read(conversation_id=conversation_id, task_id=task_id, full=True)
     return text in snapshot.output
 
 
 async def _finished(manager, conversation_id, task_id) -> bool:
-    snapshot = await manager.read(
-        conversation_id=conversation_id, task_id=task_id, full=True
-    )
+    snapshot = await manager.read(conversation_id=conversation_id, task_id=task_id, full=True)
     return not snapshot.running
 
 
@@ -187,8 +179,8 @@ async def test_output_is_bounded_and_flagged_as_truncated(tmp_path: Path) -> Non
         await manager.aclose()
 
 
-async def test_expired_tasks_are_reaped_on_the_next_start(tmp_path: Path) -> None:
-    """没人来收的后台进程会一直占着这台机器，所以绝对上限一到就回收。"""
+async def test_expired_tasks_are_reaped_without_another_operation(tmp_path: Path) -> None:
+    """没人再操作时绝对上限也必须主动回收，不能依赖下一次 start。"""
 
     manager = _manager(hard_ttl_s=0.01)
     conversation_id = uuid4()
@@ -196,12 +188,55 @@ async def test_expired_tasks_are_reaped_on_the_next_start(tmp_path: Path) -> Non
         stale = await manager.start(
             conversation_id=conversation_id, command=_command("sleep 30"), cwd=tmp_path
         )
-        await asyncio.sleep(0.05)
-        await manager.start(
-            conversation_id=conversation_id, command=_command("sleep 30"), cwd=tmp_path
-        )
+        await asyncio.sleep(0.1)
         with pytest.raises(ShellTaskError):
             await manager.read(conversation_id=conversation_id, task_id=stale.task_id)
+        assert await manager.has_live_tasks(conversation_id) is False
+    finally:
+        await manager.aclose()
+
+
+async def test_global_live_task_limit_covers_multiple_conversations(tmp_path: Path) -> None:
+    manager = _manager(max_tasks_per_conversation=1, max_tasks_total=1)
+    try:
+        await manager.start(conversation_id=uuid4(), command=_command("sleep 30"), cwd=tmp_path)
+        with pytest.raises(ShellTaskError, match="全局运行数已达上限 1"):
+            await manager.start(conversation_id=uuid4(), command=_command("sleep 30"), cwd=tmp_path)
+    finally:
+        await manager.aclose()
+
+
+async def test_completed_task_snapshots_are_bounded(tmp_path: Path) -> None:
+    manager = _manager(
+        max_tasks_per_conversation=1,
+        max_tasks_total=1,
+        max_retained_tasks=2,
+    )
+    conversation_id = uuid4()
+    try:
+        task_ids: list[str] = []
+        for _ in range(3):
+            started = await manager.start(
+                conversation_id=conversation_id,
+                command=_command("sh -c 'exit 0'"),
+                cwd=tmp_path,
+            )
+            task_ids.append(started.task_id)
+            await manager.wait(
+                conversation_id=conversation_id,
+                task_id=started.task_id,
+                timeout_s=5.0,
+            )
+
+        with pytest.raises(ShellTaskError, match="不存在"):
+            await manager.read(conversation_id=conversation_id, task_id=task_ids[0])
+        assert (
+            await manager.read(
+                conversation_id=conversation_id,
+                task_id=task_ids[-1],
+                full=True,
+            )
+        ).running is False
     finally:
         await manager.aclose()
 
@@ -286,9 +321,7 @@ async def test_wake_on_refuses_a_task_from_another_conversation() -> None:
         conversation_id=owner, command=_command("sh -c 'sleep 5'"), cwd=Path.cwd()
     )
     with pytest.raises(ShellTaskError, match="不存在"):
-        await manager.wait(
-            conversation_id=uuid4(), task_id=started.task_id, timeout_s=1.0
-        )
+        await manager.wait(conversation_id=uuid4(), task_id=started.task_id, timeout_s=1.0)
     await manager.aclose()
 
 
@@ -304,9 +337,7 @@ async def test_has_live_tasks_only_counts_running_tasks_in_this_conversation() -
         command=_command("sh -c 'exit 0'"),
         cwd=Path.cwd(),
     )
-    await manager.wait(
-        conversation_id=conversation_id, task_id=started.task_id, timeout_s=5.0
-    )
+    await manager.wait(conversation_id=conversation_id, task_id=started.task_id, timeout_s=5.0)
     assert await manager.has_live_tasks(conversation_id) is False
     assert await manager.has_live_tasks(uuid4()) is False
     await manager.aclose()

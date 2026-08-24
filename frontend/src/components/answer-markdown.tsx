@@ -17,14 +17,14 @@ import { visit } from "unist-util-visit";
  *    HTML 或 `javascript:` 链接。react-markdown 默认不渲染裸 HTML，链接协议
  *    也由 defaultUrlTransform 过滤——这两个默认值是这里的安全边界，
  *    **不要**加 rehype-raw 或自定义 urlTransform 把它们打开。
- * 3. **`[S1]` 是引用锚点不是普通文字**。渲染成可点的 chip，点了就选中对应引用，
+ * 3. **`[S1]` / `[K1]` 是引用锚点不是普通文字**。渲染成可点的 chip，点了就选中对应引用，
  *    与右侧原文预览是同一套选中状态。
  * 4. **`[p.12]` 是阅读器 locator**。论文阅读档里模型按这个形式标出处，点了把阅读器
  *    翻到那一页。和 `[S1]` 走同一条 rehype 通道，因此同样不会误伤代码块里的字样。
  */
 
 const CITATION_TAG = "citation-ref";
-const CITATION_RE = /\[(S\d+)\]/g;
+const CITATION_RE = /\[((?:S|K)\d+)\]/g;
 
 const LOCATOR_TAG = "locator-ref";
 /**
@@ -35,6 +35,41 @@ const LOCATOR_TAG = "locator-ref";
 const LOCATOR_RE = /\[p\.\s*(\d[\d\s,\u2013\u2014-]*)\](?!\()/gi;
 /** 一个 `[p.a-b]` 最多展开成几个 locator，防止 `[p.1-9999]` 铺满整段。 */
 const MAX_LOCATOR_SPAN = 40;
+const THINK_OPEN = /^\s*<think(?:ing)?\b[^>]*>/i;
+const THINK_CLOSE = /<\/think(?:ing)?>/i;
+const THINK_OPEN_PREFIXES = ["<think", "<thinking"];
+
+/**
+ * 兼容已经落盘的旧回答：部分本地模型曾把前置思考块直接写进正文。
+ *
+ * 只处理回答开头，避免误删代码示例或正文中刻意展示的同名标签。流式标签尚未闭合时
+ * 返回空串，宁可稍晚显示答案，也不能把半截标签和思考内容短暂闪给用户。
+ */
+export function stripLeadingThinkBlocks(text: string): string {
+  let visible = text;
+  while (visible !== "") {
+    const opening = THINK_OPEN.exec(visible);
+    if (opening !== null) {
+      const remainder = visible.slice(opening[0].length);
+      const closing = THINK_CLOSE.exec(remainder);
+      if (closing === null) return "";
+      visible = remainder.slice(closing.index + closing[0].length).trimStart();
+      continue;
+    }
+    const candidate = visible.trimStart().toLowerCase();
+    if (
+      !candidate.includes(">")
+      && (
+        candidate.startsWith("<think")
+        || THINK_OPEN_PREFIXES.some((prefix) => prefix.startsWith(candidate))
+      )
+    ) {
+      return "";
+    }
+    return visible;
+  }
+  return visible;
+}
 
 /** 从 `[p.…]` 的内部文本解析出升序去重的 locator。 */
 export function parseLocators(raw: string): number[] {
@@ -53,7 +88,7 @@ export function parseLocators(raw: string): number[] {
 }
 
 /**
- * 把文本里的 `[S1]` 换成自定义元素节点。
+ * 把文本里的 `[S1]` / `[K1]` 换成自定义元素节点。
  *
  * 放在 rehype 阶段而不是自己 split children：这样它只作用于真正的文本节点，
  * 代码块、行内代码、链接地址里的 `[S1]` 不会被误伤。
@@ -283,7 +318,7 @@ export function AnswerMarkdown({
   onSelectLocator?: (locator: number) => void;
   activeCitationId?: string | null;
 }) {
-  const blocks = useMemo(() => splitMarkdownBlocks(text), [text]);
+  const blocks = useMemo(() => splitMarkdownBlocks(stripLeadingThinkBlocks(text)), [text]);
 
   return (
     <article className="answer-copy">

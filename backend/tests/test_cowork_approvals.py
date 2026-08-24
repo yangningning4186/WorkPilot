@@ -5,18 +5,16 @@
 "这一类问过一次"，而这里锁住的是它**不能**顺带放开的东西。
 """
 
-import shlex
 from uuid import UUID, uuid4
 
 import pytest
 
 from app.core.db import DbSession as AsyncSession
 from app.cowork.approvals import (
-    MAX_COMMAND_PREFIX_WORDS,
     ApprovalRuleError,
-    call_target,
-    command_matches_prefix,
-    command_prefix,
+    action_target,
+    argv_matches_pattern,
+    argv_pattern,
     conversation_approval_mode,
     create_approval_rule,
     find_matching_rule,
@@ -31,14 +29,13 @@ from app.runstore.conversations import update_conversation_runtime
 from app.runstore.runs import ensure_conversation
 
 
-def test_command_prefix_round_trips_through_shlex() -> None:
-    """空格拼接会把带引号的参数拼成另一条命令，规则于是静默错配。"""
+def test_argv_pattern_round_trips_exact_arguments_and_cwd() -> None:
+    """完整 argv 按 JSON 保存，不再经过字符串拆词或前缀匹配。"""
 
     argv = ("git", "commit", "-m", "两 个 词")
-    prefix = command_prefix(argv, words=4)
-    assert command_matches_prefix(argv, prefix, has_operators=False) is True
-    # 词数按 shlex 数，不按空格数：带引号的参数里也有空格。
-    assert len(shlex.split(command_prefix(argv, words=99))) <= MAX_COMMAND_PREFIX_WORDS
+    pattern = argv_pattern(argv, cwd="/workspace")
+    assert argv_matches_pattern(argv, pattern, has_operators=False, cwd="/workspace") is True
+    assert argv_matches_pattern(argv, pattern, has_operators=False, cwd="/other") is False
 
 
 def test_a_prefix_never_authorises_a_chained_command() -> None:
@@ -51,20 +48,40 @@ def test_a_prefix_never_authorises_a_chained_command() -> None:
     chained = assess_shell_command("npm test && rm -rf ~", []).command
     assert chained.has_operators is True
     assert (
-        command_matches_prefix(chained.argv, "npm test", has_operators=chained.has_operators)
+        argv_matches_pattern(
+            chained.argv,
+            argv_pattern(chained.argv, cwd="/workspace"),
+            has_operators=chained.has_operators,
+            cwd="/workspace",
+        )
         is False
     )
 
 
-def test_prefix_matching_requires_whole_words_not_a_string_prefix() -> None:
-    """按 argv 逐词比，不是按字符串前缀比：否则 `npm` 会放行 `npmx`。"""
+def test_argv_pattern_rejects_appended_or_mutated_arguments() -> None:
+    """批准后的参数增加、删除或替换都不能命中。"""
 
-    assert command_matches_prefix(("npm", "test"), "npm", has_operators=False) is True
-    assert command_matches_prefix(("npmx", "test"), "npm", has_operators=False) is False
-    assert command_matches_prefix(("npm",), "npm test", has_operators=False) is False
+    pattern = argv_pattern(("npm", "test"), cwd="/workspace")
+    assert (
+        argv_matches_pattern(("npm", "test"), pattern, has_operators=False, cwd="/workspace")
+        is True
+    )
+    assert (
+        argv_matches_pattern(
+            ("npm", "test", "--watch"),
+            pattern,
+            has_operators=False,
+            cwd="/workspace",
+        )
+        is False
+    )
+    assert (
+        argv_matches_pattern(("npm", "publish"), pattern, has_operators=False, cwd="/workspace")
+        is False
+    )
 
 
-def test_call_target_is_stable_and_ignores_the_payload() -> None:
+def test_action_target_is_stable_and_separates_delete_from_write() -> None:
     """目标只取"后果落在哪里"的那几个字段。
 
     把 body 算进去等于每次调用都是新目标，规则永远匹配不上；把它排除掉的代价是明确的，
@@ -72,18 +89,18 @@ def test_call_target_is_stable_and_ignores_the_payload() -> None:
     """
 
     fields = ("account_id", "method", "path")
-    first = call_target(
+    first = action_target(
         "act_connector_api",
         {"account_id": "a", "method": "POST", "path": "/issues", "body": {"title": "x"}},
         fields=fields,
     )
-    second = call_target(
+    second = action_target(
         "act_connector_api",
         {"path": "/issues", "method": "POST", "account_id": "a", "body": {"title": "y"}},
         fields=fields,
     )
     assert first == second
-    third = call_target(
+    third = action_target(
         "act_connector_api",
         {"account_id": "a", "method": "DELETE", "path": "/issues"},
         fields=fields,
@@ -91,7 +108,7 @@ def test_call_target_is_stable_and_ignores_the_payload() -> None:
     assert third != first
 
 
-def test_a_tool_wide_rule_refuses_a_target() -> None:
+def test_new_rule_kinds_require_a_target() -> None:
     with pytest.raises(ApprovalRuleError, match="必须带目标"):
         import asyncio
 
@@ -100,7 +117,7 @@ def test_a_tool_wide_rule_refuses_a_target() -> None:
                 None,  # type: ignore[arg-type]
                 conversation_id=uuid4(),
                 tool="run_shell",
-                match_kind="command_prefix",
+                match_kind="argv_pattern",
                 target="   ",
             )
         )
@@ -110,15 +127,14 @@ def test_a_tool_wide_rule_refuses_a_target() -> None:
 async def test_rules_match_by_kind_and_stop_matching_once_revoked(
     db_session: AsyncSession,
 ) -> None:
-    conversation_id = await ensure_conversation(
-        db_session, title="Approval rules"
-    )
-    prefix_rule = await create_approval_rule(
+    conversation_id = await ensure_conversation(db_session, title="Approval rules")
+    pattern = argv_pattern(("npm", "test"), cwd="/workspace")
+    exact_rule = await create_approval_rule(
         db_session,
         conversation_id=conversation_id,
         tool="run_shell",
-        match_kind="command_prefix",
-        target="npm test",
+        match_kind="argv_pattern",
+        target=pattern,
     )
     await db_session.commit()
 
@@ -128,22 +144,24 @@ async def test_rules_match_by_kind_and_stop_matching_once_revoked(
             conversation_id=conversation_id,
             schedule_id=None,
             tool="run_shell",
-            argv=("npm", "test", "--", "-w"),
+            argv=("npm", "test"),
+            cwd="/workspace",
         )
     ) is not None
-    # 另一条命令不该沾光。
+    # 参数追加不该沾光。
     assert (
         await find_matching_rule(
             db_session,
             conversation_id=conversation_id,
             schedule_id=None,
             tool="run_shell",
-            argv=("npm", "publish"),
+            argv=("npm", "test", "--watch"),
+            cwd="/workspace",
         )
     ) is None
 
     assert await revoke_approval_rule(
-        db_session, conversation_id=conversation_id, rule_id=prefix_rule.id
+        db_session, conversation_id=conversation_id, rule_id=exact_rule.id
     )
     await db_session.commit()
     assert (
@@ -153,6 +171,7 @@ async def test_rules_match_by_kind_and_stop_matching_once_revoked(
             schedule_id=None,
             tool="run_shell",
             argv=("npm", "test"),
+            cwd="/workspace",
         )
     ) is None
 
@@ -167,16 +186,14 @@ async def test_schedule_scoped_rules_do_not_leak_into_manual_runs(
     的权限。
     """
 
-    conversation_id = await ensure_conversation(
-        db_session, title="Schedule scope"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Schedule scope")
     schedule_id = await _seed_schedule(db_session, conversation_id=conversation_id)
     await create_approval_rule(
         db_session,
         conversation_id=conversation_id,
         tool="run_shell",
-        match_kind="command_prefix",
-        target="npm test",
+        match_kind="argv_pattern",
+        target=argv_pattern(("npm", "test"), cwd="/workspace"),
         scope="schedule",
         schedule_id=schedule_id,
         created_by="schedule",
@@ -190,6 +207,7 @@ async def test_schedule_scoped_rules_do_not_leak_into_manual_runs(
             schedule_id=schedule_id,
             tool="run_shell",
             argv=("npm", "test"),
+            cwd="/workspace",
         )
     ) is not None
     assert (
@@ -213,9 +231,7 @@ async def test_approving_with_remember_records_exactly_what_the_card_showed(
     生效的就可能不是同一条规则。
     """
 
-    conversation_id = await ensure_conversation(
-        db_session, title="Remember"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Remember")
     item = await _pending_shell_item(
         db_session,
         conversation_id=conversation_id,
@@ -223,27 +239,23 @@ async def test_approving_with_remember_records_exactly_what_the_card_showed(
             "command": "npm test",
             "argv": ["npm", "test"],
             "has_operators": False,
-            "standing_command_prefix": "npm test",
+            "standing_argv_pattern": argv_pattern(("npm", "test"), cwd="/workspace"),
         },
     )
-    _, response = await resolve_inbox_item(
-        db_session, item=item, approved=True, remember="command"
-    )
+    _, response = await resolve_inbox_item(db_session, item=item, approved=True, remember="command")
     await db_session.commit()
 
-    assert response["standing_rule"]["match_kind"] == "command_prefix"
-    assert response["standing_rule"]["target"] == "npm test"
+    assert response["standing_rule"]["match_kind"] == "argv_pattern"
+    assert response["standing_rule"]["target"] == argv_pattern(("npm", "test"), cwd="/workspace")
     rules = await list_approval_rules(db_session, conversation_id=conversation_id)
-    assert [rule.target for rule in rules] == ["npm test"]
+    assert [rule.target for rule in rules] == [argv_pattern(("npm", "test"), cwd="/workspace")]
 
 
 @pytest.mark.integration
 async def test_a_command_with_operators_cannot_be_remembered(
     db_session: AsyncSession,
 ) -> None:
-    conversation_id = await ensure_conversation(
-        db_session, title="Operators"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Operators")
     item = await _pending_shell_item(
         db_session,
         conversation_id=conversation_id,
@@ -251,7 +263,7 @@ async def test_a_command_with_operators_cannot_be_remembered(
             "command": "npm test && rm -rf ~",
             "argv": ["npm", "test"],
             "has_operators": True,
-            "standing_command_prefix": None,
+            "standing_argv_pattern": None,
         },
     )
     with pytest.raises(ValueError, match="shell 操作符"):
@@ -262,9 +274,7 @@ async def test_a_command_with_operators_cannot_be_remembered(
 async def test_approval_mode_defaults_to_interactive_and_flips_explicitly(
     db_session: AsyncSession,
 ) -> None:
-    conversation_id = await ensure_conversation(
-        db_session, title="Approval mode"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Approval mode")
     assert (
         await conversation_approval_mode(db_session, conversation_id=conversation_id)
         == "interactive"
@@ -278,9 +288,8 @@ async def test_approval_mode_defaults_to_interactive_and_flips_explicitly(
         approval_mode="auto",
     )
     await db_session.commit()
-    assert (
-        await conversation_approval_mode(db_session, conversation_id=conversation_id) == "auto"
-    )
+    assert await conversation_approval_mode(db_session, conversation_id=conversation_id) == "auto"
+
 
 async def _seed_schedule(session: AsyncSession, *, conversation_id: UUID) -> UUID:
     from app.cowork.schedules import create_schedule

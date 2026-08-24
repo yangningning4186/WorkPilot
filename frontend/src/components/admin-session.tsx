@@ -18,6 +18,8 @@ import { isTauriRuntime } from "@/lib/desktop";
 interface AdminSessionValue {
   /** `unknown` 表示还没问过后端，用来区分"确认未登录"和"还不知道"。 */
   state: AdminAuthState | "unknown";
+  /** 桌面 sidecar 的终态启动错误；null 表示仍在连接或连接正常。 */
+  startupError: string | null;
   login: (password: string) => Promise<void>;
   logout: () => Promise<void>;
   /** 收到 401 的调用点用它把顶栏拉回未登录，避免界面和后端各说各话。 */
@@ -28,6 +30,7 @@ const AdminSessionContext = createContext<AdminSessionValue | null>(null);
 
 export function AdminSessionProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AdminAuthState | "unknown">("unknown");
+  const [startupError, setStartupError] = useState<string | null>(null);
 
   // cookie 是 httpOnly 的，挂载时只能问后端要一次当前状态。
   useEffect(() => {
@@ -36,9 +39,12 @@ export function AdminSessionProvider({ children }: { children: React.ReactNode }
       .then((next) => {
         if (!cancelled) setState(next);
       })
-      .catch(() => {
+      .catch((reason: unknown) => {
         // 后端没起来时不该谎称已登录，也不该谎称密码错。
-        if (!cancelled) setState("anonymous");
+        if (!cancelled) {
+          setStartupError(String(reason));
+          setState("anonymous");
+        }
       });
     return () => {
       cancelled = true;
@@ -62,8 +68,8 @@ export function AdminSessionProvider({ children }: { children: React.ReactNode }
   const invalidate = useCallback(() => setState("anonymous"), []);
 
   const value = useMemo<AdminSessionValue>(
-    () => ({ state, login, logout, invalidate }),
-    [state, login, logout, invalidate],
+    () => ({ state, startupError, login, logout, invalidate }),
+    [state, startupError, login, logout, invalidate],
   );
 
   return <AdminSessionContext.Provider value={value}>{children}</AdminSessionContext.Provider>;

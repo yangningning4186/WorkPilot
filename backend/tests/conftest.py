@@ -36,6 +36,7 @@ def db_engine() -> None:
 
     return None
 
+
 @pytest_asyncio.fixture(autouse=True)
 async def local_cowork_store(
     tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
@@ -50,7 +51,14 @@ async def local_cowork_store(
     from app.cowork_store.factory import close_local_cowork_stores, initialize_local_cowork_stores
 
     # 刻意不放在用例的 tmp_path 里：扫目录的用例会把这个库当成待扫描的文件。
-    monkeypatch.setenv("COWORK_DATA_PATH", str(tmp_path_factory.mktemp("cowork-state")))
+    state_path = tmp_path_factory.mktemp("cowork-state")
+    monkeypatch.setenv("COWORK_DATA_PATH", str(state_path))
+    # 测试 Provider 的默认上下文只有 32K；生产 registry 改为全量 schema 后，保留 8K
+    # 输出会让固定前缀刚好越界。测试只验证运行时协议，2K 输出足够且不裁剪 schema。
+    monkeypatch.setenv("COWORK_DECISION_MAX_TOKENS", "2048")
+    # Skill 蒸馏队列也是持久状态。若只隔离 cowork.db，跑测试会把数百条合成 run
+    # 写进桌面端的真实后台队列，随后占满 worker、饿死用户任务。
+    monkeypatch.setenv("COWORK_SKILL_CANDIDATES_PATH", str(state_path / "skills-candidates"))
     get_settings.cache_clear()
     await close_local_cowork_stores()
     await initialize_local_cowork_stores(get_settings())
@@ -101,9 +109,7 @@ async def message_status() -> "Callable[..., Awaitable[list[str]]]":
 
         records = await local_cowork_stores().conversations.read(conversation_id)
         return [
-            item.status
-            for item in records
-            if item.role == role and str(item.run_id) == str(run_id)
+            item.status for item in records if item.role == role and str(item.run_id) == str(run_id)
         ]
 
     return run

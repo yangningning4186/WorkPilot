@@ -2,23 +2,50 @@ import { type APIRequestContext, type Locator, type Page, expect } from "@playwr
 
 export const MOCK_BASE = `http://127.0.0.1:${process.env.MOCK_BACKEND_PORT ?? 8787}`;
 
-/** 提问并等 URL 上出现 run——run id 是后续所有断言的锚。 */
-export async function ask(page: Page, query: string): Promise<string> {
-  await page.goto("/");
-  await page.getByLabel("向资料库提问").fill(query);
-  await page.getByRole("button", { name: "提问" }).click();
-  await expect(page).toHaveURL(/[?&]run=/);
-  const runId = new URL(page.url()).searchParams.get("run");
-  expect(runId).not.toBeNull();
-  return runId as string;
+/** 从当前 Cowork 入口发起一轮任务，并从创建响应里取得 run id。 */
+export async function ask(
+  page: Page,
+  query: string,
+  options: { readingPath?: string } = {},
+): Promise<string> {
+  await page.goto("/cowork?new=1");
+  await loginAsAdmin(page);
+  await selectConfiguredProvider(page);
+  if (options.readingPath !== undefined) {
+    await page.getByRole("tab", { name: "论文阅读" }).click();
+    await page
+      .getByPlaceholder("要读的文档，例如 papers/attention.pdf")
+      .fill(options.readingPath);
+  }
+  const created = page.waitForResponse((response) => {
+    const request = response.request();
+    return request.method() === "POST" && new URL(response.url()).pathname === "/api/v1/runs/cowork";
+  });
+  await page.getByLabel("你想让 Cowork 完成什么？").fill(query);
+  await page.getByRole("button", { name: "开始执行任务" }).click();
+  const response = await created;
+  expect(response.ok()).toBe(true);
+  const body = (await response.json()) as { run_id: string };
+  await expect(page).toHaveURL(new RegExp("[?&]conversation="));
+  return body.run_id;
+}
+
+/** 新任务没有内置默认模型；测试显式选择假后端提供的用户配置 Provider。 */
+export async function selectConfiguredProvider(page: Page): Promise<void> {
+  const select = page.getByLabel("模型服务");
+  if (!(await select.isVisible())) {
+    await page.locator(".workdesk-run-settings > summary").click();
+  }
+  await expect(select).toBeVisible();
+  if ((await select.inputValue()) === "") await select.selectOption({ index: 1 });
 }
 
 export function answerCopy(page: Page): Locator {
-  return page.locator(".answer-copy");
+  return page.locator(".answer-copy").last();
 }
 
 export function citationCards(page: Page): Locator {
-  return page.locator("button.citation-card");
+  return answerCopy(page).locator(".citation-chip");
 }
 
 export function evidencePanel(page: Page): Locator {
@@ -72,10 +99,12 @@ export const ADMIN_PASSWORD = "demo-admin-pw";
  * 绕过 UI 注入等于把这个入口本身排除在验收之外。
  */
 export async function loginAsAdmin(page: Page): Promise<void> {
+  const badge = page.locator(".admin-badge");
+  if (await badge.isVisible()) return;
   await page.getByRole("button", { name: "owner 登录" }).click();
   await page.getByLabel("owner 口令").fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: "登录", exact: true }).click();
-  await expect(page.locator(".admin-badge")).toHaveText("owner");
+  await expect(badge).toHaveText("owner");
 }
 
 /** 切换假后端的 DEMO_ADMIN_PASSWORD_HASH 配置状态。 */
@@ -97,4 +126,26 @@ export async function mockRequests(
     requests: { method: string; path: string; search: string }[];
   };
   return body.requests;
+}
+
+/** 假后端在创建 run 时冻结的关键字段，用来验会话级配置的时序隔离。 */
+export async function mockRuns(
+  request: APIRequestContext,
+): Promise<{
+  id: string;
+  conversation_id: string;
+  status: string;
+  kb_slug: string | null;
+}[]> {
+  const response = await request.get(`${MOCK_BASE}/__runs`);
+  expect(response.ok()).toBe(true);
+  const body = (await response.json()) as {
+    runs: {
+      id: string;
+      conversation_id: string;
+      status: string;
+      kb_slug: string | null;
+    }[];
+  };
+  return body.runs;
 }

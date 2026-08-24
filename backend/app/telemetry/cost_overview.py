@@ -184,9 +184,7 @@ def _totals(tiers: list[TierUsage], cost_row: sqlite3.Row) -> CostTotals:
         fallback_count=sum(tier.fallback_count for tier in tiers),
         priced_count=priced,
         unpriced_count=unpriced,
-        cost_usd=(
-            None if priced == 0 else str(Decimal(int(get("cost_micro_usd") or 0)) / MICRO)
-        ),
+        cost_usd=(None if priced == 0 else str(Decimal(int(get("cost_micro_usd") or 0)) / MICRO)),
         cost_status=cost_status,
         window_from=_optional_datetime(get("window_from")),
         window_to=_optional_datetime(get("window_to")),

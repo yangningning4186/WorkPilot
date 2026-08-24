@@ -393,9 +393,7 @@ async def _search_files_ripgrep(
         return fnmatch.fnmatch(relative, pattern) or fnmatch.fnmatch(name, pattern)
 
     # 第一趟只列文件：它同时给出「按文件名命中」的候选集和 files_scanned 口径。
-    listing = await _run_ripgrep(
-        (*common, "--files"), cwd=root, max_bytes=max_scan_entries * 4096
-    )
+    listing = await _run_ripgrep((*common, "--files"), cwd=root, max_bytes=max_scan_entries * 4096)
     candidates = [line for line in listing.splitlines() if line]
     scan_truncated = len(candidates) > max_scan_entries
     relative_paths = sorted(

@@ -161,9 +161,7 @@ async def update_memory(
     )
 
 
-async def forget_memory(
-    session: AsyncSession, *, memory_id: UUID
-) -> CoworkMemoryRecord | None:
+async def forget_memory(session: AsyncSession, *, memory_id: UUID) -> CoworkMemoryRecord | None:
     """软删除。已经删过的返回 None，让重复调用是幂等的而不是报错。"""
 
     store = cowork_store()
@@ -242,7 +240,10 @@ def render_memory_block(
         body = item.content
         truncated = len(body) > preview_chars
         if truncated:
-            body = body[:preview_chars] + f"…（已截断，用 memory_read 取全文，共 {len(item.content)} 字）"
+            body = (
+                body[:preview_chars]
+                + f"…（已截断，用 memory_read 取全文，共 {len(item.content)} 字）"
+            )
         line = f"[{item.scope}] [#{item.id}] {body}"
         if used + len(line) + 1 > max_chars:
             break
@@ -404,11 +405,7 @@ async def apply_memory_operation(
         return MemoryWrite(True, True, await get_curated_memory(target.id))
 
     # ADD / UPDATE 都要写一条新记忆。
-    stale = (
-        target is not None
-        and target.valid_from is not None
-        and valid_from < target.valid_from
-    )
+    stale = target is not None and target.valid_from is not None and valid_from < target.valid_from
     created, _ = await store.remember_cowork_memory(
         scope="global",
         conversation_id=None,

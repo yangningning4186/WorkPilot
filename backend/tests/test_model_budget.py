@@ -43,9 +43,7 @@ def _guard(store: SqliteTelemetryStore, limit_usd: str, *, ttl_s: int = 900) -> 
 
 
 async def _reservation_status(store: SqliteTelemetryStore) -> str:
-    row = await store._read(
-        lambda c: c.execute("SELECT status FROM cost_reservations").fetchone()
-    )
+    row = await store._read(lambda c: c.execute("SELECT status FROM cost_reservations").fetchone())
     return str(row["status"])
 
 
@@ -176,9 +174,7 @@ async def test_ambiguous_failure_keeps_reservation_until_swept_at_estimate(
     assert await store.sweep_expired() == 0
 
     await store._write(
-        lambda c: c.execute(
-            "UPDATE cost_reservations SET expires_at = '2000-01-01T00:00:00+00:00'"
-        )
+        lambda c: c.execute("UPDATE cost_reservations SET expires_at = '2000-01-01T00:00:00+00:00'")
     )
     assert await store.sweep_expired() == 1
 

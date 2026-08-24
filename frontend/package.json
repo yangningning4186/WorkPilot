@@ -8,6 +8,8 @@
     "build": "next build",
     "build:desktop": "TAURI_BUILD=true next build --webpack",
     "desktop": "node node_modules/@tauri-apps/cli/tauri.js",
+    "package:sidecar": "uv --directory ../backend run python scripts/build_sidecar.py",
+    "bundle:desktop": "npm run package:sidecar && node node_modules/@tauri-apps/cli/tauri.js build --config src-tauri/tauri.bundle.conf.json",
     "build:e2e": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
@@ -20,6 +22,7 @@
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "^2.4.0",
     "next": "16.3.1",
+    "pdfjs-dist": "^5.7.284",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-markdown": "^10.1.0",
@@ -27,9 +30,9 @@
     "unist-util-visit": "^5.1.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.8.0",
     "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "^4",
+    "@tauri-apps/cli": "^2.8.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

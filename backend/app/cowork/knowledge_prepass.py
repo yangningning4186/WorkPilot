@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.knowledge_contracts import EvidenceBundle, EvidenceSegment
 
 # 预检索进的是 system 前缀，整段 run 都在为它付费，所以比工具返回收得紧。
@@ -29,16 +31,10 @@ CITATION_PREFIX = "K"
 def render_knowledge_block(bundle: EvidenceBundle, *, kb_name: str) -> str:
     """`EvidenceBundle` → 可直接注入提示词的一段。空命中返回空串。"""
 
-    lines: list[str] = []
-    used = 0
-    for ordinal, segment in enumerate(bundle.evidence, start=1):
-        quote = _clip(segment.quote, PREPASS_SEGMENT_CHARS)
-        if not quote:
-            continue
-        if used + len(quote) > PREPASS_TOTAL_CHARS:
-            break
-        used += len(quote)
-        lines.append(f"- [{CITATION_PREFIX}{ordinal}] {_source(segment)}：{quote}")
+    candidates = knowledge_prepass_evidence(bundle)
+    lines = [
+        f"- [{item['citation_id']}] {item['source_label']}：{item['quote']}" for item in candidates
+    ]
     if not lines:
         return ""
 
@@ -56,6 +52,39 @@ def render_knowledge_block(bundle: EvidenceBundle, *, kb_name: str) -> str:
     )
 
 
+def knowledge_prepass_evidence(bundle: EvidenceBundle) -> tuple[dict[str, Any], ...]:
+    """返回与提示词逐字对应的结构化证据；编号和截断必须与渲染共用这一条路径。"""
+
+    output: list[dict[str, Any]] = []
+    used = 0
+    for segment in bundle.evidence:
+        quote = _clip(segment.quote, PREPASS_SEGMENT_CHARS)
+        if not quote:
+            continue
+        if used + len(quote) > PREPASS_TOTAL_CHARS:
+            break
+        used += len(quote)
+        output.append(
+            {
+                "kind": "knowledge",
+                "citation_id": f"{CITATION_PREFIX}{len(output) + 1}",
+                "block_id": str(segment.block_id),
+                "version_id": str(segment.version_id),
+                "document_id": str(segment.document_id),
+                "title": segment.title,
+                "source_uri": segment.source_uri,
+                "source_label": _source(segment),
+                "quote": quote,
+                "char_start": segment.char_start,
+                "char_end": min(segment.char_end, segment.char_start + len(quote)),
+                "heading_path": list(segment.heading_path),
+                "locations": list(segment.locations),
+                "verified": True,
+            }
+        )
+    return tuple(output)
+
+
 def _source(segment: EvidenceSegment) -> str:
     """来源标签：`标题 p.12`。
 
@@ -63,9 +92,7 @@ def _source(segment: EvidenceSegment) -> str:
     区间），所以这里只写页码，不写 bbox。没有页码的（Markdown 笔记）就只写标题。
     """
     title = segment.title or segment.source_uri or "未知来源"
-    pages = [
-        str(item["page_no"]) for item in segment.locations if item.get("page_no") is not None
-    ]
+    pages = [str(item["page_no"]) for item in segment.locations if item.get("page_no") is not None]
     return f"{title} p.{','.join(pages)}" if pages else title
 
 
@@ -78,5 +105,6 @@ __all__ = [
     "CITATION_PREFIX",
     "MIN_QUERY_CHARS",
     "PREPASS_TOP_K",
+    "knowledge_prepass_evidence",
     "render_knowledge_block",
 ]

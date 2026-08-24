@@ -11,7 +11,6 @@ from app.core.queue import RunQueue, get_run_queue
 from app.core.run_bus import RunBus, in_memory_run_bus
 from app.llm_bootstrap import build_model_gateway
 from app.platform.admin_sessions import AdminSessionStore
-from app.rag.editor_permissions import EditorPermissionStore, InProcessEditorPermissionStore
 from app.telemetry import default_telemetry_store
 from app.telemetry.model_budget import build_cost_guard
 from workpilot_ai.gateway import ModelGateway
@@ -25,12 +24,6 @@ def get_run_bus() -> RunBus:
 def get_admin_session_store() -> AdminSessionStore:
     """进程内单例：会话表就在内存里，每次 new 一个等于每次都登出。"""
     return AdminSessionStore(ttl_s=get_settings().admin_session_ttl_s)
-
-
-@lru_cache(maxsize=1)
-def get_editor_permission_store() -> EditorPermissionStore:
-    """进程内单例：授权表就在内存里，每次 new 一个等于每次都没授权。"""
-    return InProcessEditorPermissionStore()
 
 
 def get_session_factory() -> SessionFactory:
@@ -75,21 +68,6 @@ async def require_owner_identity(
     token = request.cookies.get(settings.admin_cookie_name)
     if token is None or not await store.validate(token):
         raise HTTPException(status_code=401, detail="需要先登录 owner")
-
-
-async def require_editor_write_permission(
-    request: Request,
-    settings: Annotated[Settings, Depends(get_settings)],
-    store: Annotated[EditorPermissionStore, Depends(get_editor_permission_store)],
-) -> None:
-    """写权限绑定 owner session，过期后必须由用户重新授权。"""
-
-    token = request.cookies.get(settings.admin_cookie_name)
-    if token is None:
-        raise HTTPException(status_code=401, detail="需要先登录 owner")
-    remaining = await store.ttl(token)
-    if remaining <= 0:
-        raise HTTPException(status_code=403, detail="尚未授予本地办公文档写权限或权限已过期")
 
 
 async def get_model_gateway(

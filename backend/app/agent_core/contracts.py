@@ -48,6 +48,9 @@ class RunEvent:
             "seq": str(self.seq),
             "type": self.type,
             "data": self.payload,
+            # 运行耗时必须来自持久化事件，而不是浏览器打开页面的时刻。这样刷新、断线续传
+            # 和历史回放仍能显示同一个耗时。
+            "created_at": self.created_at.isoformat(),
         }
 
 

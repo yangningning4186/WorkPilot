@@ -56,7 +56,7 @@ def test_plan_mode_allows_reading_and_asking_but_nothing_that_changes_anything()
 
     registry = build_default_cowork_registry()
 
-    for name in ("read_text_file", "list_files", "search_files", "read_pdf", "inspect_office_file"):
+    for name in ("read_text_file", "list_files", "search_files", "read_pdf"):
         assert registry.plan_mode_allows(name), name
     # 交互工具每一次都要用户当场点头，本身就是征求同意的动作。
     for name in ("ask_user", "request_directory", "request_capability", PLAN_TOOL_NAME):
@@ -64,9 +64,6 @@ def test_plan_mode_allows_reading_and_asking_but_nothing_that_changes_anything()
     for name in (
         "write_text_file",
         "create_artifact",
-        "create_native_artifact",
-        "edit_word",
-        "edit_excel",
         "run_shell",
     ):
         assert not registry.plan_mode_allows(name), name
@@ -144,9 +141,7 @@ async def test_rejected_plan_carries_the_users_edits_back_to_the_model(
 ) -> None:
     """只回一个"被拒绝"，模型会原样再提一遍同一个计划。"""
 
-    conversation_id = await ensure_conversation(
-        db_session, title="计划退回"
-    )
+    conversation_id = await ensure_conversation(db_session, title="计划退回")
     run = await create_run(
         db_session,
         conversation_id=conversation_id,
@@ -194,9 +189,7 @@ async def test_plan_mode_refuses_writes_then_executes_the_approved_plan(
 ) -> None:
     """一条完整路径：越权被拦 → 提计划暂停 → 批准 → 解锁并落盘。"""
 
-    conversation_id = await ensure_conversation(
-        db_session, title="计划模式"
-    )
+    conversation_id = await ensure_conversation(db_session, title="计划模式")
     await create_session_root(
         db_session,
         conversation_id=conversation_id,
@@ -228,9 +221,7 @@ async def test_plan_mode_refuses_writes_then_executes_the_approved_plan(
     )
 
     target = tmp_path / "notes.md"
-    write_arguments = json.dumps(
-        {"path": str(target), "content": "结论"}, ensure_ascii=False
-    )
+    write_arguments = json.dumps({"path": str(target), "content": "结论"}, ensure_ascii=False)
     provider = NativeToolProvider(
         [
             # 1. 计划阶段抢跑写文件：必须被拦下，且文件不能出现。
@@ -262,7 +253,6 @@ async def test_plan_mode_refuses_writes_then_executes_the_approved_plan(
     context = {
         "settings": get_settings().model_copy(
             update={
-                "cowork_max_steps": 8,
                 "cowork_decision_max_tokens": 2048,
                 "run_heartbeat_s": 60.0,
             }
@@ -299,9 +289,7 @@ async def test_plan_mode_refuses_writes_then_executes_the_approved_plan(
     )
     assert item is not None
     item, response = await resolve_inbox_item(db_session, item=item, approved=True)
-    state = await resume_cowork_after_human(
-        db_session, run_id=run.id, item=item, response=response
-    )
+    state = await resume_cowork_after_human(db_session, run_id=run.id, item=item, response=response)
     await db_session.commit()
 
     # 批准是运行时状态的翻转，批准的步骤同时成为清单。

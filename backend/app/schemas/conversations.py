@@ -22,6 +22,7 @@ class ConversationCreate(BaseModel):
 class ConversationResponse(BaseModel):
     id: UUID
     title: str | None
+    active_run_id: UUID | None
     message_count: int
     latest_message: str | None
     last_message_at: datetime | None
@@ -31,6 +32,7 @@ class ConversationResponse(BaseModel):
     selected_model: str | None
     unattended: bool
     approval_mode: Literal["interactive", "auto"] = "interactive"
+    persona_name: str = "general"
     archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -47,6 +49,7 @@ class ConversationRuntimeUpdate(BaseModel):
     unattended: bool = False
     # 自主权上限。默认必须是 interactive：一个漏传字段的客户端不该把会话悄悄升级成免审批。
     approval_mode: Literal["interactive", "auto"] = "interactive"
+    persona_name: str = Field(default="general", min_length=1, max_length=64)
 
     @field_validator("model_override")
     @classmethod

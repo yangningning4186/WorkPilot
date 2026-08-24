@@ -15,9 +15,7 @@ from app.cowork.memory import (
     retry_or_fail_memory_job,
 )
 from app.cowork.memory_extraction import process_memory_job_source
-from app.llm_bootstrap import build_model_gateway
-from app.telemetry import default_telemetry_store
-from app.telemetry.model_budget import build_cost_guard
+from app.cowork.provider_profiles import build_conversation_gateway
 
 logger = structlog.get_logger(__name__)
 
@@ -43,13 +41,17 @@ async def memory_extraction_job(ctx: dict[str, Any], job_id_raw: str) -> None:
         return
 
     try:
-        telemetry = default_telemetry_store()
-        gateway = build_model_gateway(
-            settings,
-            audit_sink=telemetry,
-            budget_guard=build_cost_guard(settings, telemetry),
-            run_id=source.run_id,
-        )
+        if source.conversation_id is None:
+            raise RuntimeError("记忆抽取作业缺少来源会话，无法解析用户选择的 Provider")
+        session_factory = ctx["session_factory"]
+        async with session_factory() as session:
+            gateway = await build_conversation_gateway(
+                session,
+                conversation_id=source.conversation_id,
+                settings=settings,
+                session_factory=session_factory,
+                run_id=source.run_id,
+            )
         try:
             await process_memory_job_source(gateway, source=source)
         finally:

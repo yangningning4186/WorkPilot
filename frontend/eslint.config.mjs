@@ -14,6 +14,9 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // 验收产物：构建输出与 Playwright 报告不参与 lint。
     ".next-e2e/**",
+    // 原生发布构建生成的 sidecar 与 Playwright 浏览器发行物不是前端源码。
+    "src-tauri/binaries/**",
+    "src-tauri/resources/ms-playwright/**",
     "src-tauri/target/**",
     "test-results/**",
     "playwright-report/**",

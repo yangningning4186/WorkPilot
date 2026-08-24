@@ -5,14 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from app.core.config import Settings
 from app.cowork.mcp.client import McpClientManager, McpRemoteTool
+from app.cowork.permissions import authorize_path
 from app.cowork.skills.catalog import SkillCatalog, load_skill_catalog
-from app.cowork.skills.lifecycle import read_skill_resource
+from app.cowork.skills.lifecycle import read_skill_definition_resource
 from app.cowork.tools import (
     CoworkToolContext,
     CoworkToolRegistry,
@@ -54,9 +57,16 @@ def _skill_handlers(
             }
         )
 
-    async def load_skill(_: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+    async def load_skill(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = LoadSkillArgs.model_validate(raw.model_dump())
         skill = catalog.get(args.name)
+        if skill.origin == "project":
+            await authorize_path(
+                context.session,
+                conversation_id=context.conversation_id,
+                target_path=skill.source_path,
+                capability="filesystem.read",
+            )
         return CoworkToolResult(
             output={
                 **skill.summary(),
@@ -71,11 +81,17 @@ def _skill_handlers(
     return list_skills, load_skill
 
 
-def register_skill_tools(registry: CoworkToolRegistry, settings: Settings) -> SkillCatalog:
+def register_skill_tools(
+    registry: CoworkToolRegistry,
+    settings: Settings,
+    *,
+    project_roots: Iterable[Path] = (),
+) -> SkillCatalog:
     catalog = load_skill_catalog(
         settings.cowork_skills_path,
         max_files=settings.cowork_skill_max_files,
         max_bytes=settings.cowork_skill_max_bytes,
+        project_roots=tuple(project_roots),
     )
     list_handler, load_handler = _skill_handlers(catalog)
     registry.register(
@@ -90,12 +106,18 @@ def register_skill_tools(registry: CoworkToolRegistry, settings: Settings) -> Sk
         )
     )
 
-    async def load_resource(_: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+    async def load_resource(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = LoadSkillResourceArgs.model_validate(raw.model_dump())
-        catalog.get(args.name)
-        content, resource = read_skill_resource(
-            settings.cowork_skills_path,
-            name=args.name,
+        skill = catalog.get(args.name)
+        if skill.origin == "project":
+            await authorize_path(
+                context.session,
+                conversation_id=context.conversation_id,
+                target_path=skill.source_path,
+                capability="filesystem.read",
+            )
+        content, resource = read_skill_definition_resource(
+            skill.source_path,
             resource=args.resource,
             max_bytes=settings.cowork_skill_max_bytes,
         )
@@ -232,7 +254,7 @@ async def register_mcp_tools(
                         ),
                     )
 
-                registry.register(
+                registry.register_deferred(
                     CoworkToolSpec(
                         name=local_name,
                         description=(
@@ -249,17 +271,14 @@ async def register_mcp_tools(
                         ),
                         args_model=McpArguments,
                         input_schema=remote.input_schema,
-                        capability=(
-                            "external.action"
-                            if policy.side_effect or server.transport == "stdio"
-                            else "network.read"
-                        ),
+                        capability=("external.write" if policy.side_effect else "external.read"),
                         risk="external" if policy.side_effect else "read",
                         effect="external" if policy.side_effect else "none",
                         parallel_safe=False,
                         handler=call_mcp,
                         approval_required=policy.side_effect,
-                    )
+                    ),
+                    group=f"MCP · {server_name}",
                 )
                 registered.append(local_name)
             statuses[server_name] = {

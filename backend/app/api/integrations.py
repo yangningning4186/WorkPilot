@@ -1,7 +1,9 @@
 """MCP 与本地 Skill 的只读状态接口。"""
 
 import re
+from pathlib import Path
 from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
@@ -18,13 +20,18 @@ from app.cowork.mcp.config import (
     save_mcp_configuration,
 )
 from app.cowork.mcp.credentials import hydrate_mcp_oauth_credentials
+from app.cowork.permissions import list_session_roots
 from app.cowork.skills.candidate_store import (
     SkillCandidateStoreError,
     get_skill_candidate,
     list_skill_candidates,
     set_candidate_status,
 )
-from app.cowork.skills.catalog import SkillCatalogError, load_skill_catalog
+from app.cowork.skills.catalog import (
+    BUILTIN_SKILLS_ROOT,
+    SkillCatalogError,
+    load_skill_catalog,
+)
 from app.cowork.skills.lifecycle import (
     import_skill_zip,
     install_auto_distilled_skill,
@@ -203,22 +210,34 @@ def _public_tool(tool: McpRemoteTool, policy: McpToolPolicy | None) -> dict[str,
 
 
 @router.get("/skills")
-def get_skills_status(
+async def get_skills_status(
     settings: Annotated[Settings, Depends(get_settings)],
+    session: DbSession,
+    conversation_id: UUID | None = None,
 ) -> dict[str, Any]:
+    roots = (
+        []
+        if conversation_id is None
+        else await list_session_roots(session, conversation_id=conversation_id)
+    )
+    project_roots = tuple(Path(item.canonical_path) for item in roots)
     try:
         catalog = load_skill_catalog(
             settings.cowork_skills_path,
             max_files=settings.cowork_skill_max_files,
             max_bytes=settings.cowork_skill_max_bytes,
+            project_roots=project_roots,
         )
     except SkillCatalogError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return {
         "source_path": str(settings.cowork_skills_path),
+        "builtin_path": str(BUILTIN_SKILLS_ROOT),
+        "project_paths": [str(root / ".workpilot" / "skills") for root in project_roots],
         "snapshot_sha256": catalog.snapshot_sha256,
         "skills": catalog.summaries(),
         "errors": list(catalog.errors),
+        "shadowed": list(catalog.shadowed),
         "installed": [
             item.public()
             for item in list_managed_skills(
@@ -357,7 +376,10 @@ def delete_skill(
         remove_skill(settings.cowork_skills_path, name=skill_name)
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-    except (OSError, SkillCatalogError) as error:
+    except SkillCatalogError as error:
+        # 出厂 Skill 不可删：不是请求不合法（422），是目标状态不允许（409）。
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except OSError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

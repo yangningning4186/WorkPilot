@@ -17,6 +17,8 @@ from app.cowork_store.routing import cowork_store
 class ConversationRecord:
     id: UUID
     title: str | None
+    # 会话切走不得取消后台 run；切回时用它从持久化事件游标恢复订阅。
+    active_run_id: UUID | None
     message_count: int
     latest_message: str | None
     last_message_at: datetime | None
@@ -27,6 +29,7 @@ class ConversationRecord:
     model_override: str | None
     unattended: bool
     approval_mode: str
+    persona_name: str
     archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -49,27 +52,44 @@ class ConversationMessageRecord:
 async def _local_conversation_record(
     session: AsyncSession, row: dict[str, Any]
 ) -> ConversationRecord:
-    from app.cowork_store.factory import local_cowork_stores
-
     conversation_id = UUID(str(row["id"]))
-    messages = await local_cowork_stores().conversations.read(conversation_id)
-    visible = [item for item in messages if item.role in {"user", "assistant"}]
-    latest = next((item.content[:160] for item in reversed(visible) if item.content), None)
+    message_count = int(row.get("message_count") or 0)
+    latest = row.get("latest_message")
+    # content_preview 是 v11 加的。升级前的行没有摘要，只为这些旧会话回读一次 JSONL；
+    # 新写入的会话列表完全由一条 SQLite 查询得到。
+    if latest is None and message_count:
+        from app.cowork_store.factory import local_cowork_stores
+
+        messages = await local_cowork_stores().conversations.read(conversation_id)
+        latest = next(
+            (
+                item.content[:160]
+                for item in reversed(messages)
+                if item.role in {"user", "assistant"} and item.content
+            ),
+            None,
+        )
     profile_id = (
-        None
-        if row["provider_profile_id"] is None
-        else UUID(str(row["provider_profile_id"]))
+        None if row["provider_profile_id"] is None else UUID(str(row["provider_profile_id"]))
     )
     return ConversationRecord(
         id=conversation_id,
         title=row["title"],
-        message_count=len(visible),
-        latest_message=latest,
-        last_message_at=None if not visible else datetime.fromisoformat(visible[-1].created_at),
+        active_run_id=(
+            None if row.get("active_run_id") is None else UUID(str(row["active_run_id"]))
+        ),
+        message_count=message_count,
+        latest_message=None if latest is None else str(latest),
+        last_message_at=(
+            None
+            if row.get("last_message_at") is None
+            else datetime.fromisoformat(str(row["last_message_at"]))
+        ),
         provider_profile_id=profile_id,
         model_override=row["model_override"],
         unattended=bool(row["unattended"]),
         approval_mode=str(row.get("approval_mode") or "interactive"),
+        persona_name=str(row.get("persona_name") or "general"),
         archived_at=(
             None
             if row.get("archived_at") is None
@@ -111,6 +131,28 @@ async def get_conversation(
     return await _local_conversation_record(session, rows[0])
 
 
+async def compare_and_set_conversation_title(
+    session: AsyncSession,
+    *,
+    conversation_id: UUID,
+    expected_title: str | None,
+    title: str,
+) -> ConversationRecord | None:
+    """原子更新标题；标题已被别的路径改过时不覆盖。"""
+
+    changed = await cowork_store().compare_and_set_conversation_title(
+        conversation_id=conversation_id,
+        expected_title=expected_title,
+        title=title,
+    )
+    if not changed:
+        return None
+    return await get_conversation(
+        session,
+        conversation_id=conversation_id,
+    )
+
+
 async def update_conversation_runtime(
     session: AsyncSession,
     *,
@@ -119,6 +161,7 @@ async def update_conversation_runtime(
     model_override: str | None,
     unattended: bool,
     approval_mode: str = "interactive",
+    persona_name: str = "general",
 ) -> ConversationRecord | None:
     """更新会话运行时选择。
 
@@ -128,6 +171,8 @@ async def update_conversation_runtime(
 
     if approval_mode not in {"interactive", "auto"}:
         raise ValueError("approval_mode 只能是 interactive 或 auto")
+    if not persona_name or len(persona_name) > 64:
+        raise ValueError("persona_name 长度必须位于 1 到 64")
     store = cowork_store()
     changed = await store.update_conversation_runtime(
         conversation_id=conversation_id,
@@ -135,6 +180,7 @@ async def update_conversation_runtime(
         model_override=model_override.strip() if model_override else None,
         unattended=unattended,
         approval_mode=cast("ApprovalMode", approval_mode),
+        persona_name=persona_name,
     )
     if not changed:
         return None
@@ -160,9 +206,7 @@ async def set_conversation_kb(
     """
 
     store = cowork_store()
-    return await store.set_conversation_kb(
-        conversation_id=conversation_id, kb_slug=kb_slug
-    )
+    return await store.set_conversation_kb(conversation_id=conversation_id, kb_slug=kb_slug)
 
 
 async def get_conversation_kb(
@@ -229,9 +273,16 @@ async def list_conversation_messages(
     from app.cowork_store.factory import local_cowork_stores
 
     messages = await local_cowork_stores().conversations.read(conversation_id)
+    visible = [value for value in messages if value.role in {"user", "assistant"}][-limit:]
+    runs = {
+        run.id: run
+        for run in await store.get_runs(
+            tuple(item.run_id for item in visible if item.run_id is not None)
+        )
+    }
     output: list[ConversationMessageRecord] = []
-    for item in [value for value in messages if value.role in {"user", "assistant"}][-limit:]:
-        run = None if item.run_id is None else await store.get_run(item.run_id)
+    for item in visible:
+        run = None if item.run_id is None else runs.get(item.run_id)
         output.append(
             ConversationMessageRecord(
                 id=item.record_id,

@@ -11,6 +11,7 @@ worker 里完成。这样关掉页面任务照跑, 刷新回放与实时流共�
 
 import asyncio
 from dataclasses import dataclass
+from itertools import count
 from typing import Literal, Protocol
 from uuid import UUID
 
@@ -42,11 +43,20 @@ class InProcessRunQueue:
     """桌面单体运行时的低延迟唤醒队列。
 
     队列不是持久化真相：进程退出时尚未消费的项目允许丢失，dispatcher 会根据
-    SQLite/PostgreSQL 中的 queued 状态重新发现。集合只用于减少同进程重复唤醒。
+    SQLite 中的 queued 状态重新发现。集合只用于减少同进程重复唤醒。
+
+    用户 Cowork run 和后台后处理物理分队列。仅仅给一个统一 PriorityQueue 标优先级
+    不够：4 个 consumer 可能已经全部卡在慢蒸馏请求里，新来的用户任务仍然没有槽位。
+    运行时因此为 foreground/background 配独立 consumer；这里负责保存这条边界。
     """
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[QueuedTask] = asyncio.Queue()
+        self._foreground_queue: asyncio.Queue[QueuedTask] = asyncio.Queue()
+        # 记忆抽取比 Skill 蒸馏更接近用户可见状态，后台内部也显式分优先级。
+        self._background_queue: asyncio.PriorityQueue[tuple[int, int, QueuedTask]] = (
+            asyncio.PriorityQueue()
+        )
+        self._sequence = count()
         self._pending: set[tuple[QueueTaskName, UUID]] = set()
         self._closed = False
 
@@ -57,7 +67,11 @@ class InProcessRunQueue:
         if key in self._pending:
             return
         self._pending.add(key)
-        await self._queue.put(task)
+        if task.name == "cowork_run":
+            await self._foreground_queue.put(task)
+            return
+        priority = 0 if task.name == "memory_extraction_job" else 10
+        await self._background_queue.put((priority, next(self._sequence), task))
 
     async def enqueue_cowork_run(self, run_id: UUID, *, attempt: int = 0) -> None:
         await self._put(QueuedTask("cowork_run", run_id, attempt=attempt))
@@ -69,11 +83,28 @@ class InProcessRunQueue:
         await self._put(QueuedTask("skill_distillation_job", run_id, attempt=attempt))
 
     async def get(self) -> QueuedTask:
-        return await self._queue.get()
+        """兼容已有直接队列用例；运行时应使用两个显式消费入口。"""
+
+        if not self._foreground_queue.empty():
+            return await self.get_foreground()
+        return await self.get_background()
+
+    async def get_foreground(self) -> QueuedTask:
+        return await self._foreground_queue.get()
+
+    async def get_background(self) -> QueuedTask:
+        _, _, task = await self._background_queue.get()
+        return task
+
+    def has_foreground_work(self) -> bool:
+        return not self._foreground_queue.empty()
 
     def task_done(self, task: QueuedTask) -> None:
         self._pending.discard((task.name, task.object_id))
-        self._queue.task_done()
+        if task.name == "cowork_run":
+            self._foreground_queue.task_done()
+        else:
+            self._background_queue.task_done()
 
     async def close(self) -> None:
         self._closed = True

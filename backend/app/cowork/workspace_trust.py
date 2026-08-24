@@ -97,9 +97,7 @@ def read_workspace_allowlist(root: Path) -> WorkspaceAllowlist:
     return WorkspaceAllowlist(root=root, entries=tuple(entries), rejected=tuple(rejected))
 
 
-async def set_workspace_trust(
-    session: AsyncSession, *, canonical_path: str, trusted: bool
-) -> bool:
+async def set_workspace_trust(session: AsyncSession, *, canonical_path: str, trusted: bool) -> bool:
     store = cowork_store()
     return await store.set_workspace_trust(canonical_path=canonical_path, trusted=trusted)
 

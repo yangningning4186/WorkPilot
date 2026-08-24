@@ -32,7 +32,7 @@ async def test_stream_replays_history_then_stops_at_terminal(
         budget_calls=1,
         budget_wall_ms=1000,
     )
-    await append_events(
+    persisted = await append_events(
         db_session,
         run_id=run.id,
         events=[
@@ -59,6 +59,7 @@ async def test_stream_replays_history_then_stops_at_terminal(
         "seq": "2",
         "type": "message.delta",
         "data": {"text": "答案"},
+        "created_at": persisted[1].created_at.isoformat(),
     }
 
 

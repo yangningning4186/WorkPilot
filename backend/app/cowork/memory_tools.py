@@ -105,7 +105,9 @@ async def _memory_forget(context: CoworkToolContext, raw: BaseModel) -> CoworkTo
     record = await forget_memory(context.session, memory_id=args.memory_id)
     if record is None:
         # 已经删过或从来不存在，都不是需要模型补救的错误。
-        return CoworkToolResult(output={"memory_id": str(args.memory_id), "already_forgotten": True})
+        return CoworkToolResult(
+            output={"memory_id": str(args.memory_id), "already_forgotten": True}
+        )
     return CoworkToolResult(output={"memory": memory_payload(record), "already_forgotten": False})
 
 
@@ -121,7 +123,7 @@ async def _memory_read(context: CoworkToolContext, raw: BaseModel) -> CoworkTool
 
 
 def register_memory_tools(registry: CoworkToolRegistry) -> None:
-    registry.register(
+    registry.register_deferred(
         CoworkToolSpec(
             name="remember",
             description=(
@@ -137,9 +139,10 @@ def register_memory_tools(registry: CoworkToolRegistry) -> None:
             parallel_safe=False,
             handler=_remember,
             search_aliases=("memory", "记忆", "记住", "偏好"),
-        )
+        ),
+        group="记忆",
     )
-    registry.register(
+    registry.register_deferred(
         CoworkToolSpec(
             name="memory_update",
             description=(
@@ -152,9 +155,10 @@ def register_memory_tools(registry: CoworkToolRegistry) -> None:
             parallel_safe=False,
             handler=_memory_update,
             search_aliases=("memory", "记忆", "更正"),
-        )
+        ),
+        group="记忆",
     )
-    registry.register(
+    registry.register_deferred(
         CoworkToolSpec(
             name="memory_forget",
             description="retire 一条不再成立的记忆。用户明确说不要再记着某件事时也用它。",
@@ -164,9 +168,10 @@ def register_memory_tools(registry: CoworkToolRegistry) -> None:
             parallel_safe=False,
             handler=_memory_forget,
             search_aliases=("memory", "记忆", "忘记"),
-        )
+        ),
+        group="记忆",
     )
-    registry.register(
+    registry.register_deferred(
         CoworkToolSpec(
             name="memory_read",
             description="取一条记忆的完整内容；注入块里标注已截断时用它补全。",
@@ -176,7 +181,8 @@ def register_memory_tools(registry: CoworkToolRegistry) -> None:
             parallel_safe=True,
             handler=_memory_read,
             search_aliases=("memory", "记忆"),
-        )
+        ),
+        group="记忆",
     )
     registry.add_system_instructions(
         "用户表达长期偏好、项目约定或纠正你的既有认知时，调用 remember 记下来；"

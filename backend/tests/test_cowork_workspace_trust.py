@@ -65,18 +65,14 @@ def test_a_broken_config_is_an_actionable_error(tmp_path: Path) -> None:
 async def test_a_declared_command_does_nothing_until_the_user_trusts_the_directory(
     db_session: AsyncSession, tmp_path: Path
 ) -> None:
-    conversation_id = await ensure_conversation(
-        db_session, title="Workspace trust"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Workspace trust")
     root = await create_session_root(
         db_session,
         conversation_id=conversation_id,
         requested_path=str(tmp_path),
         access_mode="read_write",
     )
-    await grant_capability(
-        db_session, conversation_id=conversation_id, capability="shell.execute"
-    )
+    await grant_capability(db_session, conversation_id=conversation_id, capability="shell.execute")
     await db_session.commit()
     _write_config(Path(root.canonical_path), '[shell]\nallow = ["npm test"]\n')
 
@@ -91,9 +87,7 @@ async def test_a_declared_command_does_nothing_until_the_user_trusts_the_directo
         )
     ) is None
 
-    await set_workspace_trust(
-        db_session, canonical_path=root.canonical_path, trusted=True
-    )
+    await set_workspace_trust(db_session, canonical_path=root.canonical_path, trusted=True)
     await db_session.commit()
     assert await is_workspace_trusted(db_session, canonical_path=root.canonical_path)
     assert (
@@ -127,9 +121,7 @@ async def test_a_declared_command_does_nothing_until_the_user_trusts_the_directo
         )
     ) is None
 
-    await set_workspace_trust(
-        db_session, canonical_path=root.canonical_path, trusted=False
-    )
+    await set_workspace_trust(db_session, canonical_path=root.canonical_path, trusted=False)
     await db_session.commit()
     assert (
         await workspace_allows_command(
@@ -148,9 +140,7 @@ async def test_trust_does_not_reach_outside_the_granted_roots(
 ) -> None:
     """cwd 落在授权目录之外时，即使那个目录被信任过也不放行。"""
 
-    conversation_id = await ensure_conversation(
-        db_session, title="Outside root"
-    )
+    conversation_id = await ensure_conversation(db_session, title="Outside root")
     inside = tmp_path / "granted"
     outside = tmp_path / "elsewhere"
     inside.mkdir()
@@ -161,9 +151,7 @@ async def test_trust_does_not_reach_outside_the_granted_roots(
         requested_path=str(inside),
         access_mode="read_write",
     )
-    await set_workspace_trust(
-        db_session, canonical_path=root.canonical_path, trusted=True
-    )
+    await set_workspace_trust(db_session, canonical_path=root.canonical_path, trusted=True)
     await db_session.commit()
     _write_config(Path(root.canonical_path), '[shell]\nallow = ["npm test"]\n')
 

@@ -116,6 +116,28 @@ async def test_wall_clock_budget_trips_without_any_model_call() -> None:
     assert excinfo.value.dimension == "wall_ms"
 
 
+async def test_zero_limits_keep_usage_without_stopping_a_long_run() -> None:
+    """0 是不限制，不是一个已经耗尽的额度；三维计量仍必须保留。"""
+
+    clock = FrozenClock()
+    meter = BudgetMeter(
+        review_budget(max_tokens=0, max_calls=0, max_wall_ms=0),
+        chars_per_token=1.0,
+        clock=clock,
+    )
+    gateway = RecordingGateway(usage=Usage(input_tokens=40, output_tokens=5))
+    budgeted = BudgetedGateway(gateway, meter)
+
+    clock.advance(24 * 60 * 60 * 1_000)
+    meter.check_wall()
+    for _ in range(100):
+        await budgeted.complete(_messages(40), max_tokens=60)
+
+    assert gateway.dispatched == 100
+    assert meter.budget["used_calls"] == 100
+    assert meter.budget["used_tokens"] == 4_500
+
+
 async def test_wall_clock_excludes_time_between_execution_segments() -> None:
     """waiting_human 的人工思考时间与 worker 空档不计入墙钟预算。
 

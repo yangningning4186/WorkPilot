@@ -346,12 +346,26 @@ export const SCENARIOS = {
         data: {
           text:
             "调用方式见 `search(query)`：\n\n```python\n# 这里的 [S1] 只是代码里的字面量\nsearch(\"rrf\")\n```\n\n" +
-            "<script>window.pwned = 1</script>\n\n[点我](javascript:alert(1)) 详见 [S2]。\n",
+            "<script>window.pwned = 1</script>\n\n[点我](javascript:alert(1)) 详见 [S2] 与 [p.2]。\n",
         },
       },
       { delay_ms: 100, type: "citation", data: PDF_CITATION_S1 },
       { delay_ms: 60, type: "citation", data: PDF_CITATION_S2 },
       { delay_ms: 80, type: "message.done", data: DONE_OK },
+    ],
+  },
+
+  /** 兼容旧 Provider：思考标签和标签内容曾经都走 message.delta / snapshot 正文通道。 */
+  reasoningLeak: {
+    events: [
+      { delay_ms: 60, type: "message.delta", data: { text: "<thi" } },
+      { delay_ms: 60, type: "message.delta", data: { text: "nk>这是内部推理，不应进入正文。</th" } },
+      { delay_ms: 60, type: "message.delta", data: { text: "ink>\n我是 WorkPilot。" } },
+      {
+        delay_ms: 60,
+        type: "message.snapshot",
+        data: { text: "<think>这是内部推理，不应进入正文。</think>\n我是 WorkPilot。" },
+      },
     ],
   },
 

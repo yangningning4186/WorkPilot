@@ -102,9 +102,7 @@ async def handle_card_action(
     )
     # 解析完必须把 run 接着推下去，否则它会一直停在 waiting_human——从用户视角看就是
     # "我明明点了批准，它却没动"。重新入队交给调用方：队列不该被拖进这一层。
-    await resume_cowork_after_human(
-        session, run_id=item.run_id, item=resolved, response=response
-    )
+    await resume_cowork_after_human(session, run_id=item.run_id, item=resolved, response=response)
     await requeue(run_id=item.run_id, item_id=item.id)
     return InboundDecision(
         action="resolved",
@@ -124,9 +122,7 @@ async def route_inbound_message(
     start_run: RunStarter,
     conversation_busy: BusyCheck,
 ) -> InboundDecision:
-    subscriptions = await list_channel_subscriptions(
-        session, channel=(platform, chat_id)
-    )
+    subscriptions = await list_channel_subscriptions(session, channel=(platform, chat_id))
     if subscriptions:
         delivered: list[UUID] = []
         for subscription in subscriptions:
@@ -151,9 +147,7 @@ async def route_inbound_message(
                 start_run=start_run,
                 conversation_busy=conversation_busy,
             )
-            return InboundDecision(
-                action="steered", conversation_ids=(existing.conversation_id,)
-            )
+            return InboundDecision(action="steered", conversation_ids=(existing.conversation_id,))
         conversation_id = await _create_conversation(session)
         await bind_thread_session(
             session,
