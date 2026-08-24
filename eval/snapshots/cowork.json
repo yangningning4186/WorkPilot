@@ -1,0 +1,303 @@
+{
+  "schema_version": "cowork-eval-report.v1",
+  "label": "head-baseline-v6",
+  "generated_at": "2026-08-20T19:22:15.653178+00:00",
+  "suite": "cowork-core-40",
+  "suite_version": "1.0.0",
+  "suite_sha256": "d10ffd88b27068f14ab93809d5e6baa8b3746dc5f3322aec6814466f5bc5cfed",
+  "model": {
+    "provider": "openai_compatible",
+    "model": "qwen3.6-35b-a3b",
+    "endpoint": "http://172.16.6.66:3270/v1",
+    "mode": "evaluation"
+  },
+  "metrics": {
+    "items": 40,
+    "task_success_rate": 0.875,
+    "task_success_count": 35,
+    "tool_selection_accuracy": 0.85,
+    "step_efficiency": {
+      "definition": "actual_tool_calls / gold_optimal_tool_calls; 1.0 is optimal",
+      "mean": 1.2417,
+      "p50": 1.0,
+      "p95": 3.0,
+      "within_max_rate": 0.925
+    },
+    "latency_ms": {
+      "mean": 3250,
+      "p50": 2473,
+      "p95": 6743
+    },
+    "tokens": {
+      "total": 728561,
+      "mean": 18214,
+      "p50": 16444,
+      "p95": 30734,
+      "mean_per_success": 17599
+    },
+    "tool_error_rate": 0.1,
+    "recovered_tool_error_sequences": 3
+  },
+  "by_category": {
+    "artifact": {
+      "items": 8,
+      "task_success_rate": 1.0,
+      "task_success_count": 8,
+      "tool_selection_accuracy": 1.0,
+      "step_efficiency": {
+        "definition": "actual_tool_calls / gold_optimal_tool_calls; 1.0 is optimal",
+        "mean": 1.1042,
+        "p50": 1.0,
+        "p95": 1.5,
+        "within_max_rate": 1.0
+      },
+      "latency_ms": {
+        "mean": 4318,
+        "p50": 3010,
+        "p95": 11348
+      },
+      "tokens": {
+        "total": 151271,
+        "mean": 18909,
+        "p50": 16971,
+        "p95": 26813,
+        "mean_per_success": 18909
+      },
+      "tool_error_rate": 0.05,
+      "recovered_tool_error_sequences": 1
+    },
+    "knowledge": {
+      "items": 8,
+      "task_success_rate": 0.75,
+      "task_success_count": 6,
+      "tool_selection_accuracy": 0.875,
+      "step_efficiency": {
+        "definition": "actual_tool_calls / gold_optimal_tool_calls; 1.0 is optimal",
+        "mean": 1.375,
+        "p50": 1.0,
+        "p95": 4.0,
+        "within_max_rate": 0.875
+      },
+      "latency_ms": {
+        "mean": 4084,
+        "p50": 1694,
+        "p95": 19703
+      },
+      "tokens": {
+        "total": 148624,
+        "mean": 18578,
+        "p50": 11294,
+        "p95": 74993,
+        "mean_per_success": 21988
+      },
+      "tool_error_rate": 0.066667,
+      "recovered_tool_error_sequences": 0
+    },
+    "office": {
+      "items": 6,
+      "task_success_rate": 0.666667,
+      "task_success_count": 4,
+      "tool_selection_accuracy": 0.833333,
+      "step_efficiency": {
+        "definition": "actual_tool_calls / gold_optimal_tool_calls; 1.0 is optimal",
+        "mean": 1.1667,
+        "p50": 1.0,
+        "p95": 1.6667,
+        "within_max_rate": 1.0
+      },
+      "latency_ms": {
+        "mean": 4106,
+        "p50": 3694,
+        "p95": 5729
+      },
+      "tokens": {
+        "total": 161889,
+        "mean": 26982,
+        "p50": 24228,
+        "p95": 36258,
+        "mean_per_success": 23941
+      },
+      "tool_error_rate": 0.190476,
+      "recovered_tool_error_sequences": 1
+    },
+    "safety_hitl": {
+      "items": 4,
+      "task_success_rate": 0.75,
+      "task_success_count": 3,
+      "tool_selection_accuracy": 0.5,
+      "step_efficiency": {
+        "definition": "actual_tool_calls / gold_optimal_tool_calls; 1.0 is optimal",
+        "mean": 1.875,
+        "p50": 1.0,
+        "p95": 3.0,
+        "within_max_rate": 0.5
+      },
+      "latency_ms": {
+        "mean": 2850,
+        "p50": 970,
+        "p95": 6743
+      },
+      "tokens": {
+        "total": 61075,
+        "mean": 15269,
+        "p50": 9778,
+        "p95": 29764,
+        "mean_per_success": 10437
+      },
+      "tool_error_rate": 0.0,
+      "recovered_tool_error_sequences": 0
+    },
+    "web": {
+      "items": 6,
+      "task_success_rate": 1.0,
+      "task_success_count": 6,
+      "tool_selection_accuracy": 1.0,
+      "step_efficiency": {
+        "definition": "actual_tool_calls / gold_optimal_tool_calls; 1.0 is optimal",
+        "mean": 1.0,
+        "p50": 1.0,
+        "p95": 1.0,
+        "within_max_rate": 1.0
+      },
+      "latency_ms": {
+        "mean": 1337,
+        "p50": 1043,
+        "p95": 2698
+      },
+      "tokens": {
+        "total": 76392,
+        "mean": 12732,
+        "p50": 10647,
+        "p95": 22551,
+        "mean_per_success": 12732
+      },
+      "tool_error_rate": 0.25,
+      "recovered_tool_error_sequences": 0
+    },
+    "workspace": {
+      "items": 8,
+      "task_success_rate": 1.0,
+      "task_success_count": 8,
+      "tool_selection_accuracy": 0.75,
+      "step_efficiency": {
+        "definition": "actual_tool_calls / gold_optimal_tool_calls; 1.0 is optimal",
+        "mean": 1.1667,
+        "p50": 1.0,
+        "p95": 1.5,
+        "within_max_rate": 1.0
+      },
+      "latency_ms": {
+        "mean": 2339,
+        "p50": 2473,
+        "p95": 3961
+      },
+      "tokens": {
+        "total": 129310,
+        "mean": 16164,
+        "p50": 11903,
+        "p95": 25200,
+        "mean_per_success": 16164
+      },
+      "tool_error_rate": 0.058824,
+      "recovered_tool_error_sequences": 1
+    }
+  },
+  "by_split": {
+    "dev": {
+      "items": 32,
+      "task_success_rate": 0.90625,
+      "task_success_count": 29,
+      "tool_selection_accuracy": 0.875,
+      "step_efficiency": {
+        "definition": "actual_tool_calls / gold_optimal_tool_calls; 1.0 is optimal",
+        "mean": 1.2552,
+        "p50": 1.0,
+        "p95": 3.0,
+        "within_max_rate": 0.9375
+      },
+      "latency_ms": {
+        "mean": 3475,
+        "p50": 2473,
+        "p95": 11348
+      },
+      "tokens": {
+        "total": 610164,
+        "mean": 19068,
+        "p50": 16575,
+        "p95": 30734,
+        "mean_per_success": 18799
+      },
+      "tool_error_rate": 0.103896,
+      "recovered_tool_error_sequences": 2
+    },
+    "test": {
+      "items": 8,
+      "task_success_rate": 0.75,
+      "task_success_count": 6,
+      "tool_selection_accuracy": 0.75,
+      "step_efficiency": {
+        "definition": "actual_tool_calls / gold_optimal_tool_calls; 1.0 is optimal",
+        "mean": 1.1875,
+        "p50": 1.0,
+        "p95": 3.0,
+        "within_max_rate": 0.875
+      },
+      "latency_ms": {
+        "mean": 2348,
+        "p50": 1694,
+        "p95": 5729
+      },
+      "tokens": {
+        "total": 118397,
+        "mean": 14800,
+        "p50": 11334,
+        "p95": 36258,
+        "mean_per_success": 11801
+      },
+      "tool_error_rate": 0.076923,
+      "recovered_tool_error_sequences": 1
+    }
+  },
+  "items": {
+    "cowork-core-001": true,
+    "cowork-core-002": true,
+    "cowork-core-003": true,
+    "cowork-core-004": true,
+    "cowork-core-005": true,
+    "cowork-core-006": true,
+    "cowork-core-007": true,
+    "cowork-core-008": true,
+    "cowork-core-009": true,
+    "cowork-core-010": true,
+    "cowork-core-011": true,
+    "cowork-core-012": true,
+    "cowork-core-013": true,
+    "cowork-core-014": true,
+    "cowork-core-015": true,
+    "cowork-core-016": true,
+    "cowork-core-017": true,
+    "cowork-core-018": true,
+    "cowork-core-019": true,
+    "cowork-core-020": false,
+    "cowork-core-021": false,
+    "cowork-core-022": true,
+    "cowork-core-023": true,
+    "cowork-core-024": true,
+    "cowork-core-025": true,
+    "cowork-core-026": true,
+    "cowork-core-027": true,
+    "cowork-core-028": true,
+    "cowork-core-029": true,
+    "cowork-core-030": true,
+    "cowork-core-031": false,
+    "cowork-core-032": true,
+    "cowork-core-033": false,
+    "cowork-core-034": true,
+    "cowork-core-035": true,
+    "cowork-core-036": true,
+    "cowork-core-037": true,
+    "cowork-core-038": true,
+    "cowork-core-039": false,
+    "cowork-core-040": true
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "name": "a5-memory-seed",
+  "origin": "synthetic",
+  "status": "engineering_smoke_only",
+  "items": [
+    {
+      "id": "a5-001",
+      "query": "用一句话概括我正在开发的项目技术栈。",
+      "memories": ["用户正在用 FastAPI 和 Next.js 开发 WorkPilot。"],
+      "must_include": ["FastAPI", "Next.js"],
+      "must_not_include": []
+    },
+    {
+      "id": "a5-002",
+      "query": "我最近主要关注什么研究方向？",
+      "memories": ["用户最近主要关注 RAG 评测和智能体可靠性。"],
+      "must_include": ["RAG", "智能体可靠性"],
+      "must_not_include": []
+    },
+    {
+      "id": "a5-003",
+      "query": "按我惯用的结构回答：混合检索有什么价值？",
+      "memories": ["用户偏好先给结论，再列两条依据。"],
+      "must_include": ["结论", "依据"],
+      "must_not_include": []
+    },
+    {
+      "id": "a5-004",
+      "query": "提醒我写实验记录时最不能漏掉什么。",
+      "memories": ["用户要求实验记录必须写负结果和失败原因。"],
+      "must_include": ["负结果", "失败原因"],
+      "must_not_include": []
+    },
+    {
+      "id": "a5-005",
+      "query": "我更喜欢哪种综述组织方式？",
+      "memories": ["用户偏好按方法族组织综述，而不是按时间顺序。"],
+      "must_include": ["方法族", "不是按时间"],
+      "must_not_include": []
+    },
+    {
+      "id": "a5-006",
+      "query": "给我的下一轮检索实验一个最相关的建议。",
+      "memories": ["用户当前在比较 dense、lexical 与 RRF 三种检索臂。"],
+      "must_include": ["dense", "lexical", "RRF"],
+      "must_not_include": []
+    },
+    {
+      "id": "a5-007",
+      "query": "我希望回答控制在什么长度？",
+      "memories": ["用户偏好默认回答不超过 300 字。"],
+      "must_include": ["300 字"],
+      "must_not_include": []
+    },
+    {
+      "id": "a5-008",
+      "query": "我最看重这款个人助手的哪项产品承诺？",
+      "memories": ["用户最看重引用可溯源与个人记忆透明可编辑。"],
+      "must_include": ["引用可溯源", "记忆", "可编辑"],
+      "must_not_include": []
+    },
+    {
+      "id": "a5-009",
+      "query": "帮我决定先修哪类质量问题。",
+      "memories": ["用户把会导致错误结论的召回缺失列为最高优先级。"],
+      "must_include": ["召回缺失", "最高优先级"],
+      "must_not_include": []
+    },
+    {
+      "id": "a5-010",
+      "query": "我对模型评测结果有什么记录原则？",
+      "memories": ["用户要求合成数据不能冒充 human 结论。"],
+      "must_include": ["合成数据", "human"],
+      "must_not_include": []
+    }
+  ]
+}

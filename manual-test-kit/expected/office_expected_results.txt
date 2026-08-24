@@ -1,0 +1,22 @@
+Office 产物预期结果
+
+DOCX
+- 路径：authorized/output/Atlas-项目简报.docx
+- 标题：Atlas 项目简报
+- 事实：Silver Heron / 林乔 / 华东 / 2026-09-18 / 12 家
+- 必须能被 Word 或 Pages 打开且无修复提示。
+
+XLSX
+- 路径：authorized/output/Atlas-预算跟踪.xlsx
+- 工作表：预算明细、汇总
+- 预算合计：400000
+- 实际合计：371500
+- 结余：28500
+- 计算必须使用公式。
+
+PPTX
+- 路径：authorized/output/Atlas-启动会.pptx
+- 页数：4
+- 比例：16:9
+- 里程碑日期：2026-08-25 / 2026-09-05 / 2026-09-18
+- 必须能被 PowerPoint 或 Keynote 打开且无修复提示。

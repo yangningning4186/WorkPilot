@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "name": "a5-memory-quality-regression",
+  "origin": "synthetic",
+  "status": "post_blind_review_regression_only",
+  "derived_from": ["a5-003", "a5-004", "a5-010"],
+  "items": [
+    {
+      "id": "a5q-003-complete-structure",
+      "query": "按我惯用的结构回答：混合检索有什么价值？",
+      "memories": ["用户偏好先给结论，再列两条依据。"],
+      "must_include": ["结论", "关键词检索", "向量检索", "重排序"],
+      "must_not_include": []
+    },
+    {
+      "id": "a5q-004-memory-plus-reproducibility",
+      "query": "提醒我写实验记录时最不能漏掉什么。",
+      "memories": ["用户要求实验记录必须写负结果和失败原因。"],
+      "must_include": ["负结果", "失败原因", "复现", "参数"],
+      "must_not_include": []
+    },
+    {
+      "id": "a5q-010-memory-plus-eval-provenance",
+      "query": "我对模型评测结果有什么记录原则？",
+      "memories": ["用户要求合成数据不能冒充 human 结论。"],
+      "must_include": ["合成数据", "human", "模型版本", "原始输出"],
+      "must_not_include": []
+    },
+    {
+      "id": "a5q-no-internal-label",
+      "query": "我希望回答控制在什么长度？",
+      "memories": ["用户偏好默认回答不超过 300 字。"],
+      "must_include": ["300 字"],
+      "must_not_include": []
+    },
+    {
+      "id": "a5q-memory-plus-analysis",
+      "query": "给我的下一轮检索实验一个建议。",
+      "memories": ["用户当前在比较 dense、lexical 与 RRF 三种检索臂。"],
+      "must_include": ["dense", "lexical", "RRF", "失败样本"],
+      "must_not_include": []
+    }
+  ]
+}

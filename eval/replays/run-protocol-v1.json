@@ -1,0 +1,272 @@
+{
+  "schema": "workpilot.run-replay-bundle",
+  "schema_version": 1,
+  "event_protocol": "workpilot.run-events/v1",
+  "name": "run-protocol-v1",
+  "origin": "synthetic",
+  "description": "Run 事件协议的确定性离线回归种子；不包含也不触发真实工具执行。",
+  "cases": [
+    {
+      "case_id": "text-reset-snapshot-and-citation-dedup",
+      "run_id": "synthetic-run-text-v1",
+      "events": [
+        {
+          "id": "synthetic-run-text-v1:1",
+          "run_id": "synthetic-run-text-v1",
+          "seq": "1",
+          "type": "message.start",
+          "data": {
+            "message_id": "synthetic-message-v1"
+          }
+        },
+        {
+          "id": "synthetic-run-text-v1:2",
+          "run_id": "synthetic-run-text-v1",
+          "seq": "2",
+          "type": "message.delta",
+          "data": {
+            "text": "第一轮草稿"
+          }
+        },
+        {
+          "id": "synthetic-run-text-v1:3",
+          "run_id": "synthetic-run-text-v1",
+          "seq": "3",
+          "type": "citation",
+          "data": {
+            "citation_id": "synthetic-citation-1",
+            "block_id": "block-1",
+            "version_id": "version-1",
+            "doc_id": "doc-1",
+            "title": "合成证据",
+            "source_uri": "synthetic://document/1",
+            "quote": "仅用于离线协议验证。",
+            "char_start": 0,
+            "char_end": 12,
+            "heading_path": [],
+            "locations": []
+          }
+        },
+        {
+          "id": "synthetic-run-text-v1:4",
+          "run_id": "synthetic-run-text-v1",
+          "seq": "4",
+          "type": "citation",
+          "data": {
+            "citation_id": "synthetic-citation-1",
+            "block_id": "block-1",
+            "version_id": "version-1",
+            "doc_id": "doc-1",
+            "title": "合成证据",
+            "source_uri": "synthetic://document/1",
+            "quote": "仅用于离线协议验证。",
+            "char_start": 0,
+            "char_end": 12,
+            "heading_path": [],
+            "locations": []
+          }
+        },
+        {
+          "id": "synthetic-run-text-v1:5",
+          "run_id": "synthetic-run-text-v1",
+          "seq": "5",
+          "type": "message.reset",
+          "data": {}
+        },
+        {
+          "id": "synthetic-run-text-v1:6",
+          "run_id": "synthetic-run-text-v1",
+          "seq": "6",
+          "type": "message.delta",
+          "data": {
+            "text": "第二轮正文"
+          }
+        },
+        {
+          "id": "synthetic-run-text-v1:7",
+          "run_id": "synthetic-run-text-v1",
+          "seq": "7",
+          "type": "message.snapshot",
+          "data": {
+            "text": "最终正文"
+          }
+        },
+        {
+          "id": "synthetic-run-text-v1:8",
+          "run_id": "synthetic-run-text-v1",
+          "seq": "8",
+          "type": "message.done",
+          "data": {
+            "message_id": "synthetic-message-v1",
+            "refused": false,
+            "refusal_reason": null,
+            "grounded": true,
+            "latency_ms": 12,
+            "cost_usd": "0"
+          }
+        },
+        {
+          "id": "synthetic-run-text-v1:9",
+          "run_id": "synthetic-run-text-v1",
+          "seq": "9",
+          "type": "run.done",
+          "data": {
+            "workflow_type": "cowork",
+            "status": "done"
+          }
+        }
+      ],
+      "expected_state": {
+        "cursor": "9",
+        "phase": "done",
+        "message_id": "synthetic-message-v1",
+        "text": "最终正文",
+        "citation_ids": [
+          "synthetic-citation-1"
+        ],
+        "open_tools": []
+      }
+    },
+    {
+      "case_id": "plan-tool-interrupt-resume",
+      "run_id": "synthetic-run-tool-v1",
+      "events": [
+        {
+          "id": "synthetic-run-tool-v1:1",
+          "run_id": "synthetic-run-tool-v1",
+          "seq": "1",
+          "type": "plan",
+          "data": {
+            "workflow_type": "cowork",
+            "steps": [
+              {
+                "id": "step-1",
+                "idx": 0,
+                "description": "读取合成输入",
+                "tool": "read_text_file",
+                "depends_on": [],
+                "status": "pending"
+              }
+            ]
+          }
+        },
+        {
+          "id": "synthetic-run-tool-v1:2",
+          "run_id": "synthetic-run-tool-v1",
+          "seq": "2",
+          "type": "tool.start",
+          "data": {
+            "step_id": "step-1",
+            "step_idx": 0,
+            "tool": "read_text_file"
+          }
+        },
+        {
+          "id": "synthetic-run-tool-v1:3",
+          "run_id": "synthetic-run-tool-v1",
+          "seq": "3",
+          "type": "tool.result",
+          "data": {
+            "step_id": "step-1",
+            "step_idx": 0,
+            "tool": "read_text_file",
+            "reused": true
+          }
+        },
+        {
+          "id": "synthetic-run-tool-v1:4",
+          "run_id": "synthetic-run-tool-v1",
+          "seq": "4",
+          "type": "interrupt",
+          "data": {
+            "kind": "ask_user",
+            "resume_token": "synthetic-resume-token",
+            "payload": {
+              "question": "继续吗？"
+            }
+          }
+        },
+        {
+          "id": "synthetic-run-tool-v1:5",
+          "run_id": "synthetic-run-tool-v1",
+          "seq": "5",
+          "type": "interaction.resolved",
+          "data": {
+            "inbox_id": "synthetic-inbox",
+            "kind": "ask_user",
+            "status": "answered"
+          }
+        },
+        {
+          "id": "synthetic-run-tool-v1:6",
+          "run_id": "synthetic-run-tool-v1",
+          "seq": "6",
+          "type": "step.update",
+          "data": {
+            "step_id": "step-1",
+            "step_idx": 0,
+            "tool": "read_text_file",
+            "status": "done",
+            "summary": "读取完成"
+          }
+        },
+        {
+          "id": "synthetic-run-tool-v1:7",
+          "run_id": "synthetic-run-tool-v1",
+          "seq": "7",
+          "type": "message.snapshot",
+          "data": {
+            "text": "任务完成"
+          }
+        },
+        {
+          "id": "synthetic-run-tool-v1:8",
+          "run_id": "synthetic-run-tool-v1",
+          "seq": "8",
+          "type": "run.done",
+          "data": {
+            "workflow_type": "cowork",
+            "status": "done"
+          }
+        }
+      ],
+      "expected_state": {
+        "cursor": "8",
+        "phase": "done",
+        "text": "任务完成",
+        "interrupt": null,
+        "plan_statuses": {
+          "step-1": "done"
+        },
+        "open_tools": []
+      }
+    },
+    {
+      "case_id": "error-terminal",
+      "run_id": "synthetic-run-error-v1",
+      "events": [
+        {
+          "id": "synthetic-run-error-v1:1",
+          "run_id": "synthetic-run-error-v1",
+          "seq": "1",
+          "type": "error",
+          "data": {
+            "code": "synthetic_failure",
+            "retryable": false,
+            "user_message": "合成错误"
+          }
+        }
+      ],
+      "expected_state": {
+        "cursor": "1",
+        "phase": "error",
+        "open_tools": []
+      }
+    }
+  ],
+  "integrity": {
+    "algorithm": "sha256",
+    "canonicalization": "workpilot-json-sort-keys-utf8-v1",
+    "digest": "ccd96cf7564c80ffc8c41355a3d9afc9d5ed3696119b3ac553993f56dd8814af"
+  }
+}

@@ -1,0 +1,62 @@
+WorkPilot Desktop 手动测试包
+版本：2026-08-24
+
+目标
+====
+这套测试包用于开发模式下的桌面端回归测试，不需要每轮重新打包。
+它重点验证：启动与唤醒、模型消息顺序、目录权限、读写审批、任务状态原子性、
+diff、Artifact 右栏、DOCX/XLSX/PPTX 生成、PDF 阅读与引用、知识库不可变版本、
+中断恢复、重复 sidecar 和退出清理。
+
+第一次使用
+==========
+1. 打开终端，先设置本机仓库路径：
+   WORKPILOT_ROOT=/absolute/path/to/workpilot
+   cd "$WORKPILOT_ROOT/frontend"
+   npm run dev:desktop
+
+2. 等桌面端显示“本地 Agent 已连接”。不要运行 bundle:desktop。
+
+3. 先读 TEST_CASES.txt，按 P0 -> P1 -> P2 顺序执行。
+
+4. 底部“文件夹”按钮实际是原文件选择器，不允许直接选文件夹。请进入：
+   $WORKPILOT_ROOT/manual-test-kit/authorized
+
+   然后选择本次需要的一个或多个具体文件。第一次建议选择
+   01_atlas_project_facts.txt。发送任务时，WorkPilot 会把所选文件的父目录
+   authorized 作为本会话的读写授权根。
+
+   不要选择 outside-authorized 中的文件，也不要通过其他入口授权 manual-test-kit
+   根目录。这样才能验证同级目录是否会被越权读取。
+
+5. 复制 PROMPTS.txt 中对应编号的提示词，不要临场改写；精确提示词能让结果可比。
+
+6. 把结果记到 RESULTS_TEMPLATE.txt 的副本中。每次开始前先复制一份，例如：
+   RESULT_PATH=/absolute/path/to/WorkPilot-手测结果-2026-08-24.txt
+   cp "$WORKPILOT_ROOT/manual-test-kit/RESULTS_TEMPLATE.txt" "$RESULT_PATH"
+
+7. 需要重测文件编辑时，用 reset-fixtures 中的原始文件覆盖 authorized 中的同名文件。
+
+快速通过标准
+============
+- 启动最终进入“本地 Agent 已连接”，不会永久停在“正在唤醒 WorkPilot”。
+- 输入“hello”得到正常回答，不出现 “System message must be at the beginning”。
+- 不再出现 “[Errno 30] Read-only file system: '/data'”。
+- 只能读取已授权目录；不能泄露 outside-authorized 中的哨兵值。
+- 写文件前展示明确审批或 diff；拒绝后文件不变，批准后文件与预期一致。
+- 生成的 DOCX/XLSX/PPTX 出现在 Artifact 右栏，可打开且内容正确。
+- PDF 回答带可点击引用，页码和原文位置正确。
+- 知识库 v2 在 activate 前不影响回答，activate 后才切换。
+- 崩溃/退出/重启后没有永久“执行中”任务，也没有遗留 sidecar。
+
+文件说明
+========
+- TEST_CASES.txt：完整测试步骤、预期结果和失败判定。
+- PROMPTS.txt：可以直接复制到 WorkPilot 的测试提示词。
+- RESULTS_TEMPLATE.txt：测试记录模板。
+- authorized/：测试时唯一应该授权给 WorkPilot 的目录。
+- outside-authorized/：权限边界哨兵；不要授权。
+- kb/：知识库 v1/v2 版本测试素材；按测试步骤分别导入。
+- expected/：人工核对用预期结果；不要授权给 WorkPilot。
+- reset-fixtures/：需要重跑编辑用例时的原始文件。
+- qa/：本测试包生成过程中的内部渲染检查，不需要交给 WorkPilot。

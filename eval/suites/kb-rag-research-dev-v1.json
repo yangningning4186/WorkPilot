@@ -1,0 +1,441 @@
+{
+  "schema_version": 1,
+  "name": "kb-rag-research-dev-v1",
+  "description": "rag-research 53 篇论文上的首轮检索候选集：20 个单跳、2 个多跳、4 个不可答问题。gold 锚定文件内容哈希、页码与页内字符区间；用于恢复工程评测闭环和单变量实验，不作为人工质量基线。",
+  "origin": "synthetic",
+  "review": {
+    "status": "pending_human_review"
+  },
+  "items": [
+    {
+      "item_id": "rag-dev-001",
+      "split": "dev",
+      "category": "exact_identifier",
+      "question": "RIDER 在不训练额外模型的情况下，依据什么信号重排 passage？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "df66fc1c7ed655db9ec1d652f817aa83c140fb61e8c404f6b8a4934ef2196efc",
+          "page_no": 1,
+          "char_start": 762,
+          "char_end": 828,
+          "quote": "solely based on the top predictions of the\nreader before reranking"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-002",
+      "split": "dev",
+      "category": "exact_identifier",
+      "question": "coCondenser 在 passage embedding 预热阶段加入了什么训练信号？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "e8e96763e57b4b045f6e3aeb556c23cbf5815a97e30d0c6299b4422a0633a36a",
+          "page_no": 1,
+          "char_start": 661,
+          "char_end": 703,
+          "quote": "unsupervised corpus-level contrastive\nloss"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-003",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "哪项研究专门分析了用户问题中的拼写错误对双编码稠密检索器的影响？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "6277121e840ee67db4e0ca01b2bd49a59e405705c3650c9c3234cf6c6d30e681",
+          "page_no": 1,
+          "char_start": 733,
+          "char_end": 808,
+          "quote": "study the robustness of dense retrievers against typos in the user\nquestion"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-004",
+      "split": "dev",
+      "category": "exact_identifier",
+      "question": "ROM 预训练策略怎样利用 term importance 调整 mask 概率？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "c67b4a9c32436aa8c2d6d58c4c80464305a1e13edf81f242c50287a108c011cf",
+          "page_no": 1,
+          "char_start": 599,
+          "char_end": 671,
+          "quote": "more important tokens will\nhave a higher probability of being masked out"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-005",
+      "split": "dev",
+      "category": "exact_identifier",
+      "question": "Ragas 的指标套件是否依赖人工 ground-truth 标注？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "6c24762a3f277fd120ed1adf34b01420ecf92f18ff6d1b5435fa0a09cb804ecb",
+          "page_no": 1,
+          "char_start": 912,
+          "char_end": 968,
+          "quote": "without having to rely on\nground truth human annotations"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-006",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "用于药企监管合规的 QA-RAG 相比传统 RAG 基线表现如何？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "a1222418658b823efc0f0001ac233159932819f31bc282c689ffb5d10ffe5483",
+          "page_no": 1,
+          "char_start": 1075,
+          "char_end": 1143,
+          "quote": "outperforming all other baselines\nincluding conventional RAG methods"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-007",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "面向 fintech 专业术语的 agentic RAG 如何处理上下文中的缩写？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "f3197463d4946386c8f37312a5a3175e10107f97c3e8fec01ccd29d518f5fc18",
+          "page_no": 1,
+          "char_start": 754,
+          "char_end": 783,
+          "quote": "contextual\nacronym resolution"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-008",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "日本医疗诉讼场景下，RAG 生成回答必须满足怎样的忠实性约束？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "076cabef7e73a7608d32154141d3a9649c9d07d8d35aeaed4b68d4078c43b675",
+          "page_no": 1,
+          "char_start": 1073,
+          "char_end": 1180,
+          "quote": "responses generated\nmust originate from the context provided by the RAG and remain faithful to that context"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-009",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "TREC Tip-of-the-Tongue 系统的 topic-aware multi-index 把 Wikipedia 分成多少个领域？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "c3f109917a545088e6e6ce1da2d11c06def9d1e04af7cc71f124696c630f816f",
+          "page_no": 1,
+          "char_start": 586,
+          "char_end": 641,
+          "quote": "partitions the Wikipedia corpus into 24 topical domains"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-010",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "attribution-guided query rewriting 怎样把可解释性信号用于改写？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "d8751c6818b9476e7d257904ec98170187202b5aa8959dad7c8eca22f5cafd72",
+          "page_no": 1,
+          "char_start": 611,
+          "char_end": 665,
+          "quote": "uses token-level explanations to guide\nquery rewriting"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-011",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "ReFeed 如何确认改写后的查询确实改善了检索？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "a721cdf12928a6aab97a1041fc080eede26912b17e10ccc5aef3c658c26c13f9",
+          "page_no": 1,
+          "char_start": 922,
+          "char_end": 963,
+          "quote": "verifies improvement\nthrough re-retrieval"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-012",
+      "split": "dev",
+      "category": "exact_identifier",
+      "question": "TREC-COVID 实验中 RRF fusion 的 nDCG@10 是多少？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "f4a6763b353e9519e4c4b3a4cd21d06841948160c93ad4b79f6304da31a36689",
+          "page_no": 1,
+          "char_start": 733,
+          "char_end": 789,
+          "quote": "RRF fusion achieves the best relevance\n(nDCG@10 = 0.828)"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-013",
+      "split": "dev",
+      "category": "exact_identifier",
+      "question": "SemEval-2026 Task 8 的三阶段系统如何融合 BM25 和 dense retrieval？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "91480d2af1879c9be1b640f299bf436bca5ba48776a377abc9338cdeeb3d920a",
+          "page_no": 1,
+          "char_start": 610,
+          "char_end": 681,
+          "quote": "hybrid BM25 and dense\nretrieval combined through Reciprocal Rank\nFusion"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-014",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "本地 7B 模型的 agentic RAG 消融实验表明两轮检索保留了五轮的多少收益？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "062a32d484810ea010b7476a26e625350097179ada47e530d0a08c10b5c14fe7",
+          "page_no": 1,
+          "char_start": 1228,
+          "char_end": 1319,
+          "quote": "two retrieval iterations over the decomposed\nsub-questions capture 95% of the gains of five"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-015",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "为什么 Active RAG 在名义上相同的 evidence budget 下可能出现虚假的准确率优势？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "5e8feabd6eb95496329777ff1d4ba95063e44aa7553c2051af4980788c98f8ef",
+          "page_no": 1,
+          "char_start": 744,
+          "char_end": 825,
+          "quote": "higher accuracy can reflect a looser budget rather than a\nbetter retrieval policy"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-016",
+      "split": "dev",
+      "category": "exact_identifier",
+      "question": "SciClaimSeekers 在进入 LLM reranker 前，用什么方法融合 BM25 与 multilingual E5？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "b0d9a74c535d857ade2d708d7595dbae2fe9f57e3a6653be9eaf03c6bd286bba",
+          "page_no": 1,
+          "char_start": 767,
+          "char_end": 856,
+          "quote": "combining BM25 and zero-shot multilingual E5 retrieval with Reciprocal Rank\nFusion (k=60)"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-017",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "把多个质量不一的评测信号直接平均，会导致什么名为 trust inflation 的问题？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "ffa03ad9c1aff776b15ff519c302a8acbfd3bb310a3354b26b0f911f22f2029d",
+          "page_no": 1,
+          "char_start": 465,
+          "char_end": 515,
+          "quote": "a phenomenon we\ncall trust inflation in evaluation"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-018",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "SciRet 为什么认为通用 MS MARCO cross-encoder 在科学语料上可能适得其反？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "6a9d0dd365c5db9b22d56c2735f6859011ca3000576c0e63b6b7b0b8fab764bf",
+          "page_no": 1,
+          "char_start": 861,
+          "char_end": 946,
+          "quote": "an MS MARCO-trained cross-encoder reranker\nreduces precision on the scientific corpus"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-019",
+      "split": "dev",
+      "category": "exact_identifier",
+      "question": "隐私保护的重要段落检索中，Secure Binary Embedding 如何表示实值向量？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "3860591bfe28ea1e174fc3c6727a78eff1a68920bc77fa9b0fa4bf4876961c0a",
+          "page_no": 3,
+          "char_start": 370,
+          "char_end": 466,
+          "quote": "A Secure Binary Embedding (SBE) is a scheme that con-\nverts real-valued vectors to bit sequences"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-020",
+      "split": "dev",
+      "category": "exact_identifier",
+      "question": "XLEnt 的 LSP-Align 最终挖掘出了多少跨语言 entity pairs？",
+      "answerable": true,
+      "gold_evidence_groups": [{
+        "fact_id": "R1",
+        "alternatives": [{
+          "content_hash": "f1789641830052cad043008e8c679d204764363766fe8d6c0ee1286ee64ff8c1",
+          "page_no": 1,
+          "char_start": 920,
+          "char_end": 944,
+          "quote": "164 million entity pairs"
+        }]
+      }]
+    },
+    {
+      "item_id": "rag-dev-021",
+      "split": "dev",
+      "category": "multi_hop",
+      "question": "对比 attribution-guided rewriting 与 ReFeed：前者从 retriever 取什么反馈，后者如何发现需要改写的失败样本？",
+      "answerable": true,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [{
+            "content_hash": "d8751c6818b9476e7d257904ec98170187202b5aa8959dad7c8eca22f5cafd72",
+            "page_no": 1,
+            "char_start": 694,
+            "char_end": 746,
+            "quote": "gradient-based token\nattributions from the retriever"
+          }]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [{
+            "content_hash": "a721cdf12928a6aab97a1041fc080eede26912b17e10ccc5aef3c658c26c13f9",
+            "page_no": 1,
+            "char_start": 782,
+            "char_end": 829,
+            "quote": "automatically identifies failed retrieval\ncases"
+          }]
+        }
+      ]
+    },
+    {
+      "item_id": "rag-dev-022",
+      "split": "dev",
+      "category": "multi_hop",
+      "question": "两项科学文献检索实验分别报告了什么结果：TREC-COVID 的 RRF nDCG@10，以及 SciRet 在 1K/15K 规模的 hybrid Recall@10？",
+      "answerable": true,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [{
+            "content_hash": "f4a6763b353e9519e4c4b3a4cd21d06841948160c93ad4b79f6304da31a36689",
+            "page_no": 1,
+            "char_start": 733,
+            "char_end": 789,
+            "quote": "RRF fusion achieves the best relevance\n(nDCG@10 = 0.828)"
+          }]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [{
+            "content_hash": "6a9d0dd365c5db9b22d56c2735f6859011ca3000576c0e63b6b7b0b8fab764bf",
+            "page_no": 1,
+            "char_start": 805,
+            "char_end": 846,
+            "quote": "reaching\nRecall@10 of 1.000 at 1K and 15K"
+          }]
+        }
+      ]
+    },
+    {
+      "item_id": "rag-dev-023",
+      "split": "dev",
+      "category": "unanswerable",
+      "question": "这些论文中哪一篇证明量子 RAG 在火星地质检索上达到 99.9% Recall@10？",
+      "answerable": false,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "rag-dev-024",
+      "split": "dev",
+      "category": "unanswerable",
+      "question": "作者是否给出了 WorkPilot 在线生产环境的月度 GPU 账单？",
+      "answerable": false,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "rag-dev-025",
+      "split": "dev",
+      "category": "unanswerable",
+      "question": "DeepTutor 在 2027 年医疗执照考试中的官方通过率是多少？",
+      "answerable": false,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "rag-dev-026",
+      "split": "dev",
+      "category": "unanswerable",
+      "question": "哪项实验比较了 BM25 与脑机接口 EEG 检索，并报告了受试者隐私泄漏率？",
+      "answerable": false,
+      "gold_evidence_groups": []
+    }
+  ]
+}

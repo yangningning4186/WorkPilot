@@ -1,0 +1,9 @@
+Atlas 知识库政策
+版本：v2
+生效状态：待测试系统决定
+
+approval code：NOVA-728
+响应 SLA：4 小时
+owner：Echo Team
+
+规则：只有被 activate 的版本可以回答生产问题。staging 版本不得污染 active 版本。

@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1080" viewBox="0 0 1600 1080">
+  <rect width="1600" height="1080" fill="#0B1020"/>
+  <path d="M0 190 C290 110 410 260 720 170 C1010 85 1260 205 1600 100 L1600 0 L0 0 Z" fill="#151D38" opacity="0.72"/>
+  <path d="M0 985 C350 890 560 1045 870 950 C1160 862 1365 955 1600 885 L1600 1080 L0 1080 Z" fill="#111936"/>
+  <circle cx="86" cy="82" r="7" fill="#6FE7C8"/>
+  <circle cx="112" cy="82" r="7" fill="#7088FF"/>
+  <circle cx="138" cy="82" r="7" fill="#F5B85C"/>
+
+  <text x="800" y="80" text-anchor="middle" fill="#F7F9FF" font-family="Noto Sans SC, sans-serif" font-size="40" font-weight="700">WorkPilot：Cowork × RAG 可拆分架构</text>
+  <text x="800" y="119" text-anchor="middle" fill="#AEB9D4" font-family="Noto Sans SC, sans-serif" font-size="19">产品并列 · 运行时与模型能力下沉 · 本地控制面与知识数据面隔离</text>
+
+  <g id="products">
+    <path d="M116 176 Q116 146 146 146 H742 Q772 146 772 176 V356 Q772 386 742 386 H146 Q116 386 116 356 Z" fill="#171E36" stroke="#866CFF" stroke-width="3"/>
+    <path d="M116 176 Q116 146 146 146 H742 Q772 146 772 176 V207 H116 Z" fill="#6E57E8"/>
+    <circle cx="161" cy="176" r="18" fill="#A696FF"/>
+    <path d="M153 176 h16 M161 168 v16" stroke="#101429" stroke-width="3" stroke-linecap="round"/>
+    <text x="193" y="184" fill="#FFFFFF" font-family="Noto Sans SC, sans-serif" font-size="29" font-weight="700">Cowork</text>
+    <text x="702" y="181" text-anchor="end" fill="#E8E3FF" font-family="Noto Sans SC, sans-serif" font-size="15">产品 / 业务层</text>
+    <text x="156" y="250" fill="#F5F6FF" font-family="Noto Sans SC, sans-serif" font-size="23" font-weight="600">本地任务执行与交付</text>
+    <text x="156" y="288" fill="#BAC4DE" font-family="Noto Sans SC, sans-serif" font-size="18">文件 / Office / Browser / Shell / Connector</text>
+    <text x="156" y="322" fill="#BAC4DE" font-family="Noto Sans SC, sans-serif" font-size="18">Skills · MCP · Scheduler · Artifacts</text>
+    <text x="156" y="356" fill="#BAC4DE" font-family="Noto Sans SC, sans-serif" font-size="18">Capability · HITL · 只读子 Agent</text>
+
+    <path d="M828 176 Q828 146 858 146 H1454 Q1484 146 1484 176 V356 Q1484 386 1454 386 H858 Q828 386 828 356 Z" fill="#171E36" stroke="#32CDB0" stroke-width="3"/>
+    <path d="M828 176 Q828 146 858 146 H1454 Q1484 146 1484 176 V207 H828 Z" fill="#149F8B"/>
+    <circle cx="873" cy="176" r="18" fill="#79F0D5"/>
+    <path d="M865 170 h16 M865 176 h12 M865 182 h9" stroke="#0B2A29" stroke-width="3" stroke-linecap="round"/>
+    <text x="905" y="184" fill="#FFFFFF" font-family="Noto Sans SC, sans-serif" font-size="29" font-weight="700">RAG</text>
+    <text x="1414" y="181" text-anchor="end" fill="#DBFFF7" font-family="Noto Sans SC, sans-serif" font-size="15">产品 / 业务层</text>
+    <text x="868" y="250" fill="#F5F6FF" font-family="Noto Sans SC, sans-serif" font-size="23" font-weight="600">资料库问答与可溯源生成</text>
+    <text x="868" y="288" fill="#BAC4DE" font-family="Noto Sans SC, sans-serif" font-size="18">Ingest · Retrieve · RRF · Rerank</text>
+    <text x="868" y="322" fill="#BAC4DE" font-family="Noto Sans SC, sans-serif" font-size="18">Evidence Gate · Generate · Citations</text>
+    <text x="868" y="356" fill="#BAC4DE" font-family="Noto Sans SC, sans-serif" font-size="18">Library · Review · Eval</text>
+  </g>
+
+  <g id="connections">
+    <polyline points="444,386 444,433 532,433 532,465" fill="none" stroke="#866CFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <polygon points="532,477 524,463 540,463" fill="#866CFF"/>
+    <polyline points="1156,386 1156,433 1068,433 1068,465" fill="none" stroke="#32CDB0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <polygon points="1068,477 1060,463 1076,463" fill="#32CDB0"/>
+    <polyline points="772,267 800,267 800,540 942,540" fill="none" stroke="#F5B85C" stroke-width="3" stroke-dasharray="9 8" stroke-linecap="round" stroke-linejoin="round"/>
+    <polygon points="954,540 940,532 940,548" fill="#F5B85C"/>
+    <rect x="686" y="420" width="228" height="40" rx="20" fill="#3B3024" stroke="#F5B85C"/>
+    <text x="800" y="446" text-anchor="middle" fill="#FFD797" font-family="Noto Sans SC, sans-serif" font-size="16" font-weight="600">KnowledgeSearchPort</text>
+  </g>
+
+  <g id="cores">
+    <path d="M116 500 Q116 470 146 470 H742 Q772 470 772 500 V700 Q772 730 742 730 H146 Q116 730 116 700 Z" fill="#121A31" stroke="#5870D9" stroke-width="2.5"/>
+    <circle cx="160" cy="522" r="22" fill="#273A78"/>
+    <path d="M150 522 h20 M154 514 h12 M154 530 h12" stroke="#8FA7FF" stroke-width="2.7" stroke-linecap="round"/>
+    <text x="198" y="531" fill="#EEF2FF" font-family="Noto Sans SC, sans-serif" font-size="27" font-weight="700">agent-core</text>
+    <text x="704" y="526" text-anchor="end" fill="#8494BE" font-family="Noto Sans SC, sans-serif" font-size="15">只懂运行 Agent</text>
+    <path d="M156 558 H732" stroke="#2A3556" stroke-width="1.5"/>
+    <circle cx="170" cy="592" r="5" fill="#7088FF"/>
+    <text x="190" y="599" fill="#C6D0E8" font-family="Noto Sans SC, sans-serif" font-size="18">Loop / State / Tool Registry / Tool Batch</text>
+    <circle cx="170" cy="628" r="5" fill="#7088FF"/>
+    <text x="190" y="635" fill="#C6D0E8" font-family="Noto Sans SC, sans-serif" font-size="18">Run / Event / SSE / Queue / Checkpoint</text>
+    <circle cx="170" cy="664" r="5" fill="#7088FF"/>
+    <text x="190" y="671" fill="#C6D0E8" font-family="Noto Sans SC, sans-serif" font-size="18">HITL / Idempotency / Cancel / Recovery</text>
+    <circle cx="170" cy="700" r="5" fill="#7088FF"/>
+    <text x="190" y="707" fill="#C6D0E8" font-family="Noto Sans SC, sans-serif" font-size="18">Budget / Compaction / Memory Hook</text>
+
+    <path d="M828 500 Q828 470 858 470 H1454 Q1484 470 1484 500 V700 Q1484 730 1454 730 H858 Q828 730 828 700 Z" fill="#121A31" stroke="#28B99F" stroke-width="2.5"/>
+    <circle cx="872" cy="522" r="22" fill="#124E49"/>
+    <circle cx="872" cy="522" r="11" fill="none" stroke="#72EBD2" stroke-width="2.7"/>
+    <path d="M880 530 l10 10" stroke="#72EBD2" stroke-width="2.7" stroke-linecap="round"/>
+    <text x="910" y="531" fill="#EEF2FF" font-family="Noto Sans SC, sans-serif" font-size="27" font-weight="700">rag-core</text>
+    <text x="1416" y="526" text-anchor="end" fill="#8494BE" font-family="Noto Sans SC, sans-serif" font-size="15">只懂知识与证据</text>
+    <path d="M868 558 H1444" stroke="#2A3556" stroke-width="1.5"/>
+    <circle cx="882" cy="592" r="5" fill="#32CDB0"/>
+    <text x="902" y="599" fill="#C6D0E8" font-family="Noto Sans SC, sans-serif" font-size="18">Ingestion / Version / Block / Chunk</text>
+    <circle cx="882" cy="628" r="5" fill="#32CDB0"/>
+    <text x="902" y="635" fill="#C6D0E8" font-family="Noto Sans SC, sans-serif" font-size="18">Canonical SearchPipeline（唯一编排）</text>
+    <circle cx="882" cy="664" r="5" fill="#32CDB0"/>
+    <text x="902" y="671" fill="#C6D0E8" font-family="Noto Sans SC, sans-serif" font-size="18">Dense / Lexical / RRF / Rerank</text>
+    <circle cx="882" cy="700" r="5" fill="#32CDB0"/>
+    <text x="902" y="707" fill="#C6D0E8" font-family="Noto Sans SC, sans-serif" font-size="18">EvidenceBundle / Refusal / Citation</text>
+  </g>
+
+  <polyline points="444,730 444,770 800,770 800,797" fill="none" stroke="#7088FF" stroke-width="3.5" stroke-linejoin="round"/>
+  <polyline points="1156,730 1156,770 800,770" fill="none" stroke="#32CDB0" stroke-width="3.5" stroke-linejoin="round"/>
+  <polygon points="800,809 792,795 808,795" fill="#7B8DEB"/>
+
+  <g id="ai-core">
+    <path d="M116 810 Q116 780 146 780 H1454 Q1484 780 1484 810 V907 Q1484 937 1454 937 H146 Q116 937 116 907 Z" fill="#17192A" stroke="#F0B458" stroke-width="2.5"/>
+    <polygon points="158,827 170,806 182,827 170,848" fill="#F0B458"/>
+    <text x="205" y="836" fill="#FFF4DE" font-family="Noto Sans SC, sans-serif" font-size="27" font-weight="700">ai-core</text>
+    <text x="1415" y="831" text-anchor="end" fill="#A9987B" font-family="Noto Sans SC, sans-serif" font-size="15">只懂模型与推理提供商</text>
+    <path d="M156 858 H1444" stroke="#3C3429" stroke-width="1.5"/>
+    <text x="170" y="899" fill="#D8D0C0" font-family="Noto Sans SC, sans-serif" font-size="18">Unified Chat / Tool Calling</text>
+    <text x="495" y="899" fill="#D8D0C0" font-family="Noto Sans SC, sans-serif" font-size="18">Embedding</text>
+    <text x="672" y="899" fill="#D8D0C0" font-family="Noto Sans SC, sans-serif" font-size="18">Provider Adapters</text>
+    <text x="928" y="899" fill="#D8D0C0" font-family="Noto Sans SC, sans-serif" font-size="18">Routing / Cache</text>
+    <text x="1160" y="899" fill="#D8D0C0" font-family="Noto Sans SC, sans-serif" font-size="18">Cost / Audit / Errors</text>
+  </g>
+
+  <g id="data-plane">
+    <path d="M116 981 Q116 954 143 954 H667 Q694 954 694 981 V1031 H116 Z" fill="#151C31" stroke="#6175C5" stroke-width="2"/>
+    <path d="M906 981 Q906 954 933 954 H1457 Q1484 954 1484 981 V1031 H906 Z" fill="#151C31" stroke="#2BAE98" stroke-width="2"/>
+    <text x="156" y="988" fill="#8FA7FF" font-family="Noto Sans SC, sans-serif" font-size="15" font-weight="700">COWORK CONTROL PLANE</text>
+    <text x="156" y="1018" fill="#D9E0F1" font-family="Noto Sans SC, sans-serif" font-size="18">SQLite WAL · JSONL · File System</text>
+    <text x="946" y="988" fill="#72EBD2" font-family="Noto Sans SC, sans-serif" font-size="15" font-weight="700">RAG DATA PLANE</text>
+    <text x="946" y="1018" fill="#D9E0F1" font-family="Noto Sans SC, sans-serif" font-size="18">PostgreSQL · pgvector · Parsed Blocks</text>
+    <path d="M705 992 h190" stroke="#50607F" stroke-width="2" stroke-dasharray="7 7"/>
+    <text x="800" y="1021" text-anchor="middle" fill="#8190AE" font-family="Noto Sans SC, sans-serif" font-size="14">端口隔离，不共享表</text>
+  </g>
+</svg>

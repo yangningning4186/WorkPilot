@@ -1,0 +1,5 @@
+/target
+/gen/schemas
+/binaries
+/resources/ms-playwright/*
+!/resources/ms-playwright/.gitkeep
