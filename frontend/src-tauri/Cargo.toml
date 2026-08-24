@@ -18,3 +18,6 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

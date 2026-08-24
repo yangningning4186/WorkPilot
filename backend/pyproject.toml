@@ -12,7 +12,6 @@ dependencies = [
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
   "jsonschema>=4.25,<5",
-  "langgraph>=1.2.9,<1.3",
   # 本地知识库：LlamaIndex 只用它的 index/retriever 骨架，节点由我们自己按 ParsedBlock
   # 构造——它默认的 SentenceSplitter 会把约束 3 要求的 block/bbox 溯源信息切没。
   "llama-index-core>=0.12,<0.15",
@@ -27,7 +26,7 @@ dependencies = [
   "pydantic-settings>=2.10,<3",
   "pymupdf>=1.26,<2",
   "python-docx>=1.2,<2",
-  # config/routing.yaml 的解析。此前只是 langgraph 的传递依赖, 直接 import 就要显式声明。
+  # config/routing.yaml 的解析；业务代码直接 import，必须显式声明。
   "python-multipart>=0.0.20,<1",
   "python-pptx>=1.0,<2",
   "pyyaml>=6.0.3,<7",
@@ -53,6 +52,7 @@ dev = [
   "types-croniter>=6.0,<7",
   "types-pyyaml>=6.0.12,<7",
   "types-jsonschema>=4.25,<5",
+  "pyinstaller>=6.16,<7",
 ]
 
 [tool.uv]
@@ -72,7 +72,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = [".."]
 markers = [
-  "integration: requires the PostgreSQL test database",
+  "integration: 端到端跑真实 Cowork 图，比单元用例慢一个量级（PostgreSQL 已退役，不再需要外部服务）",
 ]
 
 [tool.ruff]
