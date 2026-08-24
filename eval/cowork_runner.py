@@ -25,11 +25,6 @@ from typing import Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pymupdf
-from docx import Document
-from openpyxl import Workbook, load_workbook
-from pptx import Presentation
-from pydantic import BaseModel
-
 from app.core.config import Settings
 from app.core.db import DbSession as AsyncSession
 from app.core.db import SessionFactory, close_database, session_factory
@@ -75,7 +70,18 @@ from app.knowledge_contracts import EvidenceBundle, EvidenceSegment, RagSearchRe
 from app.llm_bootstrap import build_model_gateway
 from app.runstore.runs import append_message, create_run, ensure_conversation, get_run
 from app.worker.cowork_run import cowork_run
-from eval.cowork_task_suite import DEFAULT_SUITE, load_suite, missing_capabilities_for
+from docx import Document
+from openpyxl import Workbook, load_workbook
+from pptx import Presentation
+from pydantic import BaseModel
+from workpilot_ai.gateway import ModelGateway
+
+from eval.cowork_task_suite import (
+    DEFAULT_SUITE,
+    load_suite,
+    missing_capabilities_for,
+    suite_review,
+)
 from eval.metrics.reading import merge_reading_scores, score_reading
 from eval.model_cassette import (
     MODEL_CASSETTE_SCHEMA,
@@ -85,7 +91,6 @@ from eval.model_cassette import (
     ReplayingModelGateway,
     cassette_sha256,
 )
-from workpilot_ai.gateway import ModelGateway
 
 REPORT_SCHEMA_VERSION = "cowork-eval-report.v1"
 OBSERVATION_SCHEMA_VERSION = "cowork-observation.v1"
@@ -1707,6 +1712,7 @@ async def run_suite(
         }
     repo_root = Path(__file__).resolve().parents[1]
     git_sha, git_dirty = _git_state(repo_root)
+    review = suite_review(suite)
     started_at = datetime.now(UTC)
     fixture_policy = {
         "network": "suite-local deterministic adapter; no public network",
@@ -1718,7 +1724,9 @@ async def run_suite(
         "suite_sha256": suite_sha,
         "suite_version": suite["version"],
         "suite_origin": suite["origin"],
-        "suite_review_status": suite["review_status"],
+        "suite_review_status": review["status"],
+        "suite_reviewer": review["reviewer"],
+        "suite_reviewed_at": review["reviewed_at"],
         "item_ids": item_ids,
         "splits": dict(Counter(item["split"] for item in items)),
         "model": {
@@ -1758,7 +1766,9 @@ async def run_suite(
         "suite_path": str(suite_path.resolve()),
         "suite_sha256": suite_sha,
         "suite_origin": suite["origin"],
-        "suite_review_status": suite["review_status"],
+        "suite_review_status": review["status"],
+        "suite_reviewer": review["reviewer"],
+        "suite_reviewed_at": review["reviewed_at"],
         "item_ids": item_ids,
         "splits": dict(Counter(item["split"] for item in items)),
         "model": config["model"],
@@ -1911,6 +1921,7 @@ def rescore_report(
     repo_root = Path(__file__).resolve().parents[1]
     git_sha, git_dirty = _git_state(repo_root)
     suite = load_suite(suite_path)
+    review = suite_review(suite)
     source = json.loads(source_report.read_text(encoding="utf-8"))
     if source.get("suite") != suite["name"] or not isinstance(source.get("items"), list):
         raise CoworkRunnerError("source report 与 suite 不匹配")
@@ -1958,7 +1969,12 @@ def rescore_report(
     config = {
         "suite_sha256": suite_sha,
         "suite_version": suite["version"],
+        "suite_origin": suite["origin"],
+        "suite_review_status": review["status"],
+        "suite_reviewer": review["reviewer"],
+        "suite_reviewed_at": review["reviewed_at"],
         "item_ids": [record["item_id"] for record in records],
+        "splits": dict(Counter(record["split"] for record in records)),
         "mode": "offline_rescore_no_model_calls",
         "source_config_hash": source.get("config_hash") or source_manifest.get("config_hash"),
         "source_model": source_manifest.get("model"),
@@ -1973,7 +1989,12 @@ def rescore_report(
         "source_report_sha256": _sha256_bytes(source_report.read_bytes()),
         "suite_path": str(suite_path.resolve()),
         "suite_sha256": suite_sha,
+        "suite_origin": suite["origin"],
+        "suite_review_status": review["status"],
+        "suite_reviewer": review["reviewer"],
+        "suite_reviewed_at": review["reviewed_at"],
         "item_ids": [record["item_id"] for record in records],
+        "splits": dict(Counter(record["split"] for record in records)),
         "test_access": {
             "included": any(record["split"] == "test" for record in records),
             "note": test_access_note,

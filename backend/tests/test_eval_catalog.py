@@ -26,7 +26,14 @@ def _write_json(path: Path, payload: object) -> None:
 
 
 def _fixture_tree(root: Path, *, baseline_status: str = "rebuild_required") -> dict[str, Any]:
-    suite = {"name": "suite-v1", "items": [{"id": "case-1"}]}
+    suite = {
+        "name": "suite-v1",
+        "origin": "synthetic",
+        "review_status": "approved",
+        "reviewer": "fixture-owner",
+        "reviewed_at": "2026-08-24T00:00:00+00:00",
+        "items": [{"id": "case-1", "split": "dev"}],
+    }
     policy = {
         "schema_version": "workpilot-regression-policy.v1",
         "name": "cowork-policy-v1",
@@ -56,6 +63,7 @@ def _fixture_tree(root: Path, *, baseline_status: str = "rebuild_required") -> d
                 "kind": "cowork",
                 "suite": "suites/suite.json",
                 "policy": "policies/cowork.json",
+                "selection": {"split": "dev", "item_count": 1},
                 "baseline": baseline,
             }
         ],
@@ -82,15 +90,25 @@ def _codes(report) -> set[str]:
 
 def _promote_valid_baseline(root: Path) -> None:
     policy_path = root / "policies/cowork.json"
+    suite_path = root / "suites/suite.json"
     body: dict[str, Any] = {
         "schema_version": BASELINE_SCHEMA_VERSION,
         "generated_at": "2026-08-24T00:00:00+00:00",
         "kind": "cowork",
         "dataset": "suite-v1",
         "dataset_version": "1",
-        "dataset_fingerprint": "a" * 64,
+        "dataset_fingerprint": hashlib.sha256(suite_path.read_bytes()).hexdigest(),
         "config_fingerprint": "b" * 64,
         "git_sha": "c" * 40,
+        "git_dirty": False,
+        "review": {
+            "origin": "synthetic",
+            "status": "approved",
+            "reviewer": "fixture-owner",
+            "reviewed_at": "2026-08-24T00:00:00+00:00",
+        },
+        "selection": {"split_counts": {"dev": 1}},
+        "calibration_fingerprint": None,
         "label": "baseline-v1",
         "policy": {
             "name": "cowork-policy-v1",
@@ -125,11 +143,13 @@ def test_repository_catalog_is_healthy_but_exposes_legacy_baseline_warnings() ->
         "warning",
         "warning",
         "warning",
+        "warning",
         "ready",
     ]
     rebuilds = [issue for issue in report.issues if issue.code == "baseline_rebuild_required"]
     assert {issue.resource_id for issue in rebuilds} == {
-        "cowork-core",
+        "cowork-core-dev",
+        "cowork-core-test",
         "kb-retrieval",
         "grounded-generation",
     }
@@ -145,9 +165,9 @@ def test_cli_json_distinguishes_ready_and_warning(capsys: pytest.CaptureFixture[
         "error_count": 0,
         "invalid": 0,
         "ready": 1,
-        "resource_count": 4,
-        "warning_count": 3,
-        "warnings": 3,
+        "resource_count": 5,
+        "warning_count": 4,
+        "warnings": 4,
     }
 
 
@@ -283,6 +303,15 @@ def test_policy_kind_must_match_track_kind(tmp_path: Path) -> None:
         (
             lambda baseline: baseline["integrity"].update(value="0" * 64),
             "baseline_integrity_mismatch",
+        ),
+        (lambda baseline: baseline.update(git_dirty=True), "baseline_git_dirty"),
+        (
+            lambda baseline: baseline["review"].update(reviewer="somebody-else"),
+            "baseline_review_mismatch",
+        ),
+        (
+            lambda baseline: baseline["selection"]["split_counts"].update(dev=2),
+            "baseline_selection_mismatch",
         ),
     ],
 )

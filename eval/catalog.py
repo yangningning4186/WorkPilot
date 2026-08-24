@@ -17,6 +17,7 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -153,6 +154,17 @@ class _ResolvedJson:
     path: Path
     payload: object
     raw_bytes: bytes
+
+
+@dataclass(frozen=True)
+class _TrackSelection:
+    split: str
+    item_count: int
+    case_ids: frozenset[str]
+
+    @property
+    def split_counts(self) -> dict[str, int]:
+        return {self.split: self.item_count}
 
 
 def canonical_json(value: object) -> str:
@@ -294,6 +306,104 @@ def _validate_policy(
     return policy
 
 
+def _suite_review(payload: Mapping[str, object]) -> dict[str, object]:
+    nested = payload.get("review")
+    review = nested if isinstance(nested, Mapping) else {}
+    return {
+        "origin": payload.get("origin"),
+        "status": payload.get("review_status") or review.get("status"),
+        "reviewer": payload.get("reviewer") or review.get("reviewer"),
+        "reviewed_at": payload.get("reviewed_at") or review.get("reviewed_at"),
+    }
+
+
+def _valid_reviewed_at(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def _validate_track_selection(
+    raw: Mapping[str, object],
+    *,
+    suite: _ResolvedJson | None,
+    resource_id: str,
+    issues: list[CatalogIssue],
+) -> _TrackSelection | None:
+    value = raw.get("selection")
+    if not isinstance(value, Mapping):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "track_selection_invalid",
+                "track 必须显式声明 selection.split 和 selection.item_count",
+                resource_id,
+            )
+        )
+        return None
+    split = value.get("split")
+    item_count = value.get("item_count")
+    if split not in {"dev", "test"} or (
+        isinstance(item_count, bool) or not isinstance(item_count, int) or item_count < 1
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "track_selection_invalid",
+                "selection.split 必须是 dev/test，item_count 必须是正整数",
+                resource_id,
+            )
+        )
+        return None
+    case_ids: set[str] = set()
+    if suite is not None and isinstance(suite.payload, Mapping):
+        items = suite.payload.get("items")
+        if isinstance(items, list):
+            selected = [
+                item
+                for item in items
+                if isinstance(item, Mapping) and item.get("split") == split
+            ]
+            if len(selected) != item_count:
+                issues.append(
+                    CatalogIssue(
+                        "error",
+                        "track_selection_mismatch",
+                        f"selection 声明 {split}={item_count}，suite 实际为 {len(selected)}",
+                        resource_id,
+                    )
+                )
+            for item in selected:
+                case_id = item.get("id") or item.get("item_id")
+                if isinstance(case_id, str) and case_id:
+                    if case_id in case_ids:
+                        issues.append(
+                            CatalogIssue(
+                                "error",
+                                "suite_case_id_duplicate",
+                                f"suite 选择内存在重复 case id: {case_id}",
+                                resource_id,
+                            )
+                        )
+                    case_ids.add(case_id)
+        else:
+            declared_count = suite.payload.get("item_count")
+            if isinstance(declared_count, int) and declared_count != item_count:
+                issues.append(
+                    CatalogIssue(
+                        "error",
+                        "track_selection_mismatch",
+                        f"selection.item_count={item_count}，suite.item_count={declared_count}",
+                        resource_id,
+                    )
+                )
+    return _TrackSelection(str(split), int(item_count), frozenset(case_ids))
+
+
 def _validate_ready_baseline(
     document: _ResolvedJson | None,
     *,
@@ -301,6 +411,7 @@ def _validate_ready_baseline(
     suite: _ResolvedJson | None,
     policy_document: _ResolvedJson | None,
     policy: Mapping[str, object] | None,
+    selection: _TrackSelection | None,
     resource_id: str,
     issues: list[CatalogIssue],
 ) -> None:
@@ -340,6 +451,17 @@ def _validate_ready_baseline(
                 resource_id,
             )
         )
+    if suite is not None:
+        actual_suite_sha = hashlib.sha256(suite.raw_bytes).hexdigest()
+        if baseline.get("dataset_fingerprint") != actual_suite_sha:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "baseline_suite_hash_mismatch",
+                    "baseline.dataset_fingerprint 与当前 suite 文件 SHA256 不一致",
+                    resource_id,
+                )
+            )
     for field in ("generated_at", "label"):
         if not isinstance(baseline.get(field), str) or not str(baseline[field]).strip():
             issues.append(
@@ -366,6 +488,55 @@ def _validate_ready_baseline(
                 "error",
                 "baseline_provenance_invalid",
                 "ready baseline.git_sha 必须是 40 或 64 位小写 Git SHA",
+                resource_id,
+            )
+        )
+    if baseline.get("git_dirty") is not False:
+        issues.append(
+            CatalogIssue(
+                "error",
+                "baseline_git_dirty",
+                "ready baseline.git_dirty 必须明确为 false",
+                resource_id,
+            )
+        )
+    suite_review = (
+        _suite_review(suite.payload)
+        if suite is not None and isinstance(suite.payload, Mapping)
+        else {}
+    )
+    baseline_review = baseline.get("review")
+    if (
+        suite_review.get("status") != "approved"
+        or not isinstance(suite_review.get("reviewer"), str)
+        or not _valid_reviewed_at(suite_review.get("reviewed_at"))
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "suite_review_not_approved",
+                "ready track 的 suite 必须 approved，并有 reviewer 和带时区的 reviewed_at",
+                resource_id,
+            )
+        )
+    if not isinstance(baseline_review, Mapping) or any(
+        baseline_review.get(field) != suite_review.get(field)
+        for field in ("origin", "status", "reviewer", "reviewed_at")
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "baseline_review_mismatch",
+                "baseline 固定的 review provenance 与当前 suite 不一致",
+                resource_id,
+            )
+        )
+    if kind == "retrieval" and not _is_sha256(baseline.get("calibration_fingerprint")):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "baseline_calibration_invalid",
+                "ready retrieval baseline 必须固定独立校准文件 SHA256",
                 resource_id,
             )
         )
@@ -411,6 +582,37 @@ def _validate_ready_baseline(
                 resource_id,
             )
         )
+    elif selection is not None:
+        baseline_selection = baseline.get("selection")
+        split_counts = (
+            baseline_selection.get("split_counts")
+            if isinstance(baseline_selection, Mapping)
+            else None
+        )
+        if split_counts != selection.split_counts or len(cases) != selection.item_count:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "baseline_selection_mismatch",
+                    "baseline 的 split/count 与 catalog track selection 不一致",
+                    resource_id,
+                )
+            )
+        if selection.case_ids:
+            baseline_ids = {
+                case.get("case_id")
+                for case in cases
+                if isinstance(case, Mapping) and isinstance(case.get("case_id"), str)
+            }
+            if baseline_ids != set(selection.case_ids):
+                issues.append(
+                    CatalogIssue(
+                        "error",
+                        "baseline_case_ids_mismatch",
+                        "baseline case_id 集合与 suite 所选 split 不一致",
+                        resource_id,
+                    )
+                )
     integrity = baseline.get("integrity")
     if not isinstance(integrity, Mapping) or integrity.get("algorithm") != "sha256":
         issues.append(
@@ -483,6 +685,12 @@ def _validate_track(
         issues.append(
             CatalogIssue("error", "suite_not_object", "suite 根节点必须是对象", resource_id)
         )
+    selection = _validate_track_selection(
+        raw,
+        suite=suite,
+        resource_id=resource_id,
+        issues=issues,
+    )
     policy_document = _resolve_json(
         raw.get("policy"),
         field="policy",
@@ -525,6 +733,7 @@ def _validate_track(
             suite=suite,
             policy_document=policy_document,
             policy=policy,
+            selection=selection,
             resource_id=resource_id,
             issues=issues,
         )

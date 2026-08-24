@@ -73,8 +73,8 @@ NO_REGRESSION_METRICS: dict[str, tuple[str, ...]] = {
     ),
     KIND_GENERATION: (
         "refusal_correct",
-        "citation_validity_non_refusal",
-        "constraint_pass",
+        "citation_wellformed_non_refusal",
+        "citation_support_answerable",
         "constraint_pass_answerable",
         "citation_gold_alignment",
     ),
@@ -95,6 +95,10 @@ EXCLUDED_METRICS: dict[str, str] = {
         "远超原定的 30%；墙钟还受机器负载影响，要门禁必须先有固定机器的专门测量"
     ),
     "context_redundancy": "诊断指标，方向性参考，不作阻断条件",
+    "constraint_pass": (
+        "移出门禁：分母含拒答样本，而拒答天然通过约束，提高拒答率即可刷分。"
+        "门禁只认 constraint_pass_answerable（拒答计为失败）"
+    ),
     "cost_usd": "自部署价格表为 0，金额口径不可用；成本走 token 计",
 }
 

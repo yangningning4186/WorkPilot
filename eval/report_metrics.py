@@ -107,10 +107,20 @@ def _retrieved_tokens(item: dict[str, Any], config: dict[str, Any]) -> RatioPoin
     return RatioPoint(float(tokens), 1.0)
 
 
+_REFUSAL_THRESHOLD_SOURCES = frozenset(
+    {"dev_calibrated", "independent_calibration", "manual"}
+)
+
+
 def _refusal_correct_by_score(item: dict[str, Any], config: dict[str, Any]) -> RatioPoint:
     threshold = config.get("refusal_threshold")
     score = item.get("top_score")
     if threshold is None or score is None:
+        return INELIGIBLE
+    # 阈值必须声明标定来源才算数。没有来源的历史报告一律不适用——0.35 那批就是
+    # 把归一化打分器的阈值套在 RRF 分数上，指标照常输出但恒为「全拒答」。
+    # 让它 INELIGIBLE，比让它带着一个 answerable_f1=0 的参照点进门禁要好。
+    if config.get("refusal_threshold_source") not in _REFUSAL_THRESHOLD_SOURCES:
         return INELIGIBLE
     # 各自用自己 config 里的阈值：换阈值本身就是被对照的变量
     answered = float(score) >= float(threshold)
@@ -162,6 +172,41 @@ def _citation_gold_alignment(item: dict[str, Any], config: dict[str, Any]) -> Ra
         return INELIGIBLE
     # micro 口径：重采样时按引用条数加权，与单跑报告的聚合方式一致
     return RatioPoint(float(alignment["aligned"]), total)
+
+
+def _citation_support_answerable(item: dict[str, Any], config: dict[str, Any]) -> RatioPoint:
+    """可答题上「引文真的落在 gold 证据里」的比例，拒答记 0 分而不是退出分母。
+
+    `citation_wellformed` 只查标签格式、引用记录与 quote 逐字一致，按构造几乎恒为
+    1.0，不能当质量信号。真正要守的是引文能不能支撑结论，而那只有对着 gold span
+    才能判。分母固定为可答题：否则模型多拒答一条，分母就少一条，指标反而变好看。
+    """
+
+    if not _completed(item) or not item.get("answerable"):
+        return INELIGIBLE
+    # 可答却拒答：没有产出任何有支撑的引文，计 0，不允许静默退出分母
+    if item.get("refused") is not False:
+        return RatioPoint(0.0, 1.0)
+    alignment = item["citation_gold_alignment"]
+    total = float(alignment["total"])
+    if not total:
+        # 作答了却一条引文都没给，同样是零支撑
+        return RatioPoint(0.0, 1.0)
+    return RatioPoint(float(alignment["aligned"]) / total, 1.0)
+
+
+def _constraint_pass_answerable(item: dict[str, Any], config: dict[str, Any]) -> RatioPoint:
+    """可答题的约束通过率；拒答计为失败。
+
+    旧口径把拒答样本算作「通过」，于是多拒答就能把分数刷上去——baseline 里
+    constraint_pass(0.571) 高于 constraint_pass_answerable(0.474) 就是这个效应。
+    """
+
+    if not _completed(item) or not item.get("answerable"):
+        return INELIGIBLE
+    if item.get("refused") is not False:
+        return RatioPoint(0.0, 1.0)
+    return RatioPoint(float(bool(item["constraint_pass"]["passed"])), 1.0)
 
 
 def _optional_number(*path: str) -> Extractor:
@@ -264,25 +309,39 @@ GENERATION_METRICS: tuple[MetricSpec, ...] = (
         _generation_flag("refusal_correct"),
     ),
     MetricSpec(
-        "citation_validity_non_refusal",
-        "citation_validity(非拒答)",
+        "citation_wellformed_non_refusal",
+        "引文格式合规(非拒答)",
         "ratio",
         True,
         _generation_flag("citation_validity", "valid", non_refusal_only=True),
+        note=(
+            "只校验标签格式、引用记录、block/version/document 与 quote 逐字一致。"
+            "这是前置条件不是质量信号，按构造几乎恒为 1.0；质量看 citation_support_answerable。"
+        ),
+    ),
+    MetricSpec(
+        "citation_support_answerable",
+        "引文 gold 支撑率(可答题)",
+        "ratio",
+        True,
+        _citation_support_answerable,
+        note="分母固定为可答题，拒答与零引文都计 0，堵住「多拒答把分母做小」的路。",
     ),
     MetricSpec(
         "constraint_pass",
-        "constraint_pass",
+        "constraint_pass(全部，诊断用)",
         "ratio",
         True,
         _generation_flag("constraint_pass", "passed"),
+        note="含拒答样本，拒答天然通过；只作诊断，不进门禁。",
     ),
     MetricSpec(
         "constraint_pass_answerable",
         "constraint_pass(可答题)",
         "ratio",
         True,
-        _generation_flag("constraint_pass", "passed", answerable_only=True),
+        _constraint_pass_answerable,
+        note="拒答计为失败，避免靠提高拒答率刷分。",
     ),
     MetricSpec(
         "citation_gold_alignment",

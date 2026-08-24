@@ -185,6 +185,7 @@ async def test_runner_uses_stable_content_anchors_and_writes_compatible_report(
         theta=0.5,
         alpha=0.5,
         refusal_threshold=None,
+        refusal_threshold_source=None,
         output_dir=tmp_path / "report",
         include_test=False,
         test_access_note=None,
@@ -281,6 +282,7 @@ async def test_runner_stops_immediately_when_retrieval_infrastructure_is_unavail
             theta=0.5,
             alpha=0.5,
             refusal_threshold=None,
+            refusal_threshold_source=None,
             output_dir=output,
             include_test=False,
             test_access_note=None,
@@ -348,6 +350,7 @@ async def test_formal_top_k_is_not_replaced_by_deeper_diagnostic_ranking(
         theta=0.5,
         alpha=0.5,
         refusal_threshold=None,
+        refusal_threshold_source=None,
         output_dir=tmp_path / "formal-vs-diagnostic",
         include_test=False,
         test_access_note=None,
@@ -425,6 +428,7 @@ async def test_adaptive_top_k_expands_low_consensus_queries_without_changing_fix
         theta=0.5,
         alpha=0.5,
         refusal_threshold=None,
+        refusal_threshold_source=None,
         output_dir=tmp_path / "adaptive-top-k",
         include_test=False,
         test_access_note=None,
@@ -484,3 +488,36 @@ def test_checked_in_rag_research_candidate_suite_has_the_declared_shape() -> Non
         "multi_hop",
         "unanswerable",
     }
+
+
+def test_kb_suite_human_origin_requires_complete_auditable_signoff(tmp_path: Path) -> None:
+    quote = "evidence"
+    anchor: dict[str, Any] = {
+        "content_hash": "a" * 64,
+        "page_no": None,
+        "char_start": 0,
+        "char_end": len(quote),
+        "quote": quote,
+    }
+    path = tmp_path / "suite.json"
+    _write_suite(path, content_hash="a" * 64, anchor=anchor)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["origin"] = "human"
+
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="human 评测集必须是 approved"):
+        load_kb_retrieval_suite(path)
+
+    payload["review"] = {
+        "status": "approved",
+        "reviewer": "fixture-owner",
+        "reviewed_at": "2026-08-24T09:30:00+08:00",
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    suite = load_kb_retrieval_suite(path)
+    assert suite.reviewer == "fixture-owner"
+
+    payload["review"]["reviewed_at"] = "2026-08-24 09:30:00"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="包含时区"):
+        load_kb_retrieval_suite(path)

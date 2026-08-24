@@ -3,14 +3,33 @@
   "description": "WorkPilot 的版本化评测目录；baseline 只有在晋升为隐私安全的 workpilot-regression-baseline.v1 后才能标记 ready。",
   "tracks": [
     {
-      "id": "cowork-core",
+      "id": "cowork-core-dev",
       "kind": "cowork",
       "suite": "eval/suites/cowork-core-50.json",
       "policy": "eval/policies/cowork.json",
+      "selection": {
+        "split": "dev",
+        "item_count": 39
+      },
       "baseline": {
         "status": "rebuild_required",
         "path": "eval/snapshots/cowork.json",
-        "reason": "现有 snapshot 是旧的 cowork-core-40 runner 报告，既不匹配当前 core-50 suite，也不是 workpilot-regression-baseline.v1。"
+        "reason": "dev 基线必须只含当前 core-50 的 39 条 dev。现有 snapshot 是旧的 cowork-core-40 runner 报告，既不匹配当前 suite，也不是 workpilot-regression-baseline.v1。"
+      }
+    },
+    {
+      "id": "cowork-core-test",
+      "kind": "cowork",
+      "suite": "eval/suites/cowork-core-50.json",
+      "policy": "eval/policies/cowork.json",
+      "selection": {
+        "split": "test",
+        "item_count": 11
+      },
+      "baseline": {
+        "status": "rebuild_required",
+        "path": "eval/snapshots/cowork.json",
+        "reason": "冻结 test 基线必须只含 11 条 test，并记录显式访问理由；不得与 39 条 dev 或旧 core-40 快照共用 baseline 语义。"
       }
     },
     {
@@ -18,10 +37,14 @@
       "kind": "retrieval",
       "suite": "eval/suites/kb-rag-research-dev-v1.json",
       "policy": "eval/policies/retrieval.json",
+      "selection": {
+        "split": "dev",
+        "item_count": 26
+      },
       "baseline": {
         "status": "rebuild_required",
         "path": "eval/snapshots/retrieval.json",
-        "reason": "现有 snapshot 属于已退役 PostgreSQL runner 的 m1-dev-70，与当前文件系统 KB suite 不匹配；需要重跑当前 suite 后再用 eval.regression snapshot 晋升。"
+        "reason": "现有 snapshot 属于已退役 PostgreSQL runner 的 m1-dev-70，与当前文件系统 KB suite 不匹配；旧阈值也不在当前真实 score source 的量纲内。重跑必须固定实际 score source、禁止 reranker fallback，并使用不同于 evaluation suite 的独立校准文件。"
       }
     },
     {
@@ -29,10 +52,14 @@
       "kind": "generation",
       "suite": "eval/suites/m1-dev-70.json",
       "policy": "eval/policies/generation.json",
+      "selection": {
+        "split": "dev",
+        "item_count": 70
+      },
       "baseline": {
         "status": "rebuild_required",
         "path": "eval/snapshots/generation.json",
-        "reason": "现有 snapshot 是历史 runner 报告；需要用 eval.regression snapshot 晋升为带完整性摘要的回归 baseline。"
+        "reason": "现有 snapshot 是历史 runner 报告；且其 citation_validity 只查格式恒为 1.0、constraint_pass 分母含拒答样本。指标口径已于 2026-08-24 重定义为 citation_wellformed_non_refusal / citation_support_answerable / constraint_pass_answerable，baseline 必须按新口径重建。当前架构还没有 generation runner。"
       }
     }
   ],

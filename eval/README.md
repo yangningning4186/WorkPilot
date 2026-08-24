@@ -31,7 +31,8 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.regression check \
 ```
 
 `eval.regression` 的稳定退出码是 `0=通过`、`1=可比较但发生回退`、`2=拒绝判定`。
-当前 catalog 会如实把三份历史 snapshot 标为 `rebuild_required`，而不是显示为可发布 baseline。
+当前 catalog 会如实把三份历史 snapshot 对应的四条 track 标为 `rebuild_required`，其中 Cowork
+dev（39 条）和冻结 test（11 条）是两个独立 baseline，不会显示为可发布基线。
 
 ## Cowork 单 Agent 50 条基线
 
@@ -98,6 +99,10 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
 首轮人工复核应逐条确认：prompt 是否自然且无歧义、fixture 是否足以作答、gold 工具是否是
 最短安全路径、断言是否真的代表任务完成、HITL/权限预期是否符合产品策略。复核完成后再提升
 版本并冻结 test split；不要直接修改已经产生正式报告的版本。
+
+正式快照会强制 suite `approved`、reviewer/带时区 reviewed_at、`git_dirty=false` 和精确 split。
+dev 报告只能生成 `eval/snapshots/v2/cowork-core-dev.json`；test 必须另跑并生成
+`eval/snapshots/v2/cowork-core-test.json`，不能把 50 条混成一个比较分母。
 
 live Cowork 跑批会自动生成权限 `0600` 的 `model-cassette.json`。在同一 suite/split/item
 顺序上可用它进行零真实模型 dispatch 的 fixture 执行回放：
@@ -215,6 +220,24 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.kb_retrieval_runner run \
   --label current-hybrid-v1 --top-k 10 --diagnostic-k 50 \
   --token-budget 4000 --allow-synthetic
 ```
+
+不带阈值的报告可以用于工程诊断，但不能晋升正式 retrieval baseline。正式流程先在另一份已批准
+的 calibration suite 上以相同 KB/index、预算和真实 score source 跑批，再冻结阈值：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.refusal_calibration \
+  --report eval/outputs/kb-retrieval/<calibration-run>/report.json \
+  --reviewer '<复核人>' --reviewed-at '<带时区 ISO-8601>' \
+  --output eval/calibrations/<new-calibration>.json
+
+PYTHONPATH=backend backend/.venv/bin/python -m eval.kb_retrieval_runner run \
+  --suite /path/to/kb-evaluation.json --kb-slug <slug> --kb-version <version> \
+  --label current-hybrid-v1 --top-k 10 --diagnostic-k 50 --token-budget 4000 \
+  --refusal-calibration eval/calibrations/<new-calibration>.json
+```
+
+runner 从逐题命中读取实际 `retrieval_score_source`，不再相信配置推断；同一跑批混用量纲、
+reranker 配置开启却 fallback、校准/evaluation suite SHA 相同，都会在写报告前拒绝。
 
 输出位于 `eval/outputs/kb-retrieval/<timestamp>-<label>/`，包含 `report.json` 和 `report.md`。
 报告记录 suite/config/index/实现指纹、逐题命中与失败归因、Recall/nDCG/α-nDCG/MRR、上下文

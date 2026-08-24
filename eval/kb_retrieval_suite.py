@@ -18,6 +18,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import UUID, uuid5
@@ -189,10 +190,22 @@ def load_kb_retrieval_suite(
     review_status = str(review_dict.get("status") or "pending_human_review")
     reviewer = _optional_text(review_dict.get("reviewer"))
     reviewed_at = _optional_text(review_dict.get("reviewed_at"))
-    if origin == "human" and (
-        review_status != "approved" or reviewer is None or reviewed_at is None
-    ):
-        raise ValueError("human 评测集必须有 approved 状态、reviewer 和 reviewed_at")
+    if review_status not in {"pending_human_review", "approved"}:
+        raise ValueError("review.status 必须是 pending_human_review 或 approved")
+    if review_status == "pending_human_review":
+        if reviewer is not None or reviewed_at is not None:
+            raise ValueError("pending_human_review 不能提前填写 reviewer/reviewed_at")
+    else:
+        if reviewer is None or reviewed_at is None:
+            raise ValueError("approved 评测集必须有 reviewer 和 reviewed_at")
+        try:
+            parsed_reviewed_at = datetime.fromisoformat(reviewed_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("reviewed_at 必须是 ISO-8601 时间") from error
+        if parsed_reviewed_at.tzinfo is None:
+            raise ValueError("reviewed_at 必须包含时区")
+    if origin == "human" and review_status != "approved":
+        raise ValueError("human 评测集必须是 approved")
 
     raw_items = payload.get("items")
     if not isinstance(raw_items, list) or not raw_items:

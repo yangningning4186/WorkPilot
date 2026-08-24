@@ -11,6 +11,7 @@ import argparse
 import json
 from collections import Counter
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +127,35 @@ class CoworkSuiteError(ValueError):
     """任务集违反冻结 schema。"""
 
 
+def suite_review(payload: Mapping[str, Any]) -> dict[str, str | None]:
+    """返回可审计的套件复核状态，并拒绝半批准状态。"""
+
+    status = payload.get("review_status")
+    if status not in {"pending_human_review", "approved"}:
+        raise CoworkSuiteError("review_status 必须是 pending_human_review 或 approved")
+    reviewer = payload.get("reviewer")
+    reviewed_at = payload.get("reviewed_at")
+    if status == "pending_human_review":
+        if reviewer is not None or reviewed_at is not None:
+            raise CoworkSuiteError("pending_human_review 不能提前填写 reviewer/reviewed_at")
+        return {"status": status, "reviewer": None, "reviewed_at": None}
+    if not isinstance(reviewer, str) or not reviewer.strip():
+        raise CoworkSuiteError("approved 套件必须填写 reviewer")
+    if not isinstance(reviewed_at, str) or not reviewed_at.strip():
+        raise CoworkSuiteError("approved 套件必须填写 reviewed_at")
+    try:
+        parsed = datetime.fromisoformat(reviewed_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise CoworkSuiteError("reviewed_at 必须是 ISO-8601 时间") from error
+    if parsed.tzinfo is None:
+        raise CoworkSuiteError("reviewed_at 必须包含时区")
+    return {
+        "status": status,
+        "reviewer": reviewer.strip(),
+        "reviewed_at": reviewed_at.strip(),
+    }
+
+
 def load_suite(path: Path = DEFAULT_SUITE) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -209,9 +239,8 @@ def validate_suite(payload: dict[str, Any]) -> None:
     if payload.get("schema_version") != SCHEMA_VERSION:
         raise CoworkSuiteError("schema_version 不匹配")
     if payload.get("origin") != "synthetic":
-        raise CoworkSuiteError("未经 owner 复核的套件 origin 必须是 synthetic")
-    if payload.get("review_status") != "pending_human_review":
-        raise CoworkSuiteError("套件必须保持 pending_human_review")
+        raise CoworkSuiteError("origin 必须保留题目生成来源 synthetic")
+    review = suite_review(payload)
 
     fixtures = payload.get("fixtures")
     if not isinstance(fixtures, dict) or not fixtures:
@@ -239,7 +268,10 @@ def validate_suite(payload: dict[str, Any]) -> None:
             raise CoworkSuiteError(f"{item_id}: category 非法")
         if raw.get("difficulty") not in {1, 2, 3}:
             raise CoworkSuiteError(f"{item_id}: difficulty 非法")
-        if raw.get("origin") != "synthetic" or raw.get("review_status") != "pending_human":
+        expected_item_review = (
+            "approved" if review["status"] == "approved" else "pending_human"
+        )
+        if raw.get("origin") != "synthetic" or raw.get("review_status") != expected_item_review:
             raise CoworkSuiteError(f"{item_id}: 标注 provenance 非法")
 
         fixture_ids = _non_empty_strings(raw.get("fixture_ids"), label=f"{item_id}.fixture_ids")
@@ -296,6 +328,7 @@ def validate_suite(payload: dict[str, Any]) -> None:
 def summarize_suite(payload: dict[str, Any]) -> dict[str, Any]:
     validate_suite(payload)
     items = payload["items"]
+    review = suite_review(payload)
     return {
         "name": payload["name"],
         "version": payload["version"],
@@ -307,7 +340,9 @@ def summarize_suite(payload: dict[str, Any]) -> dict[str, Any]:
         "average_optimal_tool_calls": round(
             sum(item["gold"]["optimal_tool_calls"] for item in items) / len(items), 2
         ),
-        "review_status": payload["review_status"],
+        "review_status": review["status"],
+        "reviewer": review["reviewer"],
+        "reviewed_at": review["reviewed_at"],
     }
 
 

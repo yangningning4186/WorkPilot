@@ -42,7 +42,34 @@ def test_cowork_core_suite_has_frozen_coverage() -> None:
         "hitl_items": 7,
         "average_optimal_tool_calls": 2.06,
         "review_status": "pending_human_review",
+        "reviewer": None,
+        "reviewed_at": None,
     }
+
+
+def test_cowork_suite_approval_requires_complete_auditable_signoff() -> None:
+    suite = deepcopy(load_suite(DEFAULT_SUITE))
+    suite.update(
+        review_status="approved",
+        reviewer="fixture-owner",
+        reviewed_at="2026-08-24T09:30:00+08:00",
+    )
+    for item in suite["items"]:
+        item["review_status"] = "approved"
+
+    validate_suite(suite)
+
+    suite["reviewed_at"] = "2026-08-24 09:30:00"
+    with pytest.raises(CoworkSuiteError, match="包含时区"):
+        validate_suite(suite)
+
+
+def test_pending_cowork_suite_cannot_preclaim_a_reviewer() -> None:
+    suite = deepcopy(load_suite(DEFAULT_SUITE))
+    suite["reviewer"] = "not-yet-reviewed"
+
+    with pytest.raises(CoworkSuiteError, match="不能提前填写"):
+        validate_suite(suite)
 
 
 def test_chinese_office_regressions_pin_specialized_connector_and_persistent_shell() -> None:

@@ -78,6 +78,10 @@ def _cowork_report(
         "manifest": {
             "label": label,
             "suite_sha256": suite_sha,
+            "suite_origin": "synthetic",
+            "suite_review_status": "approved",
+            "suite_reviewer": "fixture-owner",
+            "suite_reviewed_at": "2026-08-24T00:00:00+00:00",
             "item_ids": [item["item_id"] for item in items],
             "model": {
                 "provider": "fixture",
@@ -123,6 +127,14 @@ def test_cowork_snapshot_contains_only_metrics_and_hashes(tmp_path: Path) -> Non
         "numerator": 1.0,
         "denominator": 1.0,
     }
+    assert baseline["git_dirty"] is False
+    assert baseline["review"] == {
+        "origin": "synthetic",
+        "status": "approved",
+        "reviewer": "fixture-owner",
+        "reviewed_at": "2026-08-24T00:00:00+00:00",
+    }
+    assert baseline["selection"] == {"split_counts": {"dev": 1}}
     assert len(baseline["integrity"]["value"]) == 64
 
 
@@ -138,6 +150,19 @@ def test_identical_cowork_report_passes(tmp_path: Path) -> None:
 
     assert outcome.passed
     assert not outcome.violations
+
+
+def test_candidate_from_dirty_worktree_is_not_comparable(tmp_path: Path) -> None:
+    report = _cowork_report([_cowork_item("a")], label="baseline")
+    baseline = load_normalized_report(_snapshot(tmp_path, report))
+    candidate_report = deepcopy(report)
+    candidate_report["label"] = "candidate"
+    candidate_report["manifest"]["label"] = "candidate"
+    candidate_report["manifest"]["reproducibility"]["git_dirty"] = True
+    candidate = load_normalized_report(_write(tmp_path, "dirty-candidate", candidate_report))
+
+    with pytest.raises(RegressionRefused, match="Git clean"):
+        evaluate_regression(baseline, candidate, load_policy(POLICY))
 
 
 def test_case_regression_blocks_even_when_aggregate_is_unchanged(tmp_path: Path) -> None:
@@ -418,6 +443,36 @@ def test_snapshot_refuses_reports_with_errors(tmp_path: Path) -> None:
     normalized = load_normalized_report(_write(tmp_path, "failed", report))
 
     with pytest.raises(RegressionRefused, match="不能晋升 baseline"):
+        build_baseline(normalized, load_policy(POLICY))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda report: report["manifest"]["reproducibility"].update(git_dirty=True),
+            "Git dirty",
+        ),
+        (
+            lambda report: report["manifest"].update(suite_review_status="pending_human_review"),
+            "题库未 approved",
+        ),
+        (
+            lambda report: report["manifest"].update(suite_reviewer=None),
+            "题库未 approved",
+        ),
+    ],
+)
+def test_snapshot_refuses_dirty_or_unapproved_reports(
+    tmp_path: Path,
+    mutation,
+    message: str,
+) -> None:
+    report = _cowork_report([_cowork_item("a")], label="blocked")
+    mutation(report)
+    normalized = load_normalized_report(_write(tmp_path, "blocked", report))
+
+    with pytest.raises(RegressionRefused, match=message):
         build_baseline(normalized, load_policy(POLICY))
 
 
