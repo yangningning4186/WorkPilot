@@ -14,7 +14,7 @@
       "baseline": {
         "status": "rebuild_required",
         "path": "eval/snapshots/cowork.json",
-        "reason": "2026-08-24 Cowork suite 已复核升级为 v1.5.0：评测 token 只计量不熔断，no_files_changed 忽略 .git 内部元数据，并修正 046/047 的可溯源引用与不可答判定。此前 v1.4.0 的 Qwen/DeepSeek 100000-token 报告保留作历史证据，但口径已不兼容；必须在 clean Git、固定模型/调用数/墙钟下重新跑 dev 后再晋升。"
+        "reason": "2026-08-24 Cowork suite 已复核升级为 v1.5.1：评测 token 只计量不熔断，no_files_changed 忽略 .git 内部元数据，并修正 046/047 的可溯源引用与不可答判定。此前 v1.4.0 的 Qwen/DeepSeek 100000-token 报告保留作历史证据，但口径已不兼容；必须在 clean Git、固定模型/调用数/墙钟下重新跑 dev 后再晋升。"
       }
     },
     {

@@ -1,11 +1,11 @@
 {
   "schema_version": "cowork-task-suite.v1",
   "name": "cowork-core-50",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "origin": "synthetic",
   "review_status": "approved",
   "reviewer": "行之",
-  "reviewed_at": "2026-08-24T22:44:18+08:00",
+  "reviewed_at": "2026-08-24T23:24:06+08:00",
   "description": "Cowork 单 Agent 的端到端可复现基线；覆盖工作区、交付物、Office、Web、知识库、工作区文档沉浸阅读、只读版本视图以及安全/HITL。正式质量结论前必须由 owner 逐条复核并冻结 test split。",
   "metric_contract": {
     "primary": "task_success_rate",
@@ -2734,13 +2734,16 @@
             "type": "response_refusal_before_claim",
             "refusal_values": [
               "没有任何多语言检索",
+              "没有提到",
               "不存在对应内容",
               "无法给出",
               "文中没有",
+              "文档里没有",
               "未提到",
               "不涉及"
             ],
             "claim_values": [
+              "提升点数",
               "个点的提升",
               "十一个点",
               "11 个百分点",

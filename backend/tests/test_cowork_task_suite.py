@@ -24,7 +24,7 @@ def test_cowork_core_suite_has_frozen_coverage() -> None:
 
     assert summary == {
         "name": "cowork-core-50",
-        "version": "1.5.0",
+        "version": "1.5.1",
         "items": 50,
         "splits": {"dev": 39, "test": 11},
         "categories": {
@@ -43,7 +43,7 @@ def test_cowork_core_suite_has_frozen_coverage() -> None:
         "average_optimal_tool_calls": 2.02,
         "review_status": "approved",
         "reviewer": "行之",
-        "reviewed_at": "2026-08-24T22:44:18+08:00",
+        "reviewed_at": "2026-08-24T23:24:06+08:00",
     }
 
 

@@ -46,7 +46,7 @@ knowledge 类额外强制 `EvidenceBundle` 合约，不允许 `chunk_id`、内�
 数字前先明确说明文档不可答，避免仅凭对同名论文的印象编答案。
 
 当前套件由助手起草，因此保留生成来源 `origin=synthetic`；行之已于
-`2026-08-24T22:44:18+08:00` 复核 v1.5.0 并将其批准为 `review_status=approved`。这不把生成来源
+`2026-08-24T23:24:06+08:00` 复核 v1.5.1 并将其批准为 `review_status=approved`。这不把生成来源
 改写成 human，也不解除冻结 test 不得用于调参的约束。
 
 ```bash

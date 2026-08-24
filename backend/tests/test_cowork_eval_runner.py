@@ -243,7 +243,7 @@ def test_unanswerable_reading_requires_refusal_before_numeric_claim(tmp_path: Pa
     correct_refusal = evaluate_assertion(
         assertion,
         response=(
-            "文中没有任何多语言检索实验，因此无法给出多少个点的提升。"
+            "这份文档里没有任何关于多语言检索的内容，没有提到对应的提升点数。"
             "文中另有十一个点，但那是领域子集差距。"
         ),
         status="done",
