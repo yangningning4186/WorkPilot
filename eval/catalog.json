@@ -14,7 +14,7 @@
       "baseline": {
         "status": "rebuild_required",
         "path": "eval/snapshots/cowork.json",
-        "reason": "2026-08-24 已在 clean Git、固定 qwen3.6-35b-a3b 与 50000 tokens/20 calls/180000 ms 预算下重跑 39 条 dev；其中 22 条触发 token 预算熔断，晋升门禁拒绝含失败样本的报告，因此不得冻结为 baseline。"
+        "reason": "2026-08-24 已在 clean Git、固定 qwen3.6-35b-a3b 与 100000 tokens/20 calls/180000 ms 预算下重跑 39 条 dev；25 条通过，6 条仍触发 token 预算熔断，另有 8 条评分失败。晋升门禁拒绝含失败样本的报告，因此不得冻结为 baseline。"
       }
     },
     {
