@@ -69,7 +69,10 @@ def render_office_preview(
     target = cache_root / digest
 
     quicklook = Path("/usr/bin/qlmanage")
-    if sys.platform == "darwin" and quicklook.is_file():
+    # Quick Look 的 Excel Preview.html 只是一个依赖脚本切换 Attachment*.html 的外壳；
+    # 安全清洗会按设计移除脚本，结果只剩工作表名称而没有单元格。XLSX 因此直接交给
+    # LibreOffice；没有 LibreOffice 时由 API 的只读 openpyxl 表格预览兜底。
+    if suffix != ".xlsx" and sys.platform == "darwin" and quicklook.is_file():
         cached = target / "preview.html"
         if cached.is_file():
             _touch(cached)

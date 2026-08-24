@@ -49,6 +49,10 @@ _THINK_CLOSE_HOLDBACK = len("</thinking>") - 1
 # ``</think>`` before the answer.  Treat only a bounded leading preamble as protocol:
 # a literal tag much later in a long answer is more likely user-requested content.
 _ORPHAN_THINK_PREAMBLE_LIMIT = 8_192
+# 未知端点先只扣住很短的开头：足够识别常见的孤立 ``</think>``，又不会让正常模型
+# 的首轮流式输出长时间没有任何反馈。一旦识别成功，provider 实例后续轮次会直接按
+# orphan 协议实时分流。
+_ORPHAN_THINK_PROBE_CHARS = 256
 
 
 class _LeadingThinkStreamFilter:
@@ -62,9 +66,16 @@ class _LeadingThinkStreamFilter:
     不能把任意位置的内容都当作模型内部协议删除。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, orphan_mode: bool | None = False) -> None:
         self._buffer = ""
-        self._mode = "prefix"
+        self._mode = (
+            "orphan_reasoning"
+            if orphan_mode is True
+            else "probe"
+            if orphan_mode is None
+            else "prefix"
+        )
+        self.detected_orphan = False
 
     def feed(self, fragment: str) -> tuple[str, str]:
         self._buffer += fragment
@@ -75,6 +86,23 @@ class _LeadingThinkStreamFilter:
                 visible.append(self._buffer)
                 self._buffer = ""
                 break
+            if self._mode == "probe":
+                opening = _THINK_OPEN.match(self._buffer)
+                if opening is not None:
+                    self._buffer = self._buffer[opening.end() :]
+                    self._mode = "reasoning"
+                    continue
+                closing = _THINK_CLOSE.search(self._buffer)
+                if closing is not None and closing.start() <= _ORPHAN_THINK_PREAMBLE_LIMIT:
+                    reasoning.append(self._buffer[: closing.start()])
+                    self._buffer = self._buffer[closing.end() :].lstrip()
+                    self.detected_orphan = True
+                    self._mode = "prefix"
+                    continue
+                if self._could_be_opening_tag() or len(self._buffer) <= _ORPHAN_THINK_PROBE_CHARS:
+                    break
+                self._mode = "text"
+                continue
             if self._mode == "prefix":
                 opening = _THINK_OPEN.match(self._buffer)
                 if opening is not None:
@@ -85,6 +113,24 @@ class _LeadingThinkStreamFilter:
                     break
                 self._mode = "text"
                 continue
+
+            if self._mode == "orphan_reasoning":
+                # 已识别过会丢开标签的端点；后续轮次从第一片起就能实时显示思考，
+                # 同时仍兼容它偶尔恢复完整 <think> 开标签的情况。
+                opening = _THINK_OPEN.match(self._buffer)
+                if opening is not None:
+                    self._buffer = self._buffer[opening.end() :]
+                closing = _THINK_CLOSE.search(self._buffer)
+                if closing is not None:
+                    reasoning.append(self._buffer[: closing.start()])
+                    self._buffer = self._buffer[closing.end() :].lstrip()
+                    self.detected_orphan = True
+                    self._mode = "prefix"
+                    continue
+                if len(self._buffer) > _THINK_CLOSE_HOLDBACK:
+                    reasoning.append(self._buffer[:-_THINK_CLOSE_HOLDBACK])
+                    self._buffer = self._buffer[-_THINK_CLOSE_HOLDBACK:]
+                break
 
             closing = _THINK_CLOSE.search(self._buffer)
             if closing is not None:
@@ -102,8 +148,8 @@ class _LeadingThinkStreamFilter:
     def finish(self) -> tuple[str, str]:
         """排空收流时仍扣住的尾巴；未闭合思考块也绝不回灌正文。"""
 
-        visible = self._buffer if self._mode in {"prefix", "text"} else ""
-        reasoning = self._buffer if self._mode == "reasoning" else ""
+        visible = self._buffer if self._mode in {"prefix", "probe", "text"} else ""
+        reasoning = self._buffer if self._mode in {"reasoning", "orphan_reasoning"} else ""
         self._buffer = ""
         return visible, reasoning
 
@@ -139,6 +185,18 @@ def _strip_leading_think_blocks(content: str) -> str:
     if prefix.count("```") % 2 == 1 or prefix.count("`") % 2 == 1:
         return cleaned
     return cleaned[closing.end() :].lstrip()
+
+
+def _has_orphan_think_preamble(content: str) -> bool:
+    """判断原始 content 是否使用了缺失开标签的前置思考协议。"""
+
+    if _THINK_OPEN.match(content) is not None:
+        return False
+    closing = _THINK_CLOSE.search(content)
+    if closing is None or closing.start() > _ORPHAN_THINK_PREAMBLE_LIMIT:
+        return False
+    prefix = content[: closing.start()]
+    return prefix.count("```") % 2 == 0 and prefix.count("`") % 2 == 0
 
 
 def _parse_dsml_tool_calls(
@@ -309,6 +367,10 @@ class OpenAICompatibleProvider:
         self.chat_model = chat_model
         self.embedding_model = embedding_model
         self._enable_thinking = enable_thinking
+        # None = 尚未探测；部分兼容端点会省略 <think> 却保留 </think>。识别一次后，
+        # 同一 run 的后续工具轮就能从首 token 开始走 reasoning_delta。
+        self._orphan_think_protocol: bool | None = None
+        self._clean_think_probe_responses = 0
         self._prompt_cache_key_supported = prompt_cache_key_supported
         self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = client or httpx.AsyncClient(
@@ -552,6 +614,7 @@ class OpenAICompatibleProvider:
             request_payload["chat_template_kwargs"] = {"enable_thinking": self._enable_thinking}
 
         content_parts: list[str] = []
+        raw_content_parts: list[str] = []
         sent_chars = 0
         # 累积中的 tool_call，按 SSE 的 index 归位。
         partial: dict[int, dict[str, str]] = {}
@@ -561,7 +624,7 @@ class OpenAICompatibleProvider:
         generated_chars = 0
         # DSML wrapper 可能横跨两片；扣住这么多字符就足以在拼完之前认出它的开头。
         holdback = len(_DSML_TOOL_START) - 1
-        think_filter = _LeadingThinkStreamFilter()
+        think_filter = _LeadingThinkStreamFilter(orphan_mode=self._orphan_think_protocol)
 
         with _dispatch_guard():
             stream = self._client.stream(
@@ -612,6 +675,7 @@ class OpenAICompatibleProvider:
                 chunk_content = delta.get("content")
                 if isinstance(chunk_content, str) and chunk_content:
                     generated_chars += len(chunk_content)
+                    raw_content_parts.append(chunk_content)
                     visible, tagged_reasoning = think_filter.feed(chunk_content)
                     if tagged_reasoning:
                         yield CompletionChunk(reasoning_delta=tagged_reasoning)
@@ -649,7 +713,17 @@ class OpenAICompatibleProvider:
             yield CompletionChunk(reasoning_delta=reasoning_tail)
         if visible_tail:
             content_parts.append(visible_tail)
-        text = _strip_leading_think_blocks("".join(content_parts))
+        raw_content = "".join(raw_content_parts)
+        if think_filter.detected_orphan or _has_orphan_think_preamble(raw_content):
+            self._orphan_think_protocol = True
+            self._clean_think_probe_responses = 0
+        elif self._orphan_think_protocol is None:
+            # 标题请求与主任务共用 provider：不能让一条正常的短标题响应抢先把探测
+            # 关掉。连续两条都干净后才结束短前缀探测；orphan 命中仍可从 False 回到 True。
+            self._clean_think_probe_responses += 1
+            if self._clean_think_probe_responses >= 2:
+                self._orphan_think_protocol = False
+        text = _strip_leading_think_blocks(raw_content)
         tool_calls: list[ToolCall] = []
         seen_call_ids: set[str] = set()
         for index in sorted(partial):

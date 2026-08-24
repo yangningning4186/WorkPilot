@@ -2,12 +2,17 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 
 import { AdminSessionControl, useAdminSession } from "@/components/admin-session";
 import { AnswerMarkdown } from "@/components/answer-markdown";
 import { ArtifactRail } from "@/components/artifact-rail";
 import { ReaderPane } from "@/components/reader-pane";
 import { RunActivityPanel } from "@/components/run-activity-panel";
+import {
+  HistoricalRunStageHistory,
+  RunStageHistory,
+} from "@/components/run-stage-history";
 import { WorkdeskIcon, WorkdeskNavigation } from "@/components/workdesk-shell";
 import {
   ApiError,
@@ -59,7 +64,6 @@ import {
   isTauriRuntime,
   pickCoworkDirectory,
   pickCoworkReadingFile,
-  pickCoworkWorkingFiles,
 } from "@/lib/desktop";
 import { useCoworkAutoScroll } from "@/lib/use-cowork-auto-scroll";
 import { useCoworkRun } from "@/lib/use-cowork-run";
@@ -117,6 +121,21 @@ const READING_PROMPTS = [
   { label: "找一段", prompt: "帮我找到论文里讨论实验设置的那一段，定位过去并解释它。" },
 ];
 
+const INSPECTOR_WIDTH_STORAGE_KEY = "workpilot:cowork-inspector-width";
+const DEFAULT_INSPECTOR_WIDTH = 400;
+const MIN_INSPECTOR_WIDTH = 300;
+const MAX_INSPECTOR_WIDTH = 720;
+
+function clampInspectorWidth(width: number): number {
+  if (typeof window === "undefined") return Math.max(MIN_INSPECTOR_WIDTH, Math.min(MAX_INSPECTOR_WIDTH, width));
+  const sidebarWidth = window.innerWidth <= 1080 ? 238 : 292;
+  // 给主对话区至少留出 420px；再窄时右栏会切换成抽屉，不参与三栏计算。
+  const viewportMaximum = window.innerWidth <= 960
+    ? MAX_INSPECTOR_WIDTH
+    : Math.max(MIN_INSPECTOR_WIDTH, window.innerWidth - sidebarWidth - 420);
+  return Math.max(MIN_INSPECTOR_WIDTH, Math.min(MAX_INSPECTOR_WIDTH, viewportMaximum, width));
+}
+
 function readableError(reason: unknown): string {
   if (reason instanceof ApiError) {
     if (reason.status === 401) return "需要 owner 身份。桌面版会在启动时自动建立。";
@@ -141,6 +160,16 @@ function parentDirectory(path: string): string {
   // Windows 卷根需要保留尾部反斜杠；POSIX /foo 的父目录则是 /。
   if (slash === 2 && path[1] === ":") return path.slice(0, 3);
   return slash === 0 ? "/" : path.slice(0, slash);
+}
+
+function pathIsWithinDirectory(path: string, directory: string): boolean {
+  const normalize = (value: string) => {
+    const normalized = value.replaceAll("\\", "/").replace(/\/+$/, "");
+    return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
+  };
+  const target = normalize(path);
+  const root = normalize(directory);
+  return target === root || target.startsWith(`${root}/`);
 }
 
 function formatTokenCount(value: number): string {
@@ -235,9 +264,13 @@ export default function CoworkPage() {
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [goal, setGoal] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
-  const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
+  // openworker 的工作空间是会话级选择，不是每条消息附带的一组原文件。空白页还没有
+  // conversation_id，所以先保留为 draft；首轮发送严格按「建会话 → 挂工作区 → 建 run」
+  // 提交。会话开始后从 roots 读取，工作空间不再随消息变化。
+  const [workspaceDraftPath, setWorkspaceDraftPath] = useState<string | null>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
+  const runSettingsMenu = useRef<HTMLDetailsElement>(null);
   const sessionLoadGeneration = useRef(0);
   const [activePrompt, setActivePrompt] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
@@ -273,6 +306,14 @@ export default function CoworkPage() {
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [contextUsage, setContextUsage] = useState<ConversationContextUsage | null>(null);
   const [artifactRailOpen, setArtifactRailOpen] = useState(true);
+  const [inspectorWidth, setInspectorWidth] = useState(DEFAULT_INSPECTOR_WIDTH);
+  const [resizingInspector, setResizingInspector] = useState(false);
+  const inspectorDrag = useRef<{
+    currentWidth: number;
+    pointerId: number;
+    startWidth: number;
+    startX: number;
+  } | null>(null);
   const run = useCoworkRun(runId);
   // 阅读器当前打开的那份文档：模型跳过去的那份优先于输入框里填的那个路径。算在这里
   // 而不是等到渲染段，是因为发送逻辑也要用它（要带上视口），而 ref 读写在渲染期会被
@@ -282,6 +323,24 @@ export default function CoworkPage() {
   useEffect(() => {
     conversationIdRef.current = conversationId;
   }, [conversationId]);
+
+  useEffect(() => {
+    const savedWidth = Number.parseFloat(window.localStorage.getItem(INSPECTOR_WIDTH_STORAGE_KEY) ?? "");
+    const restoreSavedWidth = window.requestAnimationFrame(() => {
+      if (Number.isFinite(savedWidth)) setInspectorWidth(clampInspectorWidth(savedWidth));
+    });
+    const keepWidthInBounds = () => setInspectorWidth((current) => clampInspectorWidth(current));
+    window.addEventListener("resize", keepWidthInBounds);
+    return () => {
+      window.cancelAnimationFrame(restoreSavedWidth);
+      window.removeEventListener("resize", keepWidthInBounds);
+    };
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("workdesk-pane-resizing", resizingInspector);
+    return () => document.documentElement.classList.remove("workdesk-pane-resizing");
+  }, [resizingInspector]);
 
   useEffect(() => {
     if (openConversationMenuId === null) return;
@@ -592,7 +651,7 @@ export default function CoworkPage() {
     setContextUsage(null);
     setActivePrompt(null);
     setAttachments([]);
-    setWorkspaceFiles([]);
+    setWorkspaceDraftPath(null);
     // 新任务必须从产品默认模式开始。否则刚读过论文后点“新建任务”，一句 hello 也会
     // 携带旧 PDF 和阅读引用约束，表面看像模型或 citation 故障。
     setWorkMode("office");
@@ -633,7 +692,7 @@ export default function CoworkPage() {
     setKnowledgeBaseLoadedFor(null);
     setActivePrompt(null);
     setAttachments([]);
-    setWorkspaceFiles([]);
+    setWorkspaceDraftPath(null);
     setReadingPickerPath(null);
     setArtifactRailOpen(true);
     setKnowledgeBaseDraft(null);
@@ -782,26 +841,30 @@ export default function CoworkPage() {
       setKnowledgeBaseDraft(null);
       setKnowledgeBaseDraftDirty(false);
       setKnowledgeBaseLoadedFor(runConversationId);
+      if (workspaceDraftPath !== null) {
+        await addCoworkRoot(runConversationId, {
+          path: workspaceDraftPath,
+          access_mode: "read_write",
+          label: pathName(workspaceDraftPath),
+        });
+      }
       if (
         workMode === "reading"
         && readingPickerPath !== null
         && readingPickerPath === readingPath.trim()
       ) {
         const path = parentDirectory(readingPickerPath);
-        await addCoworkRoot(runConversationId, {
-          path,
-          access_mode: "read_only",
-          label: pathName(path),
-        });
+        const alreadyAuthorized = (workspaceDraftPath !== null
+          && pathIsWithinDirectory(readingPickerPath, workspaceDraftPath))
+          || roots.some((root) => pathIsWithinDirectory(readingPickerPath, root.canonical_path));
+        if (!alreadyAuthorized) {
+          await addCoworkRoot(runConversationId, {
+            path,
+            access_mode: "read_only",
+            label: pathName(path),
+          });
+        }
       }
-      const workingDirectories = [...new Set(workspaceFiles.map(parentDirectory))];
-      await Promise.all(
-        workingDirectories.map((path) => addCoworkRoot(runConversationId, {
-          path,
-          access_mode: "read_write",
-          label: pathName(path),
-        })),
-      );
       const uploaded = await Promise.all(
         attachments.map((file) => uploadCoworkAttachment(runConversationId, file)),
       );
@@ -809,7 +872,6 @@ export default function CoworkPage() {
         conversation_id: runConversationId,
         goal: prompt,
         attachment_ids: uploaded.map((item) => item.id),
-        workspace_files: workspaceFiles,
         plan_mode: planMode,
         work_mode: workMode,
         reading_path: workMode === "reading" && readingPath.trim() !== "" ? readingPath.trim() : null,
@@ -834,7 +896,7 @@ export default function CoworkPage() {
       }
       setGoal("");
       setAttachments([]);
-      setWorkspaceFiles([]);
+      setWorkspaceDraftPath(null);
       await loadSession(runConversationId);
     } catch (reason) {
       // 会话已经创建但后续挂载失败时也要把它留在界面上，不能在服务端留下一个用户看不见
@@ -868,8 +930,9 @@ export default function CoworkPage() {
     readerPath,
     readingPath,
     readingPickerPath,
+    roots,
     workMode,
-    workspaceFiles,
+    workspaceDraftPath,
   ]);
 
   const addAttachments = useCallback((files: FileList | File[]) => {
@@ -895,19 +958,16 @@ export default function CoworkPage() {
     });
   }, []);
 
-  const selectWorkingFiles = useCallback(async () => {
+  const selectWorkspace = useCallback(async () => {
     if (!isTauriRuntime()) {
-      setNotice("直接处理本机原文件只在 Tauri 桌面版可用；网页模式请上传只读资料副本。");
+      setNotice("工作空间选择只在 WorkPilot 桌面版可用；网页模式仍可使用默认工作区。");
       return;
     }
     try {
-      const selected = await pickCoworkWorkingFiles();
-      if (selected.length === 0) return;
-      setWorkspaceFiles((current) => {
-        const merged = [...new Set([...current, ...selected])].slice(0, 8);
-        if (current.length + selected.length > 8) setNotice("每条任务最多选择 8 个本机工作文件。");
-        return merged;
-      });
+      const selected = await pickCoworkDirectory();
+      if (selected === null) return;
+      setWorkspaceDraftPath(selected);
+      setNotice(null);
     } catch (reason) {
       setNotice(readableError(reason));
     }
@@ -1020,6 +1080,12 @@ export default function CoworkPage() {
   }, [respondToInteraction]);
 
   const submitComposer = steering ? sendSteering : execute;
+  const submitFromComposer = () => {
+    // 运行设置是编辑任务前的浮层。任务一旦发出就收起，避免它覆盖正在生成的
+    // 正文和阶段记录；下一轮仍可从 footer 主动重新打开。
+    if (runSettingsMenu.current !== null) runSettingsMenu.current.open = false;
+    void submitComposer();
+  };
   const requestLocator = useCallback((locator: number) => {
     setLocatorRequest((current) => ({ locator, nonce: (current?.nonce ?? 0) + 1 }));
     setReaderOpen(true);
@@ -1227,7 +1293,14 @@ export default function CoworkPage() {
   const planNotes = typeof interactionPayload.notes === "string" ? interactionPayload.notes : "";
   const runAnswer = useSmoothStreamText(run.answer, steering);
   const hasConversation = messages.length > 0 || runId !== null;
-  const hasComposerMaterials = workspaceFiles.length > 0 || attachments.length > 0;
+  const hasComposerMaterials = attachments.length > 0;
+  const activeWorkspace = roots[0] ?? null;
+  const workspacePath = workspaceDraftPath ?? activeWorkspace?.canonical_path ?? null;
+  const workspaceLabel = workspacePath === null
+    ? "WorkPilot 默认文件夹"
+    : workspaceDraftPath === null && activeWorkspace?.label === "WorkPilot 默认文件夹"
+      ? activeWorkspace.label
+      : pathName(workspacePath);
   const { containerRef: chatScrollRef, handleScroll: handleChatScroll } = useCoworkAutoScroll({
     scopeKey: conversationId,
     hasConversation,
@@ -1247,7 +1320,7 @@ export default function CoworkPage() {
     const maximum = Number.parseFloat(styles.maxHeight) || (hasConversation ? 196 : 240);
     const nextHeight = Math.max(minimum, Math.min(input.scrollHeight, maximum));
     input.style.height = `${nextHeight}px`;
-  }, [attachments.length, goal, hasConversation, workspaceFiles.length]);
+  }, [attachments.length, goal, hasConversation]);
   // 模型刚打开过的那份优先于输入框里填的：`reader_goto` 反映的是它此刻正在给你看什么。
   /**
    * 用户在阅读器里划了一段并点了"问这一段"。
@@ -1263,7 +1336,56 @@ export default function CoworkPage() {
     });
   }, []);
 
+  const saveInspectorWidth = useCallback((requestedWidth: number) => {
+    const nextWidth = clampInspectorWidth(requestedWidth);
+    setInspectorWidth(nextWidth);
+    window.localStorage.setItem(INSPECTOR_WIDTH_STORAGE_KEY, String(Math.round(nextWidth)));
+  }, []);
+
+  const startInspectorResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    inspectorDrag.current = {
+      currentWidth: inspectorWidth,
+      pointerId: event.pointerId,
+      startWidth: inspectorWidth,
+      startX: event.clientX,
+    };
+    setResizingInspector(true);
+  }, [inspectorWidth]);
+
+  const moveInspectorResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = inspectorDrag.current;
+    if (drag === null || drag.pointerId !== event.pointerId) return;
+    const nextWidth = clampInspectorWidth(drag.startWidth + drag.startX - event.clientX);
+    drag.currentWidth = nextWidth;
+    setInspectorWidth(nextWidth);
+  }, []);
+
+  const finishInspectorResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = inspectorDrag.current;
+    if (drag === null || drag.pointerId !== event.pointerId) return;
+    inspectorDrag.current = null;
+    setResizingInspector(false);
+    saveInspectorWidth(drag.currentWidth);
+  }, [saveInspectorWidth]);
+
+  const resizeInspectorWithKeyboard = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    let requestedWidth: number | null = null;
+    if (event.key === "ArrowLeft") requestedWidth = inspectorWidth + (event.shiftKey ? 80 : 24);
+    if (event.key === "ArrowRight") requestedWidth = inspectorWidth - (event.shiftKey ? 80 : 24);
+    if (event.key === "Home") requestedWidth = MIN_INSPECTOR_WIDTH;
+    if (event.key === "End") requestedWidth = MAX_INSPECTOR_WIDTH;
+    if (requestedWidth === null) return;
+    event.preventDefault();
+    saveInspectorWidth(requestedWidth);
+  }, [inspectorWidth, saveInspectorWidth]);
+
   const readerVisible = readerOpen && hasConversation && workMode === "reading" && readerPath !== "";
+  const artifactRailVisible = workMode === "office" && artifactRailOpen && artifacts.length > 0;
+  const inspectorVisible = readerVisible || artifactRailVisible;
+  const shellStyle = { "--workdesk-inspector-width": `${inspectorWidth}px` } as CSSProperties;
   const visibleMessages =
     runId === null ? messages : messages.filter((message) => message.run_id !== runId);
   const currentPromptMessage = messages.find(
@@ -1272,7 +1394,7 @@ export default function CoworkPage() {
   const currentPrompt = activePrompt ?? currentPromptMessage?.content ?? null;
 
   return (
-    <main className="cowork-frame workdesk-shell">
+    <main className="cowork-frame workdesk-shell" style={shellStyle}>
       <aside className="workdesk-sidebar">
         <div className="workdesk-sidebar-head">
           <Link className="workdesk-brand" href="/cowork">
@@ -1373,9 +1495,29 @@ export default function CoworkPage() {
       </aside>
 
       <section className="workdesk-main">
+        {inspectorVisible && (
+          <div
+            aria-label="调整右侧预览宽度"
+            aria-orientation="vertical"
+            aria-valuemax={MAX_INSPECTOR_WIDTH}
+            aria-valuemin={MIN_INSPECTOR_WIDTH}
+            aria-valuenow={Math.round(inspectorWidth)}
+            className={`workdesk-pane-resizer${resizingInspector ? " is-dragging" : ""}`}
+            onDoubleClick={() => saveInspectorWidth(DEFAULT_INSPECTOR_WIDTH)}
+            onKeyDown={resizeInspectorWithKeyboard}
+            onLostPointerCapture={finishInspectorResize}
+            onPointerCancel={finishInspectorResize}
+            onPointerDown={startInspectorResize}
+            onPointerMove={moveInspectorResize}
+            onPointerUp={finishInspectorResize}
+            role="separator"
+            tabIndex={0}
+            title="拖动调整预览宽度，双击恢复默认"
+          />
+        )}
         <header className="workdesk-topline">
           <div><span className={authState === "authenticated" ? "online" : ""} />{authState === "authenticated" ? "本地 Agent 已连接" : "正在连接本地 Agent"}</div>
-          <span className="workdesk-default-scope"><WorkdeskIcon name="shield" />默认权限</span>
+          <span className="workdesk-default-scope" title={workspacePath ?? "~/Documents/WorkPilot"}><WorkdeskIcon name="folder" /><span>{workspaceLabel}</span></span>
           <p>{activeConversation?.title ?? "新任务"}</p>
           {workMode === "reading" && hasConversation && !readerVisible && readerPath !== "" && (
             <button className="workdesk-reader-reopen" onClick={() => setReaderOpen(true)} type="button">
@@ -1398,9 +1540,9 @@ export default function CoworkPage() {
         ) : (
           <div
             className={`workdesk-stage${hasConversation ? " is-chat" : ""}`}
-            data-chat-scroll-root="true"
-            onScroll={handleChatScroll}
-            ref={chatScrollRef}
+            data-chat-scroll-root={hasConversation ? undefined : "true"}
+            onScroll={hasConversation ? undefined : handleChatScroll}
+            ref={hasConversation ? undefined : chatScrollRef}
           >
             {!hasConversation ? (
               <>
@@ -1435,7 +1577,13 @@ export default function CoworkPage() {
                 </div>
               </>
             ) : (
-              <section aria-label="Cowork 对话" className="workdesk-chat-thread">
+              <section
+                aria-label="Cowork 对话"
+                className="workdesk-chat-thread"
+                data-chat-scroll-root="true"
+                onScroll={handleChatScroll}
+                ref={chatScrollRef}
+              >
                 {conversationArchived && (
                   <div className="workdesk-archived-banner">
                     <WorkdeskIcon name="archive" />
@@ -1448,7 +1596,12 @@ export default function CoworkPage() {
                     {message.role === "assistant" && <span className="workdesk-agent-avatar"><WorkdeskIcon name="spark" /></span>}
                     <div className="workdesk-message-body">
                       {message.role === "assistant" && <small>WorkPilot</small>}
-                      {message.role === "assistant" ? <AnswerMarkdown onSelectLocator={workMode === "reading" ? requestLocator : undefined} text={message.content} /> : <p>{message.content}</p>}
+                      {message.role === "assistant" ? (
+                        <>
+                          {message.run_id !== null && <HistoricalRunStageHistory runId={message.run_id} />}
+                          <AnswerMarkdown onSelectLocator={workMode === "reading" ? requestLocator : undefined} text={message.content} />
+                        </>
+                      ) : <p>{message.content}</p>}
                       {message.attachments.length > 0 && <div className="workdesk-message-attachments">{message.attachments.map((item) => <span key={item.id}><WorkdeskIcon name="file" /><b>{item.filename}</b><small>{item.kind === "image" ? "图片" : item.kind === "pdf" ? "PDF" : "文本"}</small></span>)}</div>}
                     </div>
                   </article>
@@ -1482,6 +1635,8 @@ export default function CoworkPage() {
                             )}
                           </div>
                         </header>
+
+                        <RunStageHistory stages={run.modelStages} />
 
                         {pendingMemoryWrites.length > 0 && (
                           <section className="workdesk-memory-notices" aria-live="polite">
@@ -1538,88 +1693,11 @@ export default function CoworkPage() {
                           </div>
                         ))}
 
-                        {run.interrupt !== null && run.interrupt.kind !== "write_confirm" && (
-                          <section className="workdesk-inbox-card" aria-live="polite">
-                            <div className="workdesk-inbox-eyebrow"><WorkdeskIcon name="shield" /><span>需要你的确认</span></div>
-                            {run.interrupt.kind === "ask_user" ? (
-                              <>
-                                <h3>{interactionQuestion}</h3>
-                                {interactionChoices.length > 0 && (
-                                  <div className="workdesk-inbox-choices">
-                                    {interactionChoices.map((choice) => (
-                                      <button disabled={responding} key={choice} onClick={() => setInteractionAnswer(choice)} type="button">{choice}</button>
-                                    ))}
-                                  </div>
-                                )}
-                                <textarea aria-label="回复 Cowork" disabled={responding} maxLength={4000} onChange={(event) => setInteractionAnswer(event.target.value)} placeholder="直接在这里回复" rows={3} value={interactionAnswer} />
-                                <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">跳过，由 Cowork 判断</button><button className="primary" disabled={responding || interactionAnswer.trim() === ""} onClick={() => void respondToInteraction({ approved: true, answer: interactionAnswer.trim() })} type="button">回复并继续</button></div>
-                              </>
-                            ) : run.interrupt.kind === "directory_request" ? (
-                              <>
-                                <h3>允许我使用另一个目录？</h3>
-                                <p>{interactionReason}</p>
-                                <small>范围：{interactionPayload.access_mode === "read_write" ? "读取与写入" : "仅读取"}。目录必须由你在系统选择器中明确选取。</small>
-                                <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">不允许</button><button className="primary" disabled={responding || !desktopReady} onClick={() => void approveDirectoryRequest()} type="button">选择目录并允许</button></div>
-                              </>
-                            ) : run.interrupt.kind === "shell_approval" ? (
-                              <>
-                                <h3>允许我运行这条 Shell 命令？</h3>
-                                <p>{interactionReason}</p>
-                                <pre className="workdesk-shell-command"><code>{shellCommand}</code></pre>
-                                <small>工作目录：{shellCwd}</small>
-                                {interactionPayload.has_operators === true && <small className="risk">命令包含 shell 操作符，不能进入 allowlist，本次必须单独批准。</small>}
-                                {typeof interactionPayload.standing_argv_pattern === "string" && (
-                                  <label className="workdesk-remember-toggle">
-                                    <input checked={rememberScope === "command"} disabled={responding} onChange={(event) => setRememberScope(event.target.checked ? "command" : "once")} type="checkbox" />
-                                    <span>以后仅相同完整 argv 与工作目录的 <code>{shellCommand}</code> 不用再问</span>
-                                  </label>
-                                )}
-                                <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">拒绝</button><button className="primary danger" disabled={responding} onClick={() => void respondToInteraction({ approved: true, remember: rememberScope })} type="button">{rememberScope === "command" ? "批准并记住" : "批准并运行一次"}</button></div>
-                              </>
-                            ) : run.interrupt.kind === "plan_approval" ? (
-                              <>
-                                <h3>{planSummary}</h3>
-                                <ol className="workdesk-plan-steps">
-                                  {planSteps.map((step, index) => <li key={`${index}:${step}`}><span>{index + 1}</span><p>{step}</p></li>)}
-                                </ol>
-                                {planNotes !== "" && <p className="workdesk-plan-notes">{planNotes}</p>}
-                                <small>批准后这些步骤会成为任务清单，写入类工具才会解锁。要改的话直接写在下面。</small>
-                                <textarea aria-label="对这个计划的修改意见" disabled={responding} maxLength={4000} onChange={(event) => setInteractionAnswer(event.target.value)} placeholder="想改哪里？留空直接批准" rows={2} value={interactionAnswer} />
-                                <div className="workdesk-inbox-actions"><button disabled={responding || interactionAnswer.trim() === ""} onClick={() => void respondToInteraction({ approved: false, answer: interactionAnswer.trim() })} type="button">按这些意见重做计划</button><button className="primary" disabled={responding} onClick={() => void respondToInteraction({ approved: true, answer: interactionAnswer.trim() || undefined })} type="button">批准并开始执行</button></div>
-                              </>
-                            ) : run.interrupt.kind === "external_approval" ? (
-                              <>
-                                <h3>允许执行这次外部动作？</h3>
-                                <p>{typeof interactionPayload.warning === "string" ? interactionPayload.warning : "该工具会修改外部系统。"}</p>
-                                <pre className="workdesk-shell-command"><code>{JSON.stringify(interactionPayload.arguments ?? {}, null, 2)}</code></pre>
-                                <small>工具：{typeof interactionPayload.tool === "string" ? interactionPayload.tool : "外部工具"}</small>
-                                <div className="workdesk-remember-choices" role="radiogroup" aria-label="记住这次批准的范围">
-                                  <label><input checked={rememberScope === "once"} disabled={responding} name="remember" onChange={() => setRememberScope("once")} type="radio" /><span>只这一次</span></label>
-                                  {typeof interactionPayload.standing_action_target === "string" && (
-                                    <label><input checked={rememberScope === "target"} disabled={responding} name="remember" onChange={() => setRememberScope("target")} type="radio" /><span>相同动作与目标不用再问</span></label>
-                                  )}
-                                </div>
-                                <small>记住的范围只对当前会话有效，之后可以在“默认权限”里撤销。它省掉的是“再问一次”，不会放大这个会话已有的能力。</small>
-                                <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">拒绝</button><button className="primary danger" disabled={responding} onClick={() => void respondToInteraction({ approved: true, remember: rememberScope })} type="button">{rememberScope === "once" ? "批准一次" : "批准并记住"}</button></div>
-                              </>
-                            ) : (
-                              <>
-                                <h3>授予“{CAPABILITY_LABELS[requestedCapability] ?? requestedCapability}”能力？</h3>
-                                <p>{interactionReason}</p>
-                                {typeof interactionPayload.resource_scope === "string" && <small>网络范围：{interactionPayload.resource_scope}</small>}
-                                <small>授权只绑定当前 Cowork 会话，之后可以随时收回。</small>
-                                <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">不允许</button><button className="primary" disabled={responding} onClick={() => void respondToInteraction({ approved: true })} type="button">允许并继续</button></div>
-                              </>
-                            )}
-                          </section>
-                        )}
-
-                        {run.reasoning !== "" && (
-                          // 思考过程只在这一轮活着：下一条 message.reset 就把它清掉，
-                          // 运行结束后也不会留下。它不是回答，所以既不落盘也不参与引用。
+                        {run.reasoning.trim() !== "" && (
+                          // 当前阶段实时展开；阶段结束时 reducer 会把它固化进上方阶段记录。
                           <details className="workdesk-run-reasoning" open>
                             <summary>思考中…</summary>
-                            <p>{run.reasoning}</p>
+                            <p>{run.reasoning.trim()}</p>
                           </details>
                         )}
 
@@ -1650,17 +1728,109 @@ export default function CoworkPage() {
                 ref={attachmentInput}
                 type="file"
               />
-              {workspaceFiles.length > 0 && (
-                <div className="workdesk-attachment-tray workspace" aria-label="待处理的本机工作文件">
-                  {workspaceFiles.map((path, index) => (
-                    <span key={path}>
-                      <WorkdeskIcon name="folder" />
-                      <b title={path}>{pathName(path)}</b>
-                      <small title={parentDirectory(path)}>原文件 · 所在文件夹可读写</small>
-                      <button aria-label={`移除 ${pathName(path)}`} disabled={busy} onClick={() => setWorkspaceFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))} type="button">×</button>
+              {!hasConversation && (
+                <div className="workdesk-session-setup" aria-label="会话工作空间">
+                  <span>工作空间</span>
+                  <button
+                    aria-label="选择工作空间"
+                    disabled={busy || conversationArchived || !desktopReady}
+                    onClick={() => void selectWorkspace()}
+                    title={desktopReady ? workspacePath ?? "未选择时使用 ~/Documents/WorkPilot" : "请在 WorkPilot 桌面版中选择工作空间"}
+                    type="button"
+                  >
+                    <WorkdeskIcon name="folder" />
+                    <span>
+                      <strong>{workspaceLabel}</strong>
+                      <small>{workspacePath ?? "未选择时使用 ~/Documents/WorkPilot"}</small>
                     </span>
-                  ))}
+                    <b>{workspaceDraftPath === null ? "选择" : "更换"}</b>
+                  </button>
+                  {workspaceDraftPath !== null && (
+                    <button
+                      aria-label="恢复默认工作空间"
+                      className="clear"
+                      disabled={busy}
+                      onClick={() => setWorkspaceDraftPath(null)}
+                      title="恢复 WorkPilot 默认文件夹"
+                      type="button"
+                    >×</button>
+                  )}
                 </div>
+              )}
+              {run.interrupt !== null && run.interrupt.kind !== "write_confirm" && (
+                <section className="workdesk-inbox-card workdesk-composer-interaction" aria-live="polite">
+                  <div className="workdesk-inbox-eyebrow"><WorkdeskIcon name="shield" /><span>需要你的确认</span></div>
+                  {run.interrupt.kind === "ask_user" ? (
+                    <>
+                      <h3>{interactionQuestion}</h3>
+                      {interactionChoices.length > 0 && (
+                        <div className="workdesk-inbox-choices">
+                          {interactionChoices.map((choice) => (
+                            <button disabled={responding} key={choice} onClick={() => setInteractionAnswer(choice)} type="button">{choice}</button>
+                          ))}
+                        </div>
+                      )}
+                      <textarea aria-label="回复 Cowork" disabled={responding} maxLength={4000} onChange={(event) => setInteractionAnswer(event.target.value)} placeholder="直接在这里回复" rows={3} value={interactionAnswer} />
+                      <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">跳过，由 Cowork 判断</button><button className="primary" disabled={responding || interactionAnswer.trim() === ""} onClick={() => void respondToInteraction({ approved: true, answer: interactionAnswer.trim() })} type="button">回复并继续</button></div>
+                    </>
+                  ) : run.interrupt.kind === "directory_request" ? (
+                    <>
+                      <h3>允许我使用另一个目录？</h3>
+                      <p>{interactionReason}</p>
+                      <small>范围：{interactionPayload.access_mode === "read_write" ? "读取与写入" : "仅读取"}。目录必须由你在系统选择器中明确选取。</small>
+                      <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">不允许</button><button className="primary" disabled={responding || !desktopReady} onClick={() => void approveDirectoryRequest()} type="button">选择目录并允许</button></div>
+                    </>
+                  ) : run.interrupt.kind === "shell_approval" ? (
+                    <>
+                      <h3>允许我运行这条 Shell 命令？</h3>
+                      <p>{interactionReason}</p>
+                      <pre className="workdesk-shell-command"><code>{shellCommand}</code></pre>
+                      <small>工作目录：{shellCwd}</small>
+                      {interactionPayload.has_operators === true && <small className="risk">命令包含 shell 操作符，不能进入 allowlist，本次必须单独批准。</small>}
+                      {typeof interactionPayload.standing_argv_pattern === "string" && (
+                        <label className="workdesk-remember-toggle">
+                          <input checked={rememberScope === "command"} disabled={responding} onChange={(event) => setRememberScope(event.target.checked ? "command" : "once")} type="checkbox" />
+                          <span>以后仅相同完整 argv 与工作目录的 <code>{shellCommand}</code> 不用再问</span>
+                        </label>
+                      )}
+                      <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">拒绝</button><button className="primary danger" disabled={responding} onClick={() => void respondToInteraction({ approved: true, remember: rememberScope })} type="button">{rememberScope === "command" ? "批准并记住" : "批准并运行一次"}</button></div>
+                    </>
+                  ) : run.interrupt.kind === "plan_approval" ? (
+                    <>
+                      <h3>{planSummary}</h3>
+                      <ol className="workdesk-plan-steps">
+                        {planSteps.map((step, index) => <li key={`${index}:${step}`}><span>{index + 1}</span><p>{step}</p></li>)}
+                      </ol>
+                      {planNotes !== "" && <p className="workdesk-plan-notes">{planNotes}</p>}
+                      <small>批准后这些步骤会成为任务清单，写入类工具才会解锁。要改的话直接写在下面。</small>
+                      <textarea aria-label="对这个计划的修改意见" disabled={responding} maxLength={4000} onChange={(event) => setInteractionAnswer(event.target.value)} placeholder="想改哪里？留空直接批准" rows={2} value={interactionAnswer} />
+                      <div className="workdesk-inbox-actions"><button disabled={responding || interactionAnswer.trim() === ""} onClick={() => void respondToInteraction({ approved: false, answer: interactionAnswer.trim() })} type="button">按这些意见重做计划</button><button className="primary" disabled={responding} onClick={() => void respondToInteraction({ approved: true, answer: interactionAnswer.trim() || undefined })} type="button">批准并开始执行</button></div>
+                    </>
+                  ) : run.interrupt.kind === "external_approval" ? (
+                    <>
+                      <h3>允许执行这次外部动作？</h3>
+                      <p>{typeof interactionPayload.warning === "string" ? interactionPayload.warning : "该工具会修改外部系统。"}</p>
+                      <pre className="workdesk-shell-command"><code>{JSON.stringify(interactionPayload.arguments ?? {}, null, 2)}</code></pre>
+                      <small>工具：{typeof interactionPayload.tool === "string" ? interactionPayload.tool : "外部工具"}</small>
+                      <div className="workdesk-remember-choices" role="radiogroup" aria-label="记住这次批准的范围">
+                        <label><input checked={rememberScope === "once"} disabled={responding} name="remember" onChange={() => setRememberScope("once")} type="radio" /><span>只这一次</span></label>
+                        {typeof interactionPayload.standing_action_target === "string" && (
+                          <label><input checked={rememberScope === "target"} disabled={responding} name="remember" onChange={() => setRememberScope("target")} type="radio" /><span>相同动作与目标不用再问</span></label>
+                        )}
+                      </div>
+                      <small>记住的范围只对当前会话有效，之后可以在“默认权限”里撤销。它省掉的是“再问一次”，不会放大这个会话已有的能力。</small>
+                      <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">拒绝</button><button className="primary danger" disabled={responding} onClick={() => void respondToInteraction({ approved: true, remember: rememberScope })} type="button">{rememberScope === "once" ? "批准一次" : "批准并记住"}</button></div>
+                    </>
+                  ) : (
+                    <>
+                      <h3>授予“{CAPABILITY_LABELS[requestedCapability] ?? requestedCapability}”能力？</h3>
+                      <p>{interactionReason}</p>
+                      {typeof interactionPayload.resource_scope === "string" && <small>网络范围：{interactionPayload.resource_scope}</small>}
+                      <small>授权只绑定当前 Cowork 会话，之后可以随时收回。</small>
+                      <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">不允许</button><button className="primary" disabled={responding} onClick={() => void respondToInteraction({ approved: true })} type="button">允许并继续</button></div>
+                    </>
+                  )}
+                </section>
               )}
               {attachments.length > 0 && (
                 <div className="workdesk-attachment-tray" aria-label="待发送附件">
@@ -1676,12 +1846,13 @@ export default function CoworkPage() {
               )}
               <textarea
                 aria-label={steering ? "向运行中的 Cowork 追加指令" : "你想让 Cowork 完成什么？"}
+                className="workdesk-goal-input"
                 disabled={run.phase === "waiting_human" || responding || conversationArchived}
                 id="cowork-goal"
                 maxLength={4000}
                 onChange={(event) => setGoal(event.target.value)}
                 onKeyDown={(event) => {
-                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void submitComposer();
+                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") submitFromComposer();
                 }}
                 onDrop={(event) => {
                   if (steering || event.dataTransfer.files.length === 0) return;
@@ -1691,22 +1862,21 @@ export default function CoworkPage() {
                 onDragOver={(event) => {
                   if (!steering && event.dataTransfer.types.includes("Files")) event.preventDefault();
                 }}
-                placeholder={conversationArchived ? "此会话已归档，恢复后可以继续" : run.phase === "waiting_human" ? "请先回复上方的问题" : steering ? "补充要求或调整方向…" : hasConversation ? "继续这段对话，或交代一个新任务…" : "今天帮你做些什么？可以直接提问、上传资料，或交代一项任务"}
+                placeholder={conversationArchived ? "此会话已归档，恢复后可以继续" : run.phase === "waiting_human" ? "请先处理输入框中的确认请求" : steering ? "补充要求或调整方向…" : hasConversation ? "继续这段对话，或交代一个新任务…" : "今天帮你做些什么？可以直接提问、上传资料，或交代一项任务"}
                 ref={composerInput}
                 rows={hasConversation ? 2 : 4}
                 value={goal}
               />
               <div className="workdesk-composer-actions">
                 <button aria-label="添加只读资料副本" disabled={busy || running || conversationArchived} onClick={() => attachmentInput.current?.click()} title={conversationArchived ? "恢复会话后可添加资料" : running ? "运行期间暂不支持追加资料" : "上传图片、PDF 或文本的私有只读副本"} type="button"><WorkdeskIcon name="add" /></button>
-                {desktopReady && <button aria-label="选择本机工作文件" disabled={busy || running || conversationArchived} onClick={() => void selectWorkingFiles()} title="直接处理原文件；执行时会明确授权其所在文件夹在本会话内可读写" type="button"><WorkdeskIcon name="folder" /></button>}
-                <span className="workdesk-composer-status">{conversationArchived ? "归档会话 · 只读" : run.phase === "waiting_human" ? "请先处理对话中的请求" : steering ? "发送后将在安全边界转向" : !providerReady ? providers.length === 0 ? "请先配置模型服务" : "请选择模型服务" : workspaceFiles.length > 0 ? `已选择 ${workspaceFiles.length} 个原文件 · 所在文件夹将读写授权` : attachments.length > 0 ? `已添加 ${attachments.length} 份只读资料` : planMode ? "计划模式 · 先出方案等你批准" : "Agent 已就绪"}</span>
+                <span className="workdesk-composer-status">{conversationArchived ? "归档会话 · 只读" : run.phase === "waiting_human" ? "请先处理输入框中的请求" : steering ? "发送后将在安全边界转向" : !providerReady ? providers.length === 0 ? "请先配置模型服务" : "请选择模型服务" : workspaceDraftPath !== null ? `将在 ${workspaceLabel} 中工作 · 可读写` : attachments.length > 0 ? `已添加 ${attachments.length} 份只读资料` : planMode ? "计划模式 · 先出方案等你批准" : "Agent 已就绪"}</span>
                 <div className="workdesk-composer-primary-tools">
                   {conversationId !== null && <ContextUsageMeter draft={goal} usage={contextUsage} />}
-                  <button aria-label={steering ? "追加运行指令" : "开始执行任务"} className="workdesk-send" disabled={busy || conversationArchived || run.phase === "waiting_human" || (!steering && (knowledgeBaseLoading || !providerReady)) || goal.trim() === ""} onClick={() => void submitComposer()} type="button"><WorkdeskIcon name="send" /></button>
+                  <button aria-label={steering ? "追加运行指令" : "开始执行任务"} className="workdesk-send" disabled={busy || conversationArchived || run.phase === "waiting_human" || (!steering && (knowledgeBaseLoading || !providerReady)) || goal.trim() === ""} onClick={submitFromComposer} type="button"><WorkdeskIcon name="send" /></button>
                 </div>
               </div>
               <footer>
-                <details className="workdesk-run-settings" name="composer-menu">
+                <details className="workdesk-run-settings" name="composer-menu" ref={runSettingsMenu}>
                   <summary>
                     <WorkdeskIcon name="spark" />
                     <span>运行设置</span>
@@ -1880,7 +2050,7 @@ export default function CoworkPage() {
         )}
       </section>
 
-      {workMode === "office" && artifactRailOpen && artifacts.length > 0 && (
+      {artifactRailVisible && (
         <ArtifactRail artifacts={artifacts} onClose={() => setArtifactRailOpen(false)} />
       )}
 

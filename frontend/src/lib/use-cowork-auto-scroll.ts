@@ -18,7 +18,13 @@ export function useCoworkAutoScroll({
   contentKey,
   eventCount,
 }: CoworkAutoScrollOptions) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  // Chat mode scrolls the semantic message <section>; the empty state still uses
+  // the surrounding <div>. HTMLElement keeps the hook usable for both without
+  // weakening the ref to an arbitrary node.
+  const containerRef = useRef<HTMLElement>(null);
+  const setContainerRef = useCallback((node: HTMLElement | null) => {
+    containerRef.current = node;
+  }, []);
   const autoFollow = useRef(true);
 
   const pin = useCallback(() => {
@@ -123,5 +129,5 @@ export function useCoworkAutoScroll({
     };
   }, [hasConversation]);
 
-  return { containerRef, handleScroll };
+  return { containerRef: setContainerRef, handleScroll };
 }

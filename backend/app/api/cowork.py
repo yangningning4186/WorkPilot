@@ -537,8 +537,14 @@ async def get_artifact_preview(
         raise HTTPException(status_code=415, detail="该交付物格式不支持在线预览")
     document = (
         "<!doctype html><meta charset='utf-8'><style>"
-        "body{font:15px/1.65 system-ui;color:#26332f;padding:32px;max-width:960px;margin:auto}"
-        "table{border-collapse:collapse;width:100%}td,th{border:1px solid #d9dedb;padding:6px 8px}"
+        "body{font:14px/1.55 system-ui;color:#26332f;padding:24px;max-width:960px;margin:auto}"
+        "h1{font-size:21px;margin:0 0 22px}h2{font-size:16px;margin:24px 0 9px}"
+        ".sheet-table{max-width:100%;overflow-x:auto;border:1px solid #d9dedb;border-radius:8px}"
+        "table{border-collapse:collapse;width:100%;min-width:max-content}"
+        "td,th{border:0;border-right:1px solid #e2e6e3;border-bottom:1px solid #e2e6e3;"
+        "padding:7px 10px;text-align:left;white-space:nowrap}"
+        "th{background:#f2f5f3;font-weight:650}tr:last-child td,tr:last-child th{border-bottom:0}"
+        "td:last-child,th:last-child{border-right:0}.empty-sheet{color:#7b8580}"
         "pre{white-space:pre-wrap;word-break:break-word}</style>"
         f"<title>{html.escape(artifact.title)}</title><h1>{html.escape(artifact.title)}</h1>{body}"
     )
@@ -594,17 +600,37 @@ def _xlsx_preview(path: Path) -> str:
     try:
         blocks: list[str] = []
         for sheet in workbook.worksheets[:5]:
-            blocks.append(f"<h2>{html.escape(sheet.title)}</h2><table>")
-            for row in sheet.iter_rows(min_row=1, max_row=100, max_col=20, values_only=True):
-                blocks.append(
-                    "<tr>"
-                    + "".join(
-                        f"<td>{html.escape(str(value if value is not None else ''))}</td>"
-                        for value in row
-                    )
-                    + "</tr>"
+            blocks.append(f"<h2>{html.escape(sheet.title)}</h2>")
+            max_row = max(1, min(int(sheet.max_row or 1), 100))
+            max_col = max(1, min(int(sheet.max_column or 1), 20))
+            rows = [
+                list(row)
+                for row in sheet.iter_rows(
+                    min_row=1,
+                    max_row=max_row,
+                    max_col=max_col,
+                    values_only=False,
                 )
-            blocks.append("</table>")
+            ]
+            rows = [row for row in rows if any(cell.value is not None for cell in row)]
+            if not rows:
+                blocks.append("<p class='empty-sheet'>空工作表</p>")
+                continue
+            last_value_column = max(
+                index
+                for row in rows
+                for index, cell in enumerate(row, start=1)
+                if cell.value is not None
+            )
+            blocks.append("<div class='sheet-table'><table>")
+            for row in rows:
+                cells: list[str] = []
+                for cell in row[:last_value_column]:
+                    value = "" if cell.value is None else str(cell.value)
+                    tag = "th" if bool(getattr(cell.font, "bold", False)) else "td"
+                    cells.append(f"<{tag}>{html.escape(value)}</{tag}>")
+                blocks.append("<tr>" + "".join(cells) + "</tr>")
+            blocks.append("</table></div>")
         return "".join(blocks)
     finally:
         workbook.close()

@@ -63,6 +63,27 @@ test.describe("回答 Markdown 渲染", () => {
     await expect(answerCopy(page)).toHaveText("我是 WorkPilot。");
     await expect(answerCopy(page)).not.toContainText("内部推理");
     await expect(answerCopy(page)).not.toContainText("</think>");
+    await expect(page.locator(".workdesk-stage-history summary").first()).toContainText("2 个阶段");
+    await expect.poll(async () => {
+      const stageBox = await page.locator(".workdesk-stage-history").first().boundingBox();
+      const answerBox = await answerCopy(page).boundingBox();
+      return stageBox !== null && answerBox !== null && stageBox.y < answerBox.y;
+    }).toBe(true);
+    await page.locator(".workdesk-stage-history > summary").click();
+    await expect(page.locator(".workdesk-stage-list")).toContainText("这是内部推理，不应进入正文。");
+    await expect(page.locator(".workdesk-stage-list")).toContainText("正在读取资料。");
+    await expect(page.locator(".workdesk-stage-list")).toContainText("核对读取结果。");
+
+    // 任务结束并刷新后不再依赖 active_run_id；历史 assistant 仍可按 run_id 回放完整阶段。
+    await page.reload();
+    await expect.poll(async () => {
+      const stageBox = await page.locator(".workdesk-historical-stages").boundingBox();
+      const answerBox = await answerCopy(page).boundingBox();
+      return stageBox !== null && answerBox !== null && stageBox.y < answerBox.y;
+    }).toBe(true);
+    await page.locator(".workdesk-historical-stages > button").click();
+    await expect(page.locator(".workdesk-historical-stages .workdesk-stage-list")).toContainText("正在读取资料。");
+    await expect(page.locator(".workdesk-historical-stages .workdesk-stage-list")).toContainText("核对读取结果。");
   });
 
   test("证据里的 HTML 与 javascript: 链接不会变成真元素", async ({ page }) => {

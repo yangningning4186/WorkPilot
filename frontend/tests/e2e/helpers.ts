@@ -136,6 +136,8 @@ export async function mockRuns(
   conversation_id: string;
   status: string;
   kb_slug: string | null;
+  workspace_path: string | null;
+  workspace_files: string[] | null;
 }[]> {
   const response = await request.get(`${MOCK_BASE}/__runs`);
   expect(response.ok()).toBe(true);
@@ -145,6 +147,8 @@ export async function mockRuns(
       conversation_id: string;
       status: string;
       kb_slug: string | null;
+      workspace_path: string | null;
+      workspace_files: string[] | null;
     }[];
   };
   return body.runs;

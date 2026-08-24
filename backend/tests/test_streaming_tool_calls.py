@@ -166,7 +166,7 @@ async def test_openai_stream_extracts_tagged_reasoning_split_across_chunks() -> 
 
 
 async def test_openai_stream_repairs_orphan_reasoning_close_in_terminal_result() -> None:
-    """闭标签跨片且没有开标签时，终态快照仍只能包含最终答案。"""
+    """闭标签跨片且没有开标签时，流式思考与终态正文仍能正确分流。"""
 
     provider = _openai_provider(
         _sse(
@@ -177,15 +177,70 @@ async def test_openai_stream_repairs_orphan_reasoning_close_in_terminal_result()
         )
     )
 
-    _, _, result = await _collect(
+    text, reasoning, result = await _collect(
         provider.stream_with_tools(
             ASK, tools=TOOLS, parallel_tool_calls=True, max_tokens=64, temperature=0.0
         )
     )
 
+    assert reasoning == "用户要求读取文件并提取项目代号。直接回答即可。\n"
+    assert text == "项目代号：Silver Heron"
     assert result is not None
     assert result.text == "项目代号：Silver Heron"
     assert "</think>" not in result.text
+
+
+async def test_openai_stream_keeps_orphan_probe_after_concurrent_clean_title_response() -> None:
+    """一条正常标题响应不能抢先关闭主任务需要的 orphan think 探测。"""
+
+    bodies = iter(
+        [
+            _sse(
+                {"choices": [{"delta": {"content": "Atlas 项目简报"}}]},
+                {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            ),
+            _sse(
+                {"choices": [{"delta": {"content": "先读取项目资料。\n</thi"}}]},
+                {"choices": [{"delta": {"content": "nk>\n开始处理"}}]},
+                {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            ),
+        ]
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            text=next(bodies),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    provider = OpenAICompatibleProvider(
+        base_url="http://model.test/v1",
+        api_key="secret",
+        chat_model="chat",
+        embedding_model="embed",
+        client=httpx.AsyncClient(
+            base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+        ),
+    )
+
+    first_text, first_reasoning, _ = await _collect(
+        provider.stream_with_tools(
+            ASK, tools=TOOLS, parallel_tool_calls=True, max_tokens=64, temperature=0.0
+        )
+    )
+    second_text, second_reasoning, _ = await _collect(
+        provider.stream_with_tools(
+            ASK, tools=TOOLS, parallel_tool_calls=True, max_tokens=64, temperature=0.0
+        )
+    )
+    await provider.aclose()
+
+    assert first_text == "Atlas 项目简报"
+    assert first_reasoning == ""
+    assert second_reasoning == "先读取项目资料。\n"
+    assert second_text == "开始处理"
 
 
 async def test_openai_stream_never_leaks_dsml_wrapper_into_text() -> None:

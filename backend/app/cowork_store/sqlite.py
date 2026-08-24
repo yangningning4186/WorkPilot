@@ -2762,7 +2762,18 @@ class SqliteCoworkStore:
                 "SELECT * FROM artifacts WHERE conversation_id = ? ORDER BY created_at DESC, id DESC",
                 (str(conversation_id),),
             ).fetchall()
-            return [self._artifact_record(row, ArtifactRecord) for row in rows]
+            # Artifact 记录是每次文件变更的审计快照，同一路径在一次任务里反复生成时会有
+            # 多个 id；右栏回答的却是“现在有哪些交付文件”，不能把版本数冒充文件数。
+            # 保留最新一条用于预览/差异，旧记录仍留在库里并可由 run 事件按 id 追溯。
+            latest_rows: list[sqlite3.Row] = []
+            seen_uris: set[str] = set()
+            for row in rows:
+                uri = str(row["uri"])
+                if uri in seen_uris:
+                    continue
+                seen_uris.add(uri)
+                latest_rows.append(row)
+            return [self._artifact_record(row, ArtifactRecord) for row in latest_rows]
 
         return await self._read(operation)
 

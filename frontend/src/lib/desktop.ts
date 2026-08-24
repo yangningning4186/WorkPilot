@@ -62,28 +62,6 @@ export async function pickCoworkDirectory(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
-/**
- * 选取要直接处理的本机原文件。调用方必须把“将授权所在文件夹”展示给用户；这和上传
- * 一份私有只读副本是两种不同权限语义，不能共用一个含糊的附件按钮。
- */
-export async function pickCoworkWorkingFiles(): Promise<string[]> {
-  if (!isTauriRuntime()) return [];
-  const { open } = await import("@tauri-apps/plugin-dialog");
-  const selected = await open({
-    directory: false,
-    filters: [
-      {
-        name: "WorkPilot 工作文件",
-        extensions: ["docx", "xlsx", "pptx", "pdf", "md", "txt", "csv", "tsv", "json", "yaml", "yml"],
-      },
-    ],
-    multiple: true,
-    title: "选择要由 WorkPilot 直接处理的文件",
-  });
-  if (Array.isArray(selected)) return selected.filter((item): item is string => typeof item === "string");
-  return typeof selected === "string" ? [selected] : [];
-}
-
 /** 阅读模式只接受一份可定位的本机文档。 */
 export async function pickCoworkReadingFile(): Promise<string | null> {
   if (!isTauriRuntime()) return null;

@@ -51,6 +51,20 @@ test.describe("Cowork 工作台", () => {
     );
     const artifactRail = page.getByLabel("Artifact 交付物");
     await expect(artifactRail).toBeVisible();
+    const railWidthBeforeResize = await artifactRail.evaluate((element) => element.getBoundingClientRect().width);
+    const resizer = page.getByRole("separator", { name: "调整右侧预览宽度" });
+    await expect(resizer).toBeVisible();
+    const resizerBox = await resizer.boundingBox();
+    expect(resizerBox).not.toBeNull();
+    if (resizerBox !== null) {
+      await page.mouse.move(resizerBox.x + resizerBox.width / 2, resizerBox.y + 180);
+      await page.mouse.down();
+      await page.mouse.move(resizerBox.x - 100, resizerBox.y + 180, { steps: 5 });
+      await page.mouse.up();
+    }
+    await expect.poll(
+      () => artifactRail.evaluate((element) => element.getBoundingClientRect().width),
+    ).toBeGreaterThan(railWidthBeforeResize + 70);
     await expect(artifactRail.getByText("季度汇报.docx", { exact: true }).first()).toBeVisible();
     await expect(artifactRail.getByText("已更新标题与结论段")).toBeVisible();
     await artifactRail.getByRole("tab", { name: /变更/ }).click();
@@ -96,18 +110,44 @@ test.describe("Cowork 工作台", () => {
     await expect(composer.getByText("不会扩大目录、能力或审批边界。", { exact: false })).toBeVisible();
   });
 
-  test("选择本机原文件后输入区保持紧凑且操作栏仍可见", async ({ page }) => {
-    await page.goto("/cowork");
+  test("运行授权固定在底部输入框中处理", async ({ page }) => {
+    await page.goto("/cowork?new=1");
     await loginAsAdmin(page);
+    await selectConfiguredProvider(page);
 
-    await page.evaluate(() => {
+    await page.getByLabel("你想让 Cowork 完成什么？").fill("请求目录授权");
+    await page.getByRole("button", { name: "开始执行任务" }).click();
+
+    const composer = page.locator(".workdesk-composer");
+    const authorization = composer.locator(".workdesk-composer-interaction");
+    await expect(authorization).toBeVisible();
+    await expect(authorization).toContainText("允许我使用另一个目录？");
+    await expect(authorization).toContainText("读取与写入");
+    await expect(page.locator(".workdesk-run-message .workdesk-composer-interaction")).toHaveCount(0);
+    await expect(page.getByLabel("你想让 Cowork 完成什么？")).toBeDisabled();
+    await expect(page.getByPlaceholder("请先处理输入框中的确认请求")).toBeVisible();
+
+    const composerBox = await composer.boundingBox();
+    const authorizationBox = await authorization.boundingBox();
+    expect(composerBox).not.toBeNull();
+    expect(authorizationBox).not.toBeNull();
+    if (composerBox !== null && authorizationBox !== null) {
+      expect(authorizationBox.y).toBeGreaterThanOrEqual(composerBox.y);
+      expect(authorizationBox.y + authorizationBox.height).toBeLessThanOrEqual(
+        composerBox.y + composerBox.height + 1,
+      );
+    }
+  });
+
+  test("首轮选择真正的工作空间，并在创建 run 前绑定为会话主目录", async ({ page, request }) => {
+    await page.addInitScript(() => {
       Object.defineProperty(window, "isTauri", { configurable: true, value: true });
       Object.defineProperty(window, "__TAURI_INTERNALS__", {
         configurable: true,
         value: {
           invoke: async (command: string) => {
             if (command === "plugin:dialog|open") {
-              return ["/Users/rance/workpilot/manual-test-kit/authorized/01_atlas_project_facts.txt"];
+              return "/Users/rance/workpilot/manual-test-kit/authorized";
             }
             if (command === "desktop_context") {
               return { api_base: "", launch_token: "e2e-desktop-token" };
@@ -117,16 +157,24 @@ test.describe("Cowork 工作台", () => {
         },
       });
     });
+    await page.goto("/cowork?new=1");
+    await expect(page.locator(".admin-badge")).toHaveText("desktop owner");
+    await expect(page.getByRole("heading", { name: "WorkPilot，我帮你" })).toBeVisible();
 
-    // 任一局部状态变化都会让 useSyncExternalStore 重新读取桌面运行时快照。
+    await selectConfiguredProvider(page);
+    await page.locator(".workdesk-run-settings > summary").click();
+    await expect(page.getByLabel("模型服务")).toBeHidden();
     const input = page.getByLabel("你想让 Cowork 完成什么？");
-    await input.fill("准备选择原文件");
-    await expect(page.getByRole("button", { name: "选择本机工作文件" })).toBeVisible();
-    await page.getByRole("button", { name: "选择本机工作文件" }).click();
+    await input.fill("在选定工作空间里整理项目资料");
+    await expect(page.getByRole("button", { name: "选择工作空间" })).toBeVisible();
+    await page.getByRole("button", { name: "选择工作空间" }).click();
 
+    const workspaceSetup = page.getByLabel("会话工作空间");
     const composer = page.locator(".workdesk-composer");
-    await expect(composer.getByText("01_atlas_project_facts.txt", { exact: true })).toBeVisible();
-    await expect(composer.getByText("原文件 · 所在文件夹可读写", { exact: true })).toBeVisible();
+    await expect(composer.locator(".workdesk-session-setup")).toHaveCount(1);
+    await expect(workspaceSetup.getByText("authorized", { exact: true })).toBeVisible();
+    await expect(workspaceSetup).toContainText("/Users/rance/workpilot/manual-test-kit/authorized");
+    await expect(page.getByRole("button", { name: "恢复默认工作空间" })).toBeVisible();
     await expect(composer.locator(".workdesk-composer-actions")).toBeVisible();
     await expect(composer.locator(":scope > footer")).toBeVisible();
 
@@ -158,6 +206,24 @@ test.describe("Cowork 工作台", () => {
       expect(inputBox.height).toBeLessThanOrEqual(242);
       expect(composerBox.y + composerBox.height).toBeLessThanOrEqual(900);
     }
+
+    await page.getByRole("button", { name: "开始执行任务" }).click();
+    await expect(page.getByLabel("任务进度").getByText("已完成", { exact: true })).toBeVisible();
+    await expect(page.locator(".workdesk-topline")).toContainText("authorized");
+    await expect(page.getByLabel("会话工作空间")).toHaveCount(0);
+
+    const calls = await mockRequests(request);
+    const createRootAt = calls.findIndex((item) =>
+      item.method === "POST" && /\/cowork\/sessions\/[^/]+\/roots$/.test(item.path)
+    );
+    const createRunAt = calls.findIndex((item) =>
+      item.method === "POST" && item.path === "/api/v1/runs/cowork"
+    );
+    expect(createRootAt).toBeGreaterThanOrEqual(0);
+    expect(createRunAt).toBeGreaterThan(createRootAt);
+    const runs = await mockRuns(request);
+    expect(runs[0]?.workspace_path).toBe("/Users/rance/workpilot/manual-test-kit/authorized");
+    expect(runs[0]?.workspace_files).toBeNull();
   });
 
   test("空白页首轮先创建会话并等待知识库挂载，再创建 run", async ({ page, request }) => {
@@ -247,6 +313,8 @@ test.describe("Cowork 工作台", () => {
     const stop = page.getByRole("button", { name: "停止 Cowork 任务" });
     await expect(stop).toBeVisible();
 
+    // 发送任务会自动收起配置浮层，避免覆盖运行输出；需要调整下一轮配置时再主动打开。
+    await openRunSettings(page);
     await expect(knowledgeBase).toBeEnabled();
     await knowledgeBase.selectOption("agent-research");
     await expect.poll(async () => (

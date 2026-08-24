@@ -579,6 +579,26 @@ async def test_sqlite_store_covers_permissions_artifacts_inbox_and_scheduler(
     )
     assert (await store.resolve_artifact_file(artifact_id=artifact.id))[1] == artifact_path
 
+    artifact_path.write_text("updated", encoding="utf-8")
+    latest_artifact = await store.register_artifact(
+        conversation_id=conversation_id,
+        run_id=run.id,
+        session_root_id=root.id,
+        kind="file",
+        title="报告",
+        uri=str(artifact_path),
+        mime_type="text/markdown",
+        meta={"sha256": "new-version"},
+    )
+    # 会话右栏按真实文件去重，只展示同一路径的最新版本；run 级审计仍保留两次登记。
+    assert [item.id for item in await store.list_artifacts(conversation_id=conversation_id)] == [
+        latest_artifact.id
+    ]
+    assert [item.id for item in await store.list_run_artifacts(run_id=run.id)] == [
+        artifact.id,
+        latest_artifact.id,
+    ]
+
     step_id = uuid4()
     await store.upsert_plan_step(
         step_id=step_id,

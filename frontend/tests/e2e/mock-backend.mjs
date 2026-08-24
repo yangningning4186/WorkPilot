@@ -143,6 +143,12 @@ function cookies(request) {
 }
 
 function currentSession(request) {
+  // 桌面端不用浏览器 cookie；真实 sidecar 在启动令牌通过后直接落到同一个 owner store。
+  // 假后端也必须把该令牌映射到进程内的唯一会话，否则首个 POST 建出的 conversation
+  // 会在紧接着的 PUT 中凭空“消失”。
+  if (request.headers["x-workpilot-launch-token"] === "e2e-desktop-token") {
+    return firstSession();
+  }
   const token = cookies(request).workpilot_session;
   const session = token === undefined ? undefined : sessions.get(token);
   return session === undefined ? null : { token, ...session };
@@ -153,10 +159,11 @@ function firstSession() {
   return first === undefined ? null : { token: first[0], ...first[1] };
 }
 
-/** 与真后端一致：admin 凭据只认 httpOnly cookie，前端 JS 读不到。 */
+/** Web 认 httpOnly cookie；桌面端认每次启动注入的 launch token。 */
 function isAdmin(request) {
   const token = cookies(request).workpilot_admin_session;
-  return token !== undefined && adminTokens.has(token);
+  return (token !== undefined && adminTokens.has(token))
+    || request.headers["x-workpilot-launch-token"] === "e2e-desktop-token";
 }
 
 function createSession() {
@@ -523,6 +530,8 @@ const server = createServer((request, response) => {
         conversation_id: run.conversation_id,
         status: run.status,
         kb_slug: run.kb_slug ?? null,
+        workspace_path: run.workspace_path ?? null,
+        workspace_files: run.workspace_files ?? null,
       })),
     });
     return;
@@ -1277,6 +1286,7 @@ const server = createServer((request, response) => {
       const artifactId = "8c0e4c55-0000-4d00-8000-000000000001";
       const finalAnswer = "已将季度汇报改为管理层语气，并保留原有数据。";
       const waitsForCancel = body.goal.includes("保持运行直到我停止");
+      const waitsForDirectoryApproval = body.goal.includes("请求目录授权");
       const fixtureScenarioName = coworkFixtureScenario(body.goal);
       const conversationTitle = fixtureScenarioName === null
         ? "优化季度汇报管理层表达"
@@ -1285,7 +1295,24 @@ const server = createServer((request, response) => {
         { type: "plan", data: { workflow_type: "cowork", mode: "dynamic_tool_loop", tools: [] } },
         { type: "step.update", data: { step_id: `${runId}-step-0`, step_idx: 0, tool: "list_files", status: "pending", activity: { title: "列出文件", summary: "查看 *.docx", target: "/Users/demo/Documents/Quarterly", target_kind: "path" } } },
       ];
-      const standardEvents = waitsForCancel ? initialEvents : [
+      const standardEvents = waitsForCancel
+        ? initialEvents
+        : waitsForDirectoryApproval
+          ? [
+              ...initialEvents,
+              {
+                type: "interrupt",
+                data: {
+                  kind: "directory_request",
+                  resume_token: "directory-approval-token",
+                  payload: {
+                    access_mode: "read_write",
+                    reason: "需要读取并更新项目工作目录中的文件。",
+                  },
+                },
+              },
+            ]
+          : [
         ...initialEvents,
         { type: "tool.start", data: { step_id: `${runId}-step-0`, step_idx: 0, tool: "list_files", activity: { title: "列出文件", summary: "查看 *.docx", target: "/Users/demo/Documents/Quarterly", target_kind: "path" } } },
         { type: "tool.result", data: { step_id: `${runId}-step-0`, step_idx: 0, tool: "list_files", reused: false, effect_ref: null } },
@@ -1302,7 +1329,7 @@ const server = createServer((request, response) => {
         { type: "message.done", data: { message_id: `${runId}-message`, status: "completed" } },
         { type: "conversation.title", data: { conversation_id: conversationId, title: conversationTitle } },
         { type: "run.done", data: { workflow_type: "cowork", status: "done" } },
-      ];
+            ];
       const fixtureEvents = fixtureScenarioName === null
         ? null
         : SCENARIOS[fixtureScenarioName].events;
@@ -1333,9 +1360,11 @@ const server = createServer((request, response) => {
         goal: body.goal,
         // 与真后端一致：创建 run 的这一刻读取一次会话挂载，之后会话切换不回写旧 run。
         kb_slug: conversationKnowledgeBases.get(conversationId) ?? null,
+        workspace_path: (coworkRoots.get(conversationId) ?? [])[0]?.canonical_path ?? null,
+        workspace_files: body.workspace_files ?? null,
         answer_mode: "grounded",
         workflow_type: "cowork",
-        status: waitsForCancel || fixtureScenarioName !== null ? "executing" : "done",
+        status: waitsForCancel || waitsForDirectoryApproval || fixtureScenarioName !== null ? "executing" : "done",
         started_at: Date.now(),
         cancelled: false,
         cowork_drop_after_seq: fixtureScenarioName === null

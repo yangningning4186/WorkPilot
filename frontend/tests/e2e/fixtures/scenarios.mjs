@@ -360,12 +360,16 @@ export const SCENARIOS = {
     events: [
       { delay_ms: 60, type: "message.delta", data: { text: "<thi" } },
       { delay_ms: 60, type: "message.delta", data: { text: "nk>这是内部推理，不应进入正文。</th" } },
-      { delay_ms: 60, type: "message.delta", data: { text: "ink>\n我是 WorkPilot。" } },
+      { delay_ms: 60, type: "message.delta", data: { text: "ink>\n正在读取资料。" } },
+      { delay_ms: 60, type: "message.reset", data: {} },
+      { delay_ms: 60, type: "message.reasoning", data: { text: "核对读取结果。" } },
+      { delay_ms: 60, type: "message.delta", data: { text: "我是 WorkPilot。" } },
       {
         delay_ms: 60,
         type: "message.snapshot",
-        data: { text: "<think>这是内部推理，不应进入正文。</think>\n我是 WorkPilot。" },
+        data: { text: "我是 WorkPilot。" },
       },
+      { delay_ms: 60, type: "message.done", data: DONE_OK },
     ],
   },
 

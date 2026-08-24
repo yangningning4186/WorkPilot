@@ -4223,22 +4223,10 @@ textarea:focus-visible,
   color: var(--workdesk-ink);
 }
 
-/* 论文阅读档打开阅读器时的三栏。列宽写在这里而不是内联，是为了让下面的窄屏断点能改它。 */
-.workdesk-shell:has(.reader-pane) {
-  grid-template-columns: 292px minmax(0, 1fr) minmax(360px, 460px);
-}
-
+/* 交付物与阅读器共用同一条可调分栏。宽度由拖动手柄写入 CSS 变量，刷新后仍保留。 */
+.workdesk-shell:has(.reader-pane),
 .workdesk-shell:has(.workdesk-artifact-rail) {
-  grid-template-columns: 292px minmax(0, 1fr) minmax(340px, 400px);
-}
-
-@media (width <= 1280px) {
-  .workdesk-shell:has(.reader-pane) {
-    grid-template-columns: 292px minmax(0, 1fr) minmax(300px, 360px);
-  }
-  .workdesk-shell:has(.workdesk-artifact-rail) {
-    grid-template-columns: 292px minmax(0, 1fr) minmax(320px, 350px);
-  }
+  grid-template-columns: 292px minmax(0, 1fr) var(--workdesk-inspector-width, 400px);
 }
 
 .workdesk-shell svg {
@@ -4649,6 +4637,40 @@ textarea:focus-visible,
     var(--workdesk-bg);
 }
 
+.workdesk-pane-resizer {
+  position: absolute;
+  z-index: 50;
+  top: 0;
+  right: -5px;
+  bottom: 0;
+  width: 11px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+.workdesk-pane-resizer::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 1px;
+  background: var(--workdesk-line);
+  content: "";
+  transition: width 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+.workdesk-pane-resizer:hover::before,
+.workdesk-pane-resizer:focus-visible::before,
+.workdesk-pane-resizer.is-dragging::before {
+  width: 3px;
+  background: var(--workdesk-accent);
+  box-shadow: 0 0 0 4px rgb(23 107 88 / 8%);
+}
+html.workdesk-pane-resizing,
+html.workdesk-pane-resizing * { cursor: col-resize !important; user-select: none !important; }
+
 .workdesk-topline {
   position: absolute;
   z-index: 5;
@@ -4709,6 +4731,7 @@ textarea:focus-visible,
   box-shadow: 0 3px 12px rgb(20 28 25 / 4%);
 }
 .workdesk-default-scope svg { width: 14px; height: 14px; color: var(--workdesk-accent); }
+.workdesk-default-scope > span { overflow: hidden; max-width: min(260px, 32vw); text-overflow: ellipsis; white-space: nowrap; }
 
 .workdesk-section-chip {
   position: absolute;
@@ -5770,6 +5793,59 @@ textarea:focus-visible,
 .workdesk-prompt-chips button:hover { border-color: #bdc4c0; box-shadow: 0 7px 18px rgb(20 28 25 / 6%); color: var(--workdesk-ink); transform: translateY(-1px); }
 .workdesk-prompt-chips svg { width: 15px; height: 15px; }
 
+.workdesk-session-setup {
+  display: flex;
+  width: min(900px, 100%);
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 0 5px;
+  color: #8c938f;
+}
+.workdesk-session-setup > span { flex: 0 0 auto; font-size: 8px; font-weight: 700; letter-spacing: .08em; }
+.workdesk-session-setup > button:not(.clear) {
+  display: flex;
+  min-width: 0;
+  max-width: min(520px, calc(100% - 105px));
+  height: 38px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 11px;
+  border: 1px solid #dce3df;
+  border-radius: 11px;
+  background: rgb(255 255 255 / 78%);
+  color: #4e5853;
+  cursor: pointer;
+  box-shadow: 0 5px 18px rgb(22 31 27 / 4%);
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+.workdesk-session-setup > button:not(.clear):hover:not(:disabled) { border-color: #aebfb7; background: white; box-shadow: 0 7px 22px rgb(22 31 27 / 7%); }
+.workdesk-session-setup > button:not(.clear):focus-visible { outline: 2px solid rgb(23 107 88 / 25%); outline-offset: 2px; }
+.workdesk-session-setup > button:not(.clear):disabled { cursor: not-allowed; opacity: .55; }
+.workdesk-session-setup > button:not(.clear) > svg { width: 16px; height: 16px; flex: 0 0 auto; color: var(--workdesk-accent); }
+.workdesk-session-setup > button:not(.clear) > span { display: grid; min-width: 0; flex: 1; gap: 1px; text-align: left; }
+.workdesk-session-setup strong,
+.workdesk-session-setup small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workdesk-session-setup strong { color: #35413b; font-size: 10px; font-weight: 680; }
+.workdesk-session-setup small { color: #929b96; font: 7px var(--font-mono); }
+.workdesk-session-setup b { color: var(--workdesk-accent); font-size: 8px; font-weight: 650; }
+.workdesk-session-setup > button.clear {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #8b938f;
+  cursor: pointer;
+  font-size: 15px;
+}
+.workdesk-session-setup > button.clear:hover:not(:disabled) { background: #e8ece9; color: #39423e; }
+.workdesk-session-setup > button.clear:disabled { cursor: wait; opacity: .5; }
+
 .workdesk-composer {
   position: relative;
   width: min(900px, 100%);
@@ -5781,10 +5857,18 @@ textarea:focus-visible,
 }
 
 .workdesk-composer:focus-within { border-color: #b7c5bf; box-shadow: 0 20px 55px rgb(22 31 27 / 11%), 0 0 0 4px rgb(23 107 88 / 6%); }
-.workdesk-composer textarea { display: block; width: 100%; min-height: 142px; max-height: 240px; overflow-y: auto; resize: none; padding: 21px 22px 12px; border: 0; outline: 0; background: transparent; color: var(--workdesk-ink); font-size: 13px; line-height: 1.7; }
-.workdesk-composer.has-materials textarea { min-height: 112px; }
-.workdesk-composer textarea::placeholder { color: #a1a6a3; }
-.workdesk-composer textarea:disabled { cursor: wait; opacity: .65; }
+.workdesk-composer > .workdesk-session-setup {
+  width: 100%;
+  min-height: 54px;
+  margin: 0;
+  padding: 8px 15px;
+  border-bottom: 1px solid #edf0ee;
+}
+.workdesk-composer > .workdesk-session-setup > button:not(.clear) { max-width: min(520px, calc(100% - 105px)); box-shadow: none; }
+.workdesk-composer > textarea.workdesk-goal-input { display: block; width: 100%; min-height: 142px; max-height: 240px; overflow-y: auto; resize: none; padding: 21px 22px 12px; border: 0; outline: 0; background: transparent; color: var(--workdesk-ink); font-size: 13px; line-height: 1.7; }
+.workdesk-composer.has-materials > textarea.workdesk-goal-input { min-height: 112px; }
+.workdesk-composer > textarea.workdesk-goal-input::placeholder { color: #a1a6a3; }
+.workdesk-composer > textarea.workdesk-goal-input:disabled { cursor: wait; opacity: .65; }
 
 .workdesk-attachment-tray {
   display: flex;
@@ -5815,9 +5899,6 @@ textarea:focus-visible,
 .workdesk-attachment-tray small { flex: 0 0 auto; color: #8c9590; font-size: 7px; }
 .workdesk-attachment-tray button { display: grid; width: 20px; height: 20px; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #7f8883; cursor: pointer; }
 .workdesk-attachment-tray button:hover { background: #e5ebe7; color: #202823; }
-.workdesk-attachment-tray.workspace > span { border-color: #cfe0d8; background: #f3f8f5; }
-.workdesk-attachment-tray.workspace svg { color: var(--workdesk-accent); }
-.workdesk-attachment-tray.workspace small { color: #638073; }
 .workdesk-message-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .workdesk-message-attachments > span { height: 30px; padding: 0 9px; }
 .workdesk-message-attachments b { max-width: 220px; overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
@@ -6007,6 +6088,7 @@ textarea:focus-visible,
 .workdesk-stage.is-chat {
   align-items: center;
   justify-content: flex-start;
+  overflow: hidden;
   padding: 70px 34px 26px;
   background: linear-gradient(180deg, rgb(255 255 255 / 20%), transparent 180px);
 }
@@ -6014,10 +6096,14 @@ textarea:focus-visible,
 .workdesk-chat-thread {
   display: flex;
   width: min(900px, 100%);
-  flex: 1 0 auto;
+  min-height: 0;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 22px 0 30px;
+  scroll-padding: 22px 0 30px;
 }
 
 .workdesk-message {
@@ -6513,13 +6599,16 @@ textarea:focus-visible,
 .workdesk-chat-artifacts { padding: 13px 0 0; border-top: 0; background: transparent; }
 
 .workdesk-stage.is-chat > .workdesk-composer {
-  position: sticky;
+  position: relative;
   z-index: 10;
-  bottom: 0;
   flex: 0 0 auto;
-  box-shadow: 0 16px 52px rgb(22 31 27 / 13%), 0 -16px 35px var(--workdesk-bg);
+  box-shadow: 0 16px 52px rgb(22 31 27 / 13%);
 }
-.workdesk-stage.is-chat .workdesk-composer textarea { min-height: 92px; max-height: 196px; padding-top: 17px; }
+.workdesk-stage-history,
+.workdesk-historical-stage-history {
+  scroll-margin-block: 22px 30px;
+}
+.workdesk-stage.is-chat .workdesk-composer > textarea.workdesk-goal-input { min-height: 92px; max-height: 196px; padding-top: 17px; }
 .workdesk-stage.is-chat .workdesk-composer-actions { min-height: 52px; padding-bottom: 9px; }
 
 .workdesk-activity {
@@ -6545,6 +6634,19 @@ textarea:focus-visible,
 .workdesk-progress-panel code { color: var(--workdesk-faint); font-family: var(--font-mono); font-size: 8px; }
 .workdesk-progress-actions { display: flex; align-items: center; gap: 9px; }
 .workdesk-inbox-card { display: grid; gap: 11px; margin-top: 14px; padding: 16px; border: 1px solid #d9e5df; border-radius: 14px; background: linear-gradient(145deg, #f7fbf9, #eef6f2); box-shadow: inset 0 1px rgb(255 255 255 / 72%); }
+.workdesk-composer > .workdesk-composer-interaction {
+  max-height: min(430px, 52vh);
+  margin: 0;
+  padding: 15px 17px;
+  border: 0;
+  border-bottom: 1px solid #d9e5df;
+  border-radius: 18px 18px 0 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: linear-gradient(145deg, #f8fbf9, #edf6f2);
+  box-shadow: inset 0 1px rgb(255 255 255 / 78%);
+}
+.workdesk-composer > .workdesk-composer-interaction + .workdesk-attachment-tray { border-top: 0; }
 .workdesk-inbox-eyebrow { display: flex; align-items: center; gap: 6px; color: var(--workdesk-accent); font-size: 8px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
 .workdesk-inbox-eyebrow svg { width: 15px; height: 15px; }
 .workdesk-inbox-card h3 { margin: 0; color: var(--workdesk-ink); font-size: 12px; line-height: 1.45; }
@@ -6613,6 +6715,8 @@ textarea:focus-visible,
 
 @media (max-width: 1080px) {
   .workdesk-shell { grid-template-columns: 238px minmax(0, 1fr); }
+  .workdesk-shell:has(.reader-pane),
+  .workdesk-shell:has(.workdesk-artifact-rail) { grid-template-columns: 238px minmax(0, 1fr) var(--workdesk-inspector-width, 400px); }
   .workdesk-sidebar-head { padding-left: 17px; }
   .workdesk-stage { padding-right: 26px; padding-left: 26px; }
   .workdesk-stage.is-chat { padding-right: 24px; padding-left: 24px; }
@@ -6626,8 +6730,24 @@ textarea:focus-visible,
   .mcp-metrics { grid-template-columns: repeat(2, 1fr); }
 }
 
+@media (max-width: 960px) {
+  .workdesk-shell:has(.reader-pane),
+  .workdesk-shell:has(.workdesk-artifact-rail) { grid-template-columns: 238px minmax(0, 1fr); }
+  .workdesk-artifact-rail,
+  .reader-pane {
+    position: fixed;
+    z-index: 90;
+    inset: 0 0 0 auto;
+    width: min(calc(100vw - 32px), var(--workdesk-inspector-width, 400px));
+    box-shadow: -20px 0 60px rgb(26 35 31 / 18%);
+  }
+  .workdesk-pane-resizer { display: none; }
+}
+
 @media (max-width: 760px) {
   .workdesk-shell { height: auto; min-height: 100vh; grid-template-columns: 1fr; overflow: visible; }
+  .workdesk-shell:has(.reader-pane),
+  .workdesk-shell:has(.workdesk-artifact-rail) { grid-template-columns: 1fr; }
   .workdesk-sidebar { position: static; border-right: 0; border-bottom: 1px solid var(--workdesk-line); }
   .workdesk-primary-nav { grid-template-columns: repeat(2, 1fr); }
   .workdesk-sidebar-group { display: none; }
@@ -6645,7 +6765,10 @@ textarea:focus-visible,
   .workdesk-topline > button { left: 16px; max-width: 48vw; transform: none; }
   .workdesk-section-chip { left: 16px; max-width: 56vw; transform: none; }
   .workdesk-stage { padding: 92px 16px 42px; }
-  .workdesk-stage.is-chat { padding: 64px 12px 16px; }
+  .workdesk-stage.is-chat {
+    height: 760px;
+    padding: 64px 12px 16px;
+  }
   .workdesk-chat-thread { gap: 18px; padding-top: 12px; }
   .workdesk-message.user .workdesk-message-body { max-width: 90%; }
   .workdesk-agent-avatar { width: 28px; height: 28px; flex-basis: 28px; border-radius: 9px; }
@@ -6653,8 +6776,11 @@ textarea:focus-visible,
   .workdesk-run-head { align-items: flex-start; flex-direction: column; }
   .workdesk-progress-actions { width: 100%; justify-content: space-between; }
   .workdesk-prompt-chips { margin-top: 34px; }
-  .workdesk-composer textarea { min-height: 124px; }
-  .workdesk-stage.is-chat .workdesk-composer textarea { min-height: 88px; }
+  .workdesk-session-setup { align-items: flex-start; flex-wrap: wrap; }
+  .workdesk-session-setup > span { width: 100%; }
+  .workdesk-session-setup > button:not(.clear) { max-width: calc(100% - 36px); flex: 1; }
+  .workdesk-composer > textarea.workdesk-goal-input { min-height: 124px; }
+  .workdesk-stage.is-chat .workdesk-composer > textarea.workdesk-goal-input { min-height: 88px; }
   .workdesk-composer > footer { align-items: center; flex-flow: row wrap; }
   .workdesk-composer > footer > span { display: none; }
   .workdesk-run-settings > summary small { display: none; }
@@ -6823,10 +6949,6 @@ textarea:focus-visible,
 .workdesk-artifact-reopen { display: flex; height: 28px; align-items: center; padding: 0 11px; border: 1px solid var(--workdesk-line); border-radius: 14px; background: transparent; color: var(--workdesk-muted); cursor: pointer; font-size: 10px; gap: 6px; }
 .workdesk-artifact-reopen svg { width: 14px; height: 14px; }
 
-@media (max-width: 1080px) and (min-width: 761px) {
-  .workdesk-shell:has(.workdesk-artifact-rail) { grid-template-columns: 238px minmax(0, 1fr) 320px; }
-}
-
 @media (max-width: 760px) {
   .workdesk-artifact-rail { position: fixed; z-index: 90; inset: 0 0 0 auto; width: min(100%, 420px); box-shadow: -20px 0 60px rgb(26 35 31 / 18%); }
   .workdesk-reading-picker { flex-wrap: wrap; padding-top: 7px; padding-bottom: 7px; border-radius: 14px; }
@@ -6951,11 +7073,76 @@ textarea:focus-visible,
 .locator-chip.static { cursor: default; }
 
 /* --- 流式：思考过程 -------------------------------------------------------
-   与回答刻意分开显示。它不落盘、不参与引用，运行结束就消失，所以做成一块可折叠的
-   低对比灰块，而不是正文的一部分——看起来像回答的东西必须真的是回答。 */
+   与回答刻意分开显示。它不进 canonical 消息、不参与引用，完成后折叠保留在本次运行
+   记录里，所以做成低对比灰块——看起来像回答的东西必须真的是回答。 */
 .workdesk-run-reasoning { margin: 0 0 8px; padding: 8px 11px; border-radius: 8px; background: #f5f6f6; color: var(--workdesk-faint); font-size: 10px; line-height: 1.7; }
 .workdesk-run-reasoning summary { cursor: pointer; font-size: 10px; }
 .workdesk-run-reasoning p { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; }
+
+/* 阶段输出是可回放的运行旁注，不与最终回答争夺层级。主入口保持安静，展开后完整显示，
+   不做 line-clamp 或固定高度——“看起来整洁”不能以再次截断用户要查的记录为代价。 */
+.workdesk-stage-history {
+  margin: 0 0 9px;
+  border: 1px solid #e5e9e6;
+  border-radius: 9px;
+  background: #fafbfa;
+  color: #64706a;
+}
+.workdesk-stage-history > summary {
+  display: flex;
+  cursor: pointer;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 11px;
+  font-size: 10px;
+  list-style: none;
+}
+.workdesk-stage-history > summary::-webkit-details-marker { display: none; }
+.workdesk-stage-history > summary::before { color: #969f9a; content: "›"; transition: transform .16s ease; }
+.workdesk-stage-history[open] > summary::before { transform: rotate(90deg); }
+.workdesk-stage-history > summary span { flex: 1; font-weight: 680; }
+.workdesk-stage-history > summary small { color: var(--workdesk-faint); font-size: 9px; }
+.workdesk-stage-list { display: grid; gap: 0; margin: 0; padding: 0 10px 10px; list-style: none; }
+.workdesk-stage-list > li { padding: 9px 8px; border-top: 1px solid #edf0ee; }
+.workdesk-stage-list > li > header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.workdesk-stage-list > li > header strong { color: #53605a; font-size: 9px; font-weight: 720; letter-spacing: .02em; }
+.workdesk-stage-list > li > header span { color: #99a19d; font-size: 8px; }
+.workdesk-stage-thinking { margin-top: 6px; color: #7b8580; font-size: 9px; }
+.workdesk-stage-thinking summary { cursor: pointer; width: fit-content; color: #7b8580; list-style: none; }
+.workdesk-stage-thinking summary::before { margin-right: 5px; content: "›"; }
+.workdesk-stage-thinking[open] summary::before { content: "⌄"; }
+.workdesk-stage-thinking p,
+.workdesk-stage-output { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; }
+.workdesk-stage-thinking p { padding-left: 11px; color: #858f89; font-size: 9px; line-height: 1.65; }
+.workdesk-stage-output { color: #5e6963; font-size: 10px; line-height: 1.65; }
+
+.workdesk-historical-stages { margin: 0 0 11px; border: 1px solid #e5e9e6; border-radius: 9px; background: #fafbfa; }
+.workdesk-historical-stages > button {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  cursor: pointer;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 0;
+  background: transparent;
+  color: #77817c;
+  font: inherit;
+  text-align: left;
+}
+.workdesk-historical-stages > button span { font-size: 9px; font-weight: 680; }
+.workdesk-historical-stages > button small { flex: 1; color: #a0a7a3; font-size: 8px; }
+.workdesk-historical-stages > button i { color: #9aa29e; font-size: 10px; font-style: normal; transition: transform .16s ease; }
+.workdesk-historical-stages > button[aria-expanded="true"] i { transform: rotate(180deg); }
+.workdesk-historical-stages > button:focus-visible { border-radius: 5px; outline: 2px solid rgb(25 133 98 / 24%); outline-offset: 2px; }
+.workdesk-historical-stages-body { padding: 0 10px 8px; }
+.workdesk-historical-stages-body .workdesk-stage-list { padding: 0; }
+.workdesk-historical-stages-body > p { margin: 5px 0; color: #8a938e; font-size: 9px; }
+.workdesk-historical-stages-body > p.error { color: var(--danger); }
+.workdesk-historical-stages-body > p.loading { display: flex; align-items: center; gap: 7px; }
+.workdesk-historical-stages-body > p.loading i { width: 10px; height: 10px; border: 1.5px solid #d1d9d5; border-top-color: var(--workdesk-accent); border-radius: 50%; animation: workdesk-spin .8s linear infinite; }
 
 /* --- 阅读器：pdf.js 画布与文本层 -----------------------------------------
    文本层是可选中的那一层，所以只有它接收指针事件：批注框盖在它上面，但不能把拖选

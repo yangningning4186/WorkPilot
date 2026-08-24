@@ -34,6 +34,39 @@ import { parseSseFrame, takeSseFrame, waitForStreamRetry } from "./run-sse";
 
 const SSE_RETRY_MS = 1_000;
 const POLL_FALLBACK_MS = 650;
+const LEADING_THINK_OPEN = /^\s*<think(?:ing)?\b[^>]*>/i;
+const LEADING_THINK_CLOSE = /<\/think(?:ing)?>/i;
+const ORPHAN_THINK_PREAMBLE_LIMIT = 8_192;
+
+function extractedLeadingReasoning(text: string): { reasoning: string; visible: string } | null {
+  const opening = LEADING_THINK_OPEN.exec(text);
+  if (opening !== null) {
+    const remainder = text.slice(opening[0].length);
+    const closing = LEADING_THINK_CLOSE.exec(remainder);
+    if (closing === null) return null;
+    return {
+      reasoning: remainder.slice(0, closing.index),
+      visible: remainder.slice(closing.index + closing[0].length).trimStart(),
+    };
+  }
+  const closing = LEADING_THINK_CLOSE.exec(text);
+  if (closing === null || closing.index > ORPHAN_THINK_PREAMBLE_LIMIT) return null;
+  const prefix = text.slice(0, closing.index);
+  // 正文里的 Markdown 代码示例可能有同名标签；与 Provider 的终态清洗保持同一边界。
+  if (prefix.split("```").length % 2 === 0 || prefix.split("`").length % 2 === 0) return null;
+  return {
+    reasoning: prefix,
+    visible: text.slice(closing.index + closing[0].length).trimStart(),
+  };
+}
+
+function appendExtractedReasoning(current: string, fragment: string): string {
+  const normalized = fragment.trim();
+  if (normalized === "") return current;
+  const base = current.trimEnd();
+  if (base === normalized || base.endsWith(normalized)) return base;
+  return base === "" ? normalized : `${base}\n\n${normalized}`;
+}
 
 export type CoworkRunPhase =
   | "idle"
@@ -56,6 +89,12 @@ export interface CoworkProgressStep {
   activity: ToolActivityPayload | null;
 }
 
+export interface CoworkModelStage {
+  id: string;
+  reasoning: string;
+  text: string;
+}
+
 export interface CoworkRunView {
   cursor: bigint;
   phase: CoworkRunPhase;
@@ -73,10 +112,12 @@ export interface CoworkRunView {
    */
   answer: string;
   /**
-   * 模型这一轮的思考增量。**不落盘、不进消息**，由下一条 message.reset 清掉，
-   * 所以运行结束后它是空的——这正是它该有的样子：思考不是回答。
+   * 模型本次 run 的思考增量。它不进 canonical 消息和下一轮模型上下文，但 run_events
+   * 会保留显示侧记录；内部工具轮 reset 只清正文草稿，不能把刚显示的思考抹掉。
    */
   reasoning: string;
+  /** 已结束的模型工具轮；message.reset 只切阶段，不再丢弃上一轮的说明与思考。 */
+  modelStages: CoworkModelStage[];
   /** step.update / interaction.resolved 提供的运行进度说明。 */
   progressSummary: string;
   artifactEvents: ArtifactPayload[];
@@ -131,6 +172,7 @@ const EMPTY: CoworkRunView = {
   steps: [],
   answer: "",
   reasoning: "",
+  modelStages: [],
   progressSummary: "",
   artifactEvents: [],
   todos: [],
@@ -144,6 +186,36 @@ const EMPTY: CoworkRunView = {
   sleepingUntil: null,
   error: null,
 };
+
+export function createEmptyCoworkRunView(phase: CoworkRunPhase = "idle"): CoworkRunView {
+  return {
+    ...EMPTY,
+    phase,
+    tools: [],
+    steps: [],
+    artifactEvents: [],
+    modelStages: [],
+    todos: [],
+    memoryWrites: [],
+    subagentRuns: [],
+    waivedApprovals: [],
+  };
+}
+
+function appendModelStage(
+  stages: CoworkModelStage[],
+  value: CoworkModelStage,
+): CoworkModelStage[] {
+  const stage = {
+    ...value,
+    reasoning: value.reasoning.trim(),
+    text: value.text.trim(),
+  };
+  if (stage.reasoning === "" && stage.text === "") return stages;
+  const previous = stages.at(-1);
+  if (previous?.reasoning === stage.reasoning && previous.text === stage.text) return stages;
+  return [...stages, stage];
+}
 
 function upsertStep(
   steps: CoworkProgressStep[],
@@ -320,15 +392,57 @@ export function applyCoworkEvent(state: CoworkRunView, envelope: StreamEnvelope)
     }
     case "message.delta": {
       const data = envelope.data as MessageDeltaPayload;
-      return { ...next, answer: (state.answer ?? "") + data.text };
+      const answer = (state.answer ?? "") + data.text;
+      // 兼容旧/不规范端点：它把 <think> 块甚至只有闭标签的思考混进 content。
+      // 收到闭标签后原子地把前缀移到思考栏，终态前也不再把它当回答展示。
+      const extracted = extractedLeadingReasoning(answer);
+      if (extracted === null) return { ...next, answer };
+      return {
+        ...next,
+        answer: extracted.visible,
+        reasoning: appendExtractedReasoning(state.reasoning, extracted.reasoning),
+      };
     }
     case "message.snapshot": {
       const data = envelope.data as MessageSnapshotPayload;
-      return { ...next, answer: data.text, reasoning: "", progressSummary: "" };
+      const extracted = extractedLeadingReasoning(data.text);
+      const answer = extracted?.visible ?? data.text;
+      const currentReasoning = extracted === null
+        ? state.reasoning
+        : appendExtractedReasoning(state.reasoning, extracted.reasoning);
+      const currentText = state.answer.trim();
+      const finalText = answer.trim();
+      // 最后一轮的流式正文通常只是 snapshot 的前缀（最后一批 delta 甚至可能停在半个词）。
+      // 它不是一份独立阶段输出，重复保存只会制造一条看起来“被截断”的伪记录。
+      const stageText = currentText !== ""
+        && !finalText.startsWith(currentText)
+        && !currentText.startsWith(finalText)
+        ? currentText
+        : "";
+      return {
+        ...next,
+        answer,
+        reasoning: "",
+        modelStages: appendModelStage(state.modelStages, {
+          id: `stage-${seq.toString()}`,
+          reasoning: currentReasoning,
+          text: stageText,
+        }),
+        progressSummary: "",
+      };
     }
     case "message.reset": {
-      // 新一轮开写。思考一起清掉：它属于刚才那一轮。
-      return { ...next, answer: "", reasoning: "" };
+      // 新一轮开写前把刚结束的模型工具轮固化；reset 是阶段边界，不是删除指令。
+      return {
+        ...next,
+        answer: "",
+        reasoning: "",
+        modelStages: appendModelStage(state.modelStages, {
+          id: `stage-${seq.toString()}`,
+          reasoning: state.reasoning,
+          text: state.answer,
+        }),
+      };
     }
     case "message.reasoning": {
       const data = envelope.data as MessageReasoningPayload;
@@ -343,10 +457,15 @@ export function applyCoworkEvent(state: CoworkRunView, envelope: StreamEnvelope)
     }
     case "error": {
       const data = envelope.data as ErrorPayload;
+      const modelStages = appendModelStage(state.modelStages, {
+        id: `stage-${seq.toString()}`,
+        reasoning: state.reasoning,
+        text: state.answer,
+      });
       if (data.code === "cancelled") {
-        return { ...next, phase: "cancelled", answer: data.user_message, error: null, finishedAt: eventTime };
+        return { ...next, phase: "cancelled", answer: data.user_message, reasoning: "", modelStages, error: null, finishedAt: eventTime };
       }
-      return { ...next, phase: "error", error: data.user_message, finishedAt: eventTime };
+      return { ...next, phase: "error", reasoning: "", modelStages, error: data.user_message, finishedAt: eventTime };
     }
     default:
       return next;
@@ -355,7 +474,7 @@ export function applyCoworkEvent(state: CoworkRunView, envelope: StreamEnvelope)
 
 export function useCoworkRun(runId: string | null): CoworkRunView {
   const [state, setState] = useState<CoworkRunView>(
-    runId === null ? EMPTY : { ...EMPTY, phase: "connecting" },
+    () => createEmptyCoworkRunView(runId === null ? "idle" : "connecting"),
   );
   const [activeRunId, setActiveRunId] = useState<string | null>(runId);
   const requestedRunId = useRef(runId);
@@ -364,7 +483,7 @@ export function useCoworkRun(runId: string | null): CoworkRunView {
   // 切 run 的当帧就清掉上一条正文，避免 effect 晚一帧导致串对话。
   if (activeRunId !== runId) {
     setActiveRunId(runId);
-    setState(runId === null ? EMPTY : { ...EMPTY, phase: "connecting" });
+    setState(createEmptyCoworkRunView(runId === null ? "idle" : "connecting"));
   }
 
   useEffect(() => {

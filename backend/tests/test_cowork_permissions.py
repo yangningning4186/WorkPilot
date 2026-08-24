@@ -4,6 +4,8 @@ from uuid import UUID
 
 import httpx
 import pytest
+from openpyxl import Workbook  # type: ignore[import-untyped]
+from openpyxl.styles import Font  # type: ignore[import-untyped]
 
 from app.api.dependencies import require_owner_identity
 from app.core.config import Settings, get_settings
@@ -452,6 +454,60 @@ async def test_artifact_preview_ignores_model_mime_and_sandboxes_text(
     assert diff.json()["added_lines"] == 1
     assert diff.json()["removed_lines"] == 1
     assert diff.json()["text"].endswith("-old\n+new")
+
+
+async def test_xlsx_structure_preview_contains_cells_when_native_renderer_is_unavailable(
+    db_session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conversation_id = await _owner_conversation(db_session)
+    root = await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    path = tmp_path / "预算.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "预算明细"
+    sheet.append(["类别", "预算", "实际", "差额"])
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+    sheet.append(["产品设计", 80_000, 76_000, "=B2-C2"])
+    workbook.save(path)
+    workbook.close()
+    artifact = await register_artifact(
+        db_session,
+        conversation_id=conversation_id,
+        session_root_id=root.id,
+        kind="table",
+        title=path.name,
+        uri=str(path),
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    await db_session.commit()
+
+    # 测试确定性的无原生渲染器分支；macOS 真实环境也会对 XLSX 跳过 Quick Look 外壳。
+    monkeypatch.setattr("app.api.cowork.render_office_preview", lambda *args, **kwargs: None)
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    app = create_app()
+    app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_settings] = lambda: Settings(app_env="test", cowork_enabled=True)
+    app.dependency_overrides[require_owner_identity] = lambda: None
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/v1/cowork/artifacts/{artifact.id}/preview")
+
+    assert response.status_code == 200
+    assert response.headers["x-workpilot-preview-mode"] == "structure"
+    assert "预算明细" in response.text
+    assert "产品设计" in response.text
+    assert "=B2-C2" in response.text
+    assert response.text.count("<td>") < 20
 
 
 async def test_cowork_workflow_uses_existing_run_model(db_session: AsyncSession) -> None:
