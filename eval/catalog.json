@@ -14,7 +14,7 @@
       "baseline": {
         "status": "rebuild_required",
         "path": "eval/snapshots/cowork.json",
-        "reason": "2026-08-24 Cowork suite 已复核升级为 v1.5.1：评测 token 只计量不熔断，no_files_changed 忽略 .git 内部元数据，并修正 046/047 的可溯源引用与不可答判定。此前 v1.4.0 的 Qwen/DeepSeek 100000-token 报告保留作历史证据，但口径已不兼容；必须在 clean Git、固定模型/调用数/墙钟下重新跑 dev 后再晋升。"
+        "reason": "2026-08-24 已在 clean Git bb56b2f、固定 deepseek-v4-flash、token 只计量/20 calls/180000 ms 下完成 39 条 dev live 跑批；随后在 clean Git 33d1824 用复核后的 v1.5.1 对同一 observation 零模型重评分。结果 32/39，通过率 82.05%，无 runner_error 或 budget_exceeded；仍有 7 条任务失败，且 034 暴露 gold 要求 K001/K002/K005、模型实际只可见 S1–S5 的评分口径问题。旧报告、cassette 与快照均保留，剩余失败复核完成前不得晋升。"
       }
     },
     {
