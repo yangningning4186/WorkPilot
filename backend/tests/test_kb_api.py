@@ -19,6 +19,7 @@ from app.core.config import Settings, get_settings
 from app.core.db import get_db_session
 from app.main import create_app
 from app.rag.kb.jobs import KbIndexingJobs, default_indexing_jobs
+from app.rag.kb.manifest import EmbeddingSignature
 
 
 @pytest.fixture(autouse=True)
@@ -55,9 +56,7 @@ def _client(tmp_path: Path) -> httpx.AsyncClient:
         knowledge_base_path=tmp_path / "kb", embedding_base_url=""
     )
     app.dependency_overrides[require_owner_identity] = lambda: None
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    )
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
 async def test_create_list_and_delete(tmp_path: Path) -> None:
@@ -75,6 +74,10 @@ async def test_create_list_and_delete(tmp_path: Path) -> None:
             # 刚建的库还没有索引。界面据此显示"未建索引"，而不是等用户提问时才发现。
             "is_indexed": False,
             "embedding": None,
+            "active_version": None,
+            "versions": [],
+            # 新建的库天生就是版本化布局，没有要迁的东西。
+            "needs_migration": False,
             "documents": [],
         }
 
@@ -137,9 +140,7 @@ async def test_paths_with_nothing_importable_are_refused_before_a_job_starts(
 
         assert response.status_code == 422
         assert "没有可导入的文件" in response.json()["detail"]
-        assert (
-            await client.get("/api/v1/cowork/knowledge-bases/papers/indexing")
-        ).json() is None
+        assert (await client.get("/api/v1/cowork/knowledge-bases/papers/indexing")).json() is None
 
 
 async def _await_job(client: httpx.AsyncClient, slug: str) -> dict[str, object]:
@@ -192,6 +193,72 @@ async def test_rebuild_without_documents_is_refused(tmp_path: Path) -> None:
     assert "还没有文档" in response.json()["detail"]
 
 
+async def test_version_endpoints_create_activate_and_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HTTP 层把长构建放进作业，同时让切换与删除返回最新的 active 状态。"""
+    from app.rag.kb import service as service_module
+
+    async def fake_build_index(
+        target: Path, documents: list[object], **_kwargs: object
+    ) -> tuple[EmbeddingSignature, int]:
+        await asyncio.to_thread(target.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread((target / "test-index").write_text, "complete", encoding="utf-8")
+        return EmbeddingSignature("fake", 8, "v1"), len(documents)
+
+    monkeypatch.setattr(service_module, "build_index", fake_build_index)
+    source = tmp_path / "rrf.md"
+    source.write_text("# RRF\n\n排名层面融合。\n", encoding="utf-8")
+
+    async with _client(tmp_path) as client:
+        await client.post(
+            "/api/v1/cowork/knowledge-bases",
+            json={"slug": "papers", "name": "论文", "description": ""},
+        )
+        added = await client.post(
+            "/api/v1/cowork/knowledge-bases/papers/documents",
+            json={"paths": [str(source)]},
+        )
+        assert added.status_code == 202
+        assert (await _await_job(client, "papers"))["status"] == "done"
+
+        created = await client.post(
+            "/api/v1/cowork/knowledge-bases/papers/versions",
+            json={
+                "version_id": "candidate",
+                "label": "BM25 candidate",
+                "engine": "bm25",
+                "activate": False,
+            },
+        )
+        assert created.status_code == 202
+        assert (await _await_job(client, "papers"))["status"] == "done"
+
+        listed = (await client.get("/api/v1/cowork/knowledge-bases")).json()["items"][0]
+        assert listed["documents"][0]["snapshot_available"] is True
+        assert listed["documents"][0]["snapshot_path"].startswith("sources/")
+        assert len(listed["documents"][0]["content_hash"]) == 64
+        assert [version["version_id"] for version in listed["versions"]] == [
+            "v1",
+            "candidate",
+        ]
+        assert listed["active_version"] == "v1"
+
+        activated = await client.post(
+            "/api/v1/cowork/knowledge-bases/papers/versions/candidate/activate"
+        )
+        assert activated.status_code == 200
+        assert activated.json()["active_version"] == "candidate"
+
+        deleted = await client.delete("/api/v1/cowork/knowledge-bases/papers/versions/v1")
+        assert deleted.status_code == 200
+        assert [version["version_id"] for version in deleted.json()["versions"]] == ["candidate"]
+
+        last = await client.delete("/api/v1/cowork/knowledge-bases/papers/versions/candidate")
+        assert last.status_code == 422
+        assert "最后一版" in last.json()["detail"]
+
+
 async def test_indexing_status_is_null_for_an_untouched_kb(tmp_path: Path) -> None:
     async with _client(tmp_path) as client:
         await client.post(
@@ -222,9 +289,7 @@ async def test_mounting_round_trips_and_refuses_a_missing_kb(
     # 这条用例要验的是接口行为（挂载前校验库存在、卸载能回到 null），不是选后端那段逻辑，
     # 所以直接把 store 换掉，比让整个进程改后端干净。
     stores_holder: dict[str, object] = {}
-    monkeypatch.setattr(
-        conversations_module, "cowork_store", lambda: stores_holder["state"]
-    )
+    monkeypatch.setattr(conversations_module, "cowork_store", lambda: stores_holder["state"])
 
     settings = Settings(
         knowledge_base_path=tmp_path / "kb",

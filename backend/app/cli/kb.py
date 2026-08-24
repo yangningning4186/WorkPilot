@@ -1,13 +1,15 @@
 """本地知识库的命令行入口。
 
-建库、加文档、重建索引都会跑解析和 embedding，一份论文集是分钟级的活，不能挂在 HTTP
-连接上（CLAUDE.md：worker 不依附 HTTP 连接）。KB 管理界面还没做，这个入口就是目前
-唯一能把库建起来的地方——而且它以后仍然有用：批量导入一整个目录，界面上拖不动。
+建库、加文档、重建索引都会跑解析和 embedding，一份论文集是分钟级的活。这个入口和
+管理界面共用同一套 service，适合批量导入目录，以及给评测准备多版索引。
 
     uv run python -m app.cli.kb list
     uv run python -m app.cli.kb create papers --name "我的论文库"
     uv run python -m app.cli.kb add papers ~/papers/*.pdf
     uv run python -m app.cli.kb rebuild papers      # 换 embedding 模型之后
+    uv run python -m app.cli.kb version create papers --id candidate --engine bm25 --no-activate
+    uv run python -m app.cli.kb version list papers
+    uv run python -m app.cli.kb version activate papers candidate
     uv run python -m app.cli.kb search papers "RRF 怎么融合"
     uv run python -m app.cli.kb delete papers
 """
@@ -27,8 +29,30 @@ def _progress(stage: str, done: int, total: int) -> None:
 
 
 def _print_manifest(manifest: KbManifest) -> None:
-    embedding = "（未建索引）" if manifest.embedding is None else manifest.embedding.describe()
-    print(f"{manifest.slug}\t{manifest.name}\t{len(manifest.documents)} 篇\t{embedding}")
+    active = manifest.active
+    if active is not None:
+        state = f"{active.describe()}（共 {len(manifest.versions)} 版）"
+    elif manifest.has_legacy_layout:
+        state = "（旧布局，需 rebuild 迁移）"
+    else:
+        state = "（未建索引）"
+    print(f"{manifest.slug}\t{manifest.name}\t{len(manifest.documents)} 篇\t{state}")
+
+
+def _print_versions(manifest: KbManifest) -> None:
+    if not manifest.versions:
+        state = "旧布局，先运行 rebuild" if manifest.has_legacy_layout else "还没有索引版本"
+        print(f"{manifest.slug}：{state}")
+        return
+    for version in manifest.versions:
+        flags = ["active"] if version.version_id == manifest.active_version else []
+        if not version.covers(manifest.document_hashes):
+            flags.append("stale")
+        state = f" [{','.join(flags)}]" if flags else ""
+        print(
+            f"{version.version_id}{state}\t{version.label}\t{version.embedding.describe()}"
+            f"\t{version.retrieval.describe()}\t{version.node_count} 节点"
+        )
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -70,9 +94,41 @@ async def _run(args: argparse.Namespace) -> int:
         _print_manifest(await service.rebuild(args.slug, progress=_progress))
         return 0
 
+    if args.command == "version":
+        if args.version_command == "list":
+            _print_versions(service.get(args.slug))
+            return 0
+        if args.version_command == "create":
+            manifest, version = await service.create_version(
+                args.slug,
+                version_id=args.version_id,
+                label=args.label,
+                engine=args.engine,
+                activate=not args.no_activate,
+                progress=_progress,
+            )
+            print(f"已创建索引版本 {version.version_id}。")
+            _print_versions(manifest)
+            return 0
+        if args.version_command == "activate":
+            manifest = service.activate_version(args.slug, args.version_id)
+            print(f"已激活索引版本 {args.version_id}。")
+            _print_versions(manifest)
+            return 0
+        manifest = service.delete_version(args.slug, args.version_id)
+        print(f"已删除索引版本 {args.version_id}。")
+        _print_versions(manifest)
+        return 0
+
     # search
     bundle = await service.search(
-        None, RagSearchRequest(query=args.query, top_k=args.top_k, kb_slug=args.slug)
+        None,
+        RagSearchRequest(
+            query=args.query,
+            top_k=args.top_k,
+            kb_slug=args.slug,
+            kb_version_id=args.version_id,
+        ),
     )
     if not bundle.evidence:
         print("没有命中。")
@@ -116,10 +172,38 @@ def _parse_args() -> argparse.Namespace:
     rebuild = sub.add_parser("rebuild", help="按清单里的源路径重新解析并建索引")
     rebuild.add_argument("slug")
 
+    version = sub.add_parser("version", help="列出、创建、激活或删除索引版本")
+    version_sub = version.add_subparsers(dest="version_command", required=True)
+
+    version_list = version_sub.add_parser("list", help="列出一份知识库的索引版本")
+    version_list.add_argument("slug")
+
+    version_create = version_sub.add_parser("create", help="在当前文档集合上创建新版索引")
+    version_create.add_argument("slug")
+    version_create.add_argument(
+        "--id", dest="version_id", default=None, help="版本标识，默认自动生成 vN"
+    )
+    version_create.add_argument("--label", default="", help="给人看的版本说明")
+    version_create.add_argument("--engine", choices=("hybrid", "dense", "bm25"), default="hybrid")
+    version_create.add_argument(
+        "--no-activate", action="store_true", help="只建版本，不切换当前检索版本"
+    )
+
+    version_activate = version_sub.add_parser("activate", help="切换默认检索版本")
+    version_activate.add_argument("slug")
+    version_activate.add_argument("version_id")
+
+    version_delete = version_sub.add_parser("delete", help="删除索引版本（最后一版不能删）")
+    version_delete.add_argument("slug")
+    version_delete.add_argument("version_id")
+
     search = sub.add_parser("search", help="在知识库里检索，用来确认索引是好的")
     search.add_argument("slug")
     search.add_argument("query")
     search.add_argument("--top-k", type=int, default=5)
+    search.add_argument(
+        "--version", dest="version_id", default=None, help="指定索引版本，默认用 active"
+    )
 
     return parser.parse_args()
 

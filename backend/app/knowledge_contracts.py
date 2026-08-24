@@ -75,6 +75,14 @@ class RagSearchRequest:
     # 回答会带着看起来很正经的出处，而那些出处来自另一份资料。这类后端必须显式抛
     # `KnowledgeUnavailableError`。
     kb_slug: str | None = None
+    # 用这个 KB 的哪一版索引。None = active 那一版。
+    #
+    # 存在的理由是评测：baseline 与 candidate 指向同一个 KB 的两个版本，语料完全相同，
+    # 差异只有那一组 (embedding, 引擎, 切分, 融合常数)。复制一遍语料再各建一个 KB 也能
+    # 做 A/B，但那样两边的文档集合是"看起来一样"，不是同一份。
+    #
+    # 与 `kb_slug` 同一条纪律：不支持版本的后端拿到非空值必须显式报错，不能当没看见。
+    kb_version_id: str | None = None
 
 
 @dataclass(frozen=True)

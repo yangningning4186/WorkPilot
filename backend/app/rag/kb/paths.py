@@ -3,16 +3,28 @@
 一个 KB 就是 `<root>/<slug>/` 一个目录：
 
     <root>/<slug>/
-        manifest.json          # KbManifest：名字、文档清单、embedding 签名
-        index/                 # FAISS + BM25 + docstore
+        manifest.json          # KbManifest：名字、文档清单、版本列表、当前激活版本
+        sources/<sha256>.<ext> # 导入时复制的不可变原始字节快照
+        versions/<version_id>/ # 一版索引：FAISS + BM25 + docstore
 
-**重建是就地覆盖，不做原子替换。** 也就是说重建失败会让这个 KB 暂时没有索引，而不是
-继续服务旧的那份（约束 10 在 Postgres 那条路径上由事务保证，这里刻意不还它这个债）。
-这是明知的取舍：个人 KB 的重建是秒级，而"没有索引"是显式失败——`search_index` 会拒绝
-并要求重建，不会安静地返回旧结果。真正不能接受的是安静，不是短暂不可用。
+**一份文档集合上可以并存多个索引版本。** 版本 = (embedding 签名, 检索配置) 的一次具体
+取值；换 embedding、换切分粒度、换融合方式各自建一版，同一批文档上直接对比。这正是
+约束 10 想要的那个东西的正面形态：以前只能"签名不一致就拒绝检索"，现在可以"两版都在，
+你说搜哪一版"。评测跑批因此可以把 baseline 与 candidate 指向同一个 KB 的两个版本，
+而不必复制一遍语料。
 
-`manifest.json` 仍然原子写：它是「这个库里有什么」的唯一事实来源，写坏了连重建都不知道
-该重建哪些文件。
+**建新版本不动旧版本。** 构建先落到 ``versions/.<id>.<uuid>.staging``，完成后 rename
+进正式目录，最后才原子更新 manifest/active。即使进程在任一步退出，旧 active 仍可用。
+这和之前"重建就地覆盖 index/"是相反的取舍，理由也变了：
+A/B 的前提就是两版同时活着。建到一半失败只会留下一个不完整的 `versions/<新 id>/`，
+它不在 manifest 的 `versions` 里，因此对检索不可见——旧版本照常服务。
+
+**旧的单索引布局（`index/`）不做静默兼容。** 读到它会显式报错并指向 `kb rebuild`：
+KB 是派生数据，重建是秒级；而"猜一个版本 id 把旧目录认领进来"意味着那一版的检索配置
+是编出来的，A/B 的两边从此不可比。无声的错配比一次显式重建糟得多。
+
+`manifest.json` 仍然原子写：它是「这个库里有什么、哪一版在服役」的唯一事实来源，
+写坏了连重建都不知道该重建哪些文件。
 
 **为什么 slug 与显示名分开**：用户会把 KB 叫成「我的论文 / papers (2026)」，而这些字符
 不能直接当目录名。slug 是路径，name 是给人看的，manifest 里两者都存。
@@ -25,7 +37,13 @@ import unicodedata
 from pathlib import Path
 
 MANIFEST_NAME = "manifest.json"
-INDEX_DIR = "index"
+#: 旧布局的单索引目录。只用来识别"这是个需要重建的老库"，不再往里写。
+LEGACY_INDEX_DIR = "index"
+VERSIONS_DIR = "versions"
+SOURCES_DIR = "sources"
+# 版本 id 和 slug 一样同时是目录名和路径穿越的防线。
+_VERSION_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+MAX_VERSION_LABEL_CHARS = 64
 # 早期版本重建时留下的临时目录前缀。现在不再产生这种目录，但已有安装里可能还躺着，
 # 所以列举时照旧跳过。
 TMP_PREFIX = ".index."
@@ -72,8 +90,31 @@ def kb_dir(root: Path, slug: str) -> Path:
     return root / validate_slug(slug)
 
 
-def index_dir(root: Path, slug: str) -> Path:
-    return kb_dir(root, slug) / INDEX_DIR
+def validate_version_id(version_id: str) -> str:
+    if not _VERSION_RE.match(version_id or ""):
+        raise KbNameError(
+            f"索引版本标识 {version_id!r} 不合法：只能用小写字母、数字和连字符，"
+            "且以字母或数字开头。"
+        )
+    return version_id
+
+
+def versions_dir(root: Path, slug: str) -> Path:
+    return kb_dir(root, slug) / VERSIONS_DIR
+
+
+def sources_dir(root: Path, slug: str) -> Path:
+    """内容寻址的原始文件快照目录；不是用户源目录的软链接。"""
+
+    return kb_dir(root, slug) / SOURCES_DIR
+
+
+def version_dir(root: Path, slug: str, version_id: str) -> Path:
+    return versions_dir(root, slug) / validate_version_id(version_id)
+
+
+def legacy_index_dir(root: Path, slug: str) -> Path:
+    return kb_dir(root, slug) / LEGACY_INDEX_DIR
 
 
 def manifest_path(root: Path, slug: str) -> Path:
@@ -98,15 +139,22 @@ def iter_slugs(root: Path) -> list[str]:
 
 
 __all__ = [
-    "INDEX_DIR",
+    "LEGACY_INDEX_DIR",
     "MANIFEST_NAME",
+    "MAX_VERSION_LABEL_CHARS",
+    "SOURCES_DIR",
     "TMP_PREFIX",
+    "VERSIONS_DIR",
     "KbNameError",
-    "index_dir",
     "iter_slugs",
     "kb_dir",
+    "legacy_index_dir",
     "manifest_path",
     "slugify",
+    "sources_dir",
     "validate_name",
     "validate_slug",
+    "validate_version_id",
+    "version_dir",
+    "versions_dir",
 ]

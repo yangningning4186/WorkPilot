@@ -86,14 +86,14 @@ class KbIndexingJobs:
     def start(
         self,
         slug: str,
-        work: Callable[[Callable[[str, int, int], None]], Awaitable[tuple[int, tuple[SkippedSource, ...]]]],
+        work: Callable[
+            [Callable[[str, int, int], None]], Awaitable[tuple[int, tuple[SkippedSource, ...]]]
+        ],
         *,
         stage: str,
     ) -> IndexingJob:
         if self.is_running(slug):
-            raise KnowledgeUnavailableError(
-                f"知识库 {slug} 正在建索引，等它完成再提交下一批。"
-            )
+            raise KnowledgeUnavailableError(f"知识库 {slug} 正在建索引，等它完成再提交下一批。")
         self._evict_expired()
         job = IndexingJob(
             slug=slug, status="running", stage=stage, done=0, total=0, started_at=time.time()
@@ -114,7 +114,9 @@ class KbIndexingJobs:
     async def _run(
         self,
         slug: str,
-        work: Callable[[Callable[[str, int, int], None]], Awaitable[tuple[int, tuple[SkippedSource, ...]]]],
+        work: Callable[
+            [Callable[[str, int, int], None]], Awaitable[tuple[int, tuple[SkippedSource, ...]]]
+        ],
     ) -> None:
         try:
             added, skipped = await work(self._progress(slug))

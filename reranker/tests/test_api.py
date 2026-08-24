@@ -1,3 +1,4 @@
+import threading
 from dataclasses import dataclass
 
 from fastapi.testclient import TestClient
@@ -44,6 +45,17 @@ class FakeScorer:
         ]
 
 
+@dataclass
+class ThreadRecordingScorer(FakeScorer):
+    score_thread_id: int | None = None
+
+    def score(
+        self, query: str, documents: list[str], *, max_length: int | None = None
+    ) -> list[float]:
+        self.score_thread_id = threading.get_ident()
+        return super().score(query, documents, max_length=max_length)
+
+
 def test_health_and_rerank_contract() -> None:
     with TestClient(create_app(FakeScorer())) as client:
         health = client.get("/health")
@@ -70,6 +82,30 @@ def test_health_and_rerank_contract() -> None:
         ],
         "span_audits": [],
     }
+
+
+def test_inference_does_not_run_on_the_asgi_event_loop_thread() -> None:
+    scorer = ThreadRecordingScorer()
+    application = create_app(scorer)
+
+    @application.middleware("http")
+    async def remember_event_loop_thread(request, call_next):
+        request.app.state.event_loop_thread_id = threading.get_ident()
+        return await call_next(request)
+
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/rerank",
+            json={
+                "query": "目标是什么",
+                "documents": [{"id": "C1", "text": "这里包含目标"}],
+                "top_n": 1,
+            },
+        )
+
+    assert response.status_code == 200
+    assert scorer.score_thread_id is not None
+    assert scorer.score_thread_id != application.state.event_loop_thread_id
 
 
 def test_rerank_rejects_duplicate_ids_and_model_mismatch() -> None:

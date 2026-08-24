@@ -1,3 +1,4 @@
+import asyncio
 import math
 import os
 from collections import Counter
@@ -300,6 +301,10 @@ def create_app(scorer: Scorer | None = None) -> FastAPI:
         yield
 
     app = FastAPI(title="WorkPilot Reranker", version="0.1.0", lifespan=lifespan)
+    # 单个模型实例不应被多个请求同时推理: GPU/MPS 上会把峰值显存成倍放大, CPU 上则会
+    # 让 PyTorch 自己的线程池互相争抢。锁只包住推理; 工作本身在线程里跑, 不阻塞 ASGI
+    # 事件循环, 因此排队期间健康检查仍然能立即响应。
+    app.state.inference_semaphore = asyncio.Semaphore(1)
 
     @app.get("/health", response_model=HealthResponse)
     async def health(
@@ -317,6 +322,7 @@ def create_app(scorer: Scorer | None = None) -> FastAPI:
 
     @app.post("/v1/rerank", response_model=RerankResponse)
     async def rerank(
+        request: Request,
         payload: RerankRequest,
         current: Annotated[Scorer, Depends(get_scorer)],
     ) -> RerankResponse:
@@ -334,16 +340,13 @@ def create_app(scorer: Scorer | None = None) -> FastAPI:
                     f"{current.max_length}"
                 ),
             )
-        scores = current.score(
-            payload.query,
-            [document.text for document in payload.documents],
-            max_length=effective_max_length,
-        )
-        span_audits = current.audit_spans(
-            payload.query,
-            payload.documents,
-            max_length=effective_max_length,
-        )
+        async with request.app.state.inference_semaphore:
+            scores, span_audits = await asyncio.to_thread(
+                _score_and_audit,
+                current,
+                payload,
+                effective_max_length,
+            )
         ranked = sorted(
             enumerate(zip(payload.documents, scores, strict=True)),
             key=lambda item: (-item[1][1], item[0]),
@@ -358,6 +361,26 @@ def create_app(scorer: Scorer | None = None) -> FastAPI:
         )
 
     return app
+
+
+def _score_and_audit(
+    scorer: Scorer,
+    payload: RerankRequest,
+    max_length: int,
+) -> tuple[list[float], list[TokenSpanAudit]]:
+    """阻塞的 tokenizer/PyTorch 工作；只允许由工作线程调用。"""
+
+    scores = scorer.score(
+        payload.query,
+        [document.text for document in payload.documents],
+        max_length=max_length,
+    )
+    audits = scorer.audit_spans(
+        payload.query,
+        payload.documents,
+        max_length=max_length,
+    )
+    return scores, audits
 
 
 app = create_app()
