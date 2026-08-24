@@ -50,6 +50,7 @@ def routing_env(settings: Settings) -> dict[str, str]:
         "TIER_EXTERNAL_BASE_URL": settings.tier_external_base_url,
         "TIER_EXTERNAL_MODEL": settings.tier_external_model,
         "TIER_EXTERNAL_CONTEXT_WINDOW_TOKENS": str(settings.tier_external_context_window_tokens),
+        "COWORK_MODEL_TIMEOUT_S": str(settings.cowork_model_timeout_s),
         "EXTERNAL_API_KEY": settings.external_api_key,
         "CLUSTER_API_KEY": settings.cluster_api_key,
     }
@@ -137,9 +138,7 @@ def build_model_gateway(
     )
     if completion_cache is None and settings.llm_cache_enabled and mode != "evaluation":
         # 进程级单例：每建一个网关就新建一个缓存等于恒不命中。
-        completion_cache = shared_completion_cache(
-            max_entries=settings.llm_cache_max_entries
-        )
+        completion_cache = shared_completion_cache(max_entries=settings.llm_cache_max_entries)
     table = load_settings_routing_table(settings)
     pool = (
         None
@@ -199,9 +198,7 @@ def build_custom_model_gateway(
         trust_env=settings.model_trust_env,
     )
     if completion_cache is None and settings.llm_cache_enabled:
-        completion_cache = shared_completion_cache(
-            max_entries=settings.llm_cache_max_entries
-        )
+        completion_cache = shared_completion_cache(max_entries=settings.llm_cache_max_entries)
     return ModelGateway(
         chat_provider,
         embedding_dimensions=settings.embedding_dim,

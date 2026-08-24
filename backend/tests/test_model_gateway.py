@@ -99,6 +99,182 @@ async def test_openai_compatible_provider_maps_wire_format() -> None:
     assert json.loads(requests[1].content)["input"] == ["one", "two"]
 
 
+async def test_openai_compatible_provider_strips_tagged_reasoning_from_complete() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "model": "local-reasoner",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": "<thinking>先判断模型身份</thinking>\n我是 WorkPilot"
+                        },
+                    }
+                ],
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="local-reasoner",
+        embedding_model="embed",
+        client=client,
+    )
+
+    completion = await provider.complete(
+        [Message(role="user", content="你是什么模型")], max_tokens=64, temperature=0.0
+    )
+    await client.aclose()
+
+    assert completion.text == "我是 WorkPilot"
+
+
+async def test_openai_compatible_provider_strips_orphan_reasoning_close_from_complete() -> None:
+    """兼容端点偶尔丢开标签；孤立的闭标签及其前置推理也不能落入正文。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "model": "local-reasoner",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": (
+                                "用户要求读取文件并提取字段。直接回答即可。\n"
+                                "</think>\n\n项目代号：Silver Heron"
+                            )
+                        },
+                    }
+                ],
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="local-reasoner",
+        embedding_model="embed",
+        enable_thinking=False,
+        client=client,
+    )
+
+    completion = await provider.complete(
+        [Message(role="user", content="读取项目代号")], max_tokens=64, temperature=0.0
+    )
+    await client.aclose()
+
+    assert completion.text == "项目代号：Silver Heron"
+
+
+async def test_cowork_decision_omits_provider_max_tokens_for_complete_and_stream() -> None:
+    """8192 只做上下文/费用预留，不再截断 Cowork reasoning + 正文。"""
+
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        payloads.append(payload)
+        if payload.get("stream"):
+            body = "".join(
+                (
+                    'data: {"model":"served","choices":[{"delta":{"content":"完成"}}]}\n\n',
+                    'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+                    '"usage":{"prompt_tokens":5,"completion_tokens":2}}\n\n',
+                    "data: [DONE]\n\n",
+                )
+            )
+            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+        return httpx.Response(
+            200,
+            json={
+                "model": "served",
+                "choices": [{"finish_reason": "stop", "message": {"content": "完成"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="reasoner",
+        embedding_model="embed",
+        client=client,
+    )
+    gateway = ModelGateway(provider, embedding_dimensions=2)
+    tools = [ToolDefinition(name="inspect", description="检查", parameters={"type": "object"})]
+
+    completed = await gateway.complete_with_tools(
+        [Message(role="user", content="处理任务")],
+        tools=tools,
+        task_type="cowork_decision",
+        max_tokens=8_192,
+    )
+    streamed = [
+        chunk
+        async for chunk in gateway.stream_with_tools(
+            [Message(role="user", content="处理任务")],
+            tools=tools,
+            task_type="cowork_decision",
+            max_tokens=8_192,
+        )
+    ]
+    await client.aclose()
+
+    assert completed.text == "完成"
+    assert streamed[-1].result is not None and streamed[-1].result.text == "完成"
+    assert len(payloads) == 2
+    assert all("max_tokens" not in payload for payload in payloads)
+
+
+async def test_non_cowork_tasks_keep_provider_max_tokens() -> None:
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "model": "served",
+                "choices": [{"finish_reason": "stop", "message": {"content": "短回答"}}],
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="chat",
+        embedding_model="embed",
+        client=client,
+    )
+    gateway = ModelGateway(provider, embedding_dimensions=2)
+
+    await gateway.complete(
+        [Message(role="user", content="起标题")], task_type="conversation_title", max_tokens=80
+    )
+    await client.aclose()
+
+    assert payloads[0]["max_tokens"] == 80
+
+
 async def test_gateway_maps_native_parallel_tool_calls_and_canonical_history() -> None:
     requests: list[httpx.Request] = []
 

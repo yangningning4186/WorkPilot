@@ -62,16 +62,18 @@ routes:
   general_answer: main
   agent_generate_review: main
   agent_compare_documents: main
-  cowork_decision: main
+  cowork_decision:
+    tier: main
+    timeout_s: ${COWORK_MODEL_TIMEOUT_S}
 
   # —— 改写/分解：高频、对单次质量不敏感，后面还有检索与 rerank 兜底。
   query_decomposition: light
   contextual_query_rewrite: light
   edit_rewrite: light
-  edit_word: main
-  edit_excel: main
   conversation_summary: main
-  cowork_compaction: main
+  cowork_compaction:
+    tier: main
+    timeout_s: ${COWORK_MODEL_TIMEOUT_S}
   memory_op: light
 
   # —— 结构化抽取：**刻意留在 main**。

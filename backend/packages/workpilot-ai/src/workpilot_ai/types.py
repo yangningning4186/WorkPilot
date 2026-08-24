@@ -78,6 +78,25 @@ class CompletionResult:
 
 
 @dataclass(frozen=True)
+class CompletionChunk:
+    """流式 tool-calling 的一块。
+
+    三种块**互斥地**承载三件事：正文增量、思考增量、以及最后那一块携带的完整
+    ``CompletionResult``。终块的存在是刻意的——工具调用的参数是逐片拼出来的，只有
+    收完才谈得上"这一轮模型决定调哪几只工具"，而调用方需要的正是那个整体。有了终块，
+    调用方可以把流当成"complete_with_tools + 一路上的 delta"，决策逻辑一行都不用改。
+
+    ``reasoning_delta`` 与 ``text_delta`` 分开而不是拼在一起：思考过程不进 canonical
+    历史、不参与引用、也不该被当成回答的一部分落盘。混成一路之后再想分开就只能靠
+    猜标记，那是一类必然出错的解析。
+    """
+
+    text_delta: str = ""
+    reasoning_delta: str = ""
+    result: CompletionResult | None = None
+
+
+@dataclass(frozen=True)
 class EmbeddingResult:
     embeddings: list[list[float]]
     model: str
@@ -94,7 +113,7 @@ class ModelProvider(Protocol):
         self,
         messages: list[Message],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
     ) -> CompletionResult: ...
 
@@ -102,7 +121,7 @@ class ModelProvider(Protocol):
         self,
         messages: list[Message],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
     ) -> AsyncIterator[str]: ...
 
@@ -118,9 +137,28 @@ class ToolCallingProvider(Protocol):
         *,
         tools: list[ToolDefinition],
         parallel_tool_calls: bool,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
     ) -> CompletionResult: ...
+
+
+class StreamingToolCallingProvider(Protocol):
+    """真正按 SSE 流式返回、且能在流里累出 tool_call 的 adapter。
+
+    单独一个 Protocol 而不是往 ``ToolCallingProvider`` 上加方法：不是每个 Provider 都
+    做得到（Gemini 的会话适配器现在就没有），而"做不到"必须是网关能检测并优雅降级的
+    情况，不能变成运行时 AttributeError。
+    """
+
+    def stream_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool,
+        max_tokens: int | None,
+        temperature: float,
+    ) -> AsyncIterator[CompletionChunk]: ...
 
 
 class PromptCachingToolCallingProvider(Protocol):
@@ -132,7 +170,7 @@ class PromptCachingToolCallingProvider(Protocol):
         *,
         tools: list[ToolDefinition],
         parallel_tool_calls: bool,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
         prompt_cache_key: str,
     ) -> CompletionResult: ...

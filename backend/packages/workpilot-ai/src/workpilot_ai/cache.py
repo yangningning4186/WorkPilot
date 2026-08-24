@@ -45,15 +45,16 @@ def completion_cache_key(
     model: str,
     provider: str,
     messages: list[Message],
-    max_tokens: int,
+    max_tokens: int | None,
     temperature: float,
     request_fingerprint: str = "",
 ) -> str:
     """把决定输出的全部输入摊平成一个 sha256。
 
     少放一个字段就是一次错误命中，而错误命中比不命中贵得多——它会安静地返回
-    一个"看起来对"的答案。所以宁可多放：`max_tokens` 会影响截断，
-    `provider` 会影响同名模型的不同部署，`request_fingerprint` 装的是
+    一个"看起来对"的答案。所以宁可多放：`max_tokens` 会影响截断，`None`
+    表示让 Provider 使用自身输出边界；`provider` 会影响同名模型的不同部署，
+    `request_fingerprint` 装的是
     `enable_thinking` 这类改输出但不改 messages 的请求参数。
     """
 

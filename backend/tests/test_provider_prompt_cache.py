@@ -83,7 +83,11 @@ async def test_openai_prompt_cache_key_and_usage_are_mapped() -> None:
     )
 
     result = await provider.complete_with_tools_prompt_cache(
-        [Message(role="system", content="稳定策略"), Message(role="user", content="任务")],
+        [
+            Message(role="system", content="稳定策略"),
+            Message(role="user", content="任务"),
+            Message(role="user", content="每轮变化的临时上下文"),
+        ],
         tools=[_tool()],
         parallel_tool_calls=True,
         max_tokens=100,
@@ -158,9 +162,7 @@ async def test_anthropic_marks_system_prefix_and_normalizes_usage() -> None:
             },
         )
 
-    client = httpx.AsyncClient(
-        base_url="http://model.test", transport=httpx.MockTransport(handler)
-    )
+    client = httpx.AsyncClient(base_url="http://model.test", transport=httpx.MockTransport(handler))
     provider = AnthropicProvider(
         base_url="http://unused.test",
         api_key="secret",
@@ -169,7 +171,11 @@ async def test_anthropic_marks_system_prefix_and_normalizes_usage() -> None:
         client=client,
     )
     result = await provider.complete_with_tools_prompt_cache(
-        [Message(role="system", content="稳定策略"), Message(role="user", content="任务")],
+        [
+            Message(role="system", content="稳定策略"),
+            Message(role="user", content="任务"),
+            Message(role="user", content="每轮变化的临时上下文"),
+        ],
         tools=[_tool()],
         parallel_tool_calls=True,
         max_tokens=100,
@@ -181,12 +187,54 @@ async def test_anthropic_marks_system_prefix_and_normalizes_usage() -> None:
     system = requests[0]["system"]
     assert isinstance(system, list)
     assert system[0]["cache_control"] == {"type": "ephemeral"}  # type: ignore[index]
+    messages = requests[0]["messages"]
+    assert isinstance(messages, list)
+    content = messages[0]["content"]  # type: ignore[index]
+    assert content[0]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in content[1]
     assert result.usage == Usage(
         input_tokens=1_100,
         output_tokens=30,
         prompt_cache_read_tokens=800,
         prompt_cache_write_tokens=200,
     )
+
+
+async def test_anthropic_caches_single_user_turn_when_there_is_no_ephemeral_tail() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "model": "claude-test",
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 10, "output_tokens": 2},
+            },
+        )
+
+    client = httpx.AsyncClient(base_url="http://model.test", transport=httpx.MockTransport(handler))
+    provider = AnthropicProvider(
+        base_url="http://unused.test",
+        api_key="secret",
+        chat_model="claude-test",
+        timeout_s=10,
+        client=client,
+    )
+    await provider.complete_with_tools_prompt_cache(
+        [Message(role="system", content="稳定策略"), Message(role="user", content="任务")],
+        tools=[_tool()],
+        parallel_tool_calls=True,
+        max_tokens=100,
+        temperature=0.0,
+        prompt_cache_key="ignored",
+    )
+    await client.aclose()
+
+    messages = requests[0]["messages"]
+    assert isinstance(messages, list)
+    assert messages[0]["content"][0]["cache_control"] == {"type": "ephemeral"}  # type: ignore[index]
 
 
 class _PromptCacheProvider:

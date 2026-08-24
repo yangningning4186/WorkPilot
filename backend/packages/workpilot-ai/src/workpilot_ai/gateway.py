@@ -15,6 +15,9 @@ from workpilot_ai.errors import (
 )
 from workpilot_ai.errors import (
     ProviderNotDispatchedError,
+    ProviderResponseError,
+    ProviderRouteTimeoutError,
+    ProviderTimeoutError,
 )
 from workpilot_ai.pricing import GatewayPricing, ModelPricing, estimate_tokens, is_measured
 from workpilot_ai.prompt_cache import prompt_cache_key
@@ -29,11 +32,13 @@ from workpilot_ai.types import (
     AuditRecord,
     AuditSink,
     BudgetGuard,
+    CompletionChunk,
     CompletionResult,
     EmbeddingResult,
     Message,
     ModelProvider,
     PromptCachingToolCallingProvider,
+    StreamingToolCallingProvider,
     ToolCallingProvider,
     ToolDefinition,
     Usage,
@@ -43,6 +48,10 @@ logger = structlog.get_logger(__name__)
 
 _CHAT_REQUEST_OVERHEAD_TOKENS = 4
 _CHAT_MESSAGE_OVERHEAD_TOKENS = 8
+# Cowork 的主循环可能把整轮输出额度都花在 reasoning 上。这里的 max_tokens 仍用于
+# 上下文压缩、run 计量和费用预留，但支持省略该字段的 Provider 不再收到客户端硬上限。
+# 其他短任务（标题、摘要、改写等）继续严格限长。
+_PROVIDER_DEFAULT_OUTPUT_TASKS = frozenset({"cowork_decision"})
 
 
 class EmbeddingDimensionError(ValueError):
@@ -55,6 +64,16 @@ class EmbeddingIdentityError(ValueError):
 
 class NativeToolCallingUnsupportedError(ProviderNotDispatchedError):
     """路由链里的 provider 都没有实现原生 tool-calling。"""
+
+
+def _wire_max_tokens(
+    task_type: str, provider: ModelProvider, configured_max_tokens: int
+) -> int | None:
+    if task_type in _PROVIDER_DEFAULT_OUTPUT_TASKS and bool(
+        getattr(provider, "supports_omitting_max_tokens", False)
+    ):
+        return None
+    return configured_max_tokens
 
 
 def request_character_count(
@@ -158,8 +177,8 @@ class _Reservation:
 class TierProviderPool:
     """按档位持有 provider 实例。
 
-    同一档位复用同一个实例（也就是同一个 HTTP 连接池）；不同档位即使指向同一台机器
-    也分开，因为 `model` 不同，而 provider 的身份是 (base_url, model) 这一对。
+    同一 endpoint（包括任务级 timeout）复用同一个实例/HTTP 连接池；不同档位或超时
+    即使指向同一台机器也分开，因为 provider 的身份包含 (base_url, model, timeout)。
     """
 
     def __init__(
@@ -178,19 +197,19 @@ class TierProviderPool:
         self._openai_compatible_prompt_cache_key_supported = (
             openai_compatible_prompt_cache_key_supported
         )
-        self._providers: dict[Tier, ModelProvider] = {}
+        # 同一档位可以被不同 task_type 赋予不同 timeout；EndpointSpec 必须进入缓存键，
+        # 否则先创建的 30 秒 Provider 会让后续 Cowork 的 120 秒覆盖静默失效。
+        self._providers: dict[EndpointSpec, ModelProvider] = {}
 
     def _provider(self, endpoint: EndpointSpec) -> ModelProvider:
-        cached = self._providers.get(endpoint.tier)
+        cached = self._providers.get(endpoint)
         if cached is None:
             cached = (
                 _default_provider_factory(
                     endpoint,
                     embedding_model=self._embedding_model,
                     trust_env=self._trust_env,
-                    prompt_cache_key_supported=(
-                        self._openai_compatible_prompt_cache_key_supported
-                    ),
+                    prompt_cache_key_supported=(self._openai_compatible_prompt_cache_key_supported),
                 )
                 if self._factory is None
                 else self._factory(
@@ -199,7 +218,7 @@ class TierProviderPool:
                     trust_env=self._trust_env,
                 )
             )
-            self._providers[endpoint.tier] = cached
+            self._providers[endpoint] = cached
         return cached
 
     def chain(
@@ -357,6 +376,8 @@ class ModelGateway:
             and self._cache is not None
             and is_cacheable(temperature=temperature, mode=self._mode)
         )
+        route_attempts = 0
+        route_only_timed_out = True
         for index, (tier, provider) in enumerate(attempts):
             is_last = index == len(attempts) - 1
             pricing = self._pricing.for_tier(tier)
@@ -367,6 +388,7 @@ class ModelGateway:
                 max_tokens=max_tokens,
             )
             if not prompt_budget.fits(messages, tools):
+                route_only_timed_out = False
                 if is_last:
                     raise self._context_overflow(prompt_budget, messages, tools)
                 self._log_context_fallback(
@@ -377,11 +399,14 @@ class ModelGateway:
                 )
                 continue
 
+            wire_max_tokens = _wire_max_tokens(task_type, provider, max_tokens)
+
             tool_method = None
             prompt_cache_method = None
             if tools is not None:
                 candidate = getattr(provider, "complete_with_tools", None)
                 if not callable(candidate):
+                    route_only_timed_out = False
                     if is_last:
                         raise NativeToolCallingUnsupportedError(
                             f"provider {provider.name}/{provider.chat_model} 不支持原生 tool-calling"
@@ -389,9 +414,7 @@ class ModelGateway:
                     self._log_fallback(task_type, tier, attempts[index + 1][0], dispatched=False)
                     continue
                 tool_method = cast("ToolCallingProvider", provider).complete_with_tools
-                prompt_candidate = getattr(
-                    provider, "complete_with_tools_prompt_cache", None
-                )
+                prompt_candidate = getattr(provider, "complete_with_tools_prompt_cache", None)
                 if (
                     self._provider_prompt_cache_enabled
                     and self._mode != "evaluation"
@@ -409,7 +432,7 @@ class ModelGateway:
                     model=provider.chat_model,
                     provider=provider.name,
                     messages=messages,
-                    max_tokens=max_tokens,
+                    max_tokens=wire_max_tokens,
                     temperature=temperature,
                     # 用 getattr 是为了不逼所有测试假 provider 都实现它；
                     # 缺这个属性的假 provider 本来也不会改变请求参数。
@@ -441,17 +464,18 @@ class ModelGateway:
             # 预留在 try 之外: 预算不足要立刻抛出去, 换个档位重试只会更快烧完额度。
             reservation = await self._reserve(pricing, estimated_usage)
             started = monotonic()
+            route_attempts += 1
             try:
                 if tools is None:
                     result = await provider.complete(
-                        messages, max_tokens=max_tokens, temperature=temperature
+                        messages, max_tokens=wire_max_tokens, temperature=temperature
                     )
                 elif prompt_cache_method is not None:
                     result = await prompt_cache_method(
                         messages,
                         tools=tools,
                         parallel_tool_calls=parallel_tool_calls,
-                        max_tokens=max_tokens,
+                        max_tokens=wire_max_tokens,
                         temperature=temperature,
                         prompt_cache_key=prompt_cache_key(
                             provider=provider.name,
@@ -467,10 +491,11 @@ class ModelGateway:
                         messages,
                         tools=tools,
                         parallel_tool_calls=parallel_tool_calls,
-                        max_tokens=max_tokens,
+                        max_tokens=wire_max_tokens,
                         temperature=temperature,
                     )
             except ProviderNotDispatchedError:
+                route_only_timed_out = False
                 await reservation.release()
                 await self._audit(
                     task_type=task_type,
@@ -487,7 +512,9 @@ class ModelGateway:
                     raise
                 self._log_fallback(task_type, tier, attempts[index + 1][0], dispatched=False)
                 continue
-            except Exception:
+            except Exception as error:
+                if not isinstance(error, ProviderTimeoutError):
+                    route_only_timed_out = False
                 # 发出去之后失败可能已经计费, 保守记账。换档位重试是第二笔钱,
                 # 两笔都要留在 llm_calls 里, 否则成本曲线会把 fallback 抹平。
                 await reservation.abandon()
@@ -503,6 +530,10 @@ class ModelGateway:
                     was_fallback=index > 0,
                 )
                 if is_last:
+                    if route_attempts > 0 and route_only_timed_out:
+                        raise ProviderRouteTimeoutError(
+                            f"模型路由 {task_type} 的全部可用 endpoint 均响应超时"
+                        ) from error
                     raise
                 self._log_fallback(task_type, tier, attempts[index + 1][0], dispatched=True)
                 continue
@@ -522,6 +553,187 @@ class ModelGateway:
                 # 只写成功结果: 一次抖动被钉住 24 小时比不缓存糟得多。
                 await self._cache.set(cache_key, result, ttl_s=self._cache_ttl_s)
             return result
+        raise AssertionError("路由链为空, chain() 应当已经抛出 TierUnavailableError")
+
+    def stream_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool = True,
+        task_type: str = "generate",
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+        tier_override: Tier | None = None,
+    ) -> AsyncIterator[CompletionChunk]:
+        """`complete_with_tools` 的流式版本：一路 delta，最后一块携带完整结果。
+
+        契约刻意做成"终块 = complete_with_tools 的返回值"，这样 Agent 循环的决策逻辑
+        完全不需要为流式改写——它照旧拿到一个 `CompletionResult`，只是在等待期间多了
+        可以转播给用户的增量。
+
+        **不做结果缓存**：tool-calling 那条路本来就不缓存（同一段前缀在不同工具面下
+        应当得出不同决策），流式更不该缓存，否则重放的"流"是假的。
+
+        **provider 不支持流式就在同一个 endpoint 上降级**成一次 `complete_with_tools`，
+        只发终块。降级发生在档位内部而不是往下一档掉：不支持流式不是这个 endpoint 有
+        问题，换成更贵的一档既解决不了问题又悄悄改了模型。
+        """
+
+        if not tools:
+            raise ValueError("原生 tool-calling 至少需要一个工具")
+        return self._stream_with_tools(
+            messages,
+            tools=tools,
+            parallel_tool_calls=parallel_tool_calls,
+            task_type=task_type,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tier_override=tier_override,
+        )
+
+    async def _stream_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool,
+        task_type: str,
+        max_tokens: int,
+        temperature: float,
+        tier_override: Tier | None,
+    ) -> AsyncIterator[CompletionChunk]:
+        attempts = self._chain(task_type, tier_override=tier_override)
+        # 与 `_complete` 同一套判据：整条路由链只是超时（而不是任何一次真正的失败）时，
+        # 抛的是 `ProviderRouteTimeoutError`——调用方据此把 run 挂起等会儿重来，而不是
+        # 判死。少了这两个变量，一次全链超时会被当成普通失败，run 直接落 failed。
+        route_attempts = 0
+        route_only_timed_out = True
+        for index, (tier, provider) in enumerate(attempts):
+            is_last = index == len(attempts) - 1
+            pricing = self._pricing.for_tier(tier)
+            prompt_budget = self._prompt_budget_for(
+                task_type=task_type,
+                tier=tier,
+                provider=provider,
+                max_tokens=max_tokens,
+            )
+            if not prompt_budget.fits(messages, tools):
+                route_only_timed_out = False
+                if is_last:
+                    raise self._context_overflow(prompt_budget, messages, tools)
+                self._log_context_fallback(
+                    prompt_budget, attempts[index + 1][0], messages=messages, tools=tools
+                )
+                continue
+
+            wire_max_tokens = _wire_max_tokens(task_type, provider, max_tokens)
+
+            stream_candidate = getattr(provider, "stream_with_tools", None)
+            tool_candidate = getattr(provider, "complete_with_tools", None)
+            if not callable(stream_candidate) and not callable(tool_candidate):
+                route_only_timed_out = False
+                if is_last:
+                    raise NativeToolCallingUnsupportedError(
+                        f"provider {provider.name}/{provider.chat_model} 不支持原生 tool-calling"
+                    )
+                self._log_fallback(task_type, tier, attempts[index + 1][0], dispatched=False)
+                continue
+
+            estimated_usage = Usage(
+                input_tokens=self._estimate_tokens(request_character_count(messages, tools)),
+                output_tokens=max_tokens,
+            )
+            reservation = await self._reserve(pricing, estimated_usage)
+            started = monotonic()
+            route_attempts += 1
+            emitted = False
+            result: CompletionResult | None = None
+            dispatched = True
+            failure: Exception | None = None
+            try:
+                if callable(stream_candidate):
+                    provider_stream = cast(
+                        "StreamingToolCallingProvider", provider
+                    ).stream_with_tools(
+                        messages,
+                        tools=tools,
+                        parallel_tool_calls=parallel_tool_calls,
+                        max_tokens=wire_max_tokens,
+                        temperature=temperature,
+                    )
+                    async for chunk in provider_stream:
+                        if chunk.result is not None:
+                            result = chunk.result
+                            continue
+                        if chunk.text_delta or chunk.reasoning_delta:
+                            emitted = True
+                            yield chunk
+                    if result is None:
+                        raise ProviderResponseError(
+                            f"provider {provider.name} 的流没有给出终块，"
+                            "拿不到这一轮的完整结果与用量"
+                        )
+                else:
+                    result = await cast("ToolCallingProvider", provider).complete_with_tools(
+                        messages,
+                        tools=tools,
+                        parallel_tool_calls=parallel_tool_calls,
+                        max_tokens=wire_max_tokens,
+                        temperature=temperature,
+                    )
+            except ProviderNotDispatchedError as error:
+                route_only_timed_out = False
+                dispatched = False
+                failure = error
+            except Exception as error:
+                if not isinstance(error, ProviderTimeoutError):
+                    route_only_timed_out = False
+                failure = error
+
+            if failure is None:
+                assert result is not None
+                charged = await self._settle(reservation, pricing, result.usage)
+                await self._audit(
+                    task_type=task_type,
+                    tier=tier,
+                    model=result.model,
+                    provider=provider,
+                    usage=result.usage,
+                    started=started,
+                    success=True,
+                    cost_usd=charged,
+                    was_fallback=index > 0,
+                )
+                yield CompletionChunk(result=result)
+                return
+
+            if not dispatched:
+                await reservation.release()
+                cost_usd = Decimal(0)
+            else:
+                await reservation.abandon()
+                cost_usd = reservation.estimated_usd
+            await self._audit(
+                task_type=task_type,
+                tier=tier,
+                model=provider.chat_model,
+                provider=provider,
+                usage=Usage(),
+                started=started,
+                success=False,
+                cost_usd=cost_usd,
+                was_fallback=index > 0,
+            )
+            # 与 `_stream` 同一条规则：已经吐出去的文本收不回来。此时换档位会让同一段
+            # 回答的前半段和后半段由两个模型写成，读起来是自相矛盾的一段话。
+            if emitted or is_last:
+                if route_attempts > 0 and route_only_timed_out:
+                    raise ProviderRouteTimeoutError(
+                        f"模型路由 {task_type} 的全部可用 endpoint 均响应超时"
+                    ) from failure
+                raise failure
+            self._log_fallback(task_type, tier, attempts[index + 1][0], dispatched=dispatched)
         raise AssertionError("路由链为空, chain() 应当已经抛出 TierUnavailableError")
 
     def stream(
@@ -851,12 +1063,8 @@ class ModelGateway:
                 provider=provider.name,
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
-                prompt_cache_read_tokens=(
-                    0 if cache_hit else usage.prompt_cache_read_tokens
-                ),
-                prompt_cache_write_tokens=(
-                    0 if cache_hit else usage.prompt_cache_write_tokens
-                ),
+                prompt_cache_read_tokens=(0 if cache_hit else usage.prompt_cache_read_tokens),
+                prompt_cache_write_tokens=(0 if cache_hit else usage.prompt_cache_write_tokens),
                 latency_ms=max(0, round((monotonic() - started) * 1000)),
                 success=success,
                 cost_usd=cost_usd,

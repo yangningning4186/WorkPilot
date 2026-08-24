@@ -25,6 +25,10 @@ class ProviderTimeoutError(ProviderResponseError):
     """请求可能已经发送，但未在配置时间内完成。"""
 
 
+class ProviderRouteTimeoutError(ProviderTimeoutError):
+    """主 endpoint 与整条 fallback 链均以 ProviderTimeoutError 结束。"""
+
+
 class ProviderTransportError(ProviderResponseError):
     """请求可能已经发送，随后发生非超时网络错误。"""
 

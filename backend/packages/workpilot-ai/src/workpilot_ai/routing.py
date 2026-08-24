@@ -14,7 +14,7 @@
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from re import findall, sub
 from typing import Any, Literal, cast
@@ -74,6 +74,9 @@ class RoutingTable:
     routes: Mapping[str, Tier]
     default_tier: Tier
     fallback_modes: Mapping[RoutingMode, bool]
+    # task_type -> 单次 endpoint 调用超时。没有覆盖时沿用档位自己的 timeout_s。
+    # 单独放一张表而不是改变 routes 的公开类型，兼容已有调用方直接遍历 routes。
+    route_timeouts: Mapping[str, float] = field(default_factory=dict)
     # task_type → 置信度不达标时的升档目标（docs/07 §3）。与 fallback 是两回事：
     # fallback 处理"调用失败"，升档处理"调用成功但结果不可信"。
     escalation: Mapping[str, Tier] = field(default_factory=dict)
@@ -122,6 +125,12 @@ class RoutingTable:
         if tier not in self.tiers:
             raise TierUnavailableError(f"路由表里没有声明档位 {tier}")
         spec = self.tiers[tier]
+        route_timeout = self.route_timeouts.get(task_type)
+
+        def endpoint_for(candidate: Tier) -> EndpointSpec:
+            endpoint = self.tiers[candidate].primary
+            return endpoint if route_timeout is None else replace(endpoint, timeout_s=route_timeout)
+
         if not self.fallback_modes.get(mode, True):
             if not spec.primary.available:
                 raise TierUnavailableError(
@@ -129,7 +138,7 @@ class RoutingTable:
                     f"评测模式禁止降级替换。请配置 TIER_{tier.upper()}_BASE_URL 与 "
                     f"TIER_{tier.upper()}_MODEL 后重跑。"
                 )
-            return (spec.primary,)
+            return (endpoint_for(tier),)
 
         chain: list[EndpointSpec] = []
         seen: set[Tier] = set()
@@ -137,7 +146,7 @@ class RoutingTable:
             if candidate in seen:
                 continue
             seen.add(candidate)
-            endpoint = self.tiers[candidate].primary
+            endpoint = endpoint_for(candidate)
             if endpoint.available:
                 chain.append(endpoint)
         if not chain:
@@ -251,6 +260,17 @@ def _tier_name(raw: object, *, where: str) -> Tier:
     raise RoutingConfigError(f"{where} 的档位名 {raw!r} 不合法，只能是 {', '.join(TIERS)} 之一")
 
 
+def _positive_float(raw: object, env: Mapping[str, str], *, where: str) -> float:
+    expanded = _expand(raw, env, where=where).strip()
+    try:
+        value = float(expanded)
+    except ValueError as error:
+        raise RoutingConfigError(f"{where} 必须是正数，实际是 {expanded!r}") from error
+    if value <= 0:
+        raise RoutingConfigError(f"{where} 必须是正数，实际是 {expanded!r}")
+    return value
+
+
 def parse_routing_table(document: object, env: Mapping[str, str]) -> RoutingTable:
     if not isinstance(document, dict):
         raise RoutingConfigError("config/routing.yaml 顶层必须是一个映射")
@@ -311,7 +331,19 @@ def parse_routing_table(document: object, env: Mapping[str, str]) -> RoutingTabl
     if not isinstance(raw_routes, dict) or not raw_routes:
         raise RoutingConfigError("config/routing.yaml 必须声明 routes")
     routes: dict[str, Tier] = {}
-    for task_type, raw_tier in raw_routes.items():
+    route_timeouts: dict[str, float] = {}
+    for task_type, raw_route in raw_routes.items():
+        raw_tier = raw_route
+        if isinstance(raw_route, dict):
+            if "tier" not in raw_route:
+                raise RoutingConfigError(f"routes.{task_type} 必须声明 tier")
+            raw_tier = raw_route["tier"]
+            if "timeout_s" in raw_route:
+                route_timeouts[str(task_type)] = _positive_float(
+                    raw_route["timeout_s"],
+                    env,
+                    where=f"routes.{task_type}.timeout_s",
+                )
         tier = _tier_name(raw_tier, where=f"routes.{task_type}")
         if tier not in tiers:
             raise RoutingConfigError(
@@ -367,6 +399,7 @@ def parse_routing_table(document: object, env: Mapping[str, str]) -> RoutingTabl
         routes=routes,
         default_tier=default_tier,
         fallback_modes=fallback_modes,
+        route_timeouts=route_timeouts,
         escalation=escalation,
     )
 

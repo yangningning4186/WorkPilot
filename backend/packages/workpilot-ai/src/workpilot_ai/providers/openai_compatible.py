@@ -17,7 +17,9 @@ from workpilot_ai.errors import (
     ProviderTimeoutError,
     ProviderTransportError,
 )
+from workpilot_ai.pricing import estimate_tokens
 from workpilot_ai.types import (
+    CompletionChunk,
     CompletionResult,
     EmbeddingResult,
     Message,
@@ -25,6 +27,10 @@ from workpilot_ai.types import (
     ToolDefinition,
     Usage,
 )
+
+# 流式端点不给 usage 时用来估产出量。1 字符 1 token 是上界, 宁可高估:
+# 低估会让 run 的 token 预算永远触不到顶, 熔断形同虚设(约束 5)。
+_STREAM_CHARS_PER_TOKEN = 1.0
 
 _DSML_TOOL_START = "<｜DSML｜tool_calls>"
 _DSML_TOOL_END = "</｜DSML｜tool_calls>"
@@ -35,6 +41,104 @@ _DSML_PARAMETER_START = re.compile(
     r'<｜DSML｜parameter name="([A-Za-z_][A-Za-z0-9_.:-]{0,127})" '
     r'string="(true|false)">'
 )
+_THINK_OPEN = re.compile(r"^\s*<think(?:ing)?\b[^>]*>", re.IGNORECASE)
+_THINK_CLOSE = re.compile(r"</think(?:ing)?>", re.IGNORECASE)
+_THINK_OPEN_PREFIXES = ("<think", "<thinking")
+_THINK_CLOSE_HOLDBACK = len("</thinking>") - 1
+# Some OpenAI-compatible endpoints omit the opening tag but still append a closing
+# ``</think>`` before the answer.  Treat only a bounded leading preamble as protocol:
+# a literal tag much later in a long answer is more likely user-requested content.
+_ORPHAN_THINK_PREAMBLE_LIMIT = 8_192
+
+
+class _LeadingThinkStreamFilter:
+    """把兼容端点塞进 ``content`` 的前置思考块拆出正文。
+
+    一些本地 OpenAI-compatible 模型不使用 ``reasoning_content``，而是把
+    ``<think>…</think>`` 直接逐片写进 ``content``。标签可能跨 SSE chunk；在确认
+    前必须扣住短尾巴，否则开标签或闭标签的半截会先作为正文发给客户端。
+
+    只识别回答开头的 think/thinking 块。正文中的同名标签可能是用户要求展示的示例，
+    不能把任意位置的内容都当作模型内部协议删除。
+    """
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._mode = "prefix"
+
+    def feed(self, fragment: str) -> tuple[str, str]:
+        self._buffer += fragment
+        visible: list[str] = []
+        reasoning: list[str] = []
+        while self._buffer:
+            if self._mode == "text":
+                visible.append(self._buffer)
+                self._buffer = ""
+                break
+            if self._mode == "prefix":
+                opening = _THINK_OPEN.match(self._buffer)
+                if opening is not None:
+                    self._buffer = self._buffer[opening.end() :]
+                    self._mode = "reasoning"
+                    continue
+                if self._could_be_opening_tag():
+                    break
+                self._mode = "text"
+                continue
+
+            closing = _THINK_CLOSE.search(self._buffer)
+            if closing is not None:
+                reasoning.append(self._buffer[: closing.start()])
+                self._buffer = self._buffer[closing.end() :].lstrip()
+                # 允许端点输出连续的前置思考块；遇到第一段真正正文后就永久透传。
+                self._mode = "prefix"
+                continue
+            if len(self._buffer) > _THINK_CLOSE_HOLDBACK:
+                reasoning.append(self._buffer[:-_THINK_CLOSE_HOLDBACK])
+                self._buffer = self._buffer[-_THINK_CLOSE_HOLDBACK:]
+            break
+        return "".join(visible), "".join(reasoning)
+
+    def finish(self) -> tuple[str, str]:
+        """排空收流时仍扣住的尾巴；未闭合思考块也绝不回灌正文。"""
+
+        visible = self._buffer if self._mode in {"prefix", "text"} else ""
+        reasoning = self._buffer if self._mode == "reasoning" else ""
+        self._buffer = ""
+        return visible, reasoning
+
+    def _could_be_opening_tag(self) -> bool:
+        candidate = self._buffer.lstrip().casefold()
+        if not candidate:
+            return True
+        if ">" in candidate:
+            return False
+        return candidate.startswith("<think") or any(
+            prefix.startswith(candidate) for prefix in _THINK_OPEN_PREFIXES
+        )
+
+
+def _strip_leading_think_blocks(content: str) -> str:
+    parser = _LeadingThinkStreamFilter()
+    visible, _ = parser.feed(content)
+    tail, _ = parser.finish()
+    cleaned = visible + tail
+
+    # Qwen/DeepSeek-compatible servers sometimes lose ``<think>`` at the chat
+    # template boundary while retaining ``</think>``.  The stream parser cannot
+    # retroactively retract deltas that were already shown, but the terminal
+    # CompletionResult is canonical and becomes an atomic ``message.snapshot``.
+    # Removing this malformed leading protocol here therefore keeps it out of the
+    # persisted assistant message and out of every completed/reloaded view.
+    closing = _THINK_CLOSE.search(cleaned)
+    if closing is None or closing.start() > _ORPHAN_THINK_PREAMBLE_LIMIT:
+        return cleaned
+    prefix = cleaned[: closing.start()]
+    # Preserve raw tags inside Markdown code examples.  Exact internal protocol is
+    # emitted as plain text, as in ``reasoning...\n</think>\nanswer``.
+    if prefix.count("```") % 2 == 1 or prefix.count("`") % 2 == 1:
+        return cleaned
+    return cleaned[closing.end() :].lstrip()
 
 
 def _parse_dsml_tool_calls(
@@ -185,6 +289,7 @@ class OpenAICompatibleProvider:
     """覆盖 OpenAI-compatible Chat Completions 与 Embeddings 接口。"""
 
     name = "openai_compatible"
+    supports_omitting_max_tokens = True
 
     def __init__(
         self,
@@ -226,7 +331,7 @@ class OpenAICompatibleProvider:
         self,
         messages: list[Message],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
     ) -> CompletionResult:
         return await self._complete(
@@ -241,7 +346,7 @@ class OpenAICompatibleProvider:
         *,
         tools: list[ToolDefinition],
         parallel_tool_calls: bool,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
     ) -> CompletionResult:
         if not tools:
@@ -260,7 +365,7 @@ class OpenAICompatibleProvider:
         *,
         tools: list[ToolDefinition],
         parallel_tool_calls: bool,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
         prompt_cache_key: str,
     ) -> CompletionResult:
@@ -274,16 +379,14 @@ class OpenAICompatibleProvider:
             parallel_tool_calls=parallel_tool_calls,
             max_tokens=max_tokens,
             temperature=temperature,
-            prompt_cache_key=(
-                prompt_cache_key if self._prompt_cache_key_supported else None
-            ),
+            prompt_cache_key=(prompt_cache_key if self._prompt_cache_key_supported else None),
         )
 
     async def _complete(
         self,
         messages: list[Message],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
         tools: list[ToolDefinition] | None = None,
         parallel_tool_calls: bool = False,
@@ -292,9 +395,10 @@ class OpenAICompatibleProvider:
         request_payload: dict[str, Any] = {
             "model": self.chat_model,
             "messages": [await self._message_payload(message) for message in messages],
-            "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        if max_tokens is not None:
+            request_payload["max_tokens"] = max_tokens
         if tools is not None:
             request_payload["tools"] = [
                 {
@@ -330,6 +434,8 @@ class OpenAICompatibleProvider:
             content = message.get("content")
         except (KeyError, IndexError, TypeError) as error:
             raise ProviderResponseError("模型响应缺少 choices[0].message") from error
+        if isinstance(content, str):
+            content = _strip_leading_think_blocks(content)
         raw_tool_calls = message.get("tool_calls") or []
         if not isinstance(raw_tool_calls, list):
             raise ProviderResponseError("模型响应的 tool_calls 不是数组")
@@ -364,13 +470,17 @@ class OpenAICompatibleProvider:
                 assert parsed_dsml is not None
                 content, parsed_calls = parsed_dsml
                 tool_calls.extend(parsed_calls)
-        # reasoning 模型在推理耗尽 max_tokens 时会回 content=null。此处若直接 str()
+        # reasoning 模型在推理耗尽输出额度时会回 content=null。此处若直接 str()
         # 会得到字符串 "None"，把"模型没给内容"静默伪装成内容，调用方拿到的是假数据。
         if content is None and not tool_calls:
             finish_reason = payload["choices"][0].get("finish_reason")
             raise ProviderResponseError(
                 f"模型返回空 content(finish_reason={finish_reason})；"
-                "reasoning 模型可能已耗尽 max_tokens，调大后重试"
+                + (
+                    "reasoning 模型可能已耗尽 max_tokens，调大后重试"
+                    if max_tokens is not None
+                    else "请求未设置客户端输出上限，请检查模型自身输出额度或服务状态"
+                )
             )
         text = "" if content is None else str(content)
         usage = payload.get("usage") or {}
@@ -383,11 +493,217 @@ class OpenAICompatibleProvider:
                 input_tokens=int(usage.get("prompt_tokens", 0)),
                 output_tokens=int(usage.get("completion_tokens", 0)),
                 prompt_cache_read_tokens=int(prompt_details.get("cached_tokens", 0)),
-                prompt_cache_write_tokens=int(
-                    prompt_details.get("cache_write_tokens", 0)
-                ),
+                prompt_cache_write_tokens=int(prompt_details.get("cache_write_tokens", 0)),
             ),
             tool_calls=tuple(tool_calls),
+        )
+
+    async def stream_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool,
+        max_tokens: int | None,
+        temperature: float,
+    ) -> AsyncIterator[CompletionChunk]:
+        """SSE 流式 tool-calling：一路 delta，最后一块给出完整结果。
+
+        三处不显然的地方：
+
+        * **tool_call 按 `index` 拼，不按 `id` 拼。** 首片才带 id 和 name，之后的片只带
+          `index` 和一段 `arguments` 碎片；用 id 当键会把同一只工具的后续片全都丢掉，
+          而且丢得很安静——参数拼不全，最后 json 解析失败才暴露，那时已经离现场很远。
+        * **正文留一段尾巴不发。** DeepSeek 的 DSML wrapper 会从 content 里漏出来，而它
+          可能横跨两片 SSE。按 marker 长度扣住尾部再发，就不会把内部协议的前半截当正文
+          推给用户；收流时再统一走和非流式同一个 DSML 解析。
+        * **拿不到 usage 就按产出字符估。** `stream_options.include_usage` 不是所有兼容
+          端点都认。给零会让每轮花费记成 0，run 的 token 预算永远不触顶——熔断失效比多
+          估一点严重得多（约束 5）。
+        """
+
+        if not tools:
+            raise ValueError("原生 tool-calling 至少需要一个工具")
+        request_payload: dict[str, Any] = {
+            "model": self.chat_model,
+            "messages": [await self._message_payload(message) for message in messages],
+            "temperature": temperature,
+            "stream": True,
+            # 不支持的端点会忽略这个字段；支持的会在末尾多给一块带 usage 的 chunk。
+            "stream_options": {"include_usage": True},
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                        "strict": tool.strict,
+                    },
+                }
+                for tool in tools
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": parallel_tool_calls,
+        }
+        if max_tokens is not None:
+            request_payload["max_tokens"] = max_tokens
+        if self._enable_thinking is not None:
+            request_payload["chat_template_kwargs"] = {"enable_thinking": self._enable_thinking}
+
+        content_parts: list[str] = []
+        sent_chars = 0
+        # 累积中的 tool_call，按 SSE 的 index 归位。
+        partial: dict[int, dict[str, str]] = {}
+        model = self.chat_model
+        finish_reason: object = None
+        usage_payload: dict[str, Any] = {}
+        generated_chars = 0
+        # DSML wrapper 可能横跨两片；扣住这么多字符就足以在拼完之前认出它的开头。
+        holdback = len(_DSML_TOOL_START) - 1
+        think_filter = _LeadingThinkStreamFilter()
+
+        with _dispatch_guard():
+            stream = self._client.stream(
+                "POST",
+                "chat/completions",
+                headers=self._headers,
+                json=request_payload,
+            )
+            response = await stream.__aenter__()
+        try:
+            if response.is_error:
+                # 流式响应要先把体读出来才有内容, 否则拿到的是空串。
+                _raise_with_body(response, (await response.aread()).decode("utf-8", "replace"))
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    payload = json.loads(data)
+                except json.JSONDecodeError as error:
+                    raise ProviderResponseError("模型流式响应包含非法 JSON 片段") from error
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("model"):
+                    model = str(payload["model"])
+                if isinstance(payload.get("usage"), dict):
+                    usage_payload = payload["usage"]
+                choices = payload.get("choices")
+                if not isinstance(choices, list) or not choices:
+                    continue
+                choice = choices[0]
+                if not isinstance(choice, dict):
+                    continue
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+                delta = choice.get("delta")
+                if not isinstance(delta, dict):
+                    continue
+                # reasoning_content 是 DeepSeek/Qwen 的字段名，reasoning 是另一些端点的。
+                for key in ("reasoning_content", "reasoning"):
+                    value = delta.get(key)
+                    if isinstance(value, str) and value:
+                        generated_chars += len(value)
+                        yield CompletionChunk(reasoning_delta=value)
+                        break
+                chunk_content = delta.get("content")
+                if isinstance(chunk_content, str) and chunk_content:
+                    generated_chars += len(chunk_content)
+                    visible, tagged_reasoning = think_filter.feed(chunk_content)
+                    if tagged_reasoning:
+                        yield CompletionChunk(reasoning_delta=tagged_reasoning)
+                    if visible:
+                        content_parts.append(visible)
+                        joined = "".join(content_parts)
+                        marker = joined.find(_DSML_TOOL_START)
+                        safe_upto = marker if marker >= 0 else max(0, len(joined) - holdback)
+                        if safe_upto > sent_chars:
+                            yield CompletionChunk(text_delta=joined[sent_chars:safe_upto])
+                            sent_chars = safe_upto
+                raw_calls = delta.get("tool_calls")
+                if isinstance(raw_calls, list):
+                    for raw in raw_calls:
+                        if not isinstance(raw, dict):
+                            continue
+                        index = raw.get("index")
+                        if not isinstance(index, int):
+                            raise ProviderResponseError("模型流式 tool_call 缺少 index")
+                        slot = partial.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                        if raw.get("id"):
+                            slot["id"] = str(raw["id"])
+                        function = raw.get("function")
+                        if isinstance(function, dict):
+                            if function.get("name"):
+                                slot["name"] = str(function["name"])
+                            fragment = function.get("arguments")
+                            if isinstance(fragment, str):
+                                slot["arguments"] += fragment
+        finally:
+            await stream.__aexit__(None, None, None)
+
+        visible_tail, reasoning_tail = think_filter.finish()
+        if reasoning_tail:
+            yield CompletionChunk(reasoning_delta=reasoning_tail)
+        if visible_tail:
+            content_parts.append(visible_tail)
+        text = _strip_leading_think_blocks("".join(content_parts))
+        tool_calls: list[ToolCall] = []
+        seen_call_ids: set[str] = set()
+        for index in sorted(partial):
+            slot = partial[index]
+            call_id, name = slot["id"], slot["name"]
+            if not call_id or not name or call_id in seen_call_ids:
+                raise ProviderResponseError("模型流式响应包含空名称或重复 tool_call id")
+            seen_call_ids.add(call_id)
+            tool_calls.append(ToolCall(id=call_id, name=name, arguments=slot["arguments"]))
+        if _DSML_TOOL_START in text:
+            if tool_calls:
+                # 结构化调用优先，但内部协议不得进入 assistant 正文。
+                text = text[: text.find(_DSML_TOOL_START)].rstrip()
+            else:
+                parsed = _parse_dsml_tool_calls(text, finish_reason=finish_reason)
+                assert parsed is not None
+                text, parsed_calls = parsed
+                tool_calls.extend(parsed_calls)
+        if not text and not tool_calls:
+            raise ProviderResponseError(
+                f"模型流式响应为空(finish_reason={finish_reason})；"
+                + (
+                    "reasoning 模型可能已耗尽 max_tokens，调大后重试"
+                    if max_tokens is not None
+                    else "请求未设置客户端输出上限，请检查模型自身输出额度或服务状态"
+                )
+            )
+        # 扣住的尾巴在这里补齐；DSML 已经剥掉，剩下的都是正文。
+        if len(text) > sent_chars:
+            yield CompletionChunk(text_delta=text[sent_chars:])
+
+        prompt_details = usage_payload.get("prompt_tokens_details") or {}
+        output_tokens = int(usage_payload.get("completion_tokens", 0))
+        if output_tokens <= 0:
+            # Count the raw generated reasoning too.  Sanitising internal protocol
+            # must not make a reasoning-heavy call appear free to the budget meter.
+            produced = generated_chars + sum(len(item["arguments"]) for item in partial.values())
+            estimated_output = estimate_tokens(produced, chars_per_token=_STREAM_CHARS_PER_TOKEN)
+            output_tokens = (
+                estimated_output if max_tokens is None else min(max_tokens, estimated_output)
+            )
+        yield CompletionChunk(
+            result=CompletionResult(
+                text=text,
+                model=model,
+                provider=self.name,
+                usage=Usage(
+                    input_tokens=int(usage_payload.get("prompt_tokens", 0)),
+                    output_tokens=output_tokens,
+                    prompt_cache_read_tokens=int(prompt_details.get("cached_tokens", 0)),
+                    prompt_cache_write_tokens=int(prompt_details.get("cache_write_tokens", 0)),
+                ),
+                tool_calls=tuple(tool_calls),
+            )
         )
 
     @staticmethod
@@ -452,16 +768,17 @@ class OpenAICompatibleProvider:
         self,
         messages: list[Message],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
     ) -> AsyncIterator[str]:
         request_payload: dict[str, Any] = {
             "model": self.chat_model,
             "messages": [await self._message_payload(message) for message in messages],
-            "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": True,
         }
+        if max_tokens is not None:
+            request_payload["max_tokens"] = max_tokens
         if self._enable_thinking is not None:
             request_payload["chat_template_kwargs"] = {"enable_thinking": self._enable_thinking}
         with _dispatch_guard():

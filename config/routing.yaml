@@ -58,14 +58,32 @@ tiers:
 # 对不上就会静默落到 default_route，路由表也就白写了。
 routes:
   # —— 生成：甜点档。质量与成本的最优点，也是 §4 帕累托实验的基准配置。
-  cowork_decision: main
+  cowork_decision:
+    tier: main
+    # 所有可用 fallback 都继承这个任务级超时；唯一来源是 Settings，避免这里再写一份 120。
+    timeout_s: ${COWORK_MODEL_TIMEOUT_S}
+
+  # —— 只读子 Agent（explore）：调查轮与收尾轮分开登记，因为它们是两类活。
+  # 调查轮要做多轮 tool-calling，一次选错工具会连累后面七次调用，和主循环同档。
+  # 收尾轮不带工具，只把已经取到的证据改写成「结论/证据/不确定项」，正是 light 的甜点；
+  # 证据长到 light 装不下时，网关按各档声明的 context_window_tokens 自己降到 main
+  # （§1 的 fallback 链），所以这里不必为"万一超窗"预留档位。
+  # 把调查轮也降到 light 是一次会改变调查质量的变更，按 §3 的规矩要先有对照数据——
+  # explore 现在还没有评测覆盖，不能顺手翻过去。
+  cowork_readonly_subagent:
+    tier: main
+    timeout_s: ${COWORK_MODEL_TIMEOUT_S}
+  cowork_readonly_subagent_summary:
+    tier: light
+    timeout_s: ${COWORK_MODEL_TIMEOUT_S}
 
   # —— 改写：高频、对单次质量不敏感。
   edit_rewrite: light
-  edit_word: main
-  edit_excel: main
-  cowork_compaction: main
+  cowork_compaction:
+    tier: main
+    timeout_s: ${COWORK_MODEL_TIMEOUT_S}
   memory_op: light
+  conversation_title: light
   skill_distillation: light
 
   # —— 评测专用。

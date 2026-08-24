@@ -77,4 +77,3 @@ class BatchPricingNotConfiguredError(RuntimeError):
     填了却说不清出处才是问题——§7.3 明确要求报告里写出取值与来源，
     说不清口径的成本数字一问就露馅。
     """
-

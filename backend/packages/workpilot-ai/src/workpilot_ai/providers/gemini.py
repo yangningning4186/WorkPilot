@@ -30,6 +30,7 @@ from workpilot_ai.types import (
 class GeminiProvider:
     name = "gemini"
     embedding_model = "unsupported"
+    supports_omitting_max_tokens = True
 
     def __init__(
         self,
@@ -54,7 +55,7 @@ class GeminiProvider:
         return "gemini-generate-content-v1"
 
     async def complete(
-        self, messages: list[Message], *, max_tokens: int, temperature: float
+        self, messages: list[Message], *, max_tokens: int | None, temperature: float
     ) -> CompletionResult:
         return await self._complete(messages, max_tokens=max_tokens, temperature=temperature)
 
@@ -64,7 +65,7 @@ class GeminiProvider:
         *,
         tools: list[ToolDefinition],
         parallel_tool_calls: bool,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
     ) -> CompletionResult:
         del parallel_tool_calls
@@ -79,17 +80,17 @@ class GeminiProvider:
         self,
         messages: list[Message],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
         tools: list[ToolDefinition] | None = None,
     ) -> CompletionResult:
         system, contents = await _gemini_contents(messages)
+        generation_config: dict[str, Any] = {"temperature": temperature}
+        if max_tokens is not None:
+            generation_config["maxOutputTokens"] = max_tokens
         payload: dict[str, Any] = {
             "contents": contents,
-            "generationConfig": {
-                "maxOutputTokens": max_tokens,
-                "temperature": temperature,
-            },
+            "generationConfig": generation_config,
         }
         if system:
             payload["systemInstruction"] = {"parts": [{"text": system}]}
@@ -147,15 +148,13 @@ class GeminiProvider:
             usage=Usage(
                 input_tokens=int(usage.get("promptTokenCount", 0)),
                 output_tokens=int(usage.get("candidatesTokenCount", 0)),
-                prompt_cache_read_tokens=int(
-                    usage.get("cachedContentTokenCount", 0)
-                ),
+                prompt_cache_read_tokens=int(usage.get("cachedContentTokenCount", 0)),
             ),
             tool_calls=tuple(calls),
         )
 
     async def stream(
-        self, messages: list[Message], *, max_tokens: int, temperature: float
+        self, messages: list[Message], *, max_tokens: int | None, temperature: float
     ) -> AsyncIterator[str]:
         result = await self.complete(messages, max_tokens=max_tokens, temperature=temperature)
         if result.text:

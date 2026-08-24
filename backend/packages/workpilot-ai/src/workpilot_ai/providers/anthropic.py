@@ -17,6 +17,7 @@ from workpilot_ai.providers.openai_compatible import (
     _raise_with_body,
 )
 from workpilot_ai.types import (
+    CompletionChunk,
     CompletionResult,
     EmbeddingResult,
     Message,
@@ -57,7 +58,7 @@ class AnthropicProvider:
         return "anthropic-messages-v1"
 
     async def complete(
-        self, messages: list[Message], *, max_tokens: int, temperature: float
+        self, messages: list[Message], *, max_tokens: int | None, temperature: float
     ) -> CompletionResult:
         return await self._complete(messages, max_tokens=max_tokens, temperature=temperature)
 
@@ -67,7 +68,7 @@ class AnthropicProvider:
         *,
         tools: list[ToolDefinition],
         parallel_tool_calls: bool,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
     ) -> CompletionResult:
         del parallel_tool_calls
@@ -84,7 +85,7 @@ class AnthropicProvider:
         *,
         tools: list[ToolDefinition],
         parallel_tool_calls: bool,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
         prompt_cache_key: str,
     ) -> CompletionResult:
@@ -102,39 +103,18 @@ class AnthropicProvider:
         self,
         messages: list[Message],
         *,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
         tools: list[ToolDefinition] | None = None,
         cache_stable_prefix: bool = False,
     ) -> CompletionResult:
-        system, converted = await _anthropic_messages(messages)
-        payload: dict[str, Any] = {
-            "model": self.chat_model,
-            "messages": converted,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
-        if system:
-            payload["system"] = (
-                [
-                    {
-                        "type": "text",
-                        "text": system,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ]
-                if cache_stable_prefix
-                else system
-            )
-        if tools:
-            payload["tools"] = [
-                {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "input_schema": tool.parameters,
-                }
-                for tool in tools
-            ]
+        payload = await self._request_payload(
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+            cache_stable_prefix=cache_stable_prefix,
+        )
         with _dispatch_guard():
             response = await self._client.post("messages", headers=self._headers, json=payload)
         if response.is_error:
@@ -177,9 +157,7 @@ class AnthropicProvider:
             provider=self.name,
             usage=Usage(
                 input_tokens=(
-                    int(usage.get("input_tokens", 0))
-                    + cache_read_tokens
-                    + cache_write_tokens
+                    int(usage.get("input_tokens", 0)) + cache_read_tokens + cache_write_tokens
                 ),
                 output_tokens=int(usage.get("output_tokens", 0)),
                 prompt_cache_read_tokens=cache_read_tokens,
@@ -188,8 +166,194 @@ class AnthropicProvider:
             tool_calls=tuple(calls),
         )
 
+    async def _request_payload(
+        self,
+        messages: list[Message],
+        *,
+        max_tokens: int | None,
+        temperature: float,
+        tools: list[ToolDefinition] | None,
+        cache_stable_prefix: bool,
+    ) -> dict[str, Any]:
+        """流式与非流式共用一份请求体。
+
+        分成一个方法而不是复制一遍：两条路径的 system 块、cache breakpoint 与 tools
+        必须逐字一致，否则 provider 侧的前缀缓存会在"这一轮流式、下一轮非流式"之间
+        反复失效，而这件事不报错，只是账单变贵。
+        """
+
+        system, converted = await _anthropic_messages(messages)
+        if max_tokens is None:
+            raise ValueError("Anthropic Messages API 要求显式提供 max_tokens")
+        payload: dict[str, Any] = {
+            "model": self.chat_model,
+            "messages": converted,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if system:
+            payload["system"] = (
+                [
+                    {
+                        "type": "text",
+                        "text": system,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+                if cache_stable_prefix
+                else system
+            )
+        if cache_stable_prefix:
+            payload["messages"] = _mark_conversation_cache_breakpoint(converted)
+        if tools:
+            payload["tools"] = [
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.parameters,
+                }
+                for tool in tools
+            ]
+        return payload
+
+    async def stream_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool,
+        max_tokens: int | None,
+        temperature: float,
+    ) -> AsyncIterator[CompletionChunk]:
+        """Messages API 的 SSE 流。
+
+        `tool_use` 的参数是逐片 `input_json_delta` 拼出来的，所以整条流收完之前谈不上
+        "这一轮要调哪几只工具"——这正是终块存在的理由。
+
+        `thinking_delta` 单独走 `reasoning_delta`：思考不进 canonical 历史、不参与引用，
+        混进正文之后再想分开只能靠猜标记。
+
+        **流式仍然打上 cache breakpoint**（`cache_stable_prefix=True`）：Cowork 的 system
+        prompt 在一次 run 内逐字不变，前缀缓存的收益在流式这条路上分毫不少。
+        """
+
+        if not tools:
+            raise ValueError("原生 tool-calling 至少需要一个工具")
+        del parallel_tool_calls  # Anthropic 没有对应开关, 与非流式一致地忽略。
+        payload = await self._request_payload(
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+            cache_stable_prefix=True,
+        )
+        payload["stream"] = True
+
+        text_parts: list[str] = []
+        # index → 正在拼的 tool_use。Anthropic 的 content block 按序号寻址。
+        blocks: dict[int, dict[str, str]] = {}
+        model = self.chat_model
+        input_tokens = 0
+        output_tokens = 0
+        cache_read_tokens = 0
+        cache_write_tokens = 0
+        stop_reason: object = None
+
+        with _dispatch_guard():
+            stream = self._client.stream("POST", "messages", headers=self._headers, json=payload)
+            response = await stream.__aenter__()
+        try:
+            if response.is_error:
+                _raise_with_body(response, (await response.aread()).decode("utf-8", "replace"))
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data:
+                    continue
+                try:
+                    event = json.loads(data)
+                except json.JSONDecodeError as error:
+                    raise ProviderResponseError("Anthropic 流式响应包含非法 JSON 片段") from error
+                if not isinstance(event, dict):
+                    continue
+                kind = event.get("type")
+                if kind == "error":
+                    detail = event.get("error") or {}
+                    raise ProviderResponseError(
+                        f"Anthropic 流式响应报错: {detail.get('message') or detail}"
+                    )
+                if kind == "message_start":
+                    message = event.get("message") or {}
+                    model = str(message.get("model") or model)
+                    usage = message.get("usage") or {}
+                    input_tokens = int(usage.get("input_tokens", 0))
+                    cache_read_tokens = int(usage.get("cache_read_input_tokens", 0))
+                    cache_write_tokens = int(usage.get("cache_creation_input_tokens", 0))
+                elif kind == "content_block_start":
+                    block = event.get("content_block") or {}
+                    if block.get("type") == "tool_use":
+                        index = event.get("index")
+                        if not isinstance(index, int):
+                            raise ProviderResponseError("Anthropic tool_use 块缺少 index")
+                        blocks[index] = {
+                            "id": str(block.get("id") or ""),
+                            "name": str(block.get("name") or ""),
+                            "json": "",
+                        }
+                elif kind == "content_block_delta":
+                    delta = event.get("delta") or {}
+                    delta_type = delta.get("type")
+                    if delta_type == "text_delta":
+                        fragment = str(delta.get("text") or "")
+                        if fragment:
+                            text_parts.append(fragment)
+                            yield CompletionChunk(text_delta=fragment)
+                    elif delta_type == "thinking_delta":
+                        fragment = str(delta.get("thinking") or "")
+                        if fragment:
+                            yield CompletionChunk(reasoning_delta=fragment)
+                    elif delta_type == "input_json_delta":
+                        index = event.get("index")
+                        if isinstance(index, int) and index in blocks:
+                            blocks[index]["json"] += str(delta.get("partial_json") or "")
+                elif kind == "message_delta":
+                    usage = event.get("usage") or {}
+                    output_tokens = int(usage.get("output_tokens", output_tokens))
+                    stop_reason = (event.get("delta") or {}).get("stop_reason") or stop_reason
+        finally:
+            await stream.__aexit__(None, None, None)
+
+        calls: list[ToolCall] = []
+        for index in sorted(blocks):
+            block = blocks[index]
+            if not block["id"] or not block["name"]:
+                raise ProviderResponseError("Anthropic tool_use 缺少 id 或 name")
+            # 空 input 的工具调用发不出 input_json_delta，此时补一个空对象而不是空串,
+            # 否则下游 json.loads 会在一个本来完全合法的调用上失败。
+            calls.append(
+                ToolCall(id=block["id"], name=block["name"], arguments=block["json"] or "{}")
+            )
+        text = "".join(text_parts)
+        if not text and not calls:
+            raise ProviderResponseError(f"Anthropic 流式响应为空(stop_reason={stop_reason})")
+        yield CompletionChunk(
+            result=CompletionResult(
+                text=text,
+                model=model,
+                provider=self.name,
+                usage=Usage(
+                    input_tokens=input_tokens + cache_read_tokens + cache_write_tokens,
+                    output_tokens=output_tokens,
+                    prompt_cache_read_tokens=cache_read_tokens,
+                    prompt_cache_write_tokens=cache_write_tokens,
+                ),
+                tool_calls=tuple(calls),
+            )
+        )
+
     async def stream(
-        self, messages: list[Message], *, max_tokens: int, temperature: float
+        self, messages: list[Message], *, max_tokens: int | None, temperature: float
     ) -> AsyncIterator[str]:
         # 会话级 Provider 当前用于 Cowork；保留完整 stream 协议接口，避免旁路 Gateway。
         result = await self.complete(messages, max_tokens=max_tokens, temperature=temperature)
@@ -271,6 +435,39 @@ async def _anthropic_messages(messages: list[Message]) -> tuple[str, list[dict[s
                 )
         _append_anthropic(converted, "user", blocks or [{"type": "text", "text": ""}])
     return "\n\n".join(system_parts), converted
+
+
+def _mark_conversation_cache_breakpoint(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """缓存动态尾巴之前的最长对话前缀，不修改 canonical provider 消息。"""
+
+    if not messages:
+        return messages
+    copied = [{**message, "content": list(message.get("content") or [])} for message in messages]
+    final_content = copied[-1]["content"]
+    if len(final_content) >= 2:
+        target_message = copied[-1]
+        target_index = len(final_content) - 2
+    elif len(copied) >= 2 and copied[-2]["content"]:
+        target_message = copied[-2]
+        target_index = len(target_message["content"]) - 1
+    elif final_content:
+        # 普通的一问一答没有运行时临时尾巴，直接缓存这条用户输入；否则第一轮只会
+        # 写入 tools + system，第二轮无法复用首条任务这一段会话前缀。
+        target_message = copied[-1]
+        target_index = len(final_content) - 1
+    else:
+        return copied
+    content = list(target_message["content"])
+    block = content[target_index]
+    if isinstance(block, dict):
+        content[target_index] = {
+            **block,
+            "cache_control": {"type": "ephemeral"},
+        }
+        target_message["content"] = content
+    return copied
 
 
 def _append_anthropic(
