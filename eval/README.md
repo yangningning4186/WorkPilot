@@ -221,8 +221,10 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.kb_retrieval_runner run \
   --token-budget 4000 --allow-synthetic
 ```
 
-不带阈值的报告可以用于工程诊断，但不能晋升正式 retrieval baseline。正式流程先在另一份已批准
-的 calibration suite 上以相同 KB/index、预算和真实 score source 跑批，再冻结阈值：
+不带阈值的报告可以用于工程诊断，但不能晋升正式 retrieval baseline。仓库中的独立候选集
+`eval/suites/kb-rag-research-refusal-calibration-v1.json` 有 8 条可答、4 条不可答，其证据文档
+与 26 条 evaluation gold 无交集；它仍需人工批准。正式流程先以相同 KB/index、预算和真实
+score source 跑这份 calibration suite，再冻结阈值：
 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/python -m eval.refusal_calibration \

@@ -490,6 +490,26 @@ def test_checked_in_rag_research_candidate_suite_has_the_declared_shape() -> Non
     }
 
 
+def test_refusal_calibration_suite_is_independent_from_evaluation_gold() -> None:
+    suites = Path(__file__).resolve().parents[2] / "eval" / "suites"
+    evaluation = load_kb_retrieval_suite(
+        suites / "kb-rag-research-dev-v1.json",
+        allow_synthetic=True,
+    )
+    calibration = load_kb_retrieval_suite(
+        suites / "kb-rag-research-refusal-calibration-v1.json",
+        allow_synthetic=True,
+    )
+
+    evaluation_documents = {span.content_hash for item in evaluation.items for span in item.spans}
+    calibration_documents = {span.content_hash for item in calibration.items for span in item.spans}
+
+    assert calibration.review_status == "pending_human_review"
+    assert len(calibration.items) == 12
+    assert sum(item.answerable for item in calibration.items) == 8
+    assert evaluation_documents.isdisjoint(calibration_documents)
+
+
 def test_kb_suite_human_origin_requires_complete_auditable_signoff(tmp_path: Path) -> None:
     quote = "evidence"
     anchor: dict[str, Any] = {

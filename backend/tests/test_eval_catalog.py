@@ -134,6 +134,138 @@ def _promote_valid_baseline(root: Path) -> None:
     _write_json(root / "baselines/cowork.json", body)
 
 
+def _retrieval_fixture_tree(root: Path, *, ready: bool = False) -> dict[str, Any]:
+    catalog = _fixture_tree(root, baseline_status="ready" if ready else "rebuild_required")
+    evaluation_suite = {
+        "name": "retrieval-eval-v1",
+        "origin": "synthetic",
+        "review": {
+            "status": "approved",
+            "reviewer": "fixture-owner",
+            "reviewed_at": "2026-08-24T00:00:00+00:00",
+        },
+        "items": [
+            {
+                "item_id": "r1",
+                "split": "dev",
+                "answerable": True,
+                "gold_evidence_groups": [
+                    {"alternatives": [{"content_hash": "a" * 64}]}
+                ],
+            }
+        ],
+    }
+    calibration_suite = {
+        "name": "retrieval-calibration-v1",
+        "origin": "synthetic",
+        "review": {
+            "status": "approved",
+            "reviewer": "fixture-owner",
+            "reviewed_at": "2026-08-24T00:00:00+00:00",
+        },
+        "items": [
+            {
+                "item_id": "c1",
+                "split": "dev",
+                "answerable": True,
+                "gold_evidence_groups": [
+                    {"alternatives": [{"content_hash": "b" * 64}]}
+                ],
+            }
+        ],
+    }
+    _write_json(root / "suites/retrieval.json", evaluation_suite)
+    _write_json(root / "suites/calibration.json", calibration_suite)
+    policy = json.loads((root / "policies/cowork.json").read_text(encoding="utf-8"))
+    policy.update(name="retrieval-policy-v1", report_kind="retrieval")
+    _write_json(root / "policies/retrieval.json", policy)
+    track = catalog["tracks"][0]
+    track.update(
+        id="kb-retrieval",
+        kind="retrieval",
+        suite="suites/retrieval.json",
+        policy="policies/retrieval.json",
+        selection={"split": "dev", "item_count": 1},
+        calibration={
+            "status": "rebuild_required",
+            "suite": "suites/calibration.json",
+            "reason": "calibration not promoted",
+        },
+    )
+    if not ready:
+        return catalog
+
+    calibration: dict[str, Any] = {
+        "schema_version": "workpilot-refusal-calibration.v1",
+        "dataset": "retrieval-calibration-v1",
+        "dataset_sha256": hashlib.sha256(
+            (root / "suites/calibration.json").read_bytes()
+        ).hexdigest(),
+        "source_report_sha256": "d" * 64,
+        "score_source": "fusion",
+        "threshold": 0.02,
+        "method": "macro_f1_grid_v1",
+        "reviewer": "threshold-owner",
+        "reviewed_at": "2026-08-24T01:00:00+00:00",
+    }
+    calibration["integrity"] = {
+        "algorithm": "sha256",
+        "value": hashlib.sha256(canonical_json(calibration).encode()).hexdigest(),
+    }
+    _write_json(root / "calibrations/refusal.json", calibration)
+    track["calibration"] = {
+        "status": "ready",
+        "suite": "suites/calibration.json",
+        "path": "calibrations/refusal.json",
+    }
+    policy_path = root / "policies/retrieval.json"
+    baseline: dict[str, Any] = {
+        "schema_version": BASELINE_SCHEMA_VERSION,
+        "generated_at": "2026-08-24T02:00:00+00:00",
+        "kind": "retrieval",
+        "dataset": "retrieval-eval-v1",
+        "dataset_fingerprint": hashlib.sha256(
+            (root / "suites/retrieval.json").read_bytes()
+        ).hexdigest(),
+        "config_fingerprint": "c" * 64,
+        "git_sha": "e" * 40,
+        "git_dirty": False,
+        "review": {
+            "origin": "synthetic",
+            "status": "approved",
+            "reviewer": "fixture-owner",
+            "reviewed_at": "2026-08-24T00:00:00+00:00",
+        },
+        "selection": {"split_counts": {"dev": 1}},
+        "calibration_fingerprint": hashlib.sha256(
+            (root / "calibrations/refusal.json").read_bytes()
+        ).hexdigest(),
+        "label": "retrieval-v1",
+        "policy": {
+            "name": "retrieval-policy-v1",
+            "sha256": hashlib.sha256(
+                canonical_json(json.loads(policy_path.read_text(encoding="utf-8"))).encode()
+            ).hexdigest(),
+        },
+        "source_report_sha256": "f" * 64,
+        "cases": [
+            {
+                "case_id": "r1",
+                "segment": "single_hop",
+                "status": "done",
+                "error": False,
+                "metrics": {"task_success": {"numerator": 1, "denominator": 1}},
+            }
+        ],
+    }
+    baseline["integrity"] = {
+        "algorithm": "sha256",
+        "value": hashlib.sha256(canonical_json(baseline).encode()).hexdigest(),
+    }
+    _write_json(root / "baselines/cowork.json", baseline)
+    return catalog
+
+
 def test_repository_catalog_is_healthy_but_exposes_legacy_baseline_warnings() -> None:
     report = doctor_catalog(DEFAULT_CATALOG, repo_root=REPO_ROOT)
 
@@ -192,6 +324,41 @@ def test_ready_baseline_requires_promoted_schema_and_then_becomes_ready(tmp_path
     assert ready.healthy is True
     assert ready.status == "ready"
     assert all(resource.health == "ready" for resource in ready.resources)
+
+
+def test_retrieval_calibration_is_independent_and_bound_to_ready_baseline(
+    tmp_path: Path,
+) -> None:
+    catalog = _retrieval_fixture_tree(tmp_path, ready=True)
+    assert _doctor(tmp_path, catalog).status == "ready"
+
+    baseline_path = tmp_path / "baselines/cowork.json"
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    baseline["calibration_fingerprint"] = "0" * 64
+    baseline.pop("integrity")
+    baseline["integrity"] = {
+        "algorithm": "sha256",
+        "value": hashlib.sha256(canonical_json(baseline).encode()).hexdigest(),
+    }
+    _write_json(baseline_path, baseline)
+
+    report = _doctor(tmp_path, catalog)
+    assert report.healthy is False
+    assert "baseline_calibration_mismatch" in _codes(report)
+
+
+def test_retrieval_calibration_gold_cannot_overlap_evaluation(tmp_path: Path) -> None:
+    catalog = _retrieval_fixture_tree(tmp_path)
+    calibration_path = tmp_path / "suites/calibration.json"
+    calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+    calibration["items"][0]["gold_evidence_groups"][0]["alternatives"][0][
+        "content_hash"
+    ] = "a" * 64
+    _write_json(calibration_path, calibration)
+
+    report = _doctor(tmp_path, catalog)
+    assert report.healthy is False
+    assert "calibration_suite_leakage" in _codes(report)
 
 
 @pytest.mark.parametrize(

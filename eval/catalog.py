@@ -26,6 +26,7 @@ POLICY_SCHEMA_VERSION = "workpilot-regression-policy.v1"
 BASELINE_SCHEMA_VERSION = "workpilot-regression-baseline.v1"
 REPLAY_SCHEMA = "workpilot.run-replay-bundle"
 REPLAY_SCHEMA_VERSION = 1
+REFUSAL_CALIBRATION_SCHEMA = "workpilot-refusal-calibration.v1"
 
 DEFAULT_CATALOG = Path(__file__).resolve().with_name("catalog.json")
 DEFAULT_REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -404,6 +405,187 @@ def _validate_track_selection(
     return _TrackSelection(str(split), int(item_count), frozenset(case_ids))
 
 
+def _gold_document_hashes(document: _ResolvedJson | None) -> set[str]:
+    if document is None or not isinstance(document.payload, Mapping):
+        return set()
+    items = document.payload.get("items")
+    if not isinstance(items, list):
+        return set()
+    hashes: set[str] = set()
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        groups = item.get("gold_evidence_groups")
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            alternatives = group.get("alternatives") if isinstance(group, Mapping) else None
+            if not isinstance(alternatives, list):
+                continue
+            for alternative in alternatives:
+                content_hash = (
+                    alternative.get("content_hash")
+                    if isinstance(alternative, Mapping)
+                    else None
+                )
+                if isinstance(content_hash, str):
+                    hashes.add(content_hash)
+    return hashes
+
+
+def _validate_retrieval_calibration(
+    value: object,
+    *,
+    evaluation_suite: _ResolvedJson | None,
+    baseline_ready: bool,
+    resource_id: str,
+    repo_root: Path,
+    issues: list[CatalogIssue],
+) -> _ResolvedJson | None:
+    if not isinstance(value, Mapping):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "calibration_declaration_invalid",
+                "retrieval track 必须声明独立 calibration suite 与状态",
+                resource_id,
+            )
+        )
+        return None
+    status = value.get("status")
+    if status not in _BASELINE_STATUSES:
+        issues.append(
+            CatalogIssue(
+                "error",
+                "calibration_status_invalid",
+                f"calibration.status 必须是 {sorted(_BASELINE_STATUSES)} 之一",
+                resource_id,
+            )
+        )
+    calibration_suite = _resolve_json(
+        value.get("suite"),
+        field="calibration.suite",
+        resource_id=resource_id,
+        repo_root=repo_root,
+        issues=issues,
+    )
+    if calibration_suite is not None and not isinstance(calibration_suite.payload, Mapping):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "calibration_suite_invalid",
+                "calibration suite 根节点必须是对象",
+                resource_id,
+            )
+        )
+    overlap = _gold_document_hashes(evaluation_suite) & _gold_document_hashes(calibration_suite)
+    if overlap:
+        issues.append(
+            CatalogIssue(
+                "error",
+                "calibration_suite_leakage",
+                f"calibration/evaluation gold 共享 {len(overlap)} 个证据文档",
+                resource_id,
+            )
+        )
+    if status == "rebuild_required":
+        reason = value.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "calibration_rebuild_reason_missing",
+                    "calibration rebuild_required 必须提供非空 reason",
+                    resource_id,
+                )
+            )
+        if baseline_ready:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "calibration_not_ready",
+                    "retrieval baseline ready 前 calibration 必须先 ready",
+                    resource_id,
+                )
+            )
+        return None
+    if status != "ready":
+        return None
+    artifact = _resolve_json(
+        value.get("path"),
+        field="calibration.path",
+        resource_id=resource_id,
+        repo_root=repo_root,
+        issues=issues,
+    )
+    if artifact is None or not isinstance(artifact.payload, Mapping):
+        if artifact is not None:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "calibration_artifact_invalid",
+                    "calibration artifact 根节点必须是对象",
+                    resource_id,
+                )
+            )
+        return artifact
+    payload = artifact.payload
+    suite_review = (
+        _suite_review(calibration_suite.payload)
+        if calibration_suite is not None and isinstance(calibration_suite.payload, Mapping)
+        else {}
+    )
+    if (
+        suite_review.get("status") != "approved"
+        or not isinstance(suite_review.get("reviewer"), str)
+        or not _valid_reviewed_at(suite_review.get("reviewed_at"))
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "calibration_suite_not_approved",
+                "ready calibration suite 必须 approved 并包含完整复核信息",
+                resource_id,
+            )
+        )
+    expected_suite_sha = (
+        hashlib.sha256(calibration_suite.raw_bytes).hexdigest()
+        if calibration_suite is not None
+        else None
+    )
+    if (
+        payload.get("schema_version") != REFUSAL_CALIBRATION_SCHEMA
+        or payload.get("dataset_sha256") != expected_suite_sha
+        or not isinstance(payload.get("reviewer"), str)
+        or not _valid_reviewed_at(payload.get("reviewed_at"))
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "calibration_artifact_invalid",
+                "calibration artifact 的 schema/suite SHA/reviewer/reviewed_at 无效",
+                resource_id,
+            )
+        )
+    integrity = payload.get("integrity")
+    unsigned = {key: item for key, item in payload.items() if key != "integrity"}
+    if (
+        not isinstance(integrity, Mapping)
+        or integrity.get("algorithm") != "sha256"
+        or integrity.get("value")
+        != hashlib.sha256(canonical_json(unsigned).encode("utf-8")).hexdigest()
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "calibration_integrity_invalid",
+                "calibration artifact 完整性校验失败",
+                resource_id,
+            )
+        )
+    return artifact
+
+
 def _validate_ready_baseline(
     document: _ResolvedJson | None,
     *,
@@ -412,6 +594,7 @@ def _validate_ready_baseline(
     policy_document: _ResolvedJson | None,
     policy: Mapping[str, object] | None,
     selection: _TrackSelection | None,
+    calibration_artifact: _ResolvedJson | None,
     resource_id: str,
     issues: list[CatalogIssue],
 ) -> None:
@@ -540,6 +723,17 @@ def _validate_ready_baseline(
                 resource_id,
             )
         )
+    if kind == "retrieval" and calibration_artifact is not None:
+        expected_calibration_sha = hashlib.sha256(calibration_artifact.raw_bytes).hexdigest()
+        if baseline.get("calibration_fingerprint") != expected_calibration_sha:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "baseline_calibration_mismatch",
+                    "baseline 固定的 calibration SHA256 与 catalog artifact 不一致",
+                    resource_id,
+                )
+            )
     baseline_policy = baseline.get("policy")
     if not isinstance(baseline_policy, Mapping):
         issues.append(
@@ -726,6 +920,18 @@ def _validate_track(
         repo_root=repo_root,
         issues=issues,
     )
+    calibration_artifact = (
+        _validate_retrieval_calibration(
+            raw.get("calibration"),
+            evaluation_suite=suite,
+            baseline_ready=status == "ready",
+            resource_id=resource_id,
+            repo_root=repo_root,
+            issues=issues,
+        )
+        if kind == "retrieval"
+        else None
+    )
     if status == "ready":
         _validate_ready_baseline(
             baseline,
@@ -734,6 +940,7 @@ def _validate_track(
             policy_document=policy_document,
             policy=policy,
             selection=selection,
+            calibration_artifact=calibration_artifact,
             resource_id=resource_id,
             issues=issues,
         )

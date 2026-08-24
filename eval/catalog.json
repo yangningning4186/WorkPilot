@@ -41,6 +41,11 @@
         "split": "dev",
         "item_count": 26
       },
+      "calibration": {
+        "status": "rebuild_required",
+        "suite": "eval/suites/kb-rag-research-refusal-calibration-v1.json",
+        "reason": "独立 calibration suite 已起草且与 evaluation gold 文档无交集，但仍需人工复核、clean Git 跑批并生成带签字与完整性哈希的阈值文件。"
+      },
       "baseline": {
         "status": "rebuild_required",
         "path": "eval/snapshots/retrieval.json",
