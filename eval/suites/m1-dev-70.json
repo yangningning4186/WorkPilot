@@ -1,0 +1,42 @@
+{
+  "name": "m1-dev-70",
+  "description": "M1 六类人工 dev 套件 benchmark-v2；事实组支持等价证据，temporal_ctx 进入检索；70 条用于检索、拒答、生成与 Judge 校准，10 条 test 不纳入。",
+  "origin": "human",
+  "item_count": 70,
+  "datasets": [
+    {"name": "core-dev", "item_count": 20},
+    {"name": "english-dev", "item_count": 20},
+    {"name": "core-dev-handwritten-zh-v1", "item_count": 17},
+    {"name": "core-dev-handwritten-en-v1", "item_count": 13}
+  ],
+  "provenance": {
+    "core-dev": {
+      "reviewer": "owner",
+      "reviewed_at": "2026-08-14",
+      "note": "作者通过 annotation 工具逐条创建或复核。"
+    },
+    "english-dev": {
+      "reviewer": "owner",
+      "reviewed_at": "2026-08-14",
+      "note": "AI 构造候选后由 owner 逐条人工复核，并明确确认可升级为 human。"
+    },
+    "core-dev-handwritten-zh-v1": {
+      "reviewer": "xingzhi",
+      "reviewed_at": "2026-08-16",
+      "note": "助手阅读原文后撰写，作者逐条复核并显式 promotion 为 human。"
+    },
+    "core-dev-handwritten-en-v1": {
+      "reviewer": "xingzhi",
+      "reviewed_at": "2026-08-16",
+      "note": "助手阅读原文后撰写，作者逐条复核并显式 promotion 为 human。"
+    }
+  },
+  "category_counts": {
+    "single_hop": 20,
+    "multi_hop": 13,
+    "table": 12,
+    "unanswerable": 13,
+    "temporal": 6,
+    "global": 6
+  }
+}

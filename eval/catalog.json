@@ -1,0 +1,47 @@
+{
+  "schema_version": "workpilot-eval-catalog.v1",
+  "description": "WorkPilot 的版本化评测目录；baseline 只有在晋升为隐私安全的 workpilot-regression-baseline.v1 后才能标记 ready。",
+  "tracks": [
+    {
+      "id": "cowork-core",
+      "kind": "cowork",
+      "suite": "eval/suites/cowork-core-50.json",
+      "policy": "eval/policies/cowork.json",
+      "baseline": {
+        "status": "rebuild_required",
+        "path": "eval/snapshots/cowork.json",
+        "reason": "现有 snapshot 是旧的 cowork-core-40 runner 报告，既不匹配当前 core-50 suite，也不是 workpilot-regression-baseline.v1。"
+      }
+    },
+    {
+      "id": "kb-retrieval",
+      "kind": "retrieval",
+      "suite": "eval/suites/kb-rag-research-dev-v1.json",
+      "policy": "eval/policies/retrieval.json",
+      "baseline": {
+        "status": "rebuild_required",
+        "path": "eval/snapshots/retrieval.json",
+        "reason": "现有 snapshot 属于已退役 PostgreSQL runner 的 m1-dev-70，与当前文件系统 KB suite 不匹配；需要重跑当前 suite 后再用 eval.regression snapshot 晋升。"
+      }
+    },
+    {
+      "id": "grounded-generation",
+      "kind": "generation",
+      "suite": "eval/suites/m1-dev-70.json",
+      "policy": "eval/policies/generation.json",
+      "baseline": {
+        "status": "rebuild_required",
+        "path": "eval/snapshots/generation.json",
+        "reason": "现有 snapshot 是历史 runner 报告；需要用 eval.regression snapshot 晋升为带完整性摘要的回归 baseline。"
+      }
+    }
+  ],
+  "replay_suites": [
+    {
+      "id": "run-protocol-v1",
+      "kind": "event",
+      "mode": "offline_validation_only",
+      "path": "eval/replays/run-protocol-v1.json"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+Atlas 知识库政策
+版本：v1
+生效状态：待测试系统决定
+
+approval code：KITE-314
+响应 SLA：24 小时
+owner：Delta Team
+
+规则：只有被 activate 的版本可以回答生产问题。staging 版本不得污染 active 版本。

@@ -1,0 +1,30 @@
+{"id":"rag-dense","title":"Dense retrieval","text":"稠密检索把查询和文档编码为同一向量空间，通过余弦相似度召回语义相关的内容，即使双方没有完全相同的关键词也可能命中。","context_tokens":54}
+{"id":"rag-lexical","title":"词法检索","text":"PostgreSQL 原生全文检索使用 ts_rank 或 ts_rank_cd，它是 cover-density 排名而不是 BM25。词法检索擅长匹配专有名词、编号和精确关键词。","context_tokens":62}
+{"id":"rag-rrf","title":"RRF fusion","text":"RRF 按每个检索器中的名次融合结果，公式为各路 1/(k+rank) 之和。它避免直接归一化余弦分数与词法分数这两种不同量纲。","context_tokens":60}
+{"id":"chunk-heading","title":"Heading chunking","text":"heading 分块优先遵循 Markdown 或论文的章节边界；章节过长时只在 block 边界继续切分，并保留 heading_path、block 区间和字符区间。","context_tokens":58}
+{"id":"parsed-blocks","title":"Stable blocks","text":"parsed_blocks 保存 NFC full_text 中稳定的 Unicode code-point char_start 和 char_end。引用与评测锚定 block 和字符区间，而不是容易随策略变化的 chunk id。","context_tokens":62}
+{"id":"version-activation","title":"Version activation","text":"新文档版本只有在 full_text、parsed blocks、chunks 和全部 embedding 完整成功后才原子激活；激活同时关闭旧版本的 is_searchable。","context_tokens":51}
+{"id":"version-concurrency","title":"Candidate concurrency","text":"文档行锁负责分配单调版本号。慢到的旧候选发现自己不是最新版本时只能标记 superseded，不能覆盖已经激活的新候选。","context_tokens":48}
+{"id":"citation-anchor","title":"Block citations","text":"生成时给每个 evidence block 分配消息内短标签 S1、S2。后处理把标签映射回 block_id、version_id、document_id、quote、字符区间和页面坐标。","context_tokens":58}
+{"id":"citation-validation","title":"Citation validation","text":"模型引用未知标签或正常回答完全缺少引用时，服务端采用 fail-closed 策略返回 invalid_model_citation，不能猜测或静默修复伪引用。","context_tokens":50}
+{"id":"refusal-gate","title":"Refusal gate","text":"生成前比较最高 dense score 与模型专属阈值。低于阈值直接拒答且不调用生成模型；阈值必须用 answerable 和 unanswerable 分数分布校准。","context_tokens":55}
+{"id":"cost-budget","title":"Atomic cost budget","text":"商用模型调用前先用稳定幂等键预留每日费用。数据库在同一事务内更新 reserved_usd，调用结束后再按实际费用结算，避免并发请求突破预算。","context_tokens":58}
+{"id":"trace-id","title":"Request tracing","text":"Every HTTP request receives a trace_id that is propagated through structured logs and llm_calls. A valid incoming x-trace-id is preserved and returned in the response header.","context_tokens":48}
+{"id":"model-gateway","title":"Model gateway","text":"所有生成、流式生成和 embedding 调用只能经过统一模型网关。业务层不感知具体 provider，网关统一处理实际模型身份、用量、耗时和失败审计。","context_tokens":53}
+{"id":"route-qwen","title":"Qwen tiers","text":"轻量任务计划路由到 66 服务器的 qwen3.5-4b，主力生成路由到同机的 qwen3.6-35b-a3b。模型档位由配置决定而不是散落在业务代码中。","context_tokens":57}
+{"id":"route-deepseek","title":"DeepSeek fallback","text":"重推理或主力模型故障时可以路由到 deepseek-v4-flash。线上允许显式 fallback，评测模式必须关闭 fallback 以保证实验可复现。","context_tokens":49}
+{"id":"hnsw-partial","title":"Partial HNSW indexes","text":"Each chunking strategy needs its own partial HNSW index. Sharing one index and filtering strategy afterward can discard most scanned candidates and silently reduce recall.","context_tokens":46}
+{"id":"hnsw-iterative","title":"Iterative scan","text":"pgvector filtering may return fewer than top-k candidates. hnsw iterative_scan can continue scanning after filters, but its recall and latency still require measurement on the real corpus.","context_tokens":46}
+{"id":"eval-gold","title":"Gold spans","text":"评测标注使用 version_id 加 char_start、char_end 和 quote 记录 gold span。跑批前必须验证 full_text 对应区间仍等于 quote，否则样本标记 stale。","context_tokens":55}
+{"id":"eval-judge","title":"Judge calibration","text":"LLM Judge 上线前需要与人工标签计算准确率、quadratic weighted Kappa 和混淆矩阵。未校准的 Judge 分数不能作为质量结论。","context_tokens":48}
+{"id":"prompt-injection","title":"Untrusted evidence","text":"检索到的文档内容属于不可信数据。系统提示必须明确忽略 evidence 中的命令、角色声明和提示词，不能让知识库文本覆盖系统指令。","context_tokens":49}
+{"id":"semantic-cache","title":"Semantic cache","text":"语义缓存只有在命中阈值经过评测后才能启用。阈值过低会把相似但不同的问题错误复用，尤其会污染引用和拒答结果。","context_tokens":45}
+{"id":"agent-idempotency","title":"Tool idempotency","text":"有副作用的 Agent 工具先抢占 tool_invocations.idempotency_key。已经 succeeded 的调用直接复用结果，重试不能重复发送邮件或重复写入外部系统。","context_tokens":54}
+{"id":"sse-events","title":"Recoverable SSE","text":"run_events 是可回放的持久化事件源，每个 run 使用数据库原子分配递增 seq。客户端断线后携带最后 seq 即可续传 message.delta 和 citation 事件。","context_tokens":57}
+{"id":"memory-conflict","title":"Memory conflicts","text":"长期记忆更新需要保留来源、置信度和冲突关系。新事实不能无条件覆盖旧事实，冲突消解属于需要单独评测的 Agent 能力。","context_tokens":45}
+{"id":"markdown-normalization","title":"Markdown normalization","text":"Markdown 入库前统一 CRLF 和 CR 为 LF，并做 Unicode NFC 规范化。所有字符区间都基于规范化后的 Python code-point offset。","context_tokens":49}
+{"id":"pgvector-cosine","title":"Cosine distance","text":"chunks.embedding 使用 pgvector 固定维度向量。dense 查询按 cosine distance 排序，并转换成 1-distance 的相似度分数供召回和拒答门控使用。","context_tokens":50}
+{"id":"embedding-identity","title":"Embedding identity","text":"不同 embedding 模型甚至同名模型的不同 revision 处在不可比较的向量空间。chunk 向量必须记录 model、provider 和 revision，切换时原子重建，禁止混用。","context_tokens":55}
+{"id":"embedding-sparse","title":"Sparse vectors","text":"BGE-M3 可以同一次前向产生 dense、sparse 和 multi-vector 表示。M0 只走 dense 检索；sparse 可以先保存，但需要独立的高效索引方案才能参与召回。","context_tokens":57}
+{"id":"privacy-local","title":"Local privacy","text":"私人语料只在本地 owner 环境解析和索引，不与公网 demo 数据库建立同步路径。本地 embedding 避免把原始笔记和论文内容发送给第三方 API。","context_tokens":49}
+{"id":"token-budget","title":"Fixed context budget","text":"比较分块或 embedding 时不能只看固定 top-k。主口径还要限制送入生成模型的总 token budget，防止大 chunk 用更多上下文虚增 span recall。","context_tokens":49}

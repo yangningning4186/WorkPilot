@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "externalBin": ["binaries/workpilot-sidecar"],
+    "resources": {
+      "binaries/sidecar-manifest.json": "sidecar-manifest.json",
+      "resources/ms-playwright/": "ms-playwright/"
+    }
+  }
+}

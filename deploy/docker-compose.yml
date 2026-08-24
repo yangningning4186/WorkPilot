@@ -1,0 +1,11 @@
+name: workpilot
+
+# WorkPilot 不再需要任何外部服务。
+#
+# 状态全在本机文件里：Cowork 控制面与长期记忆在 `~/.workpilot/cowork.db`，会话消息在
+# `conversations/*.jsonl`，调用审计与费用预留在 `telemetry.db`，Provider 与连接器凭据
+# 在 0600 的 JSON 文件里，Skill 与它的蒸馏候选在目录里。任务队列和 run 事件唤醒都在
+# 进程内——API 与 worker 同进程。
+#
+# 这个文件留着只是为了以后需要时有地方加（比如自建的 embedding 服务）。
+services: {}

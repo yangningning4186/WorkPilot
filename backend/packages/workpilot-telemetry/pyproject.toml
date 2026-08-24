@@ -1,0 +1,21 @@
+# workpilot-telemetry —— 旁挂的横切包（对齐 earendil-works/pi 的 pi-telemetry）。
+#
+# 只装"被测量的东西长什么样"与"口径怎么算"：typed schema + 纯 Decimal 计算 + Protocol。
+# 依赖表是空的——一个连 httpx 都不需要的包，任何落库、上报、看板实现都在它之上。
+# 具体的 PostgreSQL 适配器在 app/telemetry/（docs/adr/0011）。
+[project]
+name = "workpilot-telemetry"
+version = "0.1.0"
+description = "LLM 调用与 GPU 批次的测量 schema、成本口径与费用闸门契约"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/workpilot_telemetry"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/workpilot_telemetry/py.typed" = "workpilot_telemetry/py.typed"

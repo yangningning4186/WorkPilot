@@ -1,0 +1,4848 @@
+{
+  "config": {
+    "alpha": 0.5,
+    "chat_model": "qwen3.6-35b-a3b",
+    "chat_provider": "openai_compatible",
+    "chunk_metadata": {
+      "dataset_fingerprints": {
+        "core-dev": "2bf6401b765a27eb594d9c0f08ad5fdee5bfe265687ce63ef049885369fd7388",
+        "core-dev-handwritten-en-v1": "43a0833548de00333aff68063fba8e65d44166d15e819c622441b57a7e29564a",
+        "core-dev-handwritten-zh-v1": "9adc2d6f1cb5f97ded90503f47d5278463f2f0762a449601f517b3a158b8139c",
+        "english-dev": "bcb1c572ec919c506366503c6c1920b9bc204c81ef0bd38aaaee77c9f49f3f4e"
+      },
+      "suite_definition_sha256": "31feb602f33a75b225361f13557073355d1841180f2450dec00b1baa4319c037"
+    },
+    "chunk_strategy": "heading",
+    "dataset": "m1-dev-70",
+    "dataset_fingerprint": "f04618a7628e2d92e17a7cee7579db3339931abd94a905a1df7f9da919ff3030",
+    "diagnostic_k": 50,
+    "document_cap_per_version": 0,
+    "embedding_dim": 1024,
+    "embedding_model": "bge-m3:latest",
+    "embedding_provider": "openai_compatible",
+    "embedding_provider_base_url": "http://127.0.0.1:11434/v1",
+    "embedding_revision": "sha256-daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c",
+    "hnsw_ef_search": 100,
+    "hnsw_iterative_scan": "relaxed_order",
+    "hnsw_max_scan_tuples": 20000,
+    "lexical_mode": "ts_rank",
+    "origin": "human",
+    "query_decomposition_max_subqueries": 4,
+    "refusal_score_gate_source": "disabled",
+    "refusal_threshold": 0.35,
+    "refusal_threshold_applied": false,
+    "rerank_candidate_k_per_arm": 50,
+    "rerank_candidate_mode": null,
+    "rerank_candidate_text_mode": "title_heading_content",
+    "reranker_base_url": "http://127.0.0.1:8011",
+    "reranker_model": "BAAI/bge-reranker-v2-m3",
+    "retrieval_score_source": "fusion",
+    "rrf_k": 60,
+    "runner_git_sha": "fef6b6c1c07f02266f69df6b75d5711e92f8da91",
+    "strategy": "dense-lexical-rrf",
+    "theta": 0.5,
+    "token_budget": 4000,
+    "token_count_mode": "unicode",
+    "top_k": 5
+  },
+  "config_hash": "ecc6dec67cc3cd1547cb067c33aeca5d34e30da684073ae285dfb033a1484d5c",
+  "dataset": "m1-dev-70",
+  "generated_at": "2026-08-17T17:42:42.762454+00:00",
+  "git_sha": "fef6b6c1c07f02266f69df6b75d5711e92f8da91",
+  "items": [
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "7802b89b48088ba4",
+      "item_id": "019ffd1d-bcf5-7882-a50f-30ccd8b8fad6",
+      "latency_ms": 2641,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 8,
+        "budget_retrieved_tokens": 3753,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.6,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 2248,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 1990,
+          "char_start": 0,
+          "chunk_id": "019ffc87-502b-7a19-8ca9-6b878d6066ad",
+          "chunk_strategy": "heading",
+          "content_tokens": 973,
+          "version_id": "019ffc87-4ddc-793c-a55b-8fcc2ca58d29"
+        },
+        {
+          "char_end": 2318,
+          "char_start": 1415,
+          "chunk_id": "019fffae-472f-7155-b9d2-fec0e032e343",
+          "chunk_strategy": "heading",
+          "content_tokens": 540,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 3009,
+          "char_start": 1992,
+          "chunk_id": "019ffc87-502c-7316-a88c-c285ab542bfa",
+          "chunk_strategy": "heading",
+          "content_tokens": 472,
+          "version_id": "019ffc87-4ddc-793c-a55b-8fcc2ca58d29"
+        },
+        {
+          "char_end": 177,
+          "char_start": 0,
+          "chunk_id": "019fffae-472c-78d5-b766-bb265a1d8638",
+          "chunk_strategy": "heading",
+          "content_tokens": 104,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 6229,
+          "char_start": 5979,
+          "chunk_id": "019fffae-4734-771c-801d-1d1474da6fa1",
+          "chunk_strategy": "heading",
+          "content_tokens": 159,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "528c32d883fd3b92",
+      "item_id": "019ffd20-621d-7185-8508-f762a0f307c1",
+      "latency_ms": 274,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.6309297535714575,
+        "budget_chunk_count": 8,
+        "budget_retrieved_tokens": 3792,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 3,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.4,
+        "mrr": 0.5,
+        "ndcg_at_k": 0.6309297535714575,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 2401,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 1990,
+          "char_start": 0,
+          "chunk_id": "019ffc87-502b-7a19-8ca9-6b878d6066ad",
+          "chunk_strategy": "heading",
+          "content_tokens": 973,
+          "version_id": "019ffc87-4ddc-793c-a55b-8fcc2ca58d29"
+        },
+        {
+          "char_end": 3009,
+          "char_start": 1992,
+          "chunk_id": "019ffc87-502c-7316-a88c-c285ab542bfa",
+          "chunk_strategy": "heading",
+          "content_tokens": 472,
+          "version_id": "019ffc87-4ddc-793c-a55b-8fcc2ca58d29"
+        },
+        {
+          "char_end": 2318,
+          "char_start": 1415,
+          "chunk_id": "019fffae-472f-7155-b9d2-fec0e032e343",
+          "chunk_strategy": "heading",
+          "content_tokens": 540,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 8031,
+          "char_start": 7531,
+          "chunk_id": "019ffc87-4dd0-7a2a-aa2f-7e8f6ca31fd9",
+          "chunk_strategy": "heading",
+          "content_tokens": 312,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 177,
+          "char_start": 0,
+          "chunk_id": "019fffae-472c-78d5-b766-bb265a1d8638",
+          "chunk_strategy": "heading",
+          "content_tokens": 104,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "49ec5cf28792d2c8",
+      "item_id": "019ffd22-0377-7324-ad37-4d01a4de89b2",
+      "latency_ms": 227,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.6309297535714574,
+        "budget_chunk_count": 8,
+        "budget_retrieved_tokens": 3735,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 4,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.4,
+        "mrr": 0.5,
+        "ndcg_at_k": 0.6309297535714575,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 2566,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 1990,
+          "char_start": 0,
+          "chunk_id": "019ffc87-502b-7a19-8ca9-6b878d6066ad",
+          "chunk_strategy": "heading",
+          "content_tokens": 973,
+          "version_id": "019ffc87-4ddc-793c-a55b-8fcc2ca58d29"
+        },
+        {
+          "char_end": 3009,
+          "char_start": 1992,
+          "chunk_id": "019ffc87-502c-7316-a88c-c285ab542bfa",
+          "chunk_strategy": "heading",
+          "content_tokens": 472,
+          "version_id": "019ffc87-4ddc-793c-a55b-8fcc2ca58d29"
+        },
+        {
+          "char_end": 177,
+          "char_start": 0,
+          "chunk_id": "019fffae-472c-78d5-b766-bb265a1d8638",
+          "chunk_strategy": "heading",
+          "content_tokens": 104,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 8031,
+          "char_start": 7531,
+          "chunk_id": "019ffc87-4dd0-7a2a-aa2f-7e8f6ca31fd9",
+          "chunk_strategy": "heading",
+          "content_tokens": 312,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 5720,
+          "char_start": 4606,
+          "chunk_id": "019fffae-0c96-778b-be87-1bb224d0e0dc",
+          "chunk_strategy": "heading",
+          "content_tokens": 705,
+          "version_id": "019fffae-031e-78a1-9738-4acac896f23a"
+        }
+      ],
+      "top_score": 0.03225806451612903
+    },
+    {
+      "answerable": true,
+      "category": "table",
+      "error": null,
+      "gold_fingerprint": "61537c11e9c120da",
+      "item_id": "019ffd25-a595-747d-a338-0a49a078cdc5",
+      "latency_ms": 255,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.0,
+        "budget_chunk_count": 14,
+        "budget_retrieved_tokens": 3497,
+        "budget_span_recall": 0.0,
+        "context_precision": 0.0,
+        "distinct_docs_at_k": 5,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 0.0,
+        "max_doc_share_at_k": 0.2,
+        "mrr": 0.0,
+        "ndcg_at_k": 0.0,
+        "relevant_chunks": 0,
+        "retrieved_tokens": 1156,
+        "span_recall_at_k": 0.0
+      },
+      "retrieved": [
+        {
+          "char_end": 1413,
+          "char_start": 860,
+          "chunk_id": "019fffad-fb54-7b6b-9388-0a5963149a9d",
+          "chunk_strategy": "heading",
+          "content_tokens": 380,
+          "version_id": "019fffad-ef62-7ea7-b970-db3bcf43d406"
+        },
+        {
+          "char_end": 7544,
+          "char_start": 7334,
+          "chunk_id": "019fffae-1351-756b-8246-56f1fe17a302",
+          "chunk_strategy": "heading",
+          "content_tokens": 126,
+          "version_id": "019fffae-0cae-7875-bbc0-86d4f46f45c8"
+        },
+        {
+          "char_end": 5208,
+          "char_start": 5008,
+          "chunk_id": "019fffae-5637-742e-a029-2b3f1d0292e4",
+          "chunk_strategy": "heading",
+          "content_tokens": 160,
+          "version_id": "019fffae-4d81-7589-a7e0-87054e8c1a82"
+        },
+        {
+          "char_end": 3469,
+          "char_start": 3079,
+          "chunk_id": "019fffae-27ae-78df-904b-f928d67ade41",
+          "chunk_strategy": "heading",
+          "content_tokens": 241,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 12833,
+          "char_start": 11440,
+          "chunk_id": "019fffb7-6024-7886-9619-1ad978925aea",
+          "chunk_strategy": "heading",
+          "content_tokens": 249,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "bd27bc728010a2b4",
+      "item_id": "019ffd27-973f-7b6e-9668-6d87c916676f",
+      "latency_ms": 411,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 14,
+        "budget_retrieved_tokens": 3608,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 4,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.4,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 2233,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 4419,
+          "char_start": 4039,
+          "chunk_id": "019ffc79-f1c2-75cd-b3ee-8f9a69b6a87d",
+          "chunk_strategy": "heading",
+          "content_tokens": 220,
+          "version_id": "019ffc79-e443-7d65-9f8b-77b9c52ea836"
+        },
+        {
+          "char_end": 6497,
+          "char_start": 6084,
+          "chunk_id": "019fffae-0310-7ab7-b13c-31e7591143c7",
+          "chunk_strategy": "heading",
+          "content_tokens": 293,
+          "version_id": "019fffad-fb73-7033-adda-5551154027b7"
+        },
+        {
+          "char_end": 11079,
+          "char_start": 9146,
+          "chunk_id": "019fffae-27b8-7c66-80f3-fba1f4668873",
+          "chunk_strategy": "heading",
+          "content_tokens": 1252,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 11223,
+          "char_start": 10954,
+          "chunk_id": "019fffae-5652-7643-9b34-b6321951b148",
+          "chunk_strategy": "heading",
+          "content_tokens": 201,
+          "version_id": "019fffae-4d81-7589-a7e0-87054e8c1a82"
+        },
+        {
+          "char_end": 1445,
+          "char_start": 1013,
+          "chunk_id": "019fffae-5626-7437-a15b-e8d627edf79f",
+          "chunk_strategy": "heading",
+          "content_tokens": 267,
+          "version_id": "019fffae-4d81-7589-a7e0-87054e8c1a82"
+        }
+      ],
+      "top_score": 0.03177805800756621
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "4840692e4090257b",
+      "item_id": "019ffd28-9cbb-74cb-ad88-535024ede234",
+      "latency_ms": 242,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.0,
+        "budget_chunk_count": 11,
+        "budget_retrieved_tokens": 3854,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.0,
+        "distinct_docs_at_k": 4,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 0.0,
+        "max_doc_share_at_k": 0.4,
+        "mrr": 0.0,
+        "ndcg_at_k": 0.0,
+        "relevant_chunks": 0,
+        "retrieved_tokens": 2500,
+        "span_recall_at_k": 0.0
+      },
+      "retrieved": [
+        {
+          "char_end": 11079,
+          "char_start": 9146,
+          "chunk_id": "019fffae-27b8-7c66-80f3-fba1f4668873",
+          "chunk_strategy": "heading",
+          "content_tokens": 1252,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 417,
+          "char_start": 139,
+          "chunk_id": "019fffae-5623-72b6-a99e-891e973131e8",
+          "chunk_strategy": "heading",
+          "content_tokens": 210,
+          "version_id": "019fffae-4d81-7589-a7e0-87054e8c1a82"
+        },
+        {
+          "char_end": 7115,
+          "char_start": 6858,
+          "chunk_id": "019fffae-0c9a-7f63-bd0d-155bab668a74",
+          "chunk_strategy": "heading",
+          "content_tokens": 192,
+          "version_id": "019fffae-031e-78a1-9738-4acac896f23a"
+        },
+        {
+          "char_end": 5720,
+          "char_start": 4606,
+          "chunk_id": "019fffae-0c96-778b-be87-1bb224d0e0dc",
+          "chunk_strategy": "heading",
+          "content_tokens": 705,
+          "version_id": "019fffae-031e-78a1-9738-4acac896f23a"
+        },
+        {
+          "char_end": 8224,
+          "char_start": 8038,
+          "chunk_id": "019ffc79-f1ca-744d-b326-b4b149be65cd",
+          "chunk_strategy": "heading",
+          "content_tokens": 141,
+          "version_id": "019ffc79-e443-7d65-9f8b-77b9c52ea836"
+        }
+      ],
+      "top_score": 0.029116045245077504
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "7332f8a092b4e998",
+      "item_id": "019ffd2a-5430-76cf-a775-1e4c2d798112",
+      "latency_ms": 232,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.38685280723454163,
+        "budget_chunk_count": 11,
+        "budget_retrieved_tokens": 3898,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.2,
+        "ndcg_at_k": 0.38685280723454163,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 2090,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 11453,
+          "char_start": 9903,
+          "chunk_id": "019ffc87-4dda-7181-9152-887a232f171e",
+          "chunk_strategy": "heading",
+          "content_tokens": 1007,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 6646,
+          "char_start": 6036,
+          "chunk_id": "019ffc87-4dcb-77aa-8024-394e9bd1d3c5",
+          "chunk_strategy": "heading",
+          "content_tokens": 383,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 111,
+          "char_start": 0,
+          "chunk_id": "019ffc87-4db8-7073-a30f-771cc1a7322e",
+          "chunk_strategy": "heading",
+          "content_tokens": 67,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 264,
+          "char_start": 113,
+          "chunk_id": "019ffc87-4db9-75c2-8f73-738c8371317c",
+          "chunk_strategy": "heading",
+          "content_tokens": 120,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 2484,
+          "char_start": 1549,
+          "chunk_id": "019ffc87-4dc0-77d1-8940-bd4072bd924d",
+          "chunk_strategy": "heading",
+          "content_tokens": 513,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        }
+      ],
+      "top_score": 0.03200204813108039
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "94ddadb51e7f82dc",
+      "item_id": "019ffd2c-4d00-7fa2-9c20-f70a4aeb9945",
+      "latency_ms": 231,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 11,
+        "budget_retrieved_tokens": 3693,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1804,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 4812,
+          "char_start": 4528,
+          "chunk_id": "019ffc87-4dc5-74ac-b57b-ed037f4d4fee",
+          "chunk_strategy": "heading",
+          "content_tokens": 221,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 11453,
+          "char_start": 9903,
+          "chunk_id": "019ffc87-4dda-7181-9152-887a232f171e",
+          "chunk_strategy": "heading",
+          "content_tokens": 1007,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 6646,
+          "char_start": 6036,
+          "chunk_id": "019ffc87-4dcb-77aa-8024-394e9bd1d3c5",
+          "chunk_strategy": "heading",
+          "content_tokens": 383,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 264,
+          "char_start": 113,
+          "chunk_id": "019ffc87-4db9-75c2-8f73-738c8371317c",
+          "chunk_strategy": "heading",
+          "content_tokens": 120,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 7529,
+          "char_start": 7449,
+          "chunk_id": "019ffc87-4dcf-7840-bb06-2fb702ed8700",
+          "chunk_strategy": "heading",
+          "content_tokens": 73,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": false,
+      "category": "unanswerable",
+      "error": null,
+      "gold_fingerprint": "4f53cda18c2baa0c",
+      "item_id": "019ffd2d-64a1-7289-87bb-114469131e75",
+      "latency_ms": 244,
+      "retrieval": null,
+      "retrieved": [
+        {
+          "char_end": 2451,
+          "char_start": 1737,
+          "chunk_id": "019ffc79-f1bc-7b91-a469-b38f53f71950",
+          "chunk_strategy": "heading",
+          "content_tokens": 355,
+          "version_id": "019ffc79-e443-7d65-9f8b-77b9c52ea836"
+        },
+        {
+          "char_end": 15003,
+          "char_start": 13629,
+          "chunk_id": "019ffc87-3af1-77c0-8446-40d951de0da9",
+          "chunk_strategy": "heading",
+          "content_tokens": 847,
+          "version_id": "019ffc87-2e44-7a12-8821-6bd7a63743d7"
+        },
+        {
+          "char_end": 6476,
+          "char_start": 4734,
+          "chunk_id": "019ffc87-3ae9-7b15-9573-1155bfb6d94b",
+          "chunk_strategy": "heading",
+          "content_tokens": 1132,
+          "version_id": "019ffc87-2e44-7a12-8821-6bd7a63743d7"
+        },
+        {
+          "char_end": 3550,
+          "char_start": 3069,
+          "chunk_id": "019ffc87-4dc2-7213-9e41-3e018cc1e98f",
+          "chunk_strategy": "heading",
+          "content_tokens": 350,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 12169,
+          "char_start": 10549,
+          "chunk_id": "019fffae-0ca8-7b8f-b8d6-3e509d85f048",
+          "chunk_strategy": "heading",
+          "content_tokens": 1071,
+          "version_id": "019fffae-031e-78a1-9738-4acac896f23a"
+        }
+      ],
+      "top_score": 0.027777777777777776
+    },
+    {
+      "answerable": false,
+      "category": "unanswerable",
+      "error": null,
+      "gold_fingerprint": "4f53cda18c2baa0c",
+      "item_id": "019ffd2e-62af-7bc2-8a75-af1e9c77d584",
+      "latency_ms": 219,
+      "retrieval": null,
+      "retrieved": [
+        {
+          "char_end": 3009,
+          "char_start": 1992,
+          "chunk_id": "019ffc87-502c-7316-a88c-c285ab542bfa",
+          "chunk_strategy": "heading",
+          "content_tokens": 472,
+          "version_id": "019ffc87-4ddc-793c-a55b-8fcc2ca58d29"
+        },
+        {
+          "char_end": 4360,
+          "char_start": 3492,
+          "chunk_id": "019fffae-4731-78c2-ad5a-76565dd6ca67",
+          "chunk_strategy": "heading",
+          "content_tokens": 552,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 1990,
+          "char_start": 0,
+          "chunk_id": "019ffc87-502b-7a19-8ca9-6b878d6066ad",
+          "chunk_strategy": "heading",
+          "content_tokens": 973,
+          "version_id": "019ffc87-4ddc-793c-a55b-8fcc2ca58d29"
+        },
+        {
+          "char_end": 2318,
+          "char_start": 1415,
+          "chunk_id": "019fffae-472f-7155-b9d2-fec0e032e343",
+          "chunk_strategy": "heading",
+          "content_tokens": 540,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 24925,
+          "char_start": 22960,
+          "chunk_id": "019ffc83-f97e-79e3-a789-d654876b7f99",
+          "chunk_strategy": "heading",
+          "content_tokens": 391,
+          "version_id": "019ffc83-ddb3-767f-87a5-2cec8e9c9cc5"
+        }
+      ],
+      "top_score": 0.03177805800756621
+    },
+    {
+      "answerable": false,
+      "category": "unanswerable",
+      "error": null,
+      "gold_fingerprint": "4f53cda18c2baa0c",
+      "item_id": "019ffd2f-ad7a-7091-9c31-963fcc338e98",
+      "latency_ms": 273,
+      "retrieval": null,
+      "retrieved": [
+        {
+          "char_end": 6498,
+          "char_start": 4377,
+          "chunk_id": "019fffae-27b2-75e9-acef-494a0643ba9b",
+          "chunk_strategy": "heading",
+          "content_tokens": 1309,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 20141,
+          "char_start": 19083,
+          "chunk_id": "019fffae-27c1-7521-9e73-98b05c7d1d0d",
+          "chunk_strategy": "heading",
+          "content_tokens": 864,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 920,
+          "char_start": 68,
+          "chunk_id": "019fffad-e743-7fcf-9114-1cf9a09102ec",
+          "chunk_strategy": "heading",
+          "content_tokens": 559,
+          "version_id": "019fffad-dc38-7658-9936-0fb8dc03ce73"
+        },
+        {
+          "char_end": 3077,
+          "char_start": 2114,
+          "chunk_id": "019fffae-27ad-7411-b16a-b508c6f77a02",
+          "chunk_strategy": "heading",
+          "content_tokens": 565,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 1162,
+          "char_start": 883,
+          "chunk_id": "019ffc87-3ae0-73ae-bc33-cd1af98a3fb2",
+          "chunk_strategy": "heading",
+          "content_tokens": 229,
+          "version_id": "019ffc87-2e44-7a12-8821-6bd7a63743d7"
+        }
+      ],
+      "top_score": 0.030679156908665108
+    },
+    {
+      "answerable": true,
+      "category": "multi_hop",
+      "error": null,
+      "gold_fingerprint": "ec6e2bfed136e29f",
+      "item_id": "019ffd30-aa19-7547-9155-7f70c5b99603",
+      "latency_ms": 226,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.0,
+        "budget_chunk_count": 14,
+        "budget_retrieved_tokens": 3930,
+        "budget_span_recall": 0.75,
+        "context_precision": 0.0,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 0.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.0,
+        "ndcg_at_k": 0.0,
+        "relevant_chunks": 0,
+        "retrieved_tokens": 1627,
+        "span_recall_at_k": 0.0
+      },
+      "retrieved": [
+        {
+          "char_end": 11453,
+          "char_start": 9903,
+          "chunk_id": "019ffc87-4dda-7181-9152-887a232f171e",
+          "chunk_strategy": "heading",
+          "content_tokens": 1007,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 1037,
+          "char_start": 979,
+          "chunk_id": "019ffc87-4dbb-708b-a831-0faa2f2f03b9",
+          "chunk_strategy": "heading",
+          "content_tokens": 50,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 264,
+          "char_start": 113,
+          "chunk_id": "019ffc87-4db9-75c2-8f73-738c8371317c",
+          "chunk_strategy": "heading",
+          "content_tokens": 120,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 111,
+          "char_start": 0,
+          "chunk_id": "019ffc87-4db8-7073-a30f-771cc1a7322e",
+          "chunk_strategy": "heading",
+          "content_tokens": 67,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 6646,
+          "char_start": 6036,
+          "chunk_id": "019ffc87-4dcb-77aa-8024-394e9bd1d3c5",
+          "chunk_strategy": "heading",
+          "content_tokens": 383,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        }
+      ],
+      "top_score": 0.031009615384615385
+    },
+    {
+      "answerable": false,
+      "category": "unanswerable",
+      "error": null,
+      "gold_fingerprint": "4f53cda18c2baa0c",
+      "item_id": "019ffd33-0920-73ff-b60a-94176a590574",
+      "latency_ms": 242,
+      "retrieval": null,
+      "retrieved": [
+        {
+          "char_end": 24994,
+          "char_start": 23265,
+          "chunk_id": "019fffdb-f71d-774b-b936-a3cb96dbbf94",
+          "chunk_strategy": "heading",
+          "content_tokens": 389,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 46549,
+          "char_start": 44747,
+          "chunk_id": "019fffd8-2bf4-7fec-8265-d2836e5da857",
+          "chunk_strategy": "heading",
+          "content_tokens": 513,
+          "version_id": "019fffd7-fe74-781c-bd29-58e94a9edf18"
+        },
+        {
+          "char_end": 14909,
+          "char_start": 14372,
+          "chunk_id": "019ffc87-4606-79bc-bfe2-f26f6c6efd97",
+          "chunk_strategy": "heading",
+          "content_tokens": 363,
+          "version_id": "019ffc87-3afe-7a9c-869d-cbfb3fdb4332"
+        },
+        {
+          "char_end": 49739,
+          "char_start": 47964,
+          "chunk_id": "019fffd8-2bf6-7942-9c4c-e88910a26152",
+          "chunk_strategy": "heading",
+          "content_tokens": 335,
+          "version_id": "019fffd7-fe74-781c-bd29-58e94a9edf18"
+        },
+        {
+          "char_end": 58501,
+          "char_start": 56825,
+          "chunk_id": "019fffd8-2bfb-72c2-9633-6199ab8698a3",
+          "chunk_strategy": "heading",
+          "content_tokens": 354,
+          "version_id": "019fffd7-fe74-781c-bd29-58e94a9edf18"
+        }
+      ],
+      "top_score": 0.02738970588235294
+    },
+    {
+      "answerable": true,
+      "category": "table",
+      "error": null,
+      "gold_fingerprint": "5d2b56acc9100af4",
+      "item_id": "019ffd34-3949-7b6d-b109-1e4feef649ce",
+      "latency_ms": 225,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 10,
+        "budget_retrieved_tokens": 3884,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1926,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 3067,
+          "char_start": 2486,
+          "chunk_id": "019ffc87-4dc1-7126-a68b-fa3132382d04",
+          "chunk_strategy": "heading",
+          "content_tokens": 323,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 9056,
+          "char_start": 8904,
+          "chunk_id": "019ffc87-4dd6-74fc-97ac-d00d472698d0",
+          "chunk_strategy": "heading",
+          "content_tokens": 93,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 11453,
+          "char_start": 9903,
+          "chunk_id": "019ffc87-4dda-7181-9152-887a232f171e",
+          "chunk_strategy": "heading",
+          "content_tokens": 1007,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 264,
+          "char_start": 113,
+          "chunk_id": "019ffc87-4db9-75c2-8f73-738c8371317c",
+          "chunk_strategy": "heading",
+          "content_tokens": 120,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        },
+        {
+          "char_end": 6646,
+          "char_start": 6036,
+          "chunk_id": "019ffc87-4dcb-77aa-8024-394e9bd1d3c5",
+          "chunk_strategy": "heading",
+          "content_tokens": 383,
+          "version_id": "019ffc87-460f-7172-9225-883f2d2075f7"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "3a9836c3ee574bcc",
+      "item_id": "019ffd37-e50e-707c-aab2-679a84c03b7c",
+      "latency_ms": 242,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 12,
+        "budget_retrieved_tokens": 3717,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1500,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 34432,
+          "char_start": 32567,
+          "chunk_id": "019ffc87-185d-7202-917b-201538929826",
+          "chunk_strategy": "heading",
+          "content_tokens": 356,
+          "version_id": "019ffc86-fddd-7f51-b14d-33891406fa27"
+        },
+        {
+          "char_end": 5392,
+          "char_start": 3654,
+          "chunk_id": "019ffc87-1847-72ed-82fc-2bdae1e9b2c0",
+          "chunk_strategy": "heading",
+          "content_tokens": 279,
+          "version_id": "019ffc86-fddd-7f51-b14d-33891406fa27"
+        },
+        {
+          "char_end": 29716,
+          "char_start": 28026,
+          "chunk_id": "019ffc87-185a-7d72-815f-2948d6e78c36",
+          "chunk_strategy": "heading",
+          "content_tokens": 539,
+          "version_id": "019ffc86-fddd-7f51-b14d-33891406fa27"
+        },
+        {
+          "char_end": 35198,
+          "char_start": 34434,
+          "chunk_id": "019ffc87-185e-7223-9608-977f5087312d",
+          "chunk_strategy": "heading",
+          "content_tokens": 130,
+          "version_id": "019ffc86-fddd-7f51-b14d-33891406fa27"
+        },
+        {
+          "char_end": 1743,
+          "char_start": 568,
+          "chunk_id": "019ffc87-1845-7235-a46b-a0d21cdde20f",
+          "chunk_strategy": "heading",
+          "content_tokens": 196,
+          "version_id": "019ffc86-fddd-7f51-b14d-33891406fa27"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "multi_hop",
+      "error": null,
+      "gold_fingerprint": "0b36987620eae743",
+      "item_id": "019ffd37-e520-78f5-863b-63be1797892d",
+      "latency_ms": 323,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.46927872602275644,
+        "budget_chunk_count": 13,
+        "budget_retrieved_tokens": 3943,
+        "budget_span_recall": 0.3333333333333333,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_k": 0.46927872602275644,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1659,
+        "span_recall_at_k": 0.3333333333333333
+      },
+      "retrieved": [
+        {
+          "char_end": 29347,
+          "char_start": 27488,
+          "chunk_id": "019ffc83-f982-7799-983c-2dca52fd0dc8",
+          "chunk_strategy": "heading",
+          "content_tokens": 730,
+          "version_id": "019ffc83-ddb3-767f-87a5-2cec8e9c9cc5"
+        },
+        {
+          "char_end": 31029,
+          "char_start": 29692,
+          "chunk_id": "019ffc83-f984-7319-9b08-bbac66b1a65d",
+          "chunk_strategy": "heading",
+          "content_tokens": 275,
+          "version_id": "019ffc83-ddb3-767f-87a5-2cec8e9c9cc5"
+        },
+        {
+          "char_end": 33828,
+          "char_start": 31940,
+          "chunk_id": "019ffc83-f986-76b4-9c3c-f3a9b87f148f",
+          "chunk_strategy": "heading",
+          "content_tokens": 307,
+          "version_id": "019ffc83-ddb3-767f-87a5-2cec8e9c9cc5"
+        },
+        {
+          "char_end": 67261,
+          "char_start": 66075,
+          "chunk_id": "019ffc83-f9a0-743a-a7d2-8131ef3b47d5",
+          "chunk_strategy": "heading",
+          "content_tokens": 243,
+          "version_id": "019ffc83-ddb3-767f-87a5-2cec8e9c9cc5"
+        },
+        {
+          "char_end": 96416,
+          "char_start": 95883,
+          "chunk_id": "019ffc83-f9b7-754b-8431-c8a67145dbd7",
+          "chunk_strategy": "heading",
+          "content_tokens": 104,
+          "version_id": "019ffc83-ddb3-767f-87a5-2cec8e9c9cc5"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "multi_hop",
+      "error": null,
+      "gold_fingerprint": "03ba29b815a21580",
+      "item_id": "019ffd37-e52c-7b82-a4e5-151d6563daff",
+      "latency_ms": 294,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.5316519652587917,
+        "budget_chunk_count": 6,
+        "budget_retrieved_tokens": 3940,
+        "budget_span_recall": 0.5,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_k": 0.46927872602275644,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 3628,
+        "span_recall_at_k": 0.5
+      },
+      "retrieved": [
+        {
+          "char_end": 33796,
+          "char_start": 32698,
+          "chunk_id": "019ffc7e-f80b-7bcc-ba56-e6bc64e8ac43",
+          "chunk_strategy": "heading",
+          "content_tokens": 265,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        },
+        {
+          "char_end": 29782,
+          "char_start": 26180,
+          "chunk_id": "019ffc7e-f808-7480-ad96-f18c50aea483",
+          "chunk_strategy": "heading",
+          "content_tokens": 1664,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        },
+        {
+          "char_end": 32696,
+          "char_start": 31213,
+          "chunk_id": "019ffc7e-f80a-7b13-9da3-87eb7011266c",
+          "chunk_strategy": "heading",
+          "content_tokens": 259,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        },
+        {
+          "char_end": 20321,
+          "char_start": 19480,
+          "chunk_id": "019ffc7e-f804-779b-95ac-2fa0cbb16cb2",
+          "chunk_strategy": "heading",
+          "content_tokens": 163,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        },
+        {
+          "char_end": 23135,
+          "char_start": 20323,
+          "chunk_id": "019ffc7e-f805-7b41-92ab-11e054736630",
+          "chunk_strategy": "heading",
+          "content_tokens": 1277,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "table",
+      "error": null,
+      "gold_fingerprint": "7656ab73150cff09",
+      "item_id": "019ffd37-e534-7379-9cfc-d8a9474101b0",
+      "latency_ms": 267,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 7,
+        "budget_retrieved_tokens": 3314,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 2659,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 33796,
+          "char_start": 32698,
+          "chunk_id": "019ffc7e-f80b-7bcc-ba56-e6bc64e8ac43",
+          "chunk_strategy": "heading",
+          "content_tokens": 265,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        },
+        {
+          "char_end": 20321,
+          "char_start": 19480,
+          "chunk_id": "019ffc7e-f804-779b-95ac-2fa0cbb16cb2",
+          "chunk_strategy": "heading",
+          "content_tokens": 163,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        },
+        {
+          "char_end": 25131,
+          "char_start": 23137,
+          "chunk_id": "019ffc7e-f806-7474-ae24-820b5dde3f7f",
+          "chunk_strategy": "heading",
+          "content_tokens": 642,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        },
+        {
+          "char_end": 23135,
+          "char_start": 20323,
+          "chunk_id": "019ffc7e-f805-7b41-92ab-11e054736630",
+          "chunk_strategy": "heading",
+          "content_tokens": 1277,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        },
+        {
+          "char_end": 31211,
+          "char_start": 29784,
+          "chunk_id": "019ffc7e-f809-7290-9866-10aaf258058b",
+          "chunk_strategy": "heading",
+          "content_tokens": 312,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "table",
+      "error": null,
+      "gold_fingerprint": "86fa433f02b873be",
+      "item_id": "019ffd37-e53e-7e6e-bcad-3d993fe52e64",
+      "latency_ms": 315,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.43067655807339306,
+        "budget_chunk_count": 10,
+        "budget_retrieved_tokens": 3664,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.25,
+        "ndcg_at_k": 0.43067655807339306,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1866,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 28024,
+          "char_start": 26690,
+          "chunk_id": "019ffc87-1859-7faf-a4a4-830466b03c01",
+          "chunk_strategy": "heading",
+          "content_tokens": 443,
+          "version_id": "019ffc86-fddd-7f51-b14d-33891406fa27"
+        },
+        {
+          "char_end": 29716,
+          "char_start": 28026,
+          "chunk_id": "019ffc87-185a-7d72-815f-2948d6e78c36",
+          "chunk_strategy": "heading",
+          "content_tokens": 539,
+          "version_id": "019ffc86-fddd-7f51-b14d-33891406fa27"
+        },
+        {
+          "char_end": 73482,
+          "char_start": 72559,
+          "chunk_id": "019ffc87-187d-79df-87a8-8d17c77679a5",
+          "chunk_strategy": "heading",
+          "content_tokens": 183,
+          "version_id": "019ffc86-fddd-7f51-b14d-33891406fa27"
+        },
+        {
+          "char_end": 70972,
+          "char_start": 69741,
+          "chunk_id": "019ffc87-187b-702b-b129-df7633d082bb",
+          "chunk_strategy": "heading",
+          "content_tokens": 345,
+          "version_id": "019ffc86-fddd-7f51-b14d-33891406fa27"
+        },
+        {
+          "char_end": 34432,
+          "char_start": 32567,
+          "chunk_id": "019ffc87-185d-7202-917b-201538929826",
+          "chunk_strategy": "heading",
+          "content_tokens": 356,
+          "version_id": "019ffc86-fddd-7f51-b14d-33891406fa27"
+        }
+      ],
+      "top_score": 0.03200204813108039
+    },
+    {
+      "answerable": true,
+      "category": "table",
+      "error": null,
+      "gold_fingerprint": "41429341091ec5f2",
+      "item_id": "019ffd37-e548-7c17-9e7c-76b8d0698b19",
+      "latency_ms": 262,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 9,
+        "budget_retrieved_tokens": 3910,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1957,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 29347,
+          "char_start": 27488,
+          "chunk_id": "019ffc83-f982-7799-983c-2dca52fd0dc8",
+          "chunk_strategy": "heading",
+          "content_tokens": 730,
+          "version_id": "019ffc83-ddb3-767f-87a5-2cec8e9c9cc5"
+        },
+        {
+          "char_end": 31029,
+          "char_start": 29692,
+          "chunk_id": "019ffc83-f984-7319-9b08-bbac66b1a65d",
+          "chunk_strategy": "heading",
+          "content_tokens": 275,
+          "version_id": "019ffc83-ddb3-767f-87a5-2cec8e9c9cc5"
+        },
+        {
+          "char_end": 24925,
+          "char_start": 22960,
+          "chunk_id": "019ffc83-f97e-79e3-a789-d654876b7f99",
+          "chunk_strategy": "heading",
+          "content_tokens": 391,
+          "version_id": "019ffc83-ddb3-767f-87a5-2cec8e9c9cc5"
+        },
+        {
+          "char_end": 68252,
+          "char_start": 67263,
+          "chunk_id": "019ffc83-f9a1-7110-a61f-a0bc54e66ac8",
+          "chunk_strategy": "heading",
+          "content_tokens": 254,
+          "version_id": "019ffc83-ddb3-767f-87a5-2cec8e9c9cc5"
+        },
+        {
+          "char_end": 33828,
+          "char_start": 31940,
+          "chunk_id": "019ffc83-f986-76b4-9c3c-f3a9b87f148f",
+          "chunk_strategy": "heading",
+          "content_tokens": 307,
+          "version_id": "019ffc83-ddb3-767f-87a5-2cec8e9c9cc5"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "27e0908e8ccd29b9",
+      "item_id": "01a00047-2f5b-7f7c-8768-0b7c0289aa5d",
+      "latency_ms": 281,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.38685280723454163,
+        "budget_chunk_count": 12,
+        "budget_retrieved_tokens": 3919,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.8,
+        "mrr": 0.2,
+        "ndcg_at_k": 0.38685280723454163,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1371,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 7521,
+          "char_start": 6022,
+          "chunk_id": "019fffb7-6020-7314-91ca-243d8ecfb639",
+          "chunk_strategy": "heading",
+          "content_tokens": 292,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 1959,
+          "char_start": 402,
+          "chunk_id": "019fffb7-601c-794b-b8ce-dfea87929b0f",
+          "chunk_strategy": "heading",
+          "content_tokens": 275,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 38351,
+          "char_start": 37507,
+          "chunk_id": "019fffb7-6039-7b8b-81a2-62b1bfa3ed61",
+          "chunk_strategy": "heading",
+          "content_tokens": 148,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 20356,
+          "char_start": 18480,
+          "chunk_id": "019fffbc-866b-7741-8b89-2eb2176cf24f",
+          "chunk_strategy": "heading",
+          "content_tokens": 345,
+          "version_id": "019fffbc-789a-7690-9949-8130c3910b07"
+        },
+        {
+          "char_end": 14774,
+          "char_start": 13212,
+          "chunk_id": "019fffb7-6026-78af-bd2a-04f0c25aff74",
+          "chunk_strategy": "heading",
+          "content_tokens": 311,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        }
+      ],
+      "top_score": 0.032018442622950824
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "98327707ee1f6d6b",
+      "item_id": "01a00047-2f5c-76f8-8a87-f7c41bed3662",
+      "latency_ms": 283,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.5,
+        "budget_chunk_count": 15,
+        "budget_retrieved_tokens": 3971,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.8,
+        "mrr": 0.3333333333333333,
+        "ndcg_at_k": 0.5,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1231,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 8495,
+          "char_start": 7523,
+          "chunk_id": "019fffb7-6021-76be-ad79-2748181ddf36",
+          "chunk_strategy": "heading",
+          "content_tokens": 170,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 29723,
+          "char_start": 27906,
+          "chunk_id": "019fffc1-05c4-748b-8d2d-672edd873902",
+          "chunk_strategy": "heading",
+          "content_tokens": 374,
+          "version_id": "019fffc0-e405-705e-940a-c7190d742d20"
+        },
+        {
+          "char_end": 11438,
+          "char_start": 10374,
+          "chunk_id": "019fffb7-6023-7c4a-a4fd-2a295dcff16c",
+          "chunk_strategy": "heading",
+          "content_tokens": 222,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 6020,
+          "char_start": 4986,
+          "chunk_id": "019fffb7-601f-7264-a192-32e19acc233c",
+          "chunk_strategy": "heading",
+          "content_tokens": 236,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 49739,
+          "char_start": 48776,
+          "chunk_id": "019fffb7-6040-744d-8e1a-353542c503c5",
+          "chunk_strategy": "heading",
+          "content_tokens": 229,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        }
+      ],
+      "top_score": 0.0315136476426799
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "916911736579bb9e",
+      "item_id": "01a00047-2f5d-70bf-8309-e3a308e29b31",
+      "latency_ms": 270,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.6309297535714575,
+        "budget_chunk_count": 8,
+        "budget_retrieved_tokens": 2984,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.6,
+        "mrr": 0.5,
+        "ndcg_at_k": 0.6309297535714575,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1940,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 65694,
+          "char_start": 63744,
+          "chunk_id": "019fffc5-7c42-79ee-a5cd-d4ee5d8a4508",
+          "chunk_strategy": "heading",
+          "content_tokens": 482,
+          "version_id": "019fffc5-670c-7152-92d1-8fab6c3b05bd"
+        },
+        {
+          "char_end": 1551,
+          "char_start": 0,
+          "chunk_id": "019fffd2-ee40-7c65-91b3-063717e82769",
+          "chunk_strategy": "heading",
+          "content_tokens": 362,
+          "version_id": "019fffd2-da8a-750e-84e9-7ed7ab50644f"
+        },
+        {
+          "char_end": 24849,
+          "char_start": 22953,
+          "chunk_id": "019fffc5-7c25-7345-993e-37d7001f0c37",
+          "chunk_strategy": "heading",
+          "content_tokens": 475,
+          "version_id": "019fffc5-670c-7152-92d1-8fab6c3b05bd"
+        },
+        {
+          "char_end": 27568,
+          "char_start": 25613,
+          "chunk_id": "019fffd2-ee54-7f4d-9857-92bd6ef8857d",
+          "chunk_strategy": "heading",
+          "content_tokens": 405,
+          "version_id": "019fffd2-da8a-750e-84e9-7ed7ab50644f"
+        },
+        {
+          "char_end": 30529,
+          "char_start": 29360,
+          "chunk_id": "019fffd2-ee56-7b5a-a3e5-b71b04375084",
+          "chunk_strategy": "heading",
+          "content_tokens": 216,
+          "version_id": "019fffd2-da8a-750e-84e9-7ed7ab50644f"
+        }
+      ],
+      "top_score": 0.03177805800756621
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "93ba6c35102c2847",
+      "item_id": "01a00047-2f5e-709a-a40f-dd41a25e5a20",
+      "latency_ms": 231,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.0,
+        "budget_chunk_count": 4,
+        "budget_retrieved_tokens": 2883,
+        "budget_span_recall": 0.0,
+        "context_precision": 0.0,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 0.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.0,
+        "ndcg_at_k": 0.0,
+        "relevant_chunks": 0,
+        "retrieved_tokens": 4160,
+        "span_recall_at_k": 0.0
+      },
+      "retrieved": [
+        {
+          "char_end": 33796,
+          "char_start": 32698,
+          "chunk_id": "019ffc7e-f80b-7bcc-ba56-e6bc64e8ac43",
+          "chunk_strategy": "heading",
+          "content_tokens": 265,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        },
+        {
+          "char_end": 29782,
+          "char_start": 26180,
+          "chunk_id": "019ffc7e-f808-7480-ad96-f18c50aea483",
+          "chunk_strategy": "heading",
+          "content_tokens": 1664,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        },
+        {
+          "char_end": 25131,
+          "char_start": 23137,
+          "chunk_id": "019ffc7e-f806-7474-ae24-820b5dde3f7f",
+          "chunk_strategy": "heading",
+          "content_tokens": 642,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        },
+        {
+          "char_end": 31211,
+          "char_start": 29784,
+          "chunk_id": "019ffc7e-f809-7290-9866-10aaf258058b",
+          "chunk_strategy": "heading",
+          "content_tokens": 312,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        },
+        {
+          "char_end": 23135,
+          "char_start": 20323,
+          "chunk_id": "019ffc7e-f805-7b41-92ab-11e054736630",
+          "chunk_strategy": "heading",
+          "content_tokens": 1277,
+          "version_id": "019ffc7e-e235-7e07-ad1e-2ced258b81d9"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "da256eed363a67ea",
+      "item_id": "01a00047-2f5f-7e46-8a1e-12556db5d9e8",
+      "latency_ms": 365,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.5,
+        "budget_chunk_count": 9,
+        "budget_retrieved_tokens": 3580,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.3333333333333333,
+        "ndcg_at_k": 0.5,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 2086,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 24849,
+          "char_start": 22953,
+          "chunk_id": "019fffc5-7c25-7345-993e-37d7001f0c37",
+          "chunk_strategy": "heading",
+          "content_tokens": 475,
+          "version_id": "019fffc5-670c-7152-92d1-8fab6c3b05bd"
+        },
+        {
+          "char_end": 27972,
+          "char_start": 26849,
+          "chunk_id": "019fffc5-7c27-79ef-b62a-004898ecc2d6",
+          "chunk_strategy": "heading",
+          "content_tokens": 204,
+          "version_id": "019fffc5-670c-7152-92d1-8fab6c3b05bd"
+        },
+        {
+          "char_end": 6847,
+          "char_start": 5130,
+          "chunk_id": "019fffc5-7c18-7bf4-9160-fb242afa13bb",
+          "chunk_strategy": "heading",
+          "content_tokens": 347,
+          "version_id": "019fffc5-670c-7152-92d1-8fab6c3b05bd"
+        },
+        {
+          "char_end": 65694,
+          "char_start": 63744,
+          "chunk_id": "019fffc5-7c42-79ee-a5cd-d4ee5d8a4508",
+          "chunk_strategy": "heading",
+          "content_tokens": 482,
+          "version_id": "019fffc5-670c-7152-92d1-8fab6c3b05bd"
+        },
+        {
+          "char_end": 26847,
+          "char_start": 24851,
+          "chunk_id": "019fffc5-7c26-7ea7-abf8-14a97c8cfc4a",
+          "chunk_strategy": "heading",
+          "content_tokens": 578,
+          "version_id": "019fffc5-670c-7152-92d1-8fab6c3b05bd"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "0c941286562d1ca8",
+      "item_id": "01a00047-2f60-78b4-97de-cf246c8ff1c4",
+      "latency_ms": 278,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.6309297535714575,
+        "budget_chunk_count": 12,
+        "budget_retrieved_tokens": 3808,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.5,
+        "ndcg_at_k": 0.6309297535714575,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1539,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 18478,
+          "char_start": 16562,
+          "chunk_id": "019fffbc-866a-7ad6-bbb9-596e0a588553",
+          "chunk_strategy": "heading",
+          "content_tokens": 400,
+          "version_id": "019fffbc-789a-7690-9949-8130c3910b07"
+        },
+        {
+          "char_end": 7223,
+          "char_start": 5943,
+          "chunk_id": "019fffbc-8662-7383-ae5e-097353d1134a",
+          "chunk_strategy": "heading",
+          "content_tokens": 240,
+          "version_id": "019fffbc-789a-7690-9949-8130c3910b07"
+        },
+        {
+          "char_end": 32461,
+          "char_start": 30565,
+          "chunk_id": "019fffbc-8673-7837-9f30-3ca872e7d749",
+          "chunk_strategy": "heading",
+          "content_tokens": 368,
+          "version_id": "019fffbc-789a-7690-9949-8130c3910b07"
+        },
+        {
+          "char_end": 16560,
+          "char_start": 14946,
+          "chunk_id": "019fffbc-8669-71dc-93ea-2d73a786bbe4",
+          "chunk_strategy": "heading",
+          "content_tokens": 332,
+          "version_id": "019fffbc-789a-7690-9949-8130c3910b07"
+        },
+        {
+          "char_end": 33655,
+          "char_start": 32463,
+          "chunk_id": "019fffbc-8674-7c96-9590-6b6f9eeebeda",
+          "chunk_strategy": "heading",
+          "content_tokens": 199,
+          "version_id": "019fffbc-789a-7690-9949-8130c3910b07"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "d0fe335d638fc143",
+      "item_id": "01a00047-2f61-7f3c-9070-642ffab616d1",
+      "latency_ms": 236,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 11,
+        "budget_retrieved_tokens": 3806,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1606,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 8138,
+          "char_start": 6400,
+          "chunk_id": "019fffc3-5c0a-7f88-8c36-a617460820dc",
+          "chunk_strategy": "heading",
+          "content_tokens": 338,
+          "version_id": "019fffc3-448b-7f35-8537-ae9d88928d77"
+        },
+        {
+          "char_end": 14158,
+          "char_start": 12280,
+          "chunk_id": "019fffc3-5c0f-7930-9fdb-21962bf3e507",
+          "chunk_strategy": "heading",
+          "content_tokens": 372,
+          "version_id": "019fffc3-448b-7f35-8537-ae9d88928d77"
+        },
+        {
+          "char_end": 2774,
+          "char_start": 746,
+          "chunk_id": "019fffc3-5c07-72dd-a0ec-bd215a504852",
+          "chunk_strategy": "heading",
+          "content_tokens": 398,
+          "version_id": "019fffc3-448b-7f35-8537-ae9d88928d77"
+        },
+        {
+          "char_end": 12278,
+          "char_start": 11869,
+          "chunk_id": "019fffc3-5c0e-7d10-9215-2e7a1089df25",
+          "chunk_strategy": "heading",
+          "content_tokens": 94,
+          "version_id": "019fffc3-448b-7f35-8537-ae9d88928d77"
+        },
+        {
+          "char_end": 9697,
+          "char_start": 8140,
+          "chunk_id": "019fffc3-5c0b-7d9c-833e-bdfdf7d6b6f0",
+          "chunk_strategy": "heading",
+          "content_tokens": 404,
+          "version_id": "019fffc3-448b-7f35-8537-ae9d88928d77"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": true,
+      "category": "table",
+      "error": null,
+      "gold_fingerprint": "356500c1deb90dbd",
+      "item_id": "01a00047-2f62-7082-b0b7-3e101421f0ee",
+      "latency_ms": 332,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.6309297535714575,
+        "budget_chunk_count": 11,
+        "budget_retrieved_tokens": 3149,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.5,
+        "ndcg_at_k": 0.6309297535714575,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1522,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 49739,
+          "char_start": 48776,
+          "chunk_id": "019fffb7-6040-744d-8e1a-353542c503c5",
+          "chunk_strategy": "heading",
+          "content_tokens": 229,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 16216,
+          "char_start": 14776,
+          "chunk_id": "019fffb7-6027-7073-84cb-9c140fc48ddf",
+          "chunk_strategy": "heading",
+          "content_tokens": 430,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 23532,
+          "char_start": 21684,
+          "chunk_id": "019fffb7-602c-7e0b-bcc7-2f27530f4d21",
+          "chunk_strategy": "heading",
+          "content_tokens": 358,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 20251,
+          "char_start": 18425,
+          "chunk_id": "019fffb7-602a-7a12-9ce1-de4ac49ad841",
+          "chunk_strategy": "heading",
+          "content_tokens": 402,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 52750,
+          "char_start": 52272,
+          "chunk_id": "019fffb7-6043-728a-8f60-3791891308e7",
+          "chunk_strategy": "heading",
+          "content_tokens": 103,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": true,
+      "category": "table",
+      "error": null,
+      "gold_fingerprint": "e20d2e4d973a335a",
+      "item_id": "01a00047-2f63-73ee-b25c-27eb5de662a3",
+      "latency_ms": 261,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.6309297535714575,
+        "budget_chunk_count": 11,
+        "budget_retrieved_tokens": 3609,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.5,
+        "ndcg_at_k": 0.6309297535714575,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1961,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 22297,
+          "char_start": 20785,
+          "chunk_id": "019fffb9-a38f-70a7-86f2-6794f567ef83",
+          "chunk_strategy": "heading",
+          "content_tokens": 332,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        },
+        {
+          "char_end": 24265,
+          "char_start": 22299,
+          "chunk_id": "019fffb9-a390-7144-8b09-163ad8149d70",
+          "chunk_strategy": "heading",
+          "content_tokens": 564,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        },
+        {
+          "char_end": 5359,
+          "char_start": 4734,
+          "chunk_id": "019fffb9-a383-7645-baf3-cf3d3140bc60",
+          "chunk_strategy": "heading",
+          "content_tokens": 126,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        },
+        {
+          "char_end": 25971,
+          "char_start": 24267,
+          "chunk_id": "019fffb9-a391-71b2-8a9f-7b92598ab13a",
+          "chunk_strategy": "heading",
+          "content_tokens": 424,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        },
+        {
+          "char_end": 28822,
+          "char_start": 27206,
+          "chunk_id": "019fffb9-a393-75ee-88af-f6963ee43bf9",
+          "chunk_strategy": "heading",
+          "content_tokens": 515,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": true,
+      "category": "table",
+      "error": null,
+      "gold_fingerprint": "4d780036bfe6cf1e",
+      "item_id": "01a00047-2f64-73ac-8c6a-9892abb823eb",
+      "latency_ms": 245,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.0,
+        "budget_chunk_count": 9,
+        "budget_retrieved_tokens": 3843,
+        "budget_span_recall": 0.0,
+        "context_precision": 0.0,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 0.0,
+        "max_doc_share_at_k": 0.8,
+        "mrr": 0.0,
+        "ndcg_at_k": 0.0,
+        "relevant_chunks": 0,
+        "retrieved_tokens": 2044,
+        "span_recall_at_k": 0.0
+      },
+      "retrieved": [
+        {
+          "char_end": 25971,
+          "char_start": 24267,
+          "chunk_id": "019fffb9-a391-71b2-8a9f-7b92598ab13a",
+          "chunk_strategy": "heading",
+          "content_tokens": 424,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        },
+        {
+          "char_end": 27204,
+          "char_start": 25973,
+          "chunk_id": "019fffb9-a392-7bfb-8f08-5425be69726e",
+          "chunk_strategy": "heading",
+          "content_tokens": 248,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        },
+        {
+          "char_end": 24265,
+          "char_start": 22299,
+          "chunk_id": "019fffb9-a390-7144-8b09-163ad8149d70",
+          "chunk_strategy": "heading",
+          "content_tokens": 564,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        },
+        {
+          "char_end": 22297,
+          "char_start": 20785,
+          "chunk_id": "019fffb9-a38f-70a7-86f2-6794f567ef83",
+          "chunk_strategy": "heading",
+          "content_tokens": 332,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        },
+        {
+          "char_end": 11212,
+          "char_start": 9265,
+          "chunk_id": "01a00e02-344e-7d62-8f15-4141d8d68fc8",
+          "chunk_strategy": "heading",
+          "content_tokens": 476,
+          "version_id": "01a00e02-2810-7316-863c-7df6e41f81bd"
+        }
+      ],
+      "top_score": 0.031544957774465976
+    },
+    {
+      "answerable": true,
+      "category": "table",
+      "error": null,
+      "gold_fingerprint": "e3feb87ff41b244f",
+      "item_id": "01a00047-2f65-75d1-b8ec-b4ca1740eeca",
+      "latency_ms": 272,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.6309297535714575,
+        "budget_chunk_count": 15,
+        "budget_retrieved_tokens": 3833,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 4,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.4,
+        "mrr": 0.5,
+        "ndcg_at_k": 0.6309297535714575,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1203,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 15670,
+          "char_start": 14463,
+          "chunk_id": "01a00e31-5566-7dd9-9d5a-58186f74fd99",
+          "chunk_strategy": "heading",
+          "content_tokens": 373,
+          "version_id": "01a00e31-48b6-71de-b085-eadfe8b354ef"
+        },
+        {
+          "char_end": 115420,
+          "char_start": 114910,
+          "chunk_id": "019fffc1-05ff-7ffd-9105-042f8d35e1ec",
+          "chunk_strategy": "heading",
+          "content_tokens": 168,
+          "version_id": "019fffc0-e405-705e-940a-c7190d742d20"
+        },
+        {
+          "char_end": 1803,
+          "char_start": 774,
+          "chunk_id": "01a00e31-555a-7971-8360-68e8bb9c5036",
+          "chunk_strategy": "heading",
+          "content_tokens": 196,
+          "version_id": "01a00e31-48b6-71de-b085-eadfe8b354ef"
+        },
+        {
+          "char_end": 13954,
+          "char_start": 13109,
+          "chunk_id": "01a00dfe-20f7-79f6-8584-498cfea9bffb",
+          "chunk_strategy": "heading",
+          "content_tokens": 175,
+          "version_id": "01a00dfe-1410-71b2-92ac-75fe971420cf"
+        },
+        {
+          "char_end": 10964,
+          "char_start": 9368,
+          "chunk_id": "01a00e0e-8740-71a2-92f1-a1d307733379",
+          "chunk_strategy": "heading",
+          "content_tokens": 291,
+          "version_id": "01a00e0e-7c34-7cd1-a427-4c49605b7a23"
+        }
+      ],
+      "top_score": 0.02964426877470356
+    },
+    {
+      "answerable": true,
+      "category": "table",
+      "error": null,
+      "gold_fingerprint": "78a86a64f1800a37",
+      "item_id": "01a00047-2f66-7440-9162-abef83fde5a3",
+      "latency_ms": 310,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 7,
+        "budget_retrieved_tokens": 3823,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1864,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 150479,
+          "char_start": 148915,
+          "chunk_id": "019fffcc-9912-711d-bf16-d82f38ecbffe",
+          "chunk_strategy": "heading",
+          "content_tokens": 376,
+          "version_id": "019fffcc-61c6-7c03-9ddb-4e142c396c65"
+        },
+        {
+          "char_end": 34622,
+          "char_start": 32773,
+          "chunk_id": "019fffcc-98bb-7f19-a792-cf3676c9a917",
+          "chunk_strategy": "heading",
+          "content_tokens": 350,
+          "version_id": "019fffcc-61c6-7c03-9ddb-4e142c396c65"
+        },
+        {
+          "char_end": 2312,
+          "char_start": 679,
+          "chunk_id": "019fffcc-98a5-79f8-bc45-ec63c96e0739",
+          "chunk_strategy": "heading",
+          "content_tokens": 298,
+          "version_id": "019fffcc-61c6-7c03-9ddb-4e142c396c65"
+        },
+        {
+          "char_end": 32202,
+          "char_start": 30717,
+          "chunk_id": "019fffcc-98b9-76fd-8b8c-ab1e02b67346",
+          "chunk_strategy": "heading",
+          "content_tokens": 445,
+          "version_id": "019fffcc-61c6-7c03-9ddb-4e142c396c65"
+        },
+        {
+          "char_end": 22100,
+          "char_start": 20696,
+          "chunk_id": "019fffcc-98b3-7553-af5e-39105a069fc2",
+          "chunk_strategy": "heading",
+          "content_tokens": 395,
+          "version_id": "019fffcc-61c6-7c03-9ddb-4e142c396c65"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "multi_hop",
+      "error": null,
+      "gold_fingerprint": "c7769a1d37f7a724",
+      "item_id": "01a00047-2f67-7bfb-bf39-9c128de894fe",
+      "latency_ms": 350,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.3065735963827292,
+        "budget_chunk_count": 13,
+        "budget_retrieved_tokens": 3858,
+        "budget_span_recall": 0.5,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 0.5,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.3333333333333333,
+        "ndcg_at_k": 0.3065735963827292,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1477,
+        "span_recall_at_k": 0.5
+      },
+      "retrieved": [
+        {
+          "char_end": 33655,
+          "char_start": 32463,
+          "chunk_id": "019fffbc-8674-7c96-9590-6b6f9eeebeda",
+          "chunk_strategy": "heading",
+          "content_tokens": 199,
+          "version_id": "019fffbc-789a-7690-9949-8130c3910b07"
+        },
+        {
+          "char_end": 18478,
+          "char_start": 16562,
+          "chunk_id": "019fffbc-866a-7ad6-bbb9-596e0a588553",
+          "chunk_strategy": "heading",
+          "content_tokens": 400,
+          "version_id": "019fffbc-789a-7690-9949-8130c3910b07"
+        },
+        {
+          "char_end": 7223,
+          "char_start": 5943,
+          "chunk_id": "019fffbc-8662-7383-ae5e-097353d1134a",
+          "chunk_strategy": "heading",
+          "content_tokens": 240,
+          "version_id": "019fffbc-789a-7690-9949-8130c3910b07"
+        },
+        {
+          "char_end": 32461,
+          "char_start": 30565,
+          "chunk_id": "019fffbc-8673-7837-9f30-3ca872e7d749",
+          "chunk_strategy": "heading",
+          "content_tokens": 368,
+          "version_id": "019fffbc-789a-7690-9949-8130c3910b07"
+        },
+        {
+          "char_end": 1834,
+          "char_start": 301,
+          "chunk_id": "019fffbc-865e-7a13-9b88-7be51caf60a7",
+          "chunk_strategy": "heading",
+          "content_tokens": 270,
+          "version_id": "019fffbc-789a-7690-9949-8130c3910b07"
+        }
+      ],
+      "top_score": 0.032018442622950824
+    },
+    {
+      "answerable": true,
+      "category": "multi_hop",
+      "error": null,
+      "gold_fingerprint": "c9a8fd5eb46e28fd",
+      "item_id": "01a00047-2f68-7476-a763-cf1acff038bf",
+      "latency_ms": 410,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.0,
+        "budget_chunk_count": 11,
+        "budget_retrieved_tokens": 3673,
+        "budget_span_recall": 0.0,
+        "context_precision": 0.0,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 0.0,
+        "max_doc_share_at_k": 0.8,
+        "mrr": 0.0,
+        "ndcg_at_k": 0.0,
+        "relevant_chunks": 0,
+        "retrieved_tokens": 1666,
+        "span_recall_at_k": 0.0
+      },
+      "retrieved": [
+        {
+          "char_end": 49739,
+          "char_start": 47964,
+          "chunk_id": "019fffd8-2bf6-7942-9c4c-e88910a26152",
+          "chunk_strategy": "heading",
+          "content_tokens": 335,
+          "version_id": "019fffd7-fe74-781c-bd29-58e94a9edf18"
+        },
+        {
+          "char_end": 46549,
+          "char_start": 44747,
+          "chunk_id": "019fffd8-2bf4-7fec-8265-d2836e5da857",
+          "chunk_strategy": "heading",
+          "content_tokens": 513,
+          "version_id": "019fffd7-fe74-781c-bd29-58e94a9edf18"
+        },
+        {
+          "char_end": 2312,
+          "char_start": 679,
+          "chunk_id": "019fffcc-98a5-79f8-bc45-ec63c96e0739",
+          "chunk_strategy": "heading",
+          "content_tokens": 298,
+          "version_id": "019fffcc-61c6-7c03-9ddb-4e142c396c65"
+        },
+        {
+          "char_end": 9076,
+          "char_start": 7598,
+          "chunk_id": "019fffd8-2bdb-7df5-84a7-db1aaccb3fc0",
+          "chunk_strategy": "heading",
+          "content_tokens": 237,
+          "version_id": "019fffd7-fe74-781c-bd29-58e94a9edf18"
+        },
+        {
+          "char_end": 1803,
+          "char_start": 190,
+          "chunk_id": "019fffd8-2bd6-7d3e-9174-1038bd1a6e2e",
+          "chunk_strategy": "heading",
+          "content_tokens": 283,
+          "version_id": "019fffd7-fe74-781c-bd29-58e94a9edf18"
+        }
+      ],
+      "top_score": 0.03149801587301587
+    },
+    {
+      "answerable": true,
+      "category": "multi_hop",
+      "error": null,
+      "gold_fingerprint": "c959da7302a65044",
+      "item_id": "01a00047-2f69-794f-bcb9-83e8c5140f95",
+      "latency_ms": 306,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 9,
+        "budget_retrieved_tokens": 3835,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.4,
+        "distinct_docs_at_k": 4,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.4,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 2,
+        "retrieved_tokens": 1677,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 21682,
+          "char_start": 20253,
+          "chunk_id": "019fffb7-602b-7aca-a2b8-1c39458e10bb",
+          "chunk_strategy": "heading",
+          "content_tokens": 276,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 20251,
+          "char_start": 18425,
+          "chunk_id": "019fffb7-602a-7a12-9ce1-de4ac49ad841",
+          "chunk_strategy": "heading",
+          "content_tokens": 402,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 18558,
+          "char_start": 16620,
+          "chunk_id": "01a00e31-5568-71ec-a8e3-ef85b2687848",
+          "chunk_strategy": "heading",
+          "content_tokens": 358,
+          "version_id": "01a00e31-48b6-71de-b085-eadfe8b354ef"
+        },
+        {
+          "char_end": 19006,
+          "char_start": 17687,
+          "chunk_id": "01a00e20-aded-76f7-93c1-f4d68864f8d2",
+          "chunk_strategy": "heading",
+          "content_tokens": 236,
+          "version_id": "01a00e20-a299-7000-9caf-46dd067b060f"
+        },
+        {
+          "char_end": 59693,
+          "char_start": 57698,
+          "chunk_id": "019fffc3-5c2f-71dd-bd16-6e05cce6cc64",
+          "chunk_strategy": "heading",
+          "content_tokens": 405,
+          "version_id": "019fffc3-448b-7f35-8537-ae9d88928d77"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "multi_hop",
+      "error": null,
+      "gold_fingerprint": "efe43b7ce09092bf",
+      "item_id": "01a00047-2f6a-75a7-b78a-7dacfd83af2d",
+      "latency_ms": 341,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.6131471927654584,
+        "budget_chunk_count": 12,
+        "budget_retrieved_tokens": 3910,
+        "budget_span_recall": 0.5,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 0.5,
+        "max_doc_share_at_k": 0.6,
+        "mrr": 1.0,
+        "ndcg_at_k": 0.6131471927654584,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1957,
+        "span_recall_at_k": 0.5
+      },
+      "retrieved": [
+        {
+          "char_end": 8138,
+          "char_start": 6400,
+          "chunk_id": "019fffc3-5c0a-7f88-8c36-a617460820dc",
+          "chunk_strategy": "heading",
+          "content_tokens": 338,
+          "version_id": "019fffc3-448b-7f35-8537-ae9d88928d77"
+        },
+        {
+          "char_end": 6398,
+          "char_start": 4499,
+          "chunk_id": "019fffc3-5c09-7554-a24c-a8d2e3cac4aa",
+          "chunk_strategy": "heading",
+          "content_tokens": 569,
+          "version_id": "019fffc3-448b-7f35-8537-ae9d88928d77"
+        },
+        {
+          "char_end": 11584,
+          "char_start": 9699,
+          "chunk_id": "019fffc3-5c0c-7296-9633-ab84fe89af43",
+          "chunk_strategy": "heading",
+          "content_tokens": 340,
+          "version_id": "019fffc3-448b-7f35-8537-ae9d88928d77"
+        },
+        {
+          "char_end": 32361,
+          "char_start": 30994,
+          "chunk_id": "019fffb9-a396-752f-afaf-ce7d71dc1ab8",
+          "chunk_strategy": "heading",
+          "content_tokens": 305,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        },
+        {
+          "char_end": 3246,
+          "char_start": 1298,
+          "chunk_id": "019fffb9-a381-7915-9ff3-209175700c9a",
+          "chunk_strategy": "heading",
+          "content_tokens": 405,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        }
+      ],
+      "top_score": 0.032018442622950824
+    },
+    {
+      "answerable": false,
+      "category": "unanswerable",
+      "error": null,
+      "gold_fingerprint": "4f53cda18c2baa0c",
+      "item_id": "01a00047-2f6b-7ba4-babd-52f467e91649",
+      "latency_ms": 276,
+      "retrieval": null,
+      "retrieved": [
+        {
+          "char_end": 27312,
+          "char_start": 25790,
+          "chunk_id": "019fffb7-602f-72c5-8188-8e696f0e8a96",
+          "chunk_strategy": "heading",
+          "content_tokens": 300,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 26639,
+          "char_start": 24644,
+          "chunk_id": "019fffc3-5c17-763b-ad8f-89c93605289d",
+          "chunk_strategy": "heading",
+          "content_tokens": 607,
+          "version_id": "019fffc3-448b-7f35-8537-ae9d88928d77"
+        },
+        {
+          "char_end": 97579,
+          "char_start": 94728,
+          "chunk_id": "019fffb7-6059-7d1a-b578-a941040e2aa2",
+          "chunk_strategy": "heading",
+          "content_tokens": 747,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 7521,
+          "char_start": 6022,
+          "chunk_id": "019fffb7-6020-7314-91ca-243d8ecfb639",
+          "chunk_strategy": "heading",
+          "content_tokens": 292,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 138671,
+          "char_start": 136842,
+          "chunk_id": "019fffcc-9908-7db6-9bd2-1d9e36c10ee2",
+          "chunk_strategy": "heading",
+          "content_tokens": 669,
+          "version_id": "019fffcc-61c6-7c03-9ddb-4e142c396c65"
+        }
+      ],
+      "top_score": 0.031754032258064516
+    },
+    {
+      "answerable": false,
+      "category": "unanswerable",
+      "error": null,
+      "gold_fingerprint": "4f53cda18c2baa0c",
+      "item_id": "01a00047-2f6c-786a-8d82-8ca53dd23db6",
+      "latency_ms": 265,
+      "retrieval": null,
+      "retrieved": [
+        {
+          "char_end": 29295,
+          "char_start": 25850,
+          "chunk_id": "019fffcc-98b7-708d-8489-613c6783e856",
+          "chunk_strategy": "heading",
+          "content_tokens": 1603,
+          "version_id": "019fffcc-61c6-7c03-9ddb-4e142c396c65"
+        },
+        {
+          "char_end": 5573,
+          "char_start": 3820,
+          "chunk_id": "019fffcc-98a7-78b1-ab72-abc0dbb8ec47",
+          "chunk_strategy": "heading",
+          "content_tokens": 382,
+          "version_id": "019fffcc-61c6-7c03-9ddb-4e142c396c65"
+        },
+        {
+          "char_end": 15628,
+          "char_start": 13855,
+          "chunk_id": "019fffcc-98ae-7bb7-aa1a-f328d304ce64",
+          "chunk_strategy": "heading",
+          "content_tokens": 371,
+          "version_id": "019fffcc-61c6-7c03-9ddb-4e142c396c65"
+        },
+        {
+          "char_end": 7029,
+          "char_start": 5575,
+          "chunk_id": "019fffcc-98a8-7474-9579-7dfbb19b886f",
+          "chunk_strategy": "heading",
+          "content_tokens": 288,
+          "version_id": "019fffcc-61c6-7c03-9ddb-4e142c396c65"
+        },
+        {
+          "char_end": 22100,
+          "char_start": 20696,
+          "chunk_id": "019fffcc-98b3-7553-af5e-39105a069fc2",
+          "chunk_strategy": "heading",
+          "content_tokens": 395,
+          "version_id": "019fffcc-61c6-7c03-9ddb-4e142c396c65"
+        }
+      ],
+      "top_score": 0.03200204813108039
+    },
+    {
+      "answerable": false,
+      "category": "unanswerable",
+      "error": null,
+      "gold_fingerprint": "4f53cda18c2baa0c",
+      "item_id": "01a00047-2f6d-7f5f-9607-80205596c89a",
+      "latency_ms": 236,
+      "retrieval": null,
+      "retrieved": [
+        {
+          "char_end": 69394,
+          "char_start": 68996,
+          "chunk_id": "019fffb9-a3b0-7216-9254-5d5dc352236c",
+          "chunk_strategy": "heading",
+          "content_tokens": 89,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        },
+        {
+          "char_end": 32361,
+          "char_start": 30994,
+          "chunk_id": "019fffb9-a396-752f-afaf-ce7d71dc1ab8",
+          "chunk_strategy": "heading",
+          "content_tokens": 305,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        },
+        {
+          "char_end": 24265,
+          "char_start": 22299,
+          "chunk_id": "019fffb9-a390-7144-8b09-163ad8149d70",
+          "chunk_strategy": "heading",
+          "content_tokens": 564,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        },
+        {
+          "char_end": 25971,
+          "char_start": 24267,
+          "chunk_id": "019fffb9-a391-71b2-8a9f-7b92598ab13a",
+          "chunk_strategy": "heading",
+          "content_tokens": 424,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        },
+        {
+          "char_end": 41913,
+          "char_start": 39984,
+          "chunk_id": "019fffb9-a39c-7e95-8b06-13d4cf4ee45a",
+          "chunk_strategy": "heading",
+          "content_tokens": 431,
+          "version_id": "019fffb9-8f4a-731c-81a6-c3cd408fb7a9"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": false,
+      "category": "unanswerable",
+      "error": null,
+      "gold_fingerprint": "4f53cda18c2baa0c",
+      "item_id": "01a00047-2f6e-7932-9700-5021660b5463",
+      "latency_ms": 228,
+      "retrieval": null,
+      "retrieved": [
+        {
+          "char_end": 68978,
+          "char_start": 67403,
+          "chunk_id": "019fffc5-7c45-732b-9560-e1bf3d27e695",
+          "chunk_strategy": "heading",
+          "content_tokens": 278,
+          "version_id": "019fffc5-670c-7152-92d1-8fab6c3b05bd"
+        },
+        {
+          "char_end": 1938,
+          "char_start": 819,
+          "chunk_id": "019fffc5-7c15-7926-a600-eb69246ab280",
+          "chunk_strategy": "heading",
+          "content_tokens": 184,
+          "version_id": "019fffc5-670c-7152-92d1-8fab6c3b05bd"
+        },
+        {
+          "char_end": 47900,
+          "char_start": 46407,
+          "chunk_id": "019fffc5-7c34-7efd-a54b-6eb3bafc5abe",
+          "chunk_strategy": "heading",
+          "content_tokens": 277,
+          "version_id": "019fffc5-670c-7152-92d1-8fab6c3b05bd"
+        },
+        {
+          "char_end": 5128,
+          "char_start": 3483,
+          "chunk_id": "019fffc5-7c17-7206-bf3f-c669bbb3a3dc",
+          "chunk_strategy": "heading",
+          "content_tokens": 322,
+          "version_id": "019fffc5-670c-7152-92d1-8fab6c3b05bd"
+        },
+        {
+          "char_end": 30635,
+          "char_start": 29546,
+          "chunk_id": "019fffc5-7c2a-72dd-864d-c12a890d6780",
+          "chunk_strategy": "heading",
+          "content_tokens": 198,
+          "version_id": "019fffc5-670c-7152-92d1-8fab6c3b05bd"
+        }
+      ],
+      "top_score": 0.03057889822595705
+    },
+    {
+      "answerable": true,
+      "category": "multi_hop",
+      "error": null,
+      "gold_fingerprint": "8fd40ec6c43c5479",
+      "item_id": "08715a81-df61-5e20-ba57-c3fb59cadbdb",
+      "latency_ms": 318,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.8503449055347546,
+        "budget_chunk_count": 5,
+        "budget_retrieved_tokens": 1620,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.4,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.8,
+        "mrr": 1.0,
+        "ndcg_at_k": 0.8503449055347546,
+        "relevant_chunks": 2,
+        "retrieved_tokens": 1620,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 7448,
+          "char_start": 7204,
+          "chunk_id": "019ffc87-1e62-733b-82fc-f8aa62cbec89",
+          "chunk_strategy": "heading",
+          "content_tokens": 131,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        },
+        {
+          "char_end": 5615,
+          "char_start": 5215,
+          "chunk_id": "019ffc87-1e5c-74e8-b67e-5d20600cc2cd",
+          "chunk_strategy": "heading",
+          "content_tokens": 216,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        },
+        {
+          "char_end": 9143,
+          "char_start": 8646,
+          "chunk_id": "019ffc87-1e68-7d01-8b62-fb7c572cf064",
+          "chunk_strategy": "heading",
+          "content_tokens": 257,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        },
+        {
+          "char_end": 4625,
+          "char_start": 4228,
+          "chunk_id": "019ffc87-1e59-797d-8e7f-bce779bde608",
+          "chunk_strategy": "heading",
+          "content_tokens": 249,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        },
+        {
+          "char_end": 1651,
+          "char_start": 448,
+          "chunk_id": "019fffae-27ab-767a-9363-a0a153b7b5d6",
+          "chunk_strategy": "heading",
+          "content_tokens": 767,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        }
+      ],
+      "top_score": 0.032018442622950824
+    },
+    {
+      "answerable": true,
+      "category": "global",
+      "error": null,
+      "gold_fingerprint": "927846f72bf98264",
+      "item_id": "1058e7c8-fe9a-5d52-82d9-da5962cdbecf",
+      "latency_ms": 285,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.0,
+        "budget_chunk_count": 5,
+        "budget_retrieved_tokens": 3574,
+        "budget_span_recall": 0.0,
+        "context_precision": 0.0,
+        "distinct_docs_at_k": 4,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 0.0,
+        "max_doc_share_at_k": 0.4,
+        "mrr": 0.0,
+        "ndcg_at_k": 0.0,
+        "relevant_chunks": 0,
+        "retrieved_tokens": 3574,
+        "span_recall_at_k": 0.0
+      },
+      "retrieved": [
+        {
+          "char_end": 5363,
+          "char_start": 3692,
+          "chunk_id": "019fffae-38fb-7399-9c08-a175177ce41d",
+          "chunk_strategy": "heading",
+          "content_tokens": 1060,
+          "version_id": "019fffae-31d4-7aa1-8b0f-e4cdf4932cbf"
+        },
+        {
+          "char_end": 8574,
+          "char_start": 7664,
+          "chunk_id": "019fffae-38fe-703d-a6b5-e8b47dc508b9",
+          "chunk_strategy": "heading",
+          "content_tokens": 668,
+          "version_id": "019fffae-31d4-7aa1-8b0f-e4cdf4932cbf"
+        },
+        {
+          "char_end": 12252,
+          "char_start": 11914,
+          "chunk_id": "019fffae-31cc-7784-9cb0-ee029112fece",
+          "chunk_strategy": "heading",
+          "content_tokens": 216,
+          "version_id": "019fffae-27cc-7613-aa47-c25633652ad5"
+        },
+        {
+          "char_end": 12169,
+          "char_start": 10549,
+          "chunk_id": "019fffae-0ca8-7b8f-b8d6-3e509d85f048",
+          "chunk_strategy": "heading",
+          "content_tokens": 1071,
+          "version_id": "019fffae-031e-78a1-9738-4acac896f23a"
+        },
+        {
+          "char_end": 920,
+          "char_start": 68,
+          "chunk_id": "019fffad-e743-7fcf-9114-1cf9a09102ec",
+          "chunk_strategy": "heading",
+          "content_tokens": 559,
+          "version_id": "019fffad-dc38-7658-9936-0fb8dc03ce73"
+        }
+      ],
+      "top_score": 0.03149801587301587
+    },
+    {
+      "answerable": true,
+      "category": "table",
+      "error": null,
+      "gold_fingerprint": "b978cd6050161e74",
+      "item_id": "25dd6eb4-b70b-5526-be3a-970e14317188",
+      "latency_ms": 268,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.6309297535714575,
+        "budget_chunk_count": 7,
+        "budget_retrieved_tokens": 3432,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.5,
+        "ndcg_at_k": 0.6309297535714575,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 2114,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 4375,
+          "char_start": 4148,
+          "chunk_id": "019fffae-27b1-711d-b327-f682d8e51291",
+          "chunk_strategy": "heading",
+          "content_tokens": 137,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 6498,
+          "char_start": 4377,
+          "chunk_id": "019fffae-27b2-75e9-acef-494a0643ba9b",
+          "chunk_strategy": "heading",
+          "content_tokens": 1309,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 446,
+          "char_start": 112,
+          "chunk_id": "019fffae-27aa-76f2-bdd7-36f3a1cfa423",
+          "chunk_strategy": "heading",
+          "content_tokens": 261,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 110,
+          "char_start": 0,
+          "chunk_id": "019fffae-27a9-70c8-ba62-ea450bf4ab76",
+          "chunk_strategy": "heading",
+          "content_tokens": 75,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 19081,
+          "char_start": 18656,
+          "chunk_id": "019fffae-27c0-7241-8de2-60886edba7d5",
+          "chunk_strategy": "heading",
+          "content_tokens": 332,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "dcbb33a6be3fc876",
+      "item_id": "2b930285-462d-55e9-a39f-05b9f93cf7d6",
+      "latency_ms": 280,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.0,
+        "budget_chunk_count": 16,
+        "budget_retrieved_tokens": 3803,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.0,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 0.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.0,
+        "ndcg_at_k": 0.0,
+        "relevant_chunks": 0,
+        "retrieved_tokens": 1094,
+        "span_recall_at_k": 0.0
+      },
+      "retrieved": [
+        {
+          "char_end": 2516,
+          "char_start": 2253,
+          "chunk_id": "019ffc87-1e53-7f83-a50e-a9b28b45ecc3",
+          "chunk_strategy": "heading",
+          "content_tokens": 183,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        },
+        {
+          "char_end": 6782,
+          "char_start": 6602,
+          "chunk_id": "019ffc87-1e60-7c09-ab2a-b79a29bbb35b",
+          "chunk_strategy": "heading",
+          "content_tokens": 109,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        },
+        {
+          "char_end": 5615,
+          "char_start": 5215,
+          "chunk_id": "019ffc87-1e5c-74e8-b67e-5d20600cc2cd",
+          "chunk_strategy": "heading",
+          "content_tokens": 216,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        },
+        {
+          "char_end": 4625,
+          "char_start": 4228,
+          "chunk_id": "019ffc87-1e59-797d-8e7f-bce779bde608",
+          "chunk_strategy": "heading",
+          "content_tokens": 249,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        },
+        {
+          "char_end": 9811,
+          "char_start": 9144,
+          "chunk_id": "019ffc87-1e69-7bf1-b3b6-e6d42c13a0b1",
+          "chunk_strategy": "heading",
+          "content_tokens": 337,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        }
+      ],
+      "top_score": 0.03225806451612903
+    },
+    {
+      "answerable": true,
+      "category": "global",
+      "error": null,
+      "gold_fingerprint": "7eca0ebf2265bdb4",
+      "item_id": "2fb9c356-2467-568b-b738-c58d2ecd67a1",
+      "latency_ms": 224,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.0,
+        "budget_chunk_count": 3,
+        "budget_retrieved_tokens": 3864,
+        "budget_span_recall": 0.0,
+        "context_precision": 0.0,
+        "distinct_docs_at_k": 4,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 0.0,
+        "max_doc_share_at_k": 0.4,
+        "mrr": 0.0,
+        "ndcg_at_k": 0.0,
+        "relevant_chunks": 0,
+        "retrieved_tokens": 5532,
+        "span_recall_at_k": 0.0
+      },
+      "retrieved": [
+        {
+          "char_end": 18654,
+          "char_start": 15115,
+          "chunk_id": "019fffae-27bf-7fe5-9974-9ffaad7d143a",
+          "chunk_strategy": "heading",
+          "content_tokens": 2598,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 23739,
+          "char_start": 23242,
+          "chunk_id": "019fffae-27c5-7468-8c4e-fbf904e6149f",
+          "chunk_strategy": "heading",
+          "content_tokens": 416,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 11118,
+          "char_start": 9888,
+          "chunk_id": "019fffad-fb62-780c-81ae-5f71a717947e",
+          "chunk_strategy": "heading",
+          "content_tokens": 850,
+          "version_id": "019fffad-ef62-7ea7-b970-db3bcf43d406"
+        },
+        {
+          "char_end": 9521,
+          "char_start": 8685,
+          "chunk_id": "019fffae-3900-7a83-bd4c-2fff9c718bf8",
+          "chunk_strategy": "heading",
+          "content_tokens": 652,
+          "version_id": "019fffae-31d4-7aa1-8b0f-e4cdf4932cbf"
+        },
+        {
+          "char_end": 5787,
+          "char_start": 4447,
+          "chunk_id": "019fffae-030e-7ca7-a837-e77d36b96177",
+          "chunk_strategy": "heading",
+          "content_tokens": 1016,
+          "version_id": "019fffad-fb73-7033-adda-5551154027b7"
+        }
+      ],
+      "top_score": 0.03128054740957967
+    },
+    {
+      "answerable": false,
+      "category": "unanswerable",
+      "error": null,
+      "gold_fingerprint": "4f53cda18c2baa0c",
+      "item_id": "559ef21f-5626-5010-b7f6-2834c1dac450",
+      "latency_ms": 278,
+      "retrieval": null,
+      "retrieved": [
+        {
+          "char_end": 4625,
+          "char_start": 4228,
+          "chunk_id": "019ffc87-1e59-797d-8e7f-bce779bde608",
+          "chunk_strategy": "heading",
+          "content_tokens": 249,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        },
+        {
+          "char_end": 10643,
+          "char_start": 9813,
+          "chunk_id": "019ffc87-1e6a-75b3-8c5a-f8d767bc8faf",
+          "chunk_strategy": "heading",
+          "content_tokens": 332,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        },
+        {
+          "char_end": 6782,
+          "char_start": 6602,
+          "chunk_id": "019ffc87-1e60-7c09-ab2a-b79a29bbb35b",
+          "chunk_strategy": "heading",
+          "content_tokens": 109,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        },
+        {
+          "char_end": 7825,
+          "char_start": 7638,
+          "chunk_id": "019ffc87-1e64-7c2b-98be-9a71fd1e2dce",
+          "chunk_strategy": "heading",
+          "content_tokens": 93,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        },
+        {
+          "char_end": 2516,
+          "char_start": 2253,
+          "chunk_id": "019ffc87-1e53-7f83-a50e-a9b28b45ecc3",
+          "chunk_strategy": "heading",
+          "content_tokens": 183,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        }
+      ],
+      "top_score": 0.03131881575727918
+    },
+    {
+      "answerable": true,
+      "category": "temporal",
+      "error": null,
+      "gold_fingerprint": "a2802fb865fae0a9",
+      "item_id": "6caf8d68-0497-57d2-8c09-be81e4d12b14",
+      "latency_ms": 319,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.38685280723454163,
+        "budget_chunk_count": 5,
+        "budget_retrieved_tokens": 3434,
+        "budget_span_recall": 0.5,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 4,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 0.5,
+        "max_doc_share_at_k": 0.4,
+        "mrr": 0.5,
+        "ndcg_at_k": 0.38685280723454163,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 3434,
+        "span_recall_at_k": 0.5
+      },
+      "retrieved": [
+        {
+          "char_end": 5410,
+          "char_start": 4217,
+          "chunk_id": "019fffad-fb59-7fc5-af19-2402fcb9d852",
+          "chunk_strategy": "heading",
+          "content_tokens": 665,
+          "version_id": "019fffad-ef62-7ea7-b970-db3bcf43d406"
+        },
+        {
+          "char_end": 3077,
+          "char_start": 2114,
+          "chunk_id": "019fffae-27ad-7411-b16a-b508c6f77a02",
+          "chunk_strategy": "heading",
+          "content_tokens": 565,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 8036,
+          "char_start": 7158,
+          "chunk_id": "019ffc79-f1c9-757f-bec5-e6f9f6972c1b",
+          "chunk_strategy": "heading",
+          "content_tokens": 507,
+          "version_id": "019ffc79-e443-7d65-9f8b-77b9c52ea836"
+        },
+        {
+          "char_end": 12169,
+          "char_start": 10549,
+          "chunk_id": "019fffae-0ca8-7b8f-b8d6-3e509d85f048",
+          "chunk_strategy": "heading",
+          "content_tokens": 1071,
+          "version_id": "019fffae-031e-78a1-9738-4acac896f23a"
+        },
+        {
+          "char_end": 13102,
+          "char_start": 12171,
+          "chunk_id": "019fffae-0ca9-7259-a119-076e5e54a90a",
+          "chunk_strategy": "heading",
+          "content_tokens": 626,
+          "version_id": "019fffae-031e-78a1-9738-4acac896f23a"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": true,
+      "category": "temporal",
+      "error": null,
+      "gold_fingerprint": "e57aaee3bdb7118a",
+      "item_id": "8efe8cfa-b2a0-5479-8d93-d303427dac86",
+      "latency_ms": 312,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 6,
+        "budget_retrieved_tokens": 3832,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 4,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.4,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 2523,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 3077,
+          "char_start": 2114,
+          "chunk_id": "019fffae-27ad-7411-b16a-b508c6f77a02",
+          "chunk_strategy": "heading",
+          "content_tokens": 565,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 5410,
+          "char_start": 4217,
+          "chunk_id": "019fffad-fb59-7fc5-af19-2402fcb9d852",
+          "chunk_strategy": "heading",
+          "content_tokens": 665,
+          "version_id": "019fffad-ef62-7ea7-b970-db3bcf43d406"
+        },
+        {
+          "char_end": 2451,
+          "char_start": 1737,
+          "chunk_id": "019ffc79-f1bc-7b91-a469-b38f53f71950",
+          "chunk_strategy": "heading",
+          "content_tokens": 355,
+          "version_id": "019ffc79-e443-7d65-9f8b-77b9c52ea836"
+        },
+        {
+          "char_end": 11464,
+          "char_start": 10264,
+          "chunk_id": "019ffc87-45fe-73be-b63f-c52bfb5a827f",
+          "chunk_strategy": "heading",
+          "content_tokens": 569,
+          "version_id": "019ffc87-3afe-7a9c-869d-cbfb3fdb4332"
+        },
+        {
+          "char_end": 7056,
+          "char_start": 6500,
+          "chunk_id": "019fffae-27b3-701c-ba87-0f87e065698e",
+          "chunk_strategy": "heading",
+          "content_tokens": 369,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": false,
+      "category": "unanswerable",
+      "error": null,
+      "gold_fingerprint": "4f53cda18c2baa0c",
+      "item_id": "9aede0f8-5a26-5207-a515-bf61f72825d3",
+      "latency_ms": 246,
+      "retrieval": null,
+      "retrieved": [
+        {
+          "char_end": 15113,
+          "char_start": 14793,
+          "chunk_id": "019fffae-27be-793c-bf46-119a6d4475ad",
+          "chunk_strategy": "heading",
+          "content_tokens": 237,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 7979,
+          "char_start": 7810,
+          "chunk_id": "019fffae-27b6-7896-9998-9a4c6e33e9de",
+          "chunk_strategy": "heading",
+          "content_tokens": 148,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 23240,
+          "char_start": 21588,
+          "chunk_id": "019fffae-27c4-7076-aa10-85bfab9c128c",
+          "chunk_strategy": "heading",
+          "content_tokens": 1343,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 21586,
+          "char_start": 21015,
+          "chunk_id": "019fffae-27c3-70da-a99e-4f1c8b5124f9",
+          "chunk_strategy": "heading",
+          "content_tokens": 472,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 19081,
+          "char_start": 18656,
+          "chunk_id": "019fffae-27c0-7241-8de2-60886edba7d5",
+          "chunk_strategy": "heading",
+          "content_tokens": 332,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        }
+      ],
+      "top_score": 0.03055037313432836
+    },
+    {
+      "answerable": true,
+      "category": "table",
+      "error": null,
+      "gold_fingerprint": "d834445d07966a3a",
+      "item_id": "a45be51d-01a1-55e3-be04-edcb9ded3a53",
+      "latency_ms": 251,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 9,
+        "budget_retrieved_tokens": 3959,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 3,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.6,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 2355,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 1651,
+          "char_start": 448,
+          "chunk_id": "019fffae-27ab-767a-9363-a0a153b7b5d6",
+          "chunk_strategy": "heading",
+          "content_tokens": 767,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 7589,
+          "char_start": 6952,
+          "chunk_id": "019fffad-ef57-77ac-9c0b-4f2b1813fb62",
+          "chunk_strategy": "heading",
+          "content_tokens": 403,
+          "version_id": "019fffad-e774-7c8e-bea3-fccabe9d3e01"
+        },
+        {
+          "char_end": 14550,
+          "char_start": 13808,
+          "chunk_id": "019fffae-31d2-738a-8d1b-d9b6052fedce",
+          "chunk_strategy": "heading",
+          "content_tokens": 508,
+          "version_id": "019fffae-27cc-7613-aa47-c25633652ad5"
+        },
+        {
+          "char_end": 3565,
+          "char_start": 3246,
+          "chunk_id": "019fffae-31af-7385-86bc-ced0f8d87b66",
+          "chunk_strategy": "heading",
+          "content_tokens": 204,
+          "version_id": "019fffae-27cc-7613-aa47-c25633652ad5"
+        },
+        {
+          "char_end": 8390,
+          "char_start": 7822,
+          "chunk_id": "019fffae-31be-76b0-bcd5-8fbcb2b79795",
+          "chunk_strategy": "heading",
+          "content_tokens": 473,
+          "version_id": "019fffae-27cc-7613-aa47-c25633652ad5"
+        }
+      ],
+      "top_score": 0.032266458495966696
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "e615f7b6817dc3b2",
+      "item_id": "a794e1a7-7e0c-5365-b3f0-5612b780209e",
+      "latency_ms": 261,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 7,
+        "budget_retrieved_tokens": 3740,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.8,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 2448,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 2318,
+          "char_start": 1415,
+          "chunk_id": "019fffae-472f-7155-b9d2-fec0e032e343",
+          "chunk_strategy": "heading",
+          "content_tokens": 540,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 1990,
+          "char_start": 0,
+          "chunk_id": "019ffc87-502b-7a19-8ca9-6b878d6066ad",
+          "chunk_strategy": "heading",
+          "content_tokens": 973,
+          "version_id": "019ffc87-4ddc-793c-a55b-8fcc2ca58d29"
+        },
+        {
+          "char_end": 177,
+          "char_start": 0,
+          "chunk_id": "019fffae-472c-78d5-b766-bb265a1d8638",
+          "chunk_strategy": "heading",
+          "content_tokens": 104,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 15496,
+          "char_start": 14354,
+          "chunk_id": "019fffae-473f-72f2-b7b2-c12607d3e73a",
+          "chunk_strategy": "heading",
+          "content_tokens": 672,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 6229,
+          "char_start": 5979,
+          "chunk_id": "019fffae-4734-771c-801d-1d1474da6fa1",
+          "chunk_strategy": "heading",
+          "content_tokens": 159,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "multi_hop",
+      "error": null,
+      "gold_fingerprint": "f6b27f5c46386f5c",
+      "item_id": "bc09d7af-5620-5c57-8779-5f9951de385f",
+      "latency_ms": 285,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 7,
+        "budget_retrieved_tokens": 3564,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.4,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 2,
+        "retrieved_tokens": 2799,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 3490,
+          "char_start": 2320,
+          "chunk_id": "019fffae-4730-7e72-826a-d26342573774",
+          "chunk_strategy": "heading",
+          "content_tokens": 754,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 5294,
+          "char_start": 4362,
+          "chunk_id": "019fffae-4732-7c22-b770-e40c045ab58c",
+          "chunk_strategy": "heading",
+          "content_tokens": 600,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 15496,
+          "char_start": 14354,
+          "chunk_id": "019fffae-473f-72f2-b7b2-c12607d3e73a",
+          "chunk_strategy": "heading",
+          "content_tokens": 672,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 1413,
+          "char_start": 607,
+          "chunk_id": "019fffae-472e-75e7-83fc-cfac627bd20c",
+          "chunk_strategy": "heading",
+          "content_tokens": 533,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 16035,
+          "char_start": 15589,
+          "chunk_id": "019fffae-4741-7f81-8362-f50aa6d60765",
+          "chunk_strategy": "heading",
+          "content_tokens": 240,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        }
+      ],
+      "top_score": 0.032266458495966696
+    },
+    {
+      "answerable": true,
+      "category": "global",
+      "error": null,
+      "gold_fingerprint": "37914858d0323ef5",
+      "item_id": "d8f671c3-bb25-546b-813c-0bb5f4b304fa",
+      "latency_ms": 264,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.6131471927654584,
+        "budget_chunk_count": 6,
+        "budget_retrieved_tokens": 2163,
+        "budget_span_recall": 0.5,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 4,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 0.5,
+        "max_doc_share_at_k": 0.4,
+        "mrr": 1.0,
+        "ndcg_at_k": 0.6131471927654584,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1831,
+        "span_recall_at_k": 0.5
+      },
+      "retrieved": [
+        {
+          "char_end": 1651,
+          "char_start": 448,
+          "chunk_id": "019fffae-27ab-767a-9363-a0a153b7b5d6",
+          "chunk_strategy": "heading",
+          "content_tokens": 767,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 3733,
+          "char_start": 3567,
+          "chunk_id": "019fffae-31b0-738b-b88e-bb147d77c93e",
+          "chunk_strategy": "heading",
+          "content_tokens": 127,
+          "version_id": "019fffae-27cc-7613-aa47-c25633652ad5"
+        },
+        {
+          "char_end": 9282,
+          "char_start": 7365,
+          "chunk_id": "019ffc87-184a-75dd-b57e-83a2a68e3638",
+          "chunk_strategy": "heading",
+          "content_tokens": 339,
+          "version_id": "019ffc86-fddd-7f51-b14d-33891406fa27"
+        },
+        {
+          "char_end": 45812,
+          "char_start": 43964,
+          "chunk_id": "019ffc87-1864-7c05-8489-5d9711783eaa",
+          "chunk_strategy": "heading",
+          "content_tokens": 426,
+          "version_id": "019ffc86-fddd-7f51-b14d-33891406fa27"
+        },
+        {
+          "char_end": 3403,
+          "char_start": 3133,
+          "chunk_id": "019ffc87-1e56-7011-bdcc-45bba15f713f",
+          "chunk_strategy": "heading",
+          "content_tokens": 172,
+          "version_id": "019ffc87-188c-7add-91e2-1b5a6a5278a0"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "d5aab818b58350a6",
+      "item_id": "e2825246-434a-567a-80dc-d21144b8747c",
+      "latency_ms": 242,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 7,
+        "budget_retrieved_tokens": 3653,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.8,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 2208,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 4360,
+          "char_start": 3492,
+          "chunk_id": "019fffae-4731-78c2-ad5a-76565dd6ca67",
+          "chunk_strategy": "heading",
+          "content_tokens": 552,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 16343,
+          "char_start": 16037,
+          "chunk_id": "019fffae-4742-7007-9c10-37c5d93c5a57",
+          "chunk_strategy": "heading",
+          "content_tokens": 190,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 14352,
+          "char_start": 13260,
+          "chunk_id": "019fffae-473e-7cab-9495-c18f3b233394",
+          "chunk_strategy": "heading",
+          "content_tokens": 727,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 2318,
+          "char_start": 1415,
+          "chunk_id": "019fffae-472f-7155-b9d2-fec0e032e343",
+          "chunk_strategy": "heading",
+          "content_tokens": 540,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 6012,
+          "char_start": 5722,
+          "chunk_id": "019fffae-0c97-7a73-ac3a-b2707a40f8c9",
+          "chunk_strategy": "heading",
+          "content_tokens": 199,
+          "version_id": "019fffae-031e-78a1-9738-4acac896f23a"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "temporal",
+      "error": null,
+      "gold_fingerprint": "e2617e5f6caa0d2f",
+      "item_id": "f213b59a-1e4f-5412-b857-229076b2724c",
+      "latency_ms": 279,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 8,
+        "budget_retrieved_tokens": 3552,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.8,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1176,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 4375,
+          "char_start": 4148,
+          "chunk_id": "019fffae-27b1-711d-b327-f682d8e51291",
+          "chunk_strategy": "heading",
+          "content_tokens": 137,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 446,
+          "char_start": 112,
+          "chunk_id": "019fffae-27aa-76f2-bdd7-36f3a1cfa423",
+          "chunk_strategy": "heading",
+          "content_tokens": 261,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 110,
+          "char_start": 0,
+          "chunk_id": "019fffae-27a9-70c8-ba62-ea450bf4ab76",
+          "chunk_strategy": "heading",
+          "content_tokens": 75,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 4434,
+          "char_start": 3840,
+          "chunk_id": "019fffae-31b2-7900-ad44-42cc1f0d51bc",
+          "chunk_strategy": "heading",
+          "content_tokens": 414,
+          "version_id": "019fffae-27cc-7613-aa47-c25633652ad5"
+        },
+        {
+          "char_end": 27052,
+          "char_start": 26634,
+          "chunk_id": "019fffae-27c8-7277-b252-aae89731f015",
+          "chunk_strategy": "heading",
+          "content_tokens": 289,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": false,
+      "category": "unanswerable",
+      "error": null,
+      "gold_fingerprint": "4f53cda18c2baa0c",
+      "item_id": "f32e62f0-d7fb-58cb-811d-375b72429547",
+      "latency_ms": 242,
+      "retrieval": null,
+      "retrieved": [
+        {
+          "char_end": 2318,
+          "char_start": 1415,
+          "chunk_id": "019fffae-472f-7155-b9d2-fec0e032e343",
+          "chunk_strategy": "heading",
+          "content_tokens": 540,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 7005,
+          "char_start": 6388,
+          "chunk_id": "019ffc87-2e28-703f-bf12-7fb3df97452f",
+          "chunk_strategy": "heading",
+          "content_tokens": 478,
+          "version_id": "019ffc87-1e6c-7d3c-b1e4-5591eb1d31a8"
+        },
+        {
+          "char_end": 1990,
+          "char_start": 0,
+          "chunk_id": "019ffc87-502b-7a19-8ca9-6b878d6066ad",
+          "chunk_strategy": "heading",
+          "content_tokens": 973,
+          "version_id": "019ffc87-4ddc-793c-a55b-8fcc2ca58d29"
+        },
+        {
+          "char_end": 6229,
+          "char_start": 5979,
+          "chunk_id": "019fffae-4734-771c-801d-1d1474da6fa1",
+          "chunk_strategy": "heading",
+          "content_tokens": 159,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        },
+        {
+          "char_end": 3490,
+          "char_start": 2320,
+          "chunk_id": "019fffae-4730-7e72-826a-d26342573774",
+          "chunk_strategy": "heading",
+          "content_tokens": 754,
+          "version_id": "019fffae-3906-7681-9e48-c50f9140347d"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "temporal",
+      "error": null,
+      "gold_fingerprint": "f21894ea9c7d103f",
+      "item_id": "f4e2937a-c8d8-514b-ab72-15986805f71c",
+      "latency_ms": 301,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 10,
+        "budget_retrieved_tokens": 3577,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 4,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.4,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 2017,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 3469,
+          "char_start": 3079,
+          "chunk_id": "019fffae-27ae-78df-904b-f928d67ade41",
+          "chunk_strategy": "heading",
+          "content_tokens": 241,
+          "version_id": "019fffae-1362-7e0b-baef-52dbd7af3858"
+        },
+        {
+          "char_end": 1413,
+          "char_start": 860,
+          "chunk_id": "019fffad-fb54-7b6b-9388-0a5963149a9d",
+          "chunk_strategy": "heading",
+          "content_tokens": 380,
+          "version_id": "019fffad-ef62-7ea7-b970-db3bcf43d406"
+        },
+        {
+          "char_end": 6020,
+          "char_start": 4986,
+          "chunk_id": "019fffb7-601f-7264-a192-32e19acc233c",
+          "chunk_strategy": "heading",
+          "content_tokens": 236,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        },
+        {
+          "char_end": 1735,
+          "char_start": 489,
+          "chunk_id": "019ffc79-f1bb-7961-bc37-78f8215f6dcc",
+          "chunk_strategy": "heading",
+          "content_tokens": 790,
+          "version_id": "019ffc79-e443-7d65-9f8b-77b9c52ea836"
+        },
+        {
+          "char_end": 17981,
+          "char_start": 16218,
+          "chunk_id": "019fffb7-6028-7a27-9c22-c00ccb8de0ef",
+          "chunk_strategy": "heading",
+          "content_tokens": 370,
+          "version_id": "019fffb7-39e9-7a83-8a00-1de853d731d6"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "8cb1663a8436e124",
+      "item_id": "002c6594-cee6-5046-9410-d47ec73ece1a",
+      "latency_ms": 371,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.6309297535714575,
+        "budget_chunk_count": 12,
+        "budget_retrieved_tokens": 3556,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.5,
+        "ndcg_at_k": 0.6309297535714575,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1663,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 12998,
+          "char_start": 12653,
+          "chunk_id": "019fffde-0191-7f7f-8f4b-c8b85fd6b626",
+          "chunk_strategy": "heading",
+          "content_tokens": 66,
+          "version_id": "019fffdd-ea1c-748f-86f9-d40527e387f4"
+        },
+        {
+          "char_end": 4850,
+          "char_start": 3413,
+          "chunk_id": "019fffde-018a-7164-b3a3-2b04eca18e73",
+          "chunk_strategy": "heading",
+          "content_tokens": 280,
+          "version_id": "019fffdd-ea1c-748f-86f9-d40527e387f4"
+        },
+        {
+          "char_end": 65586,
+          "char_start": 63692,
+          "chunk_id": "019fffde-01bf-7b01-ad09-378e87cebe06",
+          "chunk_strategy": "heading",
+          "content_tokens": 608,
+          "version_id": "019fffdd-ea1c-748f-86f9-d40527e387f4"
+        },
+        {
+          "char_end": 26930,
+          "char_start": 24982,
+          "chunk_id": "019fffde-019d-71de-8bbb-98969b31991b",
+          "chunk_strategy": "heading",
+          "content_tokens": 460,
+          "version_id": "019fffdd-ea1c-748f-86f9-d40527e387f4"
+        },
+        {
+          "char_end": 1459,
+          "char_start": 197,
+          "chunk_id": "019fffde-0188-7fec-857c-8108a45f93d9",
+          "chunk_strategy": "heading",
+          "content_tokens": 249,
+          "version_id": "019fffdd-ea1c-748f-86f9-d40527e387f4"
+        }
+      ],
+      "top_score": 0.031024531024531024
+    },
+    {
+      "answerable": true,
+      "category": "multi_hop",
+      "error": null,
+      "gold_fingerprint": "cdc0d3607f5c2bf8",
+      "item_id": "24b880a2-2ef3-50b9-8369-789760dc85fd",
+      "latency_ms": 347,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.5706417189553201,
+        "budget_chunk_count": 11,
+        "budget_retrieved_tokens": 3925,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.4,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 0.6,
+        "mrr": 0.3333333333333333,
+        "ndcg_at_k": 0.5706417189553201,
+        "relevant_chunks": 2,
+        "retrieved_tokens": 1511,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 26930,
+          "char_start": 24982,
+          "chunk_id": "019fffde-019d-71de-8bbb-98969b31991b",
+          "chunk_strategy": "heading",
+          "content_tokens": 460,
+          "version_id": "019fffdd-ea1c-748f-86f9-d40527e387f4"
+        },
+        {
+          "char_end": 29453,
+          "char_start": 27809,
+          "chunk_id": "019fffd9-c13c-7c96-8a68-e00700862019",
+          "chunk_strategy": "heading",
+          "content_tokens": 336,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 6171,
+          "char_start": 4992,
+          "chunk_id": "019fffd9-c12b-78e1-bc28-690972dfb87d",
+          "chunk_strategy": "heading",
+          "content_tokens": 222,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 5541,
+          "char_start": 4852,
+          "chunk_id": "019fffde-018b-707c-bde9-3d8f6abae71c",
+          "chunk_strategy": "heading",
+          "content_tokens": 151,
+          "version_id": "019fffdd-ea1c-748f-86f9-d40527e387f4"
+        },
+        {
+          "char_end": 32903,
+          "char_start": 31130,
+          "chunk_id": "019fffd9-c13e-7d37-b3ce-26f25c635f06",
+          "chunk_strategy": "heading",
+          "content_tokens": 342,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        }
+      ],
+      "top_score": 0.032018442622950824
+    },
+    {
+      "answerable": false,
+      "category": "unanswerable",
+      "error": null,
+      "gold_fingerprint": "4f53cda18c2baa0c",
+      "item_id": "4b392c1d-28a0-573b-9589-8719a0dfd2f8",
+      "latency_ms": 291,
+      "retrieval": null,
+      "retrieved": [
+        {
+          "char_end": 27070,
+          "char_start": 25444,
+          "chunk_id": "019fffd9-c13a-7142-81c8-fcd7df3e8ff6",
+          "chunk_strategy": "heading",
+          "content_tokens": 317,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 29453,
+          "char_start": 27809,
+          "chunk_id": "019fffd9-c13c-7c96-8a68-e00700862019",
+          "chunk_strategy": "heading",
+          "content_tokens": 336,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 54018,
+          "char_start": 50718,
+          "chunk_id": "019fffd8-2bf8-7084-9c99-6e084699c954",
+          "chunk_strategy": "heading",
+          "content_tokens": 1661,
+          "version_id": "019fffd7-fe74-781c-bd29-58e94a9edf18"
+        },
+        {
+          "char_end": 6171,
+          "char_start": 4992,
+          "chunk_id": "019fffd9-c12b-78e1-bc28-690972dfb87d",
+          "chunk_strategy": "heading",
+          "content_tokens": 222,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 56839,
+          "char_start": 54852,
+          "chunk_id": "019fffd9-c14f-7e2d-b76c-e0d8a1e112c7",
+          "chunk_strategy": "heading",
+          "content_tokens": 354,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": true,
+      "category": "multi_hop",
+      "error": null,
+      "gold_fingerprint": "fda0eeb7682f7198",
+      "item_id": "4edc1f15-4961-5e37-8f27-39e3699d8548",
+      "latency_ms": 344,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.7974779478881874,
+        "budget_chunk_count": 14,
+        "budget_retrieved_tokens": 3924,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.4,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 0.5,
+        "max_doc_share_at_k": 0.6,
+        "mrr": 1.0,
+        "ndcg_at_k": 0.7039180890341347,
+        "relevant_chunks": 2,
+        "retrieved_tokens": 1041,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 3699,
+          "char_start": 1924,
+          "chunk_id": "019fffdb-f70e-7c55-8d3a-7f24e713c911",
+          "chunk_strategy": "heading",
+          "content_tokens": 334,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 83855,
+          "char_start": 82637,
+          "chunk_id": "019fffd4-aaa0-7f72-8599-a605da2ca734",
+          "chunk_strategy": "heading",
+          "content_tokens": 229,
+          "version_id": "019fffd4-92af-7c1a-a23c-7aa6ddb08370"
+        },
+        {
+          "char_end": 4092,
+          "char_start": 3431,
+          "chunk_id": "019fffd4-aa6a-7820-9ac8-915d66242492",
+          "chunk_strategy": "heading",
+          "content_tokens": 121,
+          "version_id": "019fffd4-92af-7c1a-a23c-7aa6ddb08370"
+        },
+        {
+          "char_end": 49413,
+          "char_start": 49088,
+          "chunk_id": "019fffdb-f730-7b28-87f3-41256482a264",
+          "chunk_strategy": "heading",
+          "content_tokens": 64,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 9896,
+          "char_start": 8199,
+          "chunk_id": "019fffd4-aa6e-77dc-9d47-f16a8088aa07",
+          "chunk_strategy": "heading",
+          "content_tokens": 293,
+          "version_id": "019fffd4-92af-7c1a-a23c-7aa6ddb08370"
+        }
+      ],
+      "top_score": 0.03225806451612903
+    },
+    {
+      "answerable": true,
+      "category": "global",
+      "error": null,
+      "gold_fingerprint": "f3611ec0cf7d07f5",
+      "item_id": "577513d1-07ac-5c98-8ba3-c080bef8c952",
+      "latency_ms": 435,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.0,
+        "budget_chunk_count": 11,
+        "budget_retrieved_tokens": 3952,
+        "budget_span_recall": 0.0,
+        "context_precision": 0.0,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 0.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.0,
+        "ndcg_at_k": 0.0,
+        "relevant_chunks": 0,
+        "retrieved_tokens": 2082,
+        "span_recall_at_k": 0.0
+      },
+      "retrieved": [
+        {
+          "char_end": 29707,
+          "char_start": 27755,
+          "chunk_id": "019fffdb-f720-7b90-b8e4-f6f45d5a277d",
+          "chunk_strategy": "heading",
+          "content_tokens": 442,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 13297,
+          "char_start": 11564,
+          "chunk_id": "019fffdb-f715-7c9d-a0d8-ae90b24e26f5",
+          "chunk_strategy": "heading",
+          "content_tokens": 472,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 11562,
+          "char_start": 10644,
+          "chunk_id": "019fffdb-f714-7247-bea0-2a5b54bc86d4",
+          "chunk_strategy": "heading",
+          "content_tokens": 185,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 46971,
+          "char_start": 45172,
+          "chunk_id": "019fffdb-f72d-7089-adfd-fbc09769d4ac",
+          "chunk_strategy": "heading",
+          "content_tokens": 633,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 10642,
+          "char_start": 8967,
+          "chunk_id": "019fffdb-f713-7474-9fcd-b7caba25fe9e",
+          "chunk_strategy": "heading",
+          "content_tokens": 350,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        }
+      ],
+      "top_score": 0.03225806451612903
+    },
+    {
+      "answerable": true,
+      "category": "single_hop",
+      "error": null,
+      "gold_fingerprint": "672bb6bf91846d2e",
+      "item_id": "674c315e-ea8b-5333-b993-4ea15d56cad6",
+      "latency_ms": 487,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.5,
+        "budget_chunk_count": 12,
+        "budget_retrieved_tokens": 3816,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.3333333333333333,
+        "ndcg_at_k": 0.5,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1571,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 27070,
+          "char_start": 25444,
+          "chunk_id": "019fffd9-c13a-7142-81c8-fcd7df3e8ff6",
+          "chunk_strategy": "heading",
+          "content_tokens": 317,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 56839,
+          "char_start": 54852,
+          "chunk_id": "019fffd9-c14f-7e2d-b76c-e0d8a1e112c7",
+          "chunk_strategy": "heading",
+          "content_tokens": 354,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 6171,
+          "char_start": 4992,
+          "chunk_id": "019fffd9-c12b-78e1-bc28-690972dfb87d",
+          "chunk_strategy": "heading",
+          "content_tokens": 222,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 29453,
+          "char_start": 27809,
+          "chunk_id": "019fffd9-c13c-7c96-8a68-e00700862019",
+          "chunk_strategy": "heading",
+          "content_tokens": 336,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 32903,
+          "char_start": 31130,
+          "chunk_id": "019fffd9-c13e-7d37-b3ce-26f25c635f06",
+          "chunk_strategy": "heading",
+          "content_tokens": 342,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "temporal",
+      "error": null,
+      "gold_fingerprint": "29942414a1299567",
+      "item_id": "7f03fc76-b952-5633-9b8c-b2bcddeded4c",
+      "latency_ms": 348,
+      "retrieval": {
+        "alpha_ndcg_at_k": 1.0,
+        "budget_chunk_count": 13,
+        "budget_retrieved_tokens": 3821,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 1,
+        "gold_doc_recall_at_k": 1.0,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_k": 1.0,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1740,
+        "span_recall_at_k": 1.0
+      },
+      "retrieved": [
+        {
+          "char_end": 3699,
+          "char_start": 1924,
+          "chunk_id": "019fffdb-f70e-7c55-8d3a-7f24e713c911",
+          "chunk_strategy": "heading",
+          "content_tokens": 334,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 7309,
+          "char_start": 5884,
+          "chunk_id": "019fffdb-f711-7489-b1c1-8179476aca8a",
+          "chunk_strategy": "heading",
+          "content_tokens": 270,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 49086,
+          "char_start": 47103,
+          "chunk_id": "019fffdb-f72f-7042-b1ad-361ba7b7a407",
+          "chunk_strategy": "heading",
+          "content_tokens": 394,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 13297,
+          "char_start": 11564,
+          "chunk_id": "019fffdb-f715-7c9d-a0d8-ae90b24e26f5",
+          "chunk_strategy": "heading",
+          "content_tokens": 472,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 1922,
+          "char_start": 416,
+          "chunk_id": "019fffdb-f70d-7298-9f9a-2d58f7ec2085",
+          "chunk_strategy": "heading",
+          "content_tokens": 270,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": true,
+      "category": "temporal",
+      "error": null,
+      "gold_fingerprint": "c834d8da5118383e",
+      "item_id": "8e7cc6a9-bf4c-5f9e-a66f-33d284d71536",
+      "latency_ms": 329,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.0,
+        "budget_chunk_count": 13,
+        "budget_retrieved_tokens": 3682,
+        "budget_span_recall": 0.5,
+        "context_precision": 0.0,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 0.0,
+        "max_doc_share_at_k": 0.6,
+        "mrr": 0.0,
+        "ndcg_at_k": 0.0,
+        "relevant_chunks": 0,
+        "retrieved_tokens": 1204,
+        "span_recall_at_k": 0.0
+      },
+      "retrieved": [
+        {
+          "char_end": 83855,
+          "char_start": 82637,
+          "chunk_id": "019fffd4-aaa0-7f72-8599-a605da2ca734",
+          "chunk_strategy": "heading",
+          "content_tokens": 229,
+          "version_id": "019fffd4-92af-7c1a-a23c-7aa6ddb08370"
+        },
+        {
+          "char_end": 29707,
+          "char_start": 27755,
+          "chunk_id": "019fffdb-f720-7b90-b8e4-f6f45d5a277d",
+          "chunk_strategy": "heading",
+          "content_tokens": 442,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 49413,
+          "char_start": 49088,
+          "chunk_id": "019fffdb-f730-7b28-87f3-41256482a264",
+          "chunk_strategy": "heading",
+          "content_tokens": 64,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 33980,
+          "char_start": 33089,
+          "chunk_id": "019fffdb-f725-75b0-aacc-98b512856943",
+          "chunk_strategy": "heading",
+          "content_tokens": 163,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 85644,
+          "char_start": 83857,
+          "chunk_id": "019fffd4-aaa1-7d91-816d-175942425263",
+          "chunk_strategy": "heading",
+          "content_tokens": 306,
+          "version_id": "019fffd4-92af-7c1a-a23c-7aa6ddb08370"
+        }
+      ],
+      "top_score": 0.031544957774465976
+    },
+    {
+      "answerable": true,
+      "category": "multi_hop",
+      "error": null,
+      "gold_fingerprint": "9a2275036d317fe3",
+      "item_id": "90e184ee-f01f-572f-b8da-6d94edbf2bc5",
+      "latency_ms": 390,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.0,
+        "budget_chunk_count": 13,
+        "budget_retrieved_tokens": 3974,
+        "budget_span_recall": 0.5,
+        "context_precision": 0.0,
+        "distinct_docs_at_k": 2,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 0.0,
+        "max_doc_share_at_k": 0.8,
+        "mrr": 0.0,
+        "ndcg_at_k": 0.0,
+        "relevant_chunks": 0,
+        "retrieved_tokens": 1551,
+        "span_recall_at_k": 0.0
+      },
+      "retrieved": [
+        {
+          "char_end": 4990,
+          "char_start": 3084,
+          "chunk_id": "019fffd9-c12a-7434-a781-751b8e26237c",
+          "chunk_strategy": "heading",
+          "content_tokens": 340,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 106211,
+          "char_start": 104395,
+          "chunk_id": "019fffd1-f61e-734b-8cc2-60ed94b62306",
+          "chunk_strategy": "heading",
+          "content_tokens": 369,
+          "version_id": "019fffd1-ca6e-7cf5-b6cc-96e382f6e3c3"
+        },
+        {
+          "char_end": 6171,
+          "char_start": 4992,
+          "chunk_id": "019fffd9-c12b-78e1-bc28-690972dfb87d",
+          "chunk_strategy": "heading",
+          "content_tokens": 222,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 32903,
+          "char_start": 31130,
+          "chunk_id": "019fffd9-c13e-7d37-b3ce-26f25c635f06",
+          "chunk_strategy": "heading",
+          "content_tokens": 342,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 12554,
+          "char_start": 11043,
+          "chunk_id": "019fffd9-c12f-754c-846b-45fbb8344e5d",
+          "chunk_strategy": "heading",
+          "content_tokens": 278,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        }
+      ],
+      "top_score": 0.03252247488101534
+    },
+    {
+      "answerable": true,
+      "category": "multi_hop",
+      "error": null,
+      "gold_fingerprint": "197cb1c53f81fc80",
+      "item_id": "9b8dd40e-78b1-5cfa-9ffa-d600471b72cd",
+      "latency_ms": 402,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.5693100238390901,
+        "budget_chunk_count": 13,
+        "budget_retrieved_tokens": 3881,
+        "budget_span_recall": 0.5,
+        "context_precision": 0.4,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 0.5,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_k": 0.5413996682199069,
+        "relevant_chunks": 2,
+        "retrieved_tokens": 1424,
+        "span_recall_at_k": 0.5
+      },
+      "retrieved": [
+        {
+          "char_end": 33980,
+          "char_start": 33089,
+          "chunk_id": "019fffdb-f725-75b0-aacc-98b512856943",
+          "chunk_strategy": "heading",
+          "content_tokens": 163,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 13297,
+          "char_start": 11564,
+          "chunk_id": "019fffdb-f715-7c9d-a0d8-ae90b24e26f5",
+          "chunk_strategy": "heading",
+          "content_tokens": 472,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 11562,
+          "char_start": 10644,
+          "chunk_id": "019fffdb-f714-7247-bea0-2a5b54bc86d4",
+          "chunk_strategy": "heading",
+          "content_tokens": 185,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 1922,
+          "char_start": 416,
+          "chunk_id": "019fffdb-f70d-7298-9f9a-2d58f7ec2085",
+          "chunk_strategy": "heading",
+          "content_tokens": 270,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 3699,
+          "char_start": 1924,
+          "chunk_id": "019fffdb-f70e-7c55-8d3a-7f24e713c911",
+          "chunk_strategy": "heading",
+          "content_tokens": 334,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        }
+      ],
+      "top_score": 0.03177805800756621
+    },
+    {
+      "answerable": false,
+      "category": "unanswerable",
+      "error": null,
+      "gold_fingerprint": "4f53cda18c2baa0c",
+      "item_id": "a0bc1571-aa71-5e2b-8c6d-0889dfad9302",
+      "latency_ms": 278,
+      "retrieval": null,
+      "retrieved": [
+        {
+          "char_end": 54018,
+          "char_start": 50718,
+          "chunk_id": "019fffd8-2bf8-7084-9c99-6e084699c954",
+          "chunk_strategy": "heading",
+          "content_tokens": 1661,
+          "version_id": "019fffd7-fe74-781c-bd29-58e94a9edf18"
+        },
+        {
+          "char_end": 46549,
+          "char_start": 44747,
+          "chunk_id": "019fffd8-2bf4-7fec-8265-d2836e5da857",
+          "chunk_strategy": "heading",
+          "content_tokens": 513,
+          "version_id": "019fffd7-fe74-781c-bd29-58e94a9edf18"
+        },
+        {
+          "char_end": 10787,
+          "char_start": 8811,
+          "chunk_id": "019fffde-018f-775c-85b8-0116f81f4659",
+          "chunk_strategy": "heading",
+          "content_tokens": 402,
+          "version_id": "019fffdd-ea1c-748f-86f9-d40527e387f4"
+        },
+        {
+          "char_end": 8809,
+          "char_start": 8437,
+          "chunk_id": "019fffde-018e-7eb5-9700-12fe6f94288e",
+          "chunk_strategy": "heading",
+          "content_tokens": 64,
+          "version_id": "019fffdd-ea1c-748f-86f9-d40527e387f4"
+        },
+        {
+          "char_end": 39728,
+          "char_start": 37904,
+          "chunk_id": "019fffd4-aa84-7950-8013-1cf8dc8f40b0",
+          "chunk_strategy": "heading",
+          "content_tokens": 594,
+          "version_id": "019fffd4-92af-7c1a-a23c-7aa6ddb08370"
+        }
+      ],
+      "top_score": 0.031099324975891997
+    },
+    {
+      "answerable": true,
+      "category": "global",
+      "error": null,
+      "gold_fingerprint": "8fa12d75711f27e9",
+      "item_id": "b269f254-0ba4-5d44-a431-4f846c90f92d",
+      "latency_ms": 317,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.2640681225725909,
+        "budget_chunk_count": 16,
+        "budget_retrieved_tokens": 3912,
+        "budget_span_recall": 0.5,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 1,
+        "gold_doc_count": 2,
+        "gold_doc_recall_at_k": 0.5,
+        "max_doc_share_at_k": 1.0,
+        "mrr": 0.25,
+        "ndcg_at_k": 0.2640681225725909,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1360,
+        "span_recall_at_k": 0.5
+      },
+      "retrieved": [
+        {
+          "char_end": 9896,
+          "char_start": 8199,
+          "chunk_id": "019fffd4-aa6e-77dc-9d47-f16a8088aa07",
+          "chunk_strategy": "heading",
+          "content_tokens": 293,
+          "version_id": "019fffd4-92af-7c1a-a23c-7aa6ddb08370"
+        },
+        {
+          "char_end": 36452,
+          "char_start": 35507,
+          "chunk_id": "019fffd4-aa81-77b4-b8ec-567571a79584",
+          "chunk_strategy": "heading",
+          "content_tokens": 152,
+          "version_id": "019fffd4-92af-7c1a-a23c-7aa6ddb08370"
+        },
+        {
+          "char_end": 11730,
+          "char_start": 10268,
+          "chunk_id": "019fffd4-aa70-7ef2-a410-86a320a0457b",
+          "chunk_strategy": "heading",
+          "content_tokens": 284,
+          "version_id": "019fffd4-92af-7c1a-a23c-7aa6ddb08370"
+        },
+        {
+          "char_end": 1673,
+          "char_start": 314,
+          "chunk_id": "019fffd4-aa68-76b8-9bbc-0c5858abd4cb",
+          "chunk_strategy": "heading",
+          "content_tokens": 235,
+          "version_id": "019fffd4-92af-7c1a-a23c-7aa6ddb08370"
+        },
+        {
+          "char_end": 8197,
+          "char_start": 6145,
+          "chunk_id": "019fffd4-aa6d-7508-8ac2-b670c302c2aa",
+          "chunk_strategy": "heading",
+          "content_tokens": 396,
+          "version_id": "019fffd4-92af-7c1a-a23c-7aa6ddb08370"
+        }
+      ],
+      "top_score": 0.03278688524590164
+    },
+    {
+      "answerable": true,
+      "category": "global",
+      "error": null,
+      "gold_fingerprint": "f06c638fcaa60e8a",
+      "item_id": "dd1c722f-0ea6-5bf3-9d8b-e4be95bd4012",
+      "latency_ms": 404,
+      "retrieval": {
+        "alpha_ndcg_at_k": 0.46927872602275644,
+        "budget_chunk_count": 15,
+        "budget_retrieved_tokens": 3753,
+        "budget_span_recall": 1.0,
+        "context_precision": 0.2,
+        "distinct_docs_at_k": 3,
+        "gold_doc_count": 3,
+        "gold_doc_recall_at_k": 0.3333333333333333,
+        "max_doc_share_at_k": 0.6,
+        "mrr": 1.0,
+        "ndcg_at_k": 0.46927872602275644,
+        "relevant_chunks": 1,
+        "retrieved_tokens": 1149,
+        "span_recall_at_k": 0.3333333333333333
+      },
+      "retrieved": [
+        {
+          "char_end": 1615,
+          "char_start": 347,
+          "chunk_id": "019fffd9-c128-7835-ab5c-6274dfb4f51a",
+          "chunk_strategy": "heading",
+          "content_tokens": 215,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 38533,
+          "char_start": 37436,
+          "chunk_id": "019fffd9-c143-78b3-bd90-0149d161ed21",
+          "chunk_strategy": "heading",
+          "content_tokens": 183,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 3699,
+          "char_start": 1924,
+          "chunk_id": "019fffdb-f70e-7c55-8d3a-7f24e713c911",
+          "chunk_strategy": "heading",
+          "content_tokens": 334,
+          "version_id": "019fffdb-e0cd-70ac-bcdc-393e8430956c"
+        },
+        {
+          "char_end": 27807,
+          "char_start": 27072,
+          "chunk_id": "019fffd9-c13b-7e7f-ac4f-341bd39f4de2",
+          "chunk_strategy": "heading",
+          "content_tokens": 130,
+          "version_id": "019fffd9-af7e-7a33-9f5e-4743509ca033"
+        },
+        {
+          "char_end": 7596,
+          "char_start": 5911,
+          "chunk_id": "019fffd8-2bda-7acc-9206-6f516a7688cc",
+          "chunk_strategy": "heading",
+          "content_tokens": 287,
+          "version_id": "019fffd7-fe74-781c-bd29-58e94a9edf18"
+        }
+      ],
+      "top_score": 0.026779422128259338
+    }
+  ],
+  "kind": "retrieval",
+  "label": "benchmark-v2-rrf-top5-20260818-heading",
+  "metrics": {
+    "answerable_count": 57,
+    "by_category": {
+      "global": {
+        "answerable_count": 6,
+        "configured_refusal": {
+          "false_answerable": 0,
+          "false_refusal": 6,
+          "refusal_rate": 1.0,
+          "refused_count": 6,
+          "threshold": 0.35
+        },
+        "item_count": 6,
+        "retrieval": {
+          "alpha_ndcg_at_k": 0.22441567356013428,
+          "budget_span_recall": 0.3333333333333333,
+          "context_precision": 0.10000000000000002,
+          "gold_doc_recall_at_k": 0.2222222222222222,
+          "max_doc_share_at_k": 0.6333333333333333,
+          "mrr": 0.375,
+          "ndcg_at_k": 0.22441567356013428,
+          "span_recall_at_k": 0.2222222222222222
+        },
+        "scores": {
+          "count": 6,
+          "histogram": {
+            "[0.00,0.05)": 6
+          },
+          "max": 0.03278688524590164,
+          "mean": 0.031187568342316813,
+          "median": 0.03187804019457245,
+          "min": 0.026779422128259338,
+          "p25": 0.03133491452543872,
+          "p75": 0.03245637228979376,
+          "p95": 0.032720782654680064
+        },
+        "unanswerable_count": 0
+      },
+      "multi_hop": {
+        "answerable_count": 13,
+        "configured_refusal": {
+          "false_answerable": 0,
+          "false_refusal": 13,
+          "refusal_rate": 1.0,
+          "refused_count": 13,
+          "threshold": 0.35
+        },
+        "item_count": 13,
+        "retrieval": {
+          "alpha_ndcg_at_k": 0.5160327751266991,
+          "budget_span_recall": 0.6602564102564104,
+          "context_precision": 0.24615384615384617,
+          "gold_doc_recall_at_k": 0.6153846153846154,
+          "max_doc_share_at_k": 0.8153846153846154,
+          "mrr": 0.6666666666666666,
+          "ndcg_at_k": 0.5018909709952166,
+          "span_recall_at_k": 0.5641025641025641
+        },
+        "scores": {
+          "count": 13,
+          "histogram": {
+            "[0.00,0.05)": 13
+          },
+          "max": 0.03278688524590164,
+          "mean": 0.03213593179906283,
+          "median": 0.032018442622950824,
+          "min": 0.031009615384615385,
+          "p25": 0.032018442622950824,
+          "p75": 0.03252247488101534,
+          "p95": 0.03278688524590164
+        },
+        "unanswerable_count": 0
+      },
+      "single_hop": {
+        "answerable_count": 20,
+        "configured_refusal": {
+          "false_answerable": 0,
+          "false_refusal": 20,
+          "refusal_rate": 1.0,
+          "refused_count": 20,
+          "threshold": 0.35
+        },
+        "item_count": 20,
+        "retrieval": {
+          "alpha_ndcg_at_k": 0.6214177191163185,
+          "budget_span_recall": 0.95,
+          "context_precision": 0.17,
+          "gold_doc_recall_at_k": 0.85,
+          "max_doc_share_at_k": 0.8,
+          "mrr": 0.545,
+          "ndcg_at_k": 0.6214177191163185,
+          "span_recall_at_k": 0.85
+        },
+        "scores": {
+          "count": 20,
+          "histogram": {
+            "[0.00,0.05)": 20
+          },
+          "max": 0.03278688524590164,
+          "mean": 0.03215403227970983,
+          "median": 0.03252247488101534,
+          "min": 0.029116045245077504,
+          "p25": 0.03194605060020184,
+          "p75": 0.03278688524590164,
+          "p95": 0.03278688524590164
+        },
+        "unanswerable_count": 0
+      },
+      "table": {
+        "answerable_count": 12,
+        "configured_refusal": {
+          "false_answerable": 0,
+          "false_refusal": 12,
+          "refusal_rate": 1.0,
+          "refused_count": 12,
+          "threshold": 0.35
+        },
+        "item_count": 12,
+        "retrieval": {
+          "alpha_ndcg_at_k": 0.6628662976966019,
+          "budget_span_recall": 0.8333333333333334,
+          "context_precision": 0.16666666666666666,
+          "gold_doc_recall_at_k": 0.8333333333333334,
+          "max_doc_share_at_k": 0.8333333333333334,
+          "mrr": 0.6041666666666666,
+          "ndcg_at_k": 0.6628662976966019,
+          "span_recall_at_k": 0.8333333333333334
+        },
+        "scores": {
+          "count": 12,
+          "histogram": {
+            "[0.00,0.05)": 12
+          },
+          "max": 0.03278688524590164,
+          "mean": 0.03220256360991652,
+          "median": 0.03252247488101534,
+          "min": 0.02964426877470356,
+          "p25": 0.03220035590474512,
+          "p75": 0.03258857747223692,
+          "p95": 0.03278688524590164
+        },
+        "unanswerable_count": 0
+      },
+      "temporal": {
+        "answerable_count": 6,
+        "configured_refusal": {
+          "false_answerable": 0,
+          "false_refusal": 6,
+          "refusal_rate": 1.0,
+          "refused_count": 6,
+          "threshold": 0.35
+        },
+        "item_count": 6,
+        "retrieval": {
+          "alpha_ndcg_at_k": 0.7311421345390903,
+          "budget_span_recall": 0.8333333333333334,
+          "context_precision": 0.16666666666666666,
+          "gold_doc_recall_at_k": 0.75,
+          "max_doc_share_at_k": 0.6,
+          "mrr": 0.75,
+          "ndcg_at_k": 0.7311421345390903,
+          "span_recall_at_k": 0.75
+        },
+        "scores": {
+          "count": 6,
+          "histogram": {
+            "[0.00,0.05)": 6
+          },
+          "max": 0.03278688524590164,
+          "mean": 0.032491760545700264,
+          "median": 0.032654680063458494,
+          "min": 0.031544957774465976,
+          "p25": 0.03252247488101534,
+          "p75": 0.03278688524590164,
+          "p95": 0.03278688524590164
+        },
+        "unanswerable_count": 0
+      },
+      "unanswerable": {
+        "answerable_count": 0,
+        "configured_refusal": {
+          "false_answerable": 0,
+          "false_refusal": 0,
+          "refusal_rate": 1.0,
+          "refused_count": 13,
+          "threshold": 0.35
+        },
+        "item_count": 13,
+        "retrieval": {
+          "alpha_ndcg_at_k": null,
+          "budget_span_recall": null,
+          "context_precision": null,
+          "gold_doc_recall_at_k": null,
+          "max_doc_share_at_k": null,
+          "mrr": null,
+          "ndcg_at_k": null,
+          "span_recall_at_k": null
+        },
+        "scores": {
+          "count": 13,
+          "histogram": {
+            "[0.00,0.05)": 13
+          },
+          "max": 0.03278688524590164,
+          "mean": 0.031001879725521705,
+          "median": 0.03131881575727918,
+          "min": 0.02738970588235294,
+          "p25": 0.03057889822595705,
+          "p75": 0.03200204813108039,
+          "p95": 0.03278688524590164
+        },
+        "unanswerable_count": 13
+      }
+    },
+    "diagnostics": {
+      "gold_span_count": 88,
+      "missed_item_count": 21,
+      "status_counts": {
+        "hit": 55,
+        "outside_top_k": 25,
+        "relevant_chunk_not_ranked": 8
+      }
+    },
+    "item_count": 70,
+    "latency_ms": {
+      "mean": 325.98571428571427,
+      "p95": 410.55
+    },
+    "refusal": {
+      "answerable_count": 57,
+      "auroc": 0.7402159244264508,
+      "best": {
+        "accuracy": 0.8285714285714286,
+        "answerable_f1": 0.8947368421052632,
+        "false_answerable": 6,
+        "false_refusal": 6,
+        "macro_f1": 0.7165991902834008,
+        "threshold": 0.03140841581514753,
+        "true_answerable": 51,
+        "true_refusal": 7,
+        "unanswerable_f1": 0.5384615384615384
+      },
+      "configured": {
+        "accuracy": 0.18571428571428572,
+        "answerable_f1": 0.0,
+        "false_answerable": 0,
+        "false_refusal": 57,
+        "macro_f1": 0.1566265060240964,
+        "threshold": 0.35,
+        "true_answerable": 0,
+        "true_refusal": 13,
+        "unanswerable_f1": 0.3132530120481928
+      },
+      "score_distributions": {
+        "answerable": {
+          "count": 57,
+          "histogram": {
+            "[0.00,0.05)": 57
+          },
+          "max": 0.03278688524590164,
+          "mean": 0.03209393851980902,
+          "median": 0.03252247488101534,
+          "min": 0.026779422128259338,
+          "p25": 0.03200204813108039,
+          "p75": 0.03278688524590164,
+          "p95": 0.03278688524590164
+        },
+        "unanswerable": {
+          "count": 13,
+          "histogram": {
+            "[0.00,0.05)": 13
+          },
+          "max": 0.03278688524590164,
+          "mean": 0.031001879725521705,
+          "median": 0.03131881575727918,
+          "min": 0.02738970588235294,
+          "p25": 0.03057889822595705,
+          "p75": 0.03200204813108039,
+          "p95": 0.03278688524590164
+        }
+      },
+      "unanswerable_count": 13
+    },
+    "retrieval": {
+      "alpha_ndcg_at_k": 0.5758688224548778,
+      "budget_span_recall": 0.7821637426900585,
+      "context_precision": 0.17894736842105266,
+      "gold_doc_recall_at_k": 0.716374269005848,
+      "max_doc_share_at_k": 0.7719298245614035,
+      "mrr": 0.5888888888888889,
+      "ndcg_at_k": 0.5726434987055923,
+      "span_recall_at_k": 0.7046783625730993
+    },
+    "unanswerable_count": 13
+  },
+  "run_id": "suite-ecc6dec67cc3cd1547cb067c",
+  "snapshot_version": 1
+}

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "WorkPilot main window permissions",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-open"]
+}

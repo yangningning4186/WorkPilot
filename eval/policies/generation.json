@@ -1,0 +1,42 @@
+{
+  "schema_version": "workpilot-regression-policy.v1",
+  "name": "grounded-generation-v1",
+  "report_kind": "generation",
+  "require_same_dataset": true,
+  "require_same_case_ids": true,
+  "require_same_dataset_fingerprint": true,
+  "require_same_config": true,
+  "fail_on_candidate_errors": true,
+  "metrics": [
+    {
+      "name": "refusal_correct",
+      "direction": "higher",
+      "max_absolute_regression": 0
+    },
+    {
+      "name": "citation_validity_non_refusal",
+      "direction": "higher",
+      "max_absolute_regression": 0
+    },
+    {
+      "name": "constraint_pass",
+      "direction": "higher",
+      "max_absolute_regression": 0
+    },
+    {
+      "name": "constraint_pass_answerable",
+      "direction": "higher",
+      "max_absolute_regression": 0
+    },
+    {
+      "name": "citation_gold_alignment",
+      "direction": "higher",
+      "max_absolute_regression": 0
+    },
+    {
+      "name": "total_tokens",
+      "direction": "lower",
+      "max_relative_regression": 0.2
+    }
+  ]
+}

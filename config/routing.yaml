@@ -1,0 +1,115 @@
+# 任务 → 模型档位路由表，见 docs/07-模型路由与成本.md §1–2。
+#
+# 这个文件可以安全入 git：所有凭据与地址都写成 `${NAME}`，由 app/llm/routing.py
+# 从 Settings（即 .env）展开，变量白名单见该文件的 routing_env()。
+#
+# 改这个文件不需要改代码——帕累托实验（§4 的 C1–C8）就是靠改 routes 切配置的。
+version: 1
+
+defaults:
+  timeout_s: 30
+
+tiers:
+  # 分类、改写、记忆操作这类高频低难度任务；未部署时留空，路由会沿 fallback 降到 main。
+  light:
+    primary:
+      provider: openai_compatible
+      base_url: ${TIER_LIGHT_BASE_URL}
+      api_key: ${CLUSTER_API_KEY}
+      model: ${TIER_LIGHT_MODEL}
+      enable_thinking: ${TIER_LIGHT_ENABLE_THINKING}
+      context_window_tokens: ${TIER_LIGHT_CONTEXT_WINDOW_TOKENS}
+    # fallback 不传递：每档写全自己的链路，别指望接上 main 的那一串。
+    fallback: [main, heavy, external]
+
+  # 甜点档：MoE 每 token 只激活约 3B，延迟接近小模型、质量接近稠密大模型。
+  main:
+    primary:
+      provider: openai_compatible
+      base_url: ${TIER_MAIN_BASE_URL}
+      api_key: ${CLUSTER_API_KEY}
+      model: ${TIER_MAIN_MODEL}
+      enable_thinking: ${TIER_MAIN_ENABLE_THINKING}
+      context_window_tokens: ${TIER_MAIN_CONTEXT_WINDOW_TOKENS}
+    fallback: [heavy, external]
+
+  # 规划、反思、判分：这些环节错了会级联放大，省钱最不划算。
+  heavy:
+    primary:
+      provider: openai_compatible
+      base_url: ${TIER_HEAVY_BASE_URL}
+      api_key: ${CLUSTER_API_KEY}
+      model: ${TIER_HEAVY_MODEL}
+      enable_thinking: ${TIER_HEAVY_ENABLE_THINKING}
+      context_window_tokens: ${TIER_HEAVY_CONTEXT_WINDOW_TOKENS}
+    fallback: [main, external]
+
+  # 商用 API：对照基线 + 集群整体不可用时的兜底。它自己不再 fallback。
+  external:
+    primary:
+      provider: openai_compatible
+      base_url: ${TIER_EXTERNAL_BASE_URL}
+      api_key: ${EXTERNAL_API_KEY}
+      model: ${TIER_EXTERNAL_MODEL}
+      context_window_tokens: ${TIER_EXTERNAL_CONTEXT_WINDOW_TOKENS}
+    fallback: []
+
+# 左边是代码里真实传给 gateway 的 task_type，不是 docs/07 §2 表格里的类别名。
+# 对不上就会静默落到 default_route，路由表也就白写了。
+routes:
+  # —— 生成：甜点档。质量与成本的最优点，也是 §4 帕累托实验的基准配置。
+  cowork_decision:
+    tier: main
+    # 所有可用 fallback 都继承这个任务级超时；唯一来源是 Settings，避免这里再写一份 120。
+    timeout_s: ${COWORK_MODEL_TIMEOUT_S}
+
+  # —— 只读子 Agent（explore）：调查轮与收尾轮分开登记，因为它们是两类活。
+  # 调查轮要做多轮 tool-calling，一次选错工具会连累后面七次调用，和主循环同档。
+  # 收尾轮不带工具，只把已经取到的证据改写成「结论/证据/不确定项」，正是 light 的甜点；
+  # 证据长到 light 装不下时，网关按各档声明的 context_window_tokens 自己降到 main
+  # （§1 的 fallback 链），所以这里不必为"万一超窗"预留档位。
+  # 把调查轮也降到 light 是一次会改变调查质量的变更，按 §3 的规矩要先有对照数据——
+  # explore 现在还没有评测覆盖，不能顺手翻过去。
+  cowork_readonly_subagent:
+    tier: main
+    timeout_s: ${COWORK_MODEL_TIMEOUT_S}
+  cowork_readonly_subagent_summary:
+    tier: light
+    timeout_s: ${COWORK_MODEL_TIMEOUT_S}
+
+  # —— 改写：高频、对单次质量不敏感。
+  edit_rewrite: light
+  cowork_compaction:
+    tier: main
+    timeout_s: ${COWORK_MODEL_TIMEOUT_S}
+  memory_op: light
+  conversation_title: light
+  skill_distillation: light
+
+  # —— 评测专用。
+  eval_memory_injection: main
+
+  # —— 判分：错了会污染整个评测体系，最不该省钱的一档。
+  judge: heavy
+
+# 置信度驱动的动态升档（§3）：起始档跑完、确定性检查不达标时换这一档重做。
+# 与 fallback 不同——fallback 处理"调用失败"，升档处理"调用成功但结果不可信"。
+#
+# 目标 == 上面 routes 里的起始档 = **已登记但未启用**。要启用就把 routes 里
+# 对应那行改成更低的档（例如 evidence_sufficiency: light），一处改动即刻生效。
+#
+# 现在刻意都是未启用状态：把主答路径的证据门控换到 4B 上是一次会改变线上答案的
+# 变更，必须先有对照数据（§3 要测的是升档率、质量增益、相比全走 main 的净省），
+# 不能顺手翻过去。light 曾因部署参数只有 8192 而让长证据直接超上下文；当前已修正
+# 为 32768，但分档仍必须服从每个 endpoint 声明的真实 context_window_tokens。
+escalation: {}
+
+# 未登记的 task_type 落到甜点档，并靠 llm_calls 的审计发现遗漏。
+default_route: main
+
+modes:
+  online:
+    fallback_enabled: true
+  # 评测禁用 fallback（§7.4）：否则台账写着 heavy、实际由别的模型作答，且没人知道。
+  evaluation:
+    fallback_enabled: false
