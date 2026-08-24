@@ -1,6 +1,6 @@
 # ADR-0009 桌面 sidecar 与会话级能力授权
 
-**状态**：已采纳
+**状态**：已采纳；Office 专用能力条款被 ADR-0016 取代，宽泛 capability 条款被 ADR-0017 取代
 **日期**：2026-08-18
 
 ## 背景与约束
@@ -30,8 +30,8 @@ Cowork 复用 `agent_runs`、`run_events`、checkpoint 与工具幂等表，新�
 
 - 用户通过系统目录选择器授予 `read_only` 或 `read_write` root；后端保存规范化绝对路径。
 - `read_only` 自动获得 `filesystem.read`。
-- `read_write` 自动获得 `filesystem.read`、`filesystem.write`、`office.word.edit`、
-  `office.excel.edit`。此后目录内文档操作直接执行，不再逐条确认。
+- `read_write` 自动获得 `filesystem.read`、`filesystem.write`。2026-08-22 起 Office 文件
+  使用独立 `shell.execute` + 格式 Skill；不再派生格式专用 capability。
 - `network.read`、`shell.execute` 与 `external.action` 必须独立授权，
   永远不从目录权限继承。网页读取不借用语义过宽的“外部写操作”授权。
 - 每次工具执行仍重新解析真实路径、检查符号链接逃逸、root 状态、grant 撤销与过期状态。
@@ -57,7 +57,7 @@ Cowork 复用 `agent_runs`、`run_events`、checkpoint 与工具幂等表，新�
 - Tauri、sidecar 打包、升级和跨平台签名形成新的发布链路。
 - capability 检查必须位于每个副作用工具的统一入口；漏接一个工具就会形成绕过路径。
 - 按会话保存 root 会产生授权管理 UI 和陈旧目录清理工作。
-- Word/Excel 的能力名只表示允许调用受限执行器，不表示支持 Office 的全部格式语义。
+- Office 专用能力已退役；格式正确性由 Skill、脚本验证与 Artifact 扫描共同承担。
 - 第一阶段不会宣称多 Agent；短期展示重点是可恢复执行、进度和可交付文件。
 
 ## 后续影响
@@ -67,6 +67,6 @@ Cowork 复用 `agent_runs`、`run_events`、checkpoint 与工具幂等表，新�
 3. 安全读工具可并行；任何 `effect != none` 的工具都必须走 `tool_invocations` 幂等租约，
    不得只按 `risk=write` 判断。Shell 执行器还必须按当前 `tool_call_id` 复核 allowlist 或一次性审批。
    同一文件必须有冲突摘要与幂等键。
-4. 现有 `local_office_write` 限时授权（[ADR-0012](0012-退役postgres与redis改用本机文件.md) 之后落在进程内，不再是 Redis）是过渡兼容层；Cowork 编辑器接入会话 root 后应由
-   `office.word.edit` / `office.excel.edit` 和路径检查替代，而非叠加第二次逐操作确认。
+4. `local_office_write`、独立 `/workspace` 页面与 Office 专用工具均已于 2026-08-22 删除；
+   当前边界见 [ADR-0016](0016-格式Skill持久Shell与工作区产物.md)。
 5. 多 Agent 前必须补齐委派事件、子 Agent 独立预算/capability、Artifact 合并和并发冲突评测。

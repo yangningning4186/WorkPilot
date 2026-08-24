@@ -78,7 +78,7 @@ Agent 与工具 · 记忆系统 · 知识图谱 · 三档模型路由 · 任何�
 | 查询改写 | 指代消解 + 多查询扩展（引入 `light` 档） |
 | 拒答阈值 ROC 调优 | 用 dev 集画曲线取 F1 最优点 |
 | **E1 四策略对照** | 此时才建多策略 chunk + 部分索引 |
-| **一个固定的综述工作流** | LangGraph 实现，但**流程固定**（筛选→抽卡→分组→对比→生成→写回），不是通用 Agent |
+| **一个固定的综述工作流** | 确定性状态迁移实现，**流程固定**（筛选→抽卡→分组→对比→生成→写回），不是通用 Agent |
 | Agent 扩展四表 + 幂等协议 | 补齐 `agent_plan_steps/agent_attempts/tool_invocations/agent_checkpoints`；写回笔记前必须完成副作用去重 |
 | Agent 幂等补充要求 | 过期 `in_flight` / `failed` 用租约 + CAS 回收；副作用尽可能把同一幂等键传给下游 |
 | 评测集 → 80 条 human | 70 dev / 10 test；test 按 document version 隔离，最终评测前不跑、不调参 |

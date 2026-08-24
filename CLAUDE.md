@@ -28,7 +28,7 @@ workpilot/
 │   ├── app/
 │   │   ├── rag/        知识库产品：kb/（目录即 KB，FAISS+BM25）/ 编辑器授权
 │   │   │                （问答流水线与记忆已退役或并入 cowork）
-│   │   ├── cowork/     Cowork 产品：工作台 / 文件 / Office / 连接器 / Skill / MCP
+│   │   ├── cowork/     Cowork 产品：工作台 / 文件 / 格式 Skill + Shell / 连接器 / MCP
 │   │   │                reading/  ★ 沉浸阅读：locator 寻址、三层匹配、引文校验
 │   │   ├── agent_core/ 框架层：循环、状态、事件契约、压缩、预算、幂等身份
 │   │   ├── runstore/   存储层：run / 事件 / checkpoint / 幂等租约 / 会话
@@ -69,9 +69,11 @@ cd backend && uv sync && uv run uvicorn app.main:app --reload
 cd frontend && npm install && npm run dev
 
 # 评测（评测模式强制关闭 fallback，否则实验不可复现）
-# ⚠️ 检索轨当前是断的（docs/06 §4.5）：四层表随 Postgres 退役，span_recall 那组没有实现；
-#    eval/cowork_runner.py 还硬要求 COWORK_STORE_BACKEND=postgres，所以任务集也跑不起来。
+# ⚠️ 检索轨当前是断的（docs/06 §4.5）：四层表随 Postgres 退役，span_recall 那组没有实现。
 #    没有 eval.run / eval.calibrate 这两个入口——它们从未存在过。
+# Cowork 任务集（2026-08-22 修复）：跑批把控制面指到 <package>/store/，不碰 ~/.workpilot
+PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner --label <label> \
+  --allow-model-send --authorization-note "<为什么可以把这批 prompt 发给模型>"
 uv run python -m eval.compare <baseline-run> <candidate-run> --output-dir <dir>
 PYTHONPATH=backend backend/.venv/bin/python -m eval.gate check <report-dir> --against main
 
@@ -130,15 +132,15 @@ cd ../frontend && npm run lint && npm run typecheck
 
 9. **有副作用的工具必须走 `tool_invocations` 幂等协议**，
    不得依赖 Agent 状态里的 `cursor` 或任何步骤序号做去重。
-   → LangGraph 从 interrupt 恢复会从节点开头重跑，
+   → interrupt 或崩溃恢复可能重新进入尚未确认完成的执行片段，
    状态恢复 ≠ 副作用不重放（[ADR-0007](docs/adr/0007-agent幂等与事件溯源.md)）。
    重试必须区分有效租约与过期租约；跨系统副作用只承诺 effectively-once，
    并尽量向下游透传同一幂等键。
 
-10. **换了 embedding 就不许拿旧索引检索。** 原来由"候选版本全部成功才事务激活"保证
-    （版本切换与 `chunks.is_searchable` 同事务）；换到文件系统之后，由 `manifest.json` 里的
-    **embedding 签名**（model + dimensions + revision）在每次加载时比对，不一致就**拒绝检索
-    并要求重建**（[ADR-0012](docs/adr/0012-退役postgres与redis改用本机文件.md)）。
+10. **换了 embedding 就不许拿旧索引检索；候选成功前不许影响 active。** 文件系统上的
+    `KbIndexVersion` 固化 embedding 签名与检索配置，每次加载时比对，不一致就拒绝；候选先写
+    独立的 `versions/<id>/`，完整成功后才原子发布到 manifest。active 指针失效时拒绝检索，
+    不猜测回落（[ADR-0014](docs/adr/0014-知识库索引版本化与显式激活.md)）。
     → 不拒绝的话，旧向量和新查询向量不在同一个空间里，检索不会报错，只会安静地返回
     胡说八道的结果。**无声失败和显式失败的区别，是这条约束的全部理由。**
 
@@ -177,7 +179,7 @@ cd ../frontend && npm run lint && npm run typecheck
 
 ## 常见陷阱
 
-- **LangGraph interrupt 恢复会从节点开头重跑**，节点内 interrupt 之前的副作用会重复执行
+- **恢复状态不等于恢复副作用**：尚未确认完成的执行片段可能重放，工具必须独立幂等
 - **SQLite 里时间是字符串，比较是字典序**：全程存 UTC ISO。混了本地偏移，
   `22:59+08:00` 会排在 `15:05+00:00` 后面——两者其实是同一刻，租约与过期清扫会判错
 - **SQLite 没有 decimal**：钱一律存整数微美元。用 REAL 存美元会让
