@@ -1,9 +1,8 @@
-# 静态门禁：Ruff / mypy / pytest / ESLint / tsc。
+# 确定性门禁：Ruff / mypy / import-linter / pytest / ESLint / tsc / build / E2E / Cargo。
 # 范围按 docs/09-排期与任务清单.md「CI 门禁 · 静态检查范围已冻结」，不在此扩张。
 #
-# 这一层刻意**不含任何评测跑批**：evaluation 门禁（smoke + regression 规则轨）
-# 需要随仓库版本化的公开 fixture 语料与预计算 embedding，未就绪前不挂进来，
-# 免得门禁一开始就是红的、然后所有人习惯性忽略（docs/06 §4.5）。
+# CI 不调用外部模型或生产 KB；这里只跑已版本化、零网络、零副作用的评测契约。
+# 真实 Cowork/KB 跑批和 baseline 晋升由 nightly / release 流程显式授权。
 name: CI
 
 on:
@@ -26,7 +25,7 @@ jobs:
     timeout-minutes: 15
 
     # 没有 service 容器。PostgreSQL 与 Redis 已退役（docs/adr/0012），测试状态全在
-    # tmp_path 下的 SQLite / JSONL 里，`docker compose down` 之后 644 个用例照常跑。
+    # tmp_path 下的 SQLite / JSONL 里，完全不需要 Compose service。
 
     defaults:
       run:
@@ -50,22 +49,30 @@ jobs:
       - name: Ruff
         run: uv run ruff check app tests ../eval packages --config pyproject.toml
 
+      - name: Ruff format
+        run: uv run ruff format --check app tests ../eval packages --config pyproject.toml
+
       - name: mypy
         run: uv run mypy app packages/workpilot-ai/src/workpilot_ai packages/workpilot-telemetry/src/workpilot_telemetry
 
       # 层次契约（docs/adr/0011）。放在 mypy 之后、pytest 之前：它比 pytest 快两个量级,
-      # 层次违规没必要等跑完 644 个用例才被告知。
+      # 层次违规没必要等跑完全量用例才被告知。
       - name: import-linter
         run: uv run lint-imports
+
+      - name: Eval catalog and replay contracts
+        run: |
+          PYTHONPATH=.:.. uv run python -m eval.catalog doctor --catalog ../eval/catalog.json --json
+          PYTHONPATH=.:.. uv run python -m eval.replay verify ../eval/replays/run-protocol-v1.json --format json
 
       # conftest 用 tmp_path_factory 建每个测试自己的本地 store，没有迁移步骤。
       - name: pytest
         run: uv run pytest
 
   frontend:
-    name: frontend (eslint + tsc)
+    name: frontend (eslint + tsc + desktop build)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     defaults:
       run:
@@ -89,3 +96,51 @@ jobs:
 
       - name: TypeScript typecheck
         run: npm run typecheck
+
+      - name: Desktop frontend build
+        run: npm run build:desktop
+
+  frontend-e2e:
+    name: frontend E2E (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Playwright
+        run: npm run test:e2e
+
+  desktop-rust:
+    name: desktop shell (cargo check)
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: frontend/src-tauri
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo check
+        run: cargo check --locked
