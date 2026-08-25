@@ -1339,6 +1339,34 @@ def _assert_item_is_solvable(item: dict[str, Any], registry: CoworkToolRegistry)
         )
 
 
+def _fixture_work_mode(
+    item: dict[str, Any], materialized: MaterializedCase
+) -> tuple[str, str | None]:
+    """把 benchmark case 装配成与应用入口一致的 WorkMode。
+
+    阅读类题在应用里由论文阅读入口发起；若 runner 默认为 office，阅读 playbook 和首轮
+    material 工具都不会出现，测到的就不是同一产品表面。每条阅读 fixture 必须恰好包含
+    一份可读材料，歧义时 fail closed，不能偷偷挑一个文件。
+    """
+
+    if item.get("category") != "reading":
+        return "office", None
+    workspace = materialized.workspace
+    if workspace is None:
+        raise CoworkRunnerError(f"{item['id']}: reading case 缺少 workspace")
+    readable_suffixes = {".md", ".markdown", ".txt", ".pdf"}
+    candidates = sorted(
+        relative
+        for relative in materialized.before_files
+        if Path(relative).suffix.casefold() in readable_suffixes
+    )
+    if len(candidates) != 1:
+        raise CoworkRunnerError(
+            f"{item['id']}: reading fixture 必须恰好有一份材料，实际为 {candidates}"
+        )
+    return "reading", str((workspace / candidates[0]).resolve())
+
+
 async def run_case(
     suite: dict[str, Any],
     item: dict[str, Any],
@@ -1350,6 +1378,7 @@ async def run_case(
 ) -> dict[str, Any]:
     case_root.mkdir(parents=True, exist_ok=False)
     materialized = materialize_case(suite, item, case_root=case_root)
+    work_mode, reading_path = _fixture_work_mode(item, materialized)
     bus = InMemoryRunBus()
     registry = build_fixture_registry(materialized, settings=settings)
     _assert_item_is_solvable(item, registry)
@@ -1380,7 +1409,16 @@ async def run_case(
             content=str(item["prompt"]),
             run_id=run.id,
         )
-        await initialize_cowork_state(session, run_id=run.id, registry=registry, bus=bus)
+        await initialize_cowork_state(
+            session,
+            run_id=run.id,
+            registry=registry,
+            bus=bus,
+            work_mode=work_mode,
+            reading_path=reading_path,
+            workspace_files=((reading_path,) if reading_path is not None else ()),
+            settings=settings,
+        )
 
     context = {
         "settings": settings,
@@ -1804,6 +1842,7 @@ async def run_suite(
     fixture_policy = {
         "network": "suite-local deterministic adapter; no public network",
         "rag": "suite-local EvidenceBundle adapter; no production corpus",
+        "work_mode": "reading category uses reading mode with its sole fixture material; others use office",
         "browser_auto_approval": "only fixture browser_open needed for expected done",
         "cassette_replay_shell": "blocked without a no-network sandbox",
     }

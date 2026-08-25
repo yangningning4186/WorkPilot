@@ -15,6 +15,7 @@ from eval.cowork_runner import (
     FixtureRagService,
     MaterializedCase,
     _evaluation_settings,
+    _fixture_work_mode,
     _metric_slice,
     evaluate_assertion,
     materialize_case,
@@ -611,6 +612,19 @@ async def test_run_case_executes_real_cowork_graph(db_engine: AsyncEngine, tmp_p
         "search_files",
         "read_file",
     ]
+
+
+def test_reading_case_uses_application_reading_mode_and_fixture_path(tmp_path: Path) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = next(value for value in suite["items"] if value["id"] == "cowork-core-048")
+    materialized = materialize_case(suite, item, case_root=tmp_path / "case")
+
+    work_mode, reading_path = _fixture_work_mode(item, materialized)
+
+    assert work_mode == "reading"
+    assert reading_path == str(
+        (materialized.workspace / "papers/rag-survey.md").resolve()
+    )
 
 
 @pytest.mark.integration
