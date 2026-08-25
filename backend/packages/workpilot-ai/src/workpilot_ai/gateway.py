@@ -51,7 +51,7 @@ _CHAT_MESSAGE_OVERHEAD_TOKENS = 8
 # Cowork 的主循环可能把整轮输出额度都花在 reasoning 上。这里的 max_tokens 仍用于
 # 上下文压缩、run 计量和费用预留，但支持省略该字段的 Provider 不再收到客户端硬上限。
 # 其他短任务（标题、摘要、改写等）继续严格限长。
-_PROVIDER_DEFAULT_OUTPUT_TASKS = frozenset({"cowork_decision"})
+_PROVIDER_DEFAULT_OUTPUT_TASKS = frozenset({"cowork_decision", "evaluation_generation"})
 
 
 class EmbeddingDimensionError(ValueError):

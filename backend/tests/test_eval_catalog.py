@@ -272,18 +272,14 @@ def test_repository_catalog_is_healthy_and_exposes_remaining_rebuild_warnings() 
     assert report.healthy is True
     assert report.status == "warning"
     assert [resource.health for resource in report.resources] == [
-        "warning",
-        "warning",
+        "ready",
+        "ready",
         "ready",
         "warning",
         "ready",
     ]
     rebuilds = [issue for issue in report.issues if issue.code == "baseline_rebuild_required"]
-    assert {issue.resource_id for issue in rebuilds} == {
-        "cowork-core-dev",
-        "cowork-core-test",
-        "grounded-generation",
-    }
+    assert {issue.resource_id for issue in rebuilds} == {"grounded-generation"}
 
 
 def test_cli_json_distinguishes_ready_and_warning(capsys: pytest.CaptureFixture[str]) -> None:
@@ -295,10 +291,10 @@ def test_cli_json_distinguishes_ready_and_warning(capsys: pytest.CaptureFixture[
     assert output["summary"] == {
         "error_count": 0,
         "invalid": 0,
-        "ready": 2,
+        "ready": 4,
         "resource_count": 5,
-        "warning_count": 3,
-        "warnings": 3,
+        "warning_count": 1,
+        "warnings": 1,
     }
 
 

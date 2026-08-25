@@ -179,8 +179,8 @@ async def test_openai_compatible_provider_strips_orphan_reasoning_close_from_com
     assert completion.text == "项目代号：Silver Heron"
 
 
-async def test_cowork_decision_omits_provider_max_tokens_for_complete_and_stream() -> None:
-    """8192 只做上下文/费用预留，不再截断 Cowork reasoning + 正文。"""
+async def test_long_reasoning_tasks_omit_provider_max_tokens() -> None:
+    """8192 只做上下文/费用预留，不截断 Cowork 或 generation reasoning + 正文。"""
 
     payloads: list[dict[str, object]] = []
 
@@ -234,11 +234,17 @@ async def test_cowork_decision_omits_provider_max_tokens_for_complete_and_stream
             max_tokens=8_192,
         )
     ]
+    generated = await gateway.complete(
+        [Message(role="user", content="根据证据回答")],
+        task_type="evaluation_generation",
+        max_tokens=8_192,
+    )
     await client.aclose()
 
     assert completed.text == "完成"
     assert streamed[-1].result is not None and streamed[-1].result.text == "完成"
-    assert len(payloads) == 2
+    assert generated.text == "完成"
+    assert len(payloads) == 3
     assert all("max_tokens" not in payload for payload in payloads)
 
 

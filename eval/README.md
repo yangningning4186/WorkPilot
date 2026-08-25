@@ -400,30 +400,29 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.build_m1_candidate_suite --a
 `synthetic/pending_human` 或存量同 ID 内容漂移都会拒绝。被拒绝的草稿不计入正式基线，
 也不会创建 staging dataset；人工逐条重写并填写 reviewer/reviewed_at 前不得升级为 human。
 
-70 条 dev 的正式套件为 `eval/suites/m1-dev-70.json`。以下两条 runner 都会 fail-closed
-检查恰好 70 条、六类完整、无 `agent_task`、无 test dataset、gold span 有效，并将 suite SHA
-与 test-access 审计写入 manifest：
+PostgreSQL 退役后，70 条 dev 的正式生成套件迁到
+`eval/suites/m1-dev-70-v2.json`。它内嵌全部问题、答案、约束和事实组，gold 使用
+`content_hash + page_no + char range`，不再依赖本机 `eval_items` UUID。37 篇冻结 corpus
+来自历史 70 条 retrieval 报告的 Top-10 `source_uri` 并集；迁移器保留输入报告 SHA-256，
+规范化精确匹配失败时才做有下限的模糊重定位。
 
 ```bash
-PYTHONPATH=backend backend/.venv/bin/python -m eval.suite_retrieval_runner \
-  --suite eval/suites/m1-dev-70.json --label m1-dev70-finalists \
-  --chunk-strategy heading --chunk-strategy semantic \
-  --retrieval-strategy dense-lexical-rrf-rerank --top-k 10 --diagnostic-k 50 \
-  --token-budget 4000 --theta 0.5 --alpha 0.5 \
-  --rerank-candidate-text-mode title_heading_content --lexical-mode ts_rank
+# 一次性准备独立 KB。来源 v1 的 embedding/chunk/RRF 签名必须完全一致；
+# dense 节点与向量无损组合，BM25 对 37 篇并集重新计算，不修改三个来源 KB。
+PYTHONPATH=backend backend/.venv/bin/python -m eval.generation_runner prepare-kb
 
-# 会发送问题与截断证据；必须显式携带已取得的授权说明
-PYTHONPATH=backend backend/.venv/bin/python -m eval.suite_generation_runner \
-  --suite eval/suites/m1-dev-70.json --retrieval-manifest /path/to/manifest.json \
-  --label m1-dev70-heading-generation --chunk-strategy heading \
+# 正式跑批默认强制 clean Git；会发送问题与截断证据，必须携带授权说明。
+# RERANK_ENABLED=false 是明确实验配置，不是 reranker 故障后的静默 fallback。
+RERANK_ENABLED=false PYTHONPATH=backend backend/.venv/bin/python \
+  -m eval.generation_runner run --label m1-dev70-generation-v2 \
   --allow-model-send --authorization-note '<approval reference>'
 ```
 
-两条 runner 都在分 dataset 的子报告之外，再并出一份 `<batch>/<chunk_strategy>/report.json`
-的整套报告（夜间门禁判的就是它）。合并时逐项校验 dataset 顺序、item 唯一性与配置漂移；
-`dataset_fingerprint` 与 `annotation_fingerprint` 天生逐 dataset 不同，会被合成指纹并
-连同各自原值一起写进 `chunk_metadata`——**不是被忽略掉**，标注改过仍然会显形。
-生成轨合并报告的聚合值直接用 `report_metrics` 的 MetricSpec 计算，与门禁读到的是同一个定义。
+runner 直接走生产 `search_index`，再由 `ModelGateway` 生成；`evaluation_generation` 对支持
+省略输出上限的 provider 不下发 `max_tokens`，报告明确记录 `token_budget=null`。正式指标为
+`citation_wellformed_non_refusal`、`citation_support_answerable` 和
+`constraint_pass_answerable`；可答题拒答或零引用都计 0，不能靠缩分母刷分。声明启用 rerank
+但实际 score source 发生 fallback 时，该题记为基础设施错误，不进入可晋升 baseline。
 
 对 answerable 误拒做 evidence gate 分层归因时，使用同一份正式 retrieval report 和各 dataset 的
 generation report 重建证据。`round_robin` 用于复现旧实现，修复后生产口径为 `sequential`；脚本
