@@ -12,9 +12,8 @@
         "item_count": 39
       },
       "baseline": {
-        "status": "rebuild_required",
-        "path": "eval/snapshots/cowork.json",
-        "reason": "v1.6.1 已于 2026-08-25 由行之重新复核批准；034/044 已通过既有 DeepSeek V4 observation 的零模型重评分。v1.6.0 及更早报告、cassette 与快照继续保留，待 clean Git 下完整重建后再晋升 baseline。"
+        "status": "ready",
+        "path": "eval/snapshots/v2/cowork-core-dev.json"
       }
     },
     {
@@ -27,9 +26,8 @@
         "item_count": 11
       },
       "baseline": {
-        "status": "rebuild_required",
-        "path": "eval/snapshots/cowork.json",
-        "reason": "v1.6.1 已于 2026-08-25 由行之重新复核批准；040 在固定 deepseek-v4-flash、固定 endpoint、无 token 熔断下定点 live 通过。替换该 observation 后完整 test 为 9/11（81.82%），剩余失败 033/048；当前 git_dirty，仍不得晋升或覆盖旧 baseline。"
+        "status": "ready",
+        "path": "eval/snapshots/v2/cowork-core-test.json"
       }
     },
     {
