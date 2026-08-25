@@ -31,8 +31,9 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.regression check \
 ```
 
 `eval.regression` 的稳定退出码是 `0=通过`、`1=可比较但发生回退`、`2=拒绝判定`。
-当前 catalog 会如实把三份历史 snapshot 对应的四条 track 标为 `rebuild_required`，其中 Cowork
-dev（39 条）和冻结 test（11 条）是两个独立 baseline，不会显示为可发布基线。
+当前 catalog 的 Cowork dev/test、KB retrieval、Grounded Generation 四条 track 均已晋升为
+独立 v2 baseline；Run 事件回放和 full-chain cassette 也都是 `ready`。Cowork dev（39 条）
+和冻结 test（11 条）始终是两个比较分母，不能混成一份 50 条 baseline。
 
 ## Cowork 单 Agent 50 条基线
 
@@ -121,6 +122,32 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
 cassette 含完整 prompt/模型响应，不得提交 Git 或上传公共 artifact。请求漂移、篡改、
 cassette miss 或未消费记录都 fail closed；当前无可验证的断网 sandbox，所以 gold 或
 cassette 实际响应含 `run_shell` 的 case 会在 graph 执行前被拒绝。
+
+## RAG、工具与外部副作用 full-chain cassette
+
+模型 cassette 只封住模型请求；`full_chain_cassette.py` 进一步在 RAG、Cowork 工具和外部写
+副作用三个 I/O 边界做严格顺序录制。每条 interaction 同时固定规范化请求摘要、前序摘要和
+自身摘要，顶层完整性再覆盖整份 cassette。重放时传入的真实 delegate 会被完全忽略，因此
+不会重新检索生产 KB、执行工具或重复发送外部写操作；请求、顺序、hash chain、未消费记录
+任一不一致都会 fail closed。外部写必须携带非空 idempotency key，录制的是返回 receipt。
+
+真实录制默认标记为 `sensitive`、权限 `0600`，只能放在忽略的 `eval/outputs/`；Catalog 只接受
+`origin=synthetic` 且 `data_classification=synthetic` 的提交文件。仓库里的三段合成链路可这样
+做零 I/O 验证：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.full_chain_cassette \
+  eval/replays/full-chain-v1.json --format json
+```
+
+## Nightly
+
+`.github/workflows/eval-nightly.yml` 每天北京时间 02:00 在带 `workpilot-eval` 标签的自托管
+runner 上运行 Cowork dev、冻结 test、KB evaluation 和 Generation 70 条，再与固定 v2
+baseline 配对比较。模型固定为 `deepseek-v4-flash`，token 熔断关闭，KB 与索引由自托管 runner
+持有；任务不会改写 baseline。原始 report、prompt、模型 cassette 只在本机保留 30 天且至少
+保留最近 7 批；上传的 artifact 仅含 Catalog doctor、full-chain 零 I/O 验证、回归指标与摘要，
+GitHub 保留期同为 30 天。
 
 ## A5 长期记忆注入
 

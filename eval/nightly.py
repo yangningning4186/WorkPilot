@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from eval.catalog import DEFAULT_CATALOG, doctor_catalog
+from eval.full_chain_cassette import verify as verify_full_chain_cassette
 
 
 class NightlyError(RuntimeError):
@@ -247,6 +248,11 @@ def run_nightly(
     (artifacts / "catalog-doctor.json").write_text(doctor.to_json(), encoding="utf-8")
     if not doctor.healthy or doctor.status != "ready":
         raise NightlyError(f"catalog doctor must be ready, got {doctor.status}")
+    cassette_report = verify_full_chain_cassette(repo_root / "eval/replays/full-chain-v1.json")
+    (artifacts / "full-chain-cassette.json").write_text(
+        json.dumps(cassette_report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     env = dict(os.environ)
     backend = str(repo_root / "backend")
@@ -310,6 +316,10 @@ def run_nightly(
         "git_sha": git_sha,
         "git_dirty": False,
         "catalog_status": doctor.status,
+        "full_chain_cassette": {
+            "valid": cassette_report["valid"],
+            "real_io_calls": cassette_report["real_io_calls"],
+        },
         "model_token_fuse": "disabled",
         "raw_retention": {"days": 30, "keep_latest": 7, "uploaded": False},
         "artifact_retention_days": 30,

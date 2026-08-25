@@ -1,0 +1,124 @@
+{
+  "schema": "workpilot.full-chain-cassette",
+  "schema_version": 1,
+  "mode": "strict_ordered_record_replay",
+  "origin": "synthetic",
+  "data_classification": "synthetic",
+  "metadata": {
+    "case_id": "full-chain-synthetic-v1",
+    "description": "合成的 RAG→本地工具→外部写副作用链路；仅用于零 I/O 回放。"
+  },
+  "required_channels": [
+    "external_effect",
+    "rag",
+    "tool"
+  ],
+  "interactions": [
+    {
+      "seq": 1,
+      "channel": "rag",
+      "operation": "search",
+      "request": {
+        "gateway": {
+          "chat_model": "fixture-chat",
+          "chat_provider": "fixture",
+          "embedding_dimensions": 3,
+          "embedding_model": "fixture-embedding",
+          "embedding_provider": "fixture"
+        },
+        "request": {
+          "candidate_k": 20,
+          "kb_slug": "fixture-kb",
+          "kb_version_id": null,
+          "max_evidence_chars": 12000,
+          "query": "属性过滤怎么做？",
+          "strategy": "heading",
+          "top_k": 3
+        }
+      },
+      "request_sha256": "399abf87c0772acae14419ddcda0bb0ab24aa499c5e652361bcd2beb4f50fab0",
+      "outcome": {
+        "status": "ok",
+        "value": {
+          "backend": "fixture-rag",
+          "evidence": [
+            {
+              "block_id": "00000000-0000-0000-0000-000000000001",
+              "char_end": 19,
+              "char_start": 0,
+              "citation_id": "S1",
+              "document_id": "00000000-0000-0000-0000-000000000003",
+              "heading_path": [
+                "检索器"
+              ],
+              "locations": [],
+              "quote": "属性过滤应使用部分索引或迭代扫描。",
+              "source_uri": "synthetic://rag/1",
+              "title": "合成 RAG 文档",
+              "version_id": "00000000-0000-0000-0000-000000000002"
+            }
+          ],
+          "retrieved_chunks": 1
+        }
+      },
+      "previous_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "interaction_sha256": "7f9ee8127350e5a2c387fce5140e80b6aed99ce3987bfe3580519c24c79dc026"
+    },
+    {
+      "seq": 2,
+      "channel": "tool",
+      "operation": "read_file",
+      "request": {
+        "arguments": {
+          "path": "papers/rag-survey.md"
+        },
+        "effect": "none",
+        "risk": "read"
+      },
+      "request_sha256": "0143dff775b467cdd48c9a31e6063ea17712741fbb17f2d46618d91485179563",
+      "outcome": {
+        "status": "ok",
+        "value": {
+          "authorization_receipt": null,
+          "effect_ref": null,
+          "evidence": [],
+          "idempotency_key": null,
+          "output": {
+            "content": "属性过滤段落",
+            "path": "papers/rag-survey.md"
+          },
+          "reused": false
+        }
+      },
+      "previous_sha256": "7f9ee8127350e5a2c387fce5140e80b6aed99ce3987bfe3580519c24c79dc026",
+      "interaction_sha256": "34008bc63906a5797b6661f97f7feb384dd27d18f448bad7178098b064895d59"
+    },
+    {
+      "seq": 3,
+      "channel": "external_effect",
+      "operation": "calendar.create_event",
+      "request": {
+        "idempotency_key": "synthetic-effect-1",
+        "payload": {
+          "title": "合成评测会议"
+        }
+      },
+      "request_sha256": "d89ec2d182d907a1bbba4a6a4d1215453f4b4af0ad7b74a139b2915eb9c32ef7",
+      "outcome": {
+        "status": "ok",
+        "value": {
+          "receipt": "synthetic-receipt",
+          "status": "created",
+          "title": "合成评测会议"
+        }
+      },
+      "previous_sha256": "34008bc63906a5797b6661f97f7feb384dd27d18f448bad7178098b064895d59",
+      "interaction_sha256": "f5757954fd6daa9611733d6f511061efb634513784cc8132f20248621f4306cb"
+    }
+  ],
+  "integrity": {
+    "algorithm": "sha256",
+    "canonicalization": "workpilot-json-sort-keys-utf8-v1",
+    "value": "041a26f9db1e2087f49e6c6d41e12e3a74cba6e344a50267d416e1a6bc09fd13"
+  }
+}

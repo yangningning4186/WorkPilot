@@ -26,6 +26,11 @@ POLICY_SCHEMA_VERSION = "workpilot-regression-policy.v1"
 BASELINE_SCHEMA_VERSION = "workpilot-regression-baseline.v1"
 REPLAY_SCHEMA = "workpilot.run-replay-bundle"
 REPLAY_SCHEMA_VERSION = 1
+FULL_CHAIN_CASSETTE_SCHEMA = "workpilot.full-chain-cassette"
+FULL_CHAIN_CASSETTE_VERSION = 1
+FULL_CHAIN_CASSETTE_MODE = "strict_ordered_record_replay"
+FULL_CHAIN_CASSETTE_CHANNELS = frozenset({"rag", "tool", "external_effect"})
+CANONICALIZATION = "workpilot-json-sort-keys-utf8-v1"
 REFUSAL_CALIBRATION_SCHEMA = "workpilot-refusal-calibration.v1"
 
 DEFAULT_CATALOG = Path(__file__).resolve().with_name("catalog.json")
@@ -365,9 +370,7 @@ def _validate_track_selection(
         items = suite.payload.get("items")
         if isinstance(items, list):
             selected = [
-                item
-                for item in items
-                if isinstance(item, Mapping) and item.get("split") == split
+                item for item in items if isinstance(item, Mapping) and item.get("split") == split
             ]
             if len(selected) != item_count:
                 issues.append(
@@ -424,9 +427,7 @@ def _gold_document_hashes(document: _ResolvedJson | None) -> set[str]:
                 continue
             for alternative in alternatives:
                 content_hash = (
-                    alternative.get("content_hash")
-                    if isinstance(alternative, Mapping)
-                    else None
+                    alternative.get("content_hash") if isinstance(alternative, Mapping) else None
                 )
                 if isinstance(content_hash, str):
                     hashes.add(content_hash)
@@ -982,21 +983,23 @@ def _validate_replay(
     resource_id, id_issue = _resource_id(raw.get("id"), fallback=fallback)
     if id_issue is not None:
         issues.append(id_issue)
-    if raw.get("kind") != "event":
+    kind = raw.get("kind")
+    if kind not in {"event", "cassette"}:
         issues.append(
             CatalogIssue(
                 "error",
                 "replay_kind_invalid",
-                "replay kind 目前只支持 'event'",
+                "replay kind 必须是 event 或 cassette",
                 resource_id,
             )
         )
-    if raw.get("mode") != "offline_validation_only":
+    expected_mode = "offline_validation_only" if kind == "event" else "offline_no_live_io"
+    if raw.get("mode") != expected_mode:
         issues.append(
             CatalogIssue(
                 "error",
                 "replay_mode_invalid",
-                "event replay 必须显式声明 offline_validation_only",
+                f"{kind or 'unknown'} replay 必须显式声明 {expected_mode}",
                 resource_id,
             )
         )
@@ -1020,6 +1023,9 @@ def _validate_replay(
         )
         return resource_id, "replay bundle invalid"
     bundle = document.payload
+    if kind == "cassette":
+        _validate_full_chain_cassette(bundle, resource_id=resource_id, issues=issues)
+        return resource_id, "offline RAG/tool/external-effect cassette declared"
     if (
         bundle.get("schema") != REPLAY_SCHEMA
         or bundle.get("schema_version") != REPLAY_SCHEMA_VERSION
@@ -1043,6 +1049,116 @@ def _validate_replay(
             )
         )
     return resource_id, "offline event replay bundle declared"
+
+
+def _validate_full_chain_cassette(
+    bundle: Mapping[str, object],
+    *,
+    resource_id: str,
+    issues: list[CatalogIssue],
+) -> None:
+    if (
+        bundle.get("schema") != FULL_CHAIN_CASSETTE_SCHEMA
+        or bundle.get("schema_version") != FULL_CHAIN_CASSETTE_VERSION
+        or bundle.get("mode") != FULL_CHAIN_CASSETTE_MODE
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "cassette_schema_invalid",
+                f"cassette 必须是 {FULL_CHAIN_CASSETTE_SCHEMA} v{FULL_CHAIN_CASSETTE_VERSION}",
+                resource_id,
+            )
+        )
+    if bundle.get("origin") != "synthetic" or bundle.get("data_classification") != "synthetic":
+        issues.append(
+            CatalogIssue(
+                "error",
+                "cassette_data_classification_invalid",
+                "提交到 catalog 的 cassette 必须是 synthetic，不得包含运行时敏感数据",
+                resource_id,
+            )
+        )
+
+    integrity = bundle.get("integrity")
+    unsigned = {key: value for key, value in bundle.items() if key != "integrity"}
+    if (
+        not isinstance(integrity, Mapping)
+        or integrity.get("algorithm") != "sha256"
+        or integrity.get("canonicalization") != CANONICALIZATION
+        or integrity.get("value")
+        != hashlib.sha256(canonical_json(unsigned).encode("utf-8")).hexdigest()
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "cassette_integrity_mismatch",
+                "cassette 顶层完整性摘要不匹配",
+                resource_id,
+            )
+        )
+
+    interactions = bundle.get("interactions")
+    if not isinstance(interactions, list) or not interactions:
+        issues.append(
+            CatalogIssue(
+                "error",
+                "cassette_interactions_invalid",
+                "cassette interactions 必须是非空数组",
+                resource_id,
+            )
+        )
+        return
+    previous = "0" * 64
+    channels: set[str] = set()
+    for seq, interaction in enumerate(interactions, 1):
+        if not isinstance(interaction, Mapping):
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "cassette_interaction_invalid",
+                    f"interaction {seq} 必须是对象",
+                    resource_id,
+                )
+            )
+            continue
+        channel = interaction.get("channel")
+        request = interaction.get("request")
+        request_sha = hashlib.sha256(canonical_json(request).encode("utf-8")).hexdigest()
+        body = {key: value for key, value in interaction.items() if key != "interaction_sha256"}
+        interaction_sha = hashlib.sha256(canonical_json(body).encode("utf-8")).hexdigest()
+        valid = (
+            interaction.get("seq") == seq
+            and channel in FULL_CHAIN_CASSETTE_CHANNELS
+            and isinstance(interaction.get("operation"), str)
+            and bool(str(interaction.get("operation")).strip())
+            and interaction.get("request_sha256") == request_sha
+            and interaction.get("previous_sha256") == previous
+            and interaction.get("interaction_sha256") == interaction_sha
+            and isinstance(interaction.get("outcome"), Mapping)
+        )
+        if not valid:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "cassette_interaction_invalid",
+                    f"interaction {seq} 的顺序、请求摘要或 hash chain 无效",
+                    resource_id,
+                )
+            )
+        if isinstance(channel, str):
+            channels.add(channel)
+        previous = interaction_sha
+    missing = FULL_CHAIN_CASSETTE_CHANNELS - channels
+    if missing:
+        issues.append(
+            CatalogIssue(
+                "error",
+                "cassette_channels_missing",
+                f"cassette 缺少全链路 channel: {sorted(missing)}",
+                resource_id,
+            )
+        )
 
 
 def doctor_catalog(

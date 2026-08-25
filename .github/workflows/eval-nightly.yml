@@ -48,6 +48,7 @@ jobs:
         run: |
           test -z "$(git status --porcelain --untracked-files=all)"
           uv run --project backend python -m eval.catalog doctor --catalog eval/catalog.json --json
+          uv run --project backend python -m eval.full_chain_cassette eval/replays/full-chain-v1.json --format json
 
       - name: Run full live v2 matrix
         id: matrix

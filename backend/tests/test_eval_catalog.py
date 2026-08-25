@@ -149,9 +149,7 @@ def _retrieval_fixture_tree(root: Path, *, ready: bool = False) -> dict[str, Any
                 "item_id": "r1",
                 "split": "dev",
                 "answerable": True,
-                "gold_evidence_groups": [
-                    {"alternatives": [{"content_hash": "a" * 64}]}
-                ],
+                "gold_evidence_groups": [{"alternatives": [{"content_hash": "a" * 64}]}],
             }
         ],
     }
@@ -168,9 +166,7 @@ def _retrieval_fixture_tree(root: Path, *, ready: bool = False) -> dict[str, Any
                 "item_id": "c1",
                 "split": "dev",
                 "answerable": True,
-                "gold_evidence_groups": [
-                    {"alternatives": [{"content_hash": "b" * 64}]}
-                ],
+                "gold_evidence_groups": [{"alternatives": [{"content_hash": "b" * 64}]}],
             }
         ],
     }
@@ -271,7 +267,7 @@ def test_repository_catalog_is_ready() -> None:
 
     assert report.healthy is True
     assert report.status == "ready"
-    assert [resource.health for resource in report.resources] == ["ready"] * 5
+    assert [resource.health for resource in report.resources] == ["ready"] * 6
     rebuilds = [issue for issue in report.issues if issue.code == "baseline_rebuild_required"]
     assert rebuilds == []
 
@@ -285,11 +281,35 @@ def test_cli_json_distinguishes_ready_and_warning(capsys: pytest.CaptureFixture[
     assert output["summary"] == {
         "error_count": 0,
         "invalid": 0,
-        "ready": 5,
-        "resource_count": 5,
+        "ready": 6,
+        "resource_count": 6,
         "warning_count": 0,
         "warnings": 0,
     }
+
+
+def test_full_chain_cassette_is_checked_for_integrity(tmp_path: Path) -> None:
+    catalog = _fixture_tree(tmp_path)
+    source = REPO_ROOT / "eval/replays/full-chain-v1.json"
+    cassette = json.loads(source.read_text(encoding="utf-8"))
+    _write_json(tmp_path / "replays/full-chain.json", cassette)
+    catalog["replay_suites"].append(
+        {
+            "id": "full-chain-v1",
+            "kind": "cassette",
+            "mode": "offline_no_live_io",
+            "path": "replays/full-chain.json",
+        }
+    )
+
+    healthy = _doctor(tmp_path, catalog)
+    assert not {code for code in _codes(healthy) if code.startswith("cassette_")}
+
+    cassette["interactions"][0]["request"]["request"]["query"] = "tampered"
+    _write_json(tmp_path / "replays/full-chain.json", cassette)
+    tampered = _doctor(tmp_path, catalog)
+    assert "cassette_integrity_mismatch" in _codes(tampered)
+    assert "cassette_interaction_invalid" in _codes(tampered)
 
 
 def test_rebuild_required_is_a_warning_not_a_failure(tmp_path: Path) -> None:
@@ -340,9 +360,7 @@ def test_retrieval_calibration_gold_cannot_overlap_evaluation(tmp_path: Path) ->
     catalog = _retrieval_fixture_tree(tmp_path)
     calibration_path = tmp_path / "suites/calibration.json"
     calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
-    calibration["items"][0]["gold_evidence_groups"][0]["alternatives"][0][
-        "content_hash"
-    ] = "a" * 64
+    calibration["items"][0]["gold_evidence_groups"][0]["alternatives"][0]["content_hash"] = "a" * 64
     _write_json(calibration_path, calibration)
 
     report = _doctor(tmp_path, catalog)

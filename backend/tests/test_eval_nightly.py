@@ -41,6 +41,7 @@ def test_scheduled_workflow_uses_private_runner_and_bounded_retention() -> None:
     assert 'cron: "0 18 * * *"' in workflow
     assert "runs-on: [self-hosted, workpilot-eval]" in workflow
     assert "python -m eval.nightly" in workflow
+    assert "python -m eval.full_chain_cassette" in workflow
     assert "actions/upload-artifact@v4" in workflow
     assert "path: ${{ steps.artifact.outputs.path }}" in workflow
     assert "retention-days: 30" in workflow

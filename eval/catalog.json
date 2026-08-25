@@ -70,6 +70,12 @@
       "kind": "event",
       "mode": "offline_validation_only",
       "path": "eval/replays/run-protocol-v1.json"
+    },
+    {
+      "id": "full-chain-v1",
+      "kind": "cassette",
+      "mode": "offline_no_live_io",
+      "path": "eval/replays/full-chain-v1.json"
     }
   ]
 }
