@@ -253,6 +253,19 @@ def test_unanswerable_reading_requires_refusal_before_numeric_claim(tmp_path: Pa
         materialized=materialized,
         after_files=materialized.before_files,
     )
+    natural_no_report_refusal = evaluate_assertion(
+        assertion,
+        response=(
+            "这份文档没有报告任何多语言检索提升，也没有多语言实验设置。"
+            "文档另有八个点的提升，但语境不是多语言。"
+        ),
+        status="done",
+        interrupt=None,
+        trace=[],
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
     contradictory_claim = evaluate_assertion(
         assertion,
         response=(
@@ -268,6 +281,7 @@ def test_unanswerable_reading_requires_refusal_before_numeric_claim(tmp_path: Pa
     )
 
     assert correct_refusal.passed is True
+    assert natural_no_report_refusal.passed is True
     assert contradictory_claim.passed is False
 
 
@@ -293,6 +307,35 @@ def test_hitl_assertion_can_pin_tool_arguments(tmp_path: Path) -> None:
             },
         },
         trace=[{"name": "run_shell", "status": "interrupt", "arguments": {}}],
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+
+    assert result.passed is True
+
+
+def test_write_capability_hitl_accepts_read_write_directory_upgrade(tmp_path: Path) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = next(value for value in suite["items"] if value["id"] == "cowork-core-038")
+    materialized = materialize_case(suite, item, case_root=tmp_path / "case")
+    assertion = next(
+        value for value in item["gold"]["assertions"] if value["type"] == "hitl_interrupt"
+    )
+
+    result = evaluate_assertion(
+        assertion,
+        response="",
+        status="waiting_human",
+        interrupt={
+            "kind": "directory_request",
+            "request": {
+                "access_mode": "read_write",
+                "reason": "当前只读工作区需要升级为可写",
+                "suggested_path": str(materialized.workspace),
+            },
+        },
+        trace=[],
         artifacts=[],
         materialized=materialized,
         after_files=materialized.before_files,

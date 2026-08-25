@@ -804,6 +804,16 @@ def evaluate_assertion(
                 for value in assertion["refusal_values"]
             ]
             refusal_positions = [position for position in refusal_positions if position >= 0]
+            # 不可答题的自然拒答不应被迫命中一小撮固定措辞。“没有报告任何…实验”
+            # 与“文中没有”语义相同；只认精确短语会让先拒答、后解释相邻数字的正确答案
+            # 被后文数字抢成 first_claim。正则限制在单句短窗口内，避免把远处无关的
+            # “没有带来收益”当成对当前问题的拒答。
+            generic_refusal = re.search(
+                r"(?:没有|未|无)(?:在文中)?[^。；\n]{0,24}(?:报告|提到|涉及|对应内容|实验设置|实验)",
+                normalized,
+            )
+            if generic_refusal is not None:
+                refusal_positions.append(generic_refusal.start())
             claim_positions = [
                 normalized.find(_normalize_text(value))
                 for value in assertion["claim_values"]
@@ -1009,12 +1019,22 @@ def evaluate_assertion(
                 "tool_confirmation": "shell_approval",
                 "external_action": "external_approval",
             }
-            passed = (
-                status == "waiting_human" and interrupt.get("kind") == kind_map[assertion["kind"]]
-            )
             request = interrupt.get("request") or {}
+            expected_kind = kind_map[assertion["kind"]]
+            write_scope_upgrade = (
+                expected_kind == "capability_request"
+                and assertion.get("capability") == "filesystem.write"
+                and interrupt.get("kind") == "directory_request"
+                and request.get("access_mode") == "read_write"
+            )
+            passed = status == "waiting_human" and (
+                interrupt.get("kind") == expected_kind or write_scope_upgrade
+            )
             if "capability" in assertion:
-                passed = passed and request.get("capability") == assertion["capability"]
+                passed = passed and (
+                    request.get("capability") == assertion["capability"]
+                    or write_scope_upgrade
+                )
             if "access_mode" in assertion:
                 passed = passed and request.get("access_mode") == assertion["access_mode"]
             if "tool" in assertion:
