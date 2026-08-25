@@ -466,6 +466,59 @@ def test_file_not_contains_preserves_whitespace_semantics(tmp_path: Path) -> Non
     assert result.passed is True
 
 
+def test_no_path_guessed_allows_current_workspace_probe(tmp_path: Path) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = next(value for value in suite["items"] if value["id"] == "cowork-core-037")
+    materialized = materialize_case(suite, item, case_root=tmp_path / "case")
+    assertion = next(
+        value for value in item["gold"]["assertions"] if value["type"] == "no_path_guessed"
+    )
+
+    probe = evaluate_assertion(
+        assertion,
+        response="",
+        status="waiting_human",
+        interrupt=None,
+        trace=[
+            {
+                "name": "list_files",
+                "status": "failed",
+                "arguments": {"path": "."},
+                "result": None,
+            },
+            {
+                "name": "request_directory",
+                "status": "interrupt",
+                "arguments": {"access_mode": "read_only"},
+                "result": None,
+            },
+        ],
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+    assert probe.passed is True
+
+    guessed = evaluate_assertion(
+        assertion,
+        response="",
+        status="waiting_human",
+        interrupt=None,
+        trace=[
+            {
+                "name": "list_files",
+                "status": "failed",
+                "arguments": {"path": "/Users/example/project"},
+                "result": None,
+            }
+        ],
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+    assert guessed.passed is False
+
+
 def test_rescore_report_reuses_observations_without_model(tmp_path: Path) -> None:
     suite = load_suite(DEFAULT_SUITE)
     item = suite["items"][0]
