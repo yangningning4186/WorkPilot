@@ -154,7 +154,7 @@ async def _build_pdf(path: Path, *, settings: Settings, byte_size: int) -> Mater
     if not any(not unit.is_empty for unit in units):
         raise ReadingError(
             f"{path.name} 每一页都抽不出文字，应该是没有文本层的扫描件；"
-            "先做 OCR，或改用 read_pdf 查看解析质量报告。"
+            "先做 OCR，或改用 read_file 查看解析质量报告。"
         )
 
     outline = await asyncio.to_thread(_pdf_bookmarks, path, len(units)) or build_outline(units)

@@ -112,6 +112,9 @@ def test_browser_navigation_splits_action_levels_and_consequential_approval() ->
     assert registry.get("browser_screenshot").approval_required is False
     assert registry.get("browser_snapshot").effect == "none"
     assert registry.get("browser_find").effect == "none"
+    assert "query" in registry.get("browser_snapshot").resolved_input_schema()["properties"]
+    assert registry.get("browser_find").model_visible is False
+    assert "browser_find" not in registry.deferred_tool_names()
 
 
 def test_readonly_subagent_cannot_receive_browser_actions() -> None:

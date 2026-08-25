@@ -27,8 +27,10 @@ _TITLES: dict[str, str] = {
     "request_capability": "申请运行能力",
     "propose_plan": "提交执行计划",
     "todo_write": "更新任务清单",
-    "list_workspace_roots": "确认工作目录",
     "list_files": "列出文件",
+    "read_file": "读取文件",
+    "write_file": "写入文件",
+    # 旧 checkpoint/cassette 回放仍可能产生这些名称。
     "read_text_file": "读取文本",
     "write_text_file": "写入文本",
     "replace_in_file": "修改文件",
@@ -45,11 +47,9 @@ _TITLES: dict[str, str] = {
     "wake_on": "等待后台任务",
     "sleep": "等待后继续",
     "create_artifact": "生成交付物",
-    "search_tool_catalog": "搜索工具目录",
     "load_tools": "加载扩展工具",
     "list_skills": "查看可用技能",
     "load_skill": "加载格式 Skill",
-    "load_skill_resource": "读取 Skill 资源",
     "explore": "委派只读调查",
     "reader_goto": "定位文档原文",
     "reader_annotate": "批注文档原文",
@@ -154,6 +154,8 @@ def describe_tool_activity(name: str, raw_arguments: object) -> ToolActivity:
 
     if name in {
         "list_files",
+        "read_file",
+        "write_file",
         "read_text_file",
         "write_text_file",
         "replace_in_file",
@@ -180,7 +182,7 @@ def describe_tool_activity(name: str, raw_arguments: object) -> ToolActivity:
             if arguments.get("recursive") is True
             else f"查看 {pattern or '*'}"
         )
-    elif name == "read_text_file":
+    elif name in {"read_file", "read_text_file"}:
         start = arguments.get("start_line")
         maximum = arguments.get("max_lines")
         if isinstance(start, int):
@@ -189,8 +191,10 @@ def describe_tool_activity(name: str, raw_arguments: object) -> ToolActivity:
                 if isinstance(maximum, int)
                 else f"从第 {start} 行开始读取"
             )
-    elif name == "write_text_file":
-        activity["summary"] = "创建或更新文本文件"
+    elif name in {"write_file", "write_text_file"}:
+        activity["summary"] = (
+            "创建或更新交付物" if arguments.get("purpose") == "artifact" else "创建或更新文本文件"
+        )
     elif name == "replace_in_file":
         activity["summary"] = "替换文件中的指定内容"
     elif name == "search_files":
@@ -201,7 +205,7 @@ def describe_tool_activity(name: str, raw_arguments: object) -> ToolActivity:
         title = _string(arguments, "title")
         if title:
             activity["summary"] = f"生成“{_clip(title, 100)}”"
-    elif name in {"web_search", "search_tool_catalog", "search_knowledge"}:
+    elif name in {"web_search", "search_knowledge"}:
         query = _string(arguments, "query")
         if query:
             _set_target(activity, _clip(query), "text")
@@ -216,10 +220,6 @@ def describe_tool_activity(name: str, raw_arguments: object) -> ToolActivity:
         if skill:
             _set_target(activity, skill, "text")
             activity["summary"] = "读取这项 Skill 的执行规范"
-    elif name == "load_skill_resource":
-        target = _string(arguments, "resource") or _string(arguments, "path")
-        if target:
-            _set_target(activity, _clip(target), "path")
     elif name == "load_tools":
         names = arguments.get("names")
         if isinstance(names, list):

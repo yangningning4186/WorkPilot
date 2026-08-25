@@ -420,31 +420,6 @@ def read_skill_resource(
     return target.read_text(encoding="utf-8"), relative.as_posix()
 
 
-def read_skill_definition_resource(
-    skill_path: Path,
-    *,
-    resource: str,
-    max_bytes: int,
-) -> tuple[str, str]:
-    """按 catalog 已选中的具体 SKILL.md 读资源，保持 project > user > builtin。"""
-
-    relative = PurePosixPath(resource)
-    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
-        raise SkillCatalogError("Skill resource 路径非法")
-    if skill_path.name != "SKILL.md" or not skill_path.is_file() or skill_path.is_symlink():
-        raise FileNotFoundError(skill_path)
-    skill_dir = skill_path.parent.resolve(strict=True)
-    try:
-        target = skill_dir.joinpath(*relative.parts).resolve(strict=True)
-    except (FileNotFoundError, OSError) as error:
-        raise FileNotFoundError(resource) from error
-    if not target.is_relative_to(skill_dir) or not target.is_file() or target.is_symlink():
-        raise FileNotFoundError(resource)
-    if target.stat().st_size > max_bytes:
-        raise SkillCatalogError("Skill resource 超过读取上限")
-    return target.read_text(encoding="utf-8"), relative.as_posix()
-
-
 def _managed_one(target: Path, *, max_bytes: int, origin: SkillOrigin = "user") -> ManagedSkill:
     skill = load_skill_file(target / "SKILL.md", max_bytes=max_bytes, origin=origin)
     resources = tuple(

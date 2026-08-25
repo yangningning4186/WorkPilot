@@ -48,6 +48,17 @@ async def test_reading_capability_owns_prompt_tools_and_pre_loop() -> None:
     assert calls == ["解释方法"]
 
 
+def test_office_capability_mounts_hot_path_tools_not_admin_routes() -> None:
+    resolved = build_work_capability_registry().resolve(
+        CapabilityActivation(goal="整理季度报告", work_mode="office")
+    )
+
+    assert {"list_files", "read_file", "write_file", "load_skill", "run_shell"} <= (
+        resolved.owned_tools
+    )
+    assert {"run_sandbox", "list_skills"}.isdisjoint(resolved.owned_tools)
+
+
 def test_exclusive_capability_is_a_tool_surface_rule_not_a_permission_grant() -> None:
     exclusive = WorkCapability(
         name="deep-research", owned_tools=frozenset({"web_search"}), exclusive=True
@@ -101,8 +112,10 @@ system_block = "项目事实优先。"
     assert persona.origin == "project"
     assert persona.label == "项目研究员"
     assert allowed is not None
+    assert "read_file" in allowed
+    assert "write_file" not in allowed
+    # 旧 checkpoint 若已调用过别名，Persona 仍允许它继续回放。
     assert "read_text_file" in allowed
-    assert "write_text_file" not in allowed
     # Persona 只收窄业务工具，申请目录/能力与向用户提问的安全控制面永远保留。
     assert {"ask_user", "request_directory", "request_capability"} <= allowed
 

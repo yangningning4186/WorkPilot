@@ -23,7 +23,7 @@ from app.core.queue import get_run_queue
 from app.core.run_bus import RunBus
 from app.cowork.automation_tools import register_scheduler_tools
 from app.cowork.browser_tools import PlaywrightBrowserManager, register_browser_tools
-from app.cowork.connector_tools import register_connector_tools
+from app.cowork.connector_tools import connected_connector_kinds, register_connector_tools
 from app.cowork.conversation_titles import (
     fallback_conversation_title,
     generate_conversation_title,
@@ -310,7 +310,10 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                     )
                     ctx["browser_manager"] = browser_manager
                 register_browser_tools(registry, browser_manager)
-                register_connector_tools(registry)
+                register_connector_tools(
+                    registry,
+                    enabled_kinds=connected_connector_kinds(settings),
+                )
                 register_scheduler_tools(registry)
                 register_memory_tools(registry)
                 register_readonly_subagent(registry)

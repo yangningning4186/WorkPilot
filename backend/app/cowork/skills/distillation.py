@@ -18,7 +18,6 @@ _BLOCKED_AUTO_TOOLS = frozenset(
     {
         "run_shell",
         "act_connector_api",
-        "search_tool_catalog",
         "ask_user",
         "request_directory",
         "request_capability",

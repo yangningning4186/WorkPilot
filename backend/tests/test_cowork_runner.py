@@ -104,7 +104,7 @@ def test_office_goal_uses_skill_and_shell_without_format_specific_tools() -> Non
         definition.name for definition in registry.tool_definitions_for("帮我生成一个儿童节 PPT")
     }
 
-    assert {"write_text_file", "run_shell"} <= names
+    assert {"write_file", "run_shell"} <= names
     assert {
         "create_native_artifact",
         "list_office_files",
@@ -1873,16 +1873,17 @@ def test_default_registry_exposes_risk_and_capability_contract() -> None:
         "inspect_office_file",
         "edit_word",
         "edit_excel",
+        "list_workspace_roots",
+        "search_tool_catalog",
     }.isdisjoint(catalog)
-    assert catalog["list_workspace_roots"]["parallel_safe"] is True
     assert catalog["list_files"]["parallel_safe"] is True
-    assert catalog["read_text_file"]["capability"] == "filesystem.read"
+    assert catalog["read_file"]["capability"] == "filesystem.read"
     assert catalog["search_files"]["effect"] == "none"
-    assert catalog["read_pdf"]["parallel_safe"] is True
+    assert catalog["read_file"]["parallel_safe"] is True
     assert catalog["fetch_url"]["capability"] == "network.fetch"
-    assert catalog["write_text_file"]["effect"] == "filesystem"
-    assert catalog["create_artifact"]["risk"] == "write"
-    assert registry.parallel_safe(["list_files", "search_files", "read_pdf"]) is True
+    assert catalog["write_file"]["effect"] == "filesystem"
+    assert catalog["write_file"]["risk"] == "write"
+    assert registry.parallel_safe(["list_files", "search_files", "read_file"]) is True
     assert catalog["run_shell"]["capability"] == "host.execute"
     assert catalog["run_sandbox"]["capability"] == "sandbox.execute"
     assert catalog["run_shell"]["effect"] == "external"

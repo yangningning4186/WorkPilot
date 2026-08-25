@@ -5,12 +5,12 @@ trigger:
   - 用户要求创建、合并、拆分、标注、转换或交付 PDF
   - 需要对 PDF 页面做确定性的本地处理
 anti_trigger:
-  - 用户只要求阅读或总结 PDF（优先 read_pdf 或沉浸阅读）
+  - 用户只要求阅读或总结 PDF（优先 read_file 或沉浸阅读）
   - 用户只需要可继续编辑的 DOCX/PPTX 源文件
 tools:
   - list_files
-  - read_pdf
-  - write_text_file
+  - read_file
+  - write_file
   - run_shell
 status: active
 ---
@@ -20,7 +20,8 @@ LibreOffice。不要通过改写提取文本来“编辑 PDF”，那会丢失�
 
 ## 工作流
 
-1. 阅读已有 PDF 优先用 `read_pdf`；真正需要页面级编辑或生成时才写 Python 脚本。
+1. 阅读已有 PDF 优先用 `read_file`；真正需要页面级编辑或生成时才写 Python 脚本，脚本用
+   `write_file`（`purpose=workspace`）写入工作区。
 2. 默认输出 `<原名>-workpilot.pdf`，不覆盖原件。明确覆盖时先用 `shutil.copy2` 在
    `.workpilot-backups/` 留时间戳备份。
 3. 用前台 `run_shell` 执行。脚本完成后重新 `fitz.open(output)`，检查加密状态、页数、页面尺寸、

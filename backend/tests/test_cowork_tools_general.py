@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import cast
 from uuid import UUID
 
+import fitz
 import pytest
 from uuid6 import uuid7
 
@@ -27,7 +28,7 @@ async def _plan_step(session: AsyncSession, run_id: UUID, index: int) -> UUID:
                 "id": str(step_id),
                 "idx": index,
                 "description": "test tool",
-                "tool": "create_artifact",
+                "tool": "write_file",
                 "depends_on": [],
                 "status": "running",
             }
@@ -74,23 +75,16 @@ async def test_general_tools_create_index_and_reuse_artifact_exactly_once(
         plan_step_id=step_id,
         tool_call_id="artifact-call",
     )
-    roots_result = await registry.execute("list_workspace_roots", {}, context=context)
-    assert roots_result.output["has_workspace"] is True
-    assert len(roots_result.output["roots"]) == 1
-    root = roots_result.output["roots"][0]
-    assert UUID(root["id"])
-    assert root["label"] == tmp_path.name
-    assert root["path"] == str(tmp_path)
-    assert root["access_mode"] == "read_write"
     arguments = {
         "path": "report.md",
         "content": "# Report\n\nEvidence-backed result.\n",
+        "purpose": "artifact",
         "kind": "report",
         "title": "Research report",
     }
 
-    first = await registry.execute("create_artifact", arguments, context=context)
-    replay = await registry.execute("create_artifact", arguments, context=context)
+    first = await registry.execute("write_file", arguments, context=context)
+    replay = await registry.execute("write_file", arguments, context=context)
 
     assert first.reused is False
     assert replay.reused is True
@@ -106,13 +100,27 @@ async def test_general_tools_create_index_and_reuse_artifact_exactly_once(
     assert "+# Report" in artifacts[0].meta["diff"]["text"]
 
     read_result = await registry.execute(
-        "read_text_file",
+        "read_file",
         {"path": str(tmp_path / "report.md"), "max_lines": 10},
         context=context,
     )
     # 行号前缀是给模型引用 path:line 用的，不属于文件内容；这里同时锁住格式与起始行号。
     assert read_result.output["content"].startswith("     1\t# Report")
     assert len(read_result.output["baseline_sha256"]) == 64
+
+    pdf_path = tmp_path / "brief.pdf"
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "WorkPilot PDF auto detection")
+    document.save(pdf_path)
+    document.close()
+    pdf_result = await registry.execute(
+        "read_file",
+        {"path": str(pdf_path)},
+        context=context,
+    )
+    assert pdf_result.output["page_count"] == 1
+    assert "WorkPilot PDF auto detection" in pdf_result.output["content"]
 
     search_result = await registry.execute(
         "search_files",

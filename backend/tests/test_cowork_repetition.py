@@ -284,14 +284,14 @@ async def test_mixed_batch_keeps_the_call_that_still_makes_progress(
         [
             *(
                 _tool_completion(
-                    ToolCall(id=f"a-{index}", name="read_text_file", arguments=repeated)
+                    ToolCall(id=f"a-{index}", name="read_file", arguments=repeated)
                 )
                 for index in range(DEFAULT_REPEAT_LIMIT)
             ),
             # 第四次读 a.md 会被拦，同一批里的 b.md 必须照常读到。
             _tool_completion(
-                ToolCall(id="a-last", name="read_text_file", arguments=repeated),
-                ToolCall(id="b-1", name="read_text_file", arguments=fresh),
+                ToolCall(id="a-last", name="read_file", arguments=repeated),
+                ToolCall(id="b-1", name="read_file", arguments=fresh),
             ),
             _final_completion("甲和乙都读到了。"),
         ]
@@ -316,7 +316,7 @@ async def test_mixed_batch_keeps_the_call_that_still_makes_progress(
     assert "已经执行过" in by_id["a-last"]
     assert "乙" in by_id["b-1"]
     # 被拦的那次不该计进签名表，否则一次拦截会把计数推得越来越高。
-    signature = call_signature("read_text_file", {"path": str(tmp_path / "a.md")})
+    signature = call_signature("read_file", {"path": str(tmp_path / "a.md")})
     assert checkpoint.state["call_signatures"][signature] == DEFAULT_REPEAT_LIMIT
     assert UUID(checkpoint.state["run_id"]) == run.id
 

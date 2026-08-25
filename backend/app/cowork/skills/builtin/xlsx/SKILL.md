@@ -9,7 +9,7 @@ anti_trigger:
   - 用户处理的是飞书电子表格或多维表格
 tools:
   - list_files
-  - write_text_file
+  - write_file
   - run_shell
 status: active
 ---
@@ -20,7 +20,9 @@ status: active
 ## 工作流
 
 1. 用 `list_files` 找到源文件；不要把 XLSX 当文本读取。
-2. 把处理代码写成工作区内的 Python 脚本，Shell cwd 设为工作区。
+2. 若任务只读且用户要求不修改任何文件，用单次 `run_shell` 调用 `python -c` 以 `read_only=True`
+   打开并输出所需工作表/单元格；不得创建辅助脚本、备份或产物。需要创建或修改时，才把处理代码
+   写成工作区内的 Python 脚本，Shell cwd 设为工作区。
 3. 默认输出 `<原名>-workpilot.xlsx`。只有用户明确要求覆盖时才先用 `shutil.copy2` 在
    `.workpilot-backups/` 留下带时间戳备份。
 4. 用前台 `run_shell` 执行。保存后用 `load_workbook(output, data_only=False)` 重新打开，检查工作表名、

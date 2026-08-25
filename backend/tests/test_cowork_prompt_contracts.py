@@ -53,6 +53,8 @@ def test_main_agent_contract_separates_goal_workflow_authority_and_completion() 
     assert "不能改写用户目标" in prompt
     assert "必要动作已有成功工具结果" in prompt
     assert "不得把计划中的动作写成已经完成" in prompt
+    assert "多个都合理的可写目标" in prompt
+    assert "必须先 ask_user" in prompt
 
 
 def test_empty_optional_blocks_do_not_pollute_the_stable_prefix() -> None:
@@ -104,9 +106,18 @@ def test_office_prompt_routes_binary_files_through_skills_and_shell() -> None:
     assert "没有专用 inspect/edit" in prompt
     assert "run_in_background=true" in prompt
     assert "默认保留原件" in prompt
+    assert "不得创建辅助脚本、备份或产物" in prompt
+    assert "单次只读" in prompt
     assert "只重写 selected_text" in _PROPOSAL_SYSTEM_PROMPT
     assert "instruction 明确要求" in _PROPOSAL_SYSTEM_PROMPT
     assert "不得把上下文" in _PROPOSAL_SYSTEM_PROMPT and "内容复制进选区" in _PROPOSAL_SYSTEM_PROMPT
+
+
+def test_text_deliverables_have_one_model_facing_write_route() -> None:
+    prompt = _system_prompt("")
+
+    assert "write_file 的 purpose=artifact" in prompt
+    assert "purpose=workspace 只写辅助脚本" in prompt
 
 
 def test_selected_workspace_files_are_stable_primary_targets_not_scan_permission() -> None:

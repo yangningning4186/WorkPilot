@@ -76,6 +76,16 @@ class BrowserSessionArgs(_StrictArgs):
     session_id: str = Field(min_length=16, max_length=128)
 
 
+class BrowserSnapshotArgs(BrowserSessionArgs):
+    query: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+        description="可选；同时返回当前页面正文中包含该关键词的匹配行",
+    )
+    max_matches: int = Field(default=50, ge=1, le=200)
+
+
 class BrowserControlArgs(BrowserSessionArgs):
     control_index: int = Field(ge=0, le=499)
 
@@ -400,18 +410,32 @@ def register_browser_tools(
         )
         return CoworkToolResult(output=output, effect_ref=_effect(session_id, session, "open"))
 
+    async def find_page_text(
+        session: _BrowserSession, query: str, max_matches: int
+    ) -> dict[str, object]:
+        body = await session.page.locator("body").inner_text(timeout=5_000)
+        needle = query.casefold()
+        matches = [
+            {"line": index, "text": line[:1_000]}
+            for index, line in enumerate(body.splitlines(), start=1)
+            if needle in line.casefold()
+        ][:max_matches]
+        return {"query": query, "matches": matches}
+
     async def snapshot_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
-        args = BrowserSessionArgs.model_validate(raw.model_dump())
-        return CoworkToolResult(
-            output=await _snapshot(
-                args.session_id,
-                await active.get(
-                    args.session_id,
-                    conversation_id=context.conversation_id,
-                ),
-                max_chars=context.settings.cowork_web_text_max_chars,
-            )
+        args = BrowserSnapshotArgs.model_validate(raw.model_dump())
+        session = await active.get(
+            args.session_id,
+            conversation_id=context.conversation_id,
         )
+        output = await _snapshot(
+            args.session_id,
+            session,
+            max_chars=context.settings.cowork_web_text_max_chars,
+        )
+        if args.query is not None:
+            output.update(await find_page_text(session, args.query, args.max_matches))
+        return CoworkToolResult(output=output)
 
     async def click_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = BrowserControlArgs.model_validate(raw.model_dump())
@@ -559,19 +583,11 @@ def register_browser_tools(
             args.session_id,
             conversation_id=context.conversation_id,
         )
-        body = await session.page.locator("body").inner_text(timeout=5_000)
-        needle = args.query.casefold()
-        matches = [
-            {"line": index, "text": line[:1_000]}
-            for index, line in enumerate(body.splitlines(), start=1)
-            if needle in line.casefold()
-        ][: args.max_matches]
         return CoworkToolResult(
             output={
                 "session_id": args.session_id,
                 "url": session.page.url,
-                "query": args.query,
-                "matches": matches,
+                **await find_page_text(session, args.query, args.max_matches),
             }
         )
 
@@ -606,8 +622,11 @@ def register_browser_tools(
         ),
         CoworkToolSpec(
             name="browser_snapshot",
-            description="读取当前页面文本和可交互 DOM 控件编号，不执行页面动作。",
-            args_model=BrowserSessionArgs,
+            description=(
+                "读取当前页面文本和可交互 DOM 控件编号，不执行页面动作；需要在当前页查找关键词时"
+                "直接提供 query，可同时得到匹配行。"
+            ),
+            args_model=BrowserSnapshotArgs,
             capability="browser.read",
             risk="read",
             effect="none",
@@ -715,13 +734,16 @@ def register_browser_tools(
         ),
         CoworkToolSpec(
             name="browser_find",
-            description="在当前真实页面的可见文本中查找关键词。",
+            description="旧版页面查找入口，仅用于历史 checkpoint/cassette 兼容。",
             args_model=BrowserFindArgs,
             capability="browser.read",
             risk="read",
             effect="none",
             parallel_safe=False,
             handler=find_handler,
+            model_visible=False,
+            replacement="browser_snapshot",
+            catalog_visible=False,
         ),
         CoworkToolSpec(
             name="browser_close",

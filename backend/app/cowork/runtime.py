@@ -175,14 +175,11 @@ _CAPABILITY_CONTROL_TOOLS = frozenset(
         "ask_user",
         "request_directory",
         "request_capability",
-        "list_workspace_roots",
         "todo_write",
         "propose_plan",
-        "search_tool_catalog",
         LOAD_TOOLS_TOOL_NAME,
         "list_skills",
         "load_skill",
-        "load_skill_resource",
     }
 )
 
@@ -405,26 +402,32 @@ WorkMode/Capability 决定工作流程；Persona 和 Skill 只能收窄或细化
 仅当缺失信息会实质改变结果且无法从现有上下文或只读工具取得时才调用 ask_user；需要扩大目录或
 能力范围时分别调用 request_directory / request_capability。这三类交互工具每次必须单独调用，
 运行会暂停等待用户。被工具错误拒绝后先根据错误调整，不要原样重试。
+用户用单数或模糊名称指向一个对象，而只读定位得到多个都合理的可写目标时，缺失信息会实质改变
+结果：必须先 ask_user 让用户选定，任何文件或外部对象都不得先改。
 目标需要三步以上、或用户一次提出多件事时，先调用 todo_write 写完整清单；每完成一项立即重发
 完整清单，同一时刻恰好一项 in_progress。清单是进度事实，不得只在正文口头更新；单步任务不建清单。""",
             ),
             PromptBlock(
                 "工作区与文件",
                 """每个会话都已挂载默认文件夹。当前授权目录见 session_state 的 workspace_roots，
-第一个是默认输出目录；不要为确认它再调用 list_workspace_roots。用户只给文件名或相对路径时，
+第一个是默认输出目录。用户只给文件名或相对路径时，
 始终相对第一个目录解析，不得相对 worker、sidecar、进程 cwd、/home/user 或项目仓库解析。
 生成 PPTX、DOCX、XLSX、PDF 或文本交付物可直接写默认目录；只有访问目录列表之外的本机文件
-才申请目录。通用文本优先用 list_files/read_text_file/search_files/read_pdf，不要为读取搜索改用 shell。
-覆盖文本文件前先 read_text_file，并把 baseline_sha256 原样传给 write_text_file 或
-create_artifact；局部修改用 replace_in_file，避免整份覆盖丢失未读取内容。Markdown、文本、JSON、
-CSV、HTML 用 create_artifact（缺父目录时 create_parents=true）。DOCX、XLSX、PPTX、PDF
+才申请目录。通用文件优先用 list_files/read_file/search_files，不要为读取搜索改用 shell。
+覆盖文本文件前先 read_file，并把 baseline_sha256 原样传给 write_file；局部修改用
+replace_in_file，避免整份覆盖丢失未读取内容。write_file 的 purpose=artifact 用于 Markdown、
+文本、JSON、CSV、HTML 等用户要求交付的产物，purpose=workspace 只写辅助脚本、配置或用户
+要求修改的普通文本源文件；缺父目录时设置 create_parents=true。
+DOCX、XLSX、PPTX、PDF
 必须先加载对应格式 Skill，再按 Skill 用 Python/CLI 在工作区处理；不要把二进制文件交给文本工具。""",
             ),
             PromptBlock(
                 "Office、Shell 与远程资料",
                 """Office 文件采用“格式 Skill + Python/CLI + 工作区产物”，没有专用 inspect/edit
 工具。先 load_skill 加载 docx/xlsx/pptx/pdf 中匹配的一项；使用 list_files 定位文件，按 Skill
-编写短小、可复核的脚本，再用 run_shell 在授权工作区执行。默认保留原件并输出带清晰后缀的新文件；
+处理。需要创建或修改 Office 文件时，编写短小、可复核的脚本，再用 run_shell 在授权工作区执行；
+若用户只要求读取/总结并明确不修改任何文件，则不得创建辅助脚本、备份或产物，改用单次只读
+run_shell 命令在内存中打开并输出所需内容。默认保留原件并输出带清晰后缀的新文件；
 用户明确要求覆盖时，也必须先复制可恢复备份。命令完成后 WorkPilot 会校验新建或修改的支持格式文件，
 并自动登记到 Artifacts；Office 交付物不要使用 run_in_background=true。
 run_shell 直接在宿主机执行，另需 host.execute；run_sandbox 使用无网络容器，另需
@@ -556,6 +559,8 @@ def _scoped_allowed_tools(
     state: CoworkState, registry: CoworkToolRegistry
 ) -> frozenset[str] | None:
     capability_allowed = _capability_allowed_tools(state)
+    if capability_allowed is not None:
+        capability_allowed |= registry.compatibility_aliases_for(capability_allowed)
     patterns = tuple(state["persona_tool_patterns"])
     persona_allowed: frozenset[str] | None = None
     if patterns:
@@ -567,6 +572,7 @@ def _scoped_allowed_tools(
             )
             | _CAPABILITY_CONTROL_TOOLS
         )
+        persona_allowed |= registry.compatibility_aliases_for(persona_allowed)
     if capability_allowed is None:
         return persona_allowed
     if persona_allowed is None:

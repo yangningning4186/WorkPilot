@@ -12,6 +12,7 @@ from uuid import UUID
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.config import Settings
 from app.cowork.connector_descriptors import (
     get_connector_descriptor,
     list_connector_descriptors,
@@ -505,7 +506,11 @@ def _require_feishu_account(context: CoworkToolContext, account_id: UUID) -> Non
 
 
 async def _list_handler(context: CoworkToolContext, _: BaseModel) -> CoworkToolResult:
-    accounts = list_connector_accounts(context.settings)
+    accounts = [
+        account
+        for account in list_connector_accounts(context.settings)
+        if account.enabled and account.status in {"connected", "configured"}
+    ]
     return CoworkToolResult(output={"connectors": [_public_account(item) for item in accounts]})
 
 
@@ -642,9 +647,14 @@ async def _approval_submit_handler(context: CoworkToolContext, raw: BaseModel) -
     )
 
 
-def _register_all(registry: CoworkToolRegistry, specs: tuple[CoworkToolSpec, ...]) -> None:
+def _register_all(
+    registry: CoworkToolRegistry,
+    specs: tuple[CoworkToolSpec, ...],
+    *,
+    group: str = "连接器",
+) -> None:
     for spec in specs:
-        registry.register_deferred(spec, group="连接器")
+        registry.register_deferred(spec, group=group)
 
 
 def _feishu_calendar_specs() -> tuple[CoworkToolSpec, ...]:
@@ -662,7 +672,10 @@ def _feishu_calendar_specs() -> tuple[CoworkToolSpec, ...]:
         ),
         CoworkToolSpec(
             name="feishu_calendar_event_action",
-            description="创建、更新或删除飞书日程；外部写操作需要用户批准。",
+            description=(
+                "创建、更新或删除飞书日程。参数齐全时直接调用本工具；运行时会在执行前生成"
+                " external_approval 并暂停，禁止先用 ask_user 做一遍重复确认。"
+            ),
             args_model=FeishuCalendarEventActionArgs,
             capability_resolver=_external_mutation_capability,
             risk="external",
@@ -691,7 +704,10 @@ def _feishu_content_specs() -> tuple[CoworkToolSpec, ...]:
         ),
         CoworkToolSpec(
             name="feishu_base_record_action",
-            description="创建、更新或删除一条飞书多维表格记录；外部写操作需要用户批准。",
+            description=(
+                "创建、更新或删除一条飞书多维表格记录。参数齐全时直接调用本工具；运行时会在"
+                "执行前生成 external_approval 并暂停，禁止先用 ask_user 做一遍重复确认。"
+            ),
             args_model=FeishuBaseRecordActionArgs,
             capability_resolver=_external_mutation_capability,
             risk="external",
@@ -742,7 +758,10 @@ def _feishu_workflow_specs() -> tuple[CoworkToolSpec, ...]:
         ),
         CoworkToolSpec(
             name="feishu_task_action",
-            description="创建、更新或删除飞书任务；外部写操作需要用户批准。",
+            description=(
+                "创建、更新或删除飞书任务。参数齐全时直接调用本工具；运行时会在执行前生成"
+                " external_approval 并暂停，禁止先用 ask_user 做一遍重复确认。"
+            ),
             args_model=FeishuTaskActionArgs,
             capability_resolver=_external_mutation_capability,
             risk="external",
@@ -766,7 +785,10 @@ def _feishu_workflow_specs() -> tuple[CoworkToolSpec, ...]:
         ),
         CoworkToolSpec(
             name="feishu_approval_submit",
-            description="发起一条飞书审批实例；表单用官方 form JSON，提交前需要用户批准。",
+            description=(
+                "发起一条飞书审批实例；表单用官方 form JSON。参数齐全时直接调用本工具；运行时"
+                "会在提交前生成 external_approval 并暂停，禁止先用 ask_user 做一遍重复确认。"
+            ),
             args_model=FeishuApprovalSubmitArgs,
             capability="external.write",
             risk="external",
@@ -799,8 +821,30 @@ def _load_registrar(reference: str) -> Callable[[CoworkToolRegistry], None]:
     return cast("Callable[[CoworkToolRegistry], None]", candidate)
 
 
-def register_connector_tools(registry: CoworkToolRegistry) -> None:
-    """注册通用连接器工具，再按 Descriptor 装配各平台的专用域工具。"""
+def connected_connector_kinds(settings: Settings) -> frozenset[str]:
+    """当前真实可用的账户类型；同类多账号只装配一份 schema。"""
+
+    return frozenset(
+        account.kind
+        for account in list_connector_accounts(settings)
+        if account.enabled and account.status in {"connected", "configured"}
+    )
+
+
+def register_connector_tools(
+    registry: CoworkToolRegistry,
+    *,
+    enabled_kinds: frozenset[str] | None = None,
+) -> None:
+    """按已连接账户装配工具；None 仅供评测/目录校验构建全量静态 catalog。"""
+
+    descriptors = tuple(
+        descriptor
+        for descriptor in list_connector_descriptors()
+        if enabled_kinds is None or descriptor.kind in enabled_kinds
+    )
+    if not descriptors:
+        return
 
     platform_aliases = tuple(
         dict.fromkeys(
@@ -810,7 +854,7 @@ def register_connector_tools(registry: CoworkToolRegistry) -> None:
                 "oauth",
                 *(
                     alias
-                    for descriptor in list_connector_descriptors()
+                    for descriptor in descriptors
                     for alias in (descriptor.kind, descriptor.label)
                 ),
             )
@@ -821,7 +865,10 @@ def register_connector_tools(registry: CoworkToolRegistry) -> None:
         (
             CoworkToolSpec(
                 name="list_connectors",
-                description="列出已配置连接器账户与 Descriptor 声明的能力，不返回密钥。",
+                description=(
+                    "仅在任务没有提供 account_id、确实需要选择账户时，列出已配置连接器账户与"
+                    " Descriptor 能力；不返回密钥。account_id 已给出时禁止调用。"
+                ),
                 args_model=ListConnectorsArgs,
                 capability="external.read",
                 risk="read",
@@ -830,9 +877,20 @@ def register_connector_tools(registry: CoworkToolRegistry) -> None:
                 handler=_list_handler,
                 search_aliases=(*platform_aliases, "账户", "account", "已连接"),
             ),
+        ),
+    )
+    fallback_kinds = frozenset(
+        descriptor.kind for descriptor in descriptors if not descriptor.tool_registrars
+    )
+    _register_all(
+        registry,
+        (
             CoworkToolSpec(
                 name="read_connector_api",
-                description="使用连接器读取固定官方主机上的相对 API path。",
+                description=(
+                    "使用连接器读取固定官方主机上的相对 API path；仅作为没有匹配专用域工具时的"
+                    " fallback。飞书日历、Base、文档、云盘、任务、审批必须优先使用 feishu_*。"
+                ),
                 args_model=ConnectorRequestArgs,
                 capability="external.read",
                 risk="read",
@@ -840,10 +898,14 @@ def register_connector_tools(registry: CoworkToolRegistry) -> None:
                 parallel_safe=True,
                 handler=_read_handler,
                 search_aliases=(*platform_aliases, "读取 API", "read api"),
+                catalog_visible=False,
             ),
             CoworkToolSpec(
                 name="act_connector_api",
-                description="调用固定官方主机上的写 API；任何调用都必须逐次获得用户批准。",
+                description=(
+                    "调用固定官方主机上的写 API；仅作为没有匹配专用域工具时的 fallback。参数齐全"
+                    "时直接调用，运行时会生成 external_approval；不要先用 ask_user 重复确认。"
+                ),
                 args_model=ConnectorActionArgs,
                 capability_resolver=_external_mutation_capability,
                 risk="external",
@@ -859,14 +921,23 @@ def register_connector_tools(registry: CoworkToolRegistry) -> None:
                     "创建 issue",
                     "pull request",
                 ),
+                catalog_visible=False,
             ),
         ),
+        group="连接器高级 fallback",
     )
-    for descriptor in list_connector_descriptors():
+    for descriptor in descriptors:
         for registrar in descriptor.tool_registrars:
             _load_registrar(registrar)(registry)
+    fallback_labels = "、".join(
+        descriptor.label for descriptor in descriptors if descriptor.kind in fallback_kinds
+    )
     registry.add_system_instructions(
-        "连接器凭据不会展示给模型。先调用 list_connectors 获取 account_id；"
-        "飞书文档、云盘、日历、多维表、任务与审批优先使用 feishu_* 专用工具；"
-        "其他读取用 read_connector_api，外部写入必须等待用户批准。"
+        "连接器凭据不会展示给模型。只有缺少 account_id、确实需要选择账户时才调用 "
+        "list_connectors；用户或上下文已给 account_id 时直接使用。飞书文档、云盘、日历、多维表、"
+        "任务与审批必须优先使用 feishu_* 专用工具。通用 read_connector_api/act_connector_api "
+        "属于高级 fallback：只有明确操作未被专用域工具覆盖时，才按准确名称 load_tools；"
+        + (f"当前需要通用 API 的连接器：{fallback_labels}。" if fallback_labels else "")
+        + "外部写工具参数齐全时直接调用：运行时会先生成 "
+        "external_approval 并暂停，不要提前用 ask_user 做重复确认。"
     )

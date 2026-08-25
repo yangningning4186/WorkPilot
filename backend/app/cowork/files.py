@@ -572,7 +572,7 @@ def _replace_in_file_sync(
     if path.suffix.casefold() in _KNOWN_BINARY_SUFFIXES:
         raise CoworkFileError(f"通用文本工具不能写入 {path.suffix} 二进制文档，请使用对应专用工具")
     if not old_text:
-        raise CoworkFileError("old_text 不能为空；新建文件请使用 write_text_file")
+        raise CoworkFileError("old_text 不能为空；新建文件请使用 write_file")
     if old_text == new_text:
         raise CoworkFileError("old_text 与 new_text 相同，这次替换不会产生任何改动")
     if path.is_symlink() or not path.is_file():
@@ -580,7 +580,7 @@ def _replace_in_file_sync(
     previous = _read_bounded(path, max_bytes)
     actual_sha256 = _sha256_bytes(previous)
     if baseline_sha256 is None:
-        raise CoworkFileError("修改现有文件必须提供 read_text_file 返回的 baseline_sha256")
+        raise CoworkFileError("修改现有文件必须提供 read_file 返回的 baseline_sha256")
     if actual_sha256 != baseline_sha256:
         raise CoworkFileError("文件已在读取后发生变化，请重新读取后再修改")
     try:
@@ -591,7 +591,7 @@ def _replace_in_file_sync(
     found = text.count(old_text)
     if found == 0:
         raise CoworkFileError(
-            "old_text 在文件中不存在。请先用 read_text_file 取回原文，"
+            "old_text 在文件中不存在。请先用 read_file 取回原文，"
             "逐字复制要替换的片段（包括缩进与换行），不要凭记忆书写"
         )
     # 默认要求唯一命中：改错位置比报错贵得多，而模型看不出自己改的是第几处。
@@ -675,7 +675,7 @@ def _write_text_file_sync(
         previous = _read_bounded(path, max_bytes)
         actual_sha256 = _sha256_bytes(previous)
         if baseline_sha256 is None:
-            raise CoworkFileError("覆盖现有文件必须提供 read_text_file 返回的 baseline_sha256")
+            raise CoworkFileError("覆盖现有文件必须提供 read_file 返回的 baseline_sha256")
         if actual_sha256 != baseline_sha256:
             raise CoworkFileError("文件已在读取后发生变化，请重新读取后再写入")
         previous_mode = stat_module.S_IMODE(path.stat().st_mode)
@@ -741,7 +741,7 @@ async def read_pdf_file(path: Path, *, settings: Settings) -> PdfSnapshot:
     except OSError as error:
         raise CoworkFileError(f"PDF 不存在: {path}") from error
     if path.suffix.casefold() != ".pdf" or not stat_module.S_ISREG(stat.st_mode):
-        raise CoworkFileError("read_pdf 只接受现有 .pdf 文件")
+        raise CoworkFileError("read_file 的 PDF 模式只接受现有 PDF 文件")
     if stat.st_size > settings.pdf_max_bytes:
         raise CoworkFileError(
             f"PDF 大小 {stat.st_size} bytes 超过上限 {settings.pdf_max_bytes} bytes"

@@ -12,7 +12,6 @@ const TOOL_LABELS: Record<string, string> = {
   propose_plan: "提交执行计划",
   todo_write: "更新任务清单",
   run_shell: "执行 Shell 命令",
-  list_workspace_roots: "确认工作目录",
   list_files: "列出文件",
   read_text_file: "读取文本",
   write_text_file: "写入文本",
@@ -34,11 +33,9 @@ const TOOL_LABELS: Record<string, string> = {
   browser_close: "关闭浏览器",
   explore: "委派只读调查",
   create_artifact: "生成交付物",
-  search_tool_catalog: "搜索工具目录",
   load_tools: "加载扩展工具",
   list_skills: "查看可用技能",
   load_skill: "加载格式 Skill",
-  load_skill_resource: "读取 Skill 资源",
 };
 
 const SUBAGENT_STOP_LABELS: Record<string, string> = {

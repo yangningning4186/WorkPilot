@@ -56,14 +56,13 @@ def test_plan_mode_allows_reading_and_asking_but_nothing_that_changes_anything()
 
     registry = build_default_cowork_registry()
 
-    for name in ("read_text_file", "list_files", "search_files", "read_pdf"):
+    for name in ("read_file", "list_files", "search_files"):
         assert registry.plan_mode_allows(name), name
     # 交互工具每一次都要用户当场点头，本身就是征求同意的动作。
     for name in ("ask_user", "request_directory", "request_capability", PLAN_TOOL_NAME):
         assert registry.plan_mode_allows(name), name
     for name in (
-        "write_text_file",
-        "create_artifact",
+        "write_file",
         "run_shell",
     ):
         assert not registry.plan_mode_allows(name), name
@@ -73,16 +72,16 @@ def test_plan_mode_allows_reading_and_asking_but_nothing_that_changes_anything()
 def test_plan_mode_catalog_drops_writes_and_always_offers_the_plan_tool() -> None:
     registry = build_default_cowork_registry()
     full = registry.tool_definitions_for("把这些财务表整理成一份报告")
-    assert any(item.name == "write_text_file" for item in full)
+    assert any(item.name == "write_file" for item in full)
 
     planning = registry.plan_mode_definitions(full)
     names = {item.name for item in planning}
 
-    assert "write_text_file" not in names
+    assert "write_file" not in names
     assert "run_shell" not in names
     # propose_plan 不进 core 目录（执行模式下是纯噪声），所以必须由这里补上。
     assert PLAN_TOOL_NAME in names
-    assert "read_text_file" in names
+    assert "read_file" in names
 
 
 def test_plan_mode_definitions_do_not_duplicate_the_plan_tool() -> None:
@@ -221,12 +220,15 @@ async def test_plan_mode_refuses_writes_then_executes_the_approved_plan(
     )
 
     target = tmp_path / "notes.md"
-    write_arguments = json.dumps({"path": str(target), "content": "结论"}, ensure_ascii=False)
+    write_arguments = json.dumps(
+        {"path": str(target), "content": "结论", "purpose": "workspace"},
+        ensure_ascii=False,
+    )
     provider = NativeToolProvider(
         [
             # 1. 计划阶段抢跑写文件：必须被拦下，且文件不能出现。
             _tool_completion(
-                ToolCall(id="write-early", name="write_text_file", arguments=write_arguments)
+                ToolCall(id="write-early", name="write_file", arguments=write_arguments)
             ),
             # 2. 改为提交计划：运行在这里暂停。
             _tool_completion(
@@ -245,7 +247,7 @@ async def test_plan_mode_refuses_writes_then_executes_the_approved_plan(
             ),
             # 3. 批准之后同一个调用才落盘。
             _tool_completion(
-                ToolCall(id="write-after", name="write_text_file", arguments=write_arguments)
+                ToolCall(id="write-after", name="write_file", arguments=write_arguments)
             ),
             _final_completion("已经写好 notes.md。"),
         ]
@@ -270,7 +272,7 @@ async def test_plan_mode_refuses_writes_then_executes_the_approved_plan(
     assert not target.exists()
 
     # 计划阶段下发的目录里就没有写工具，模型伪造的调用也拿到了可执行的纠正指令。
-    assert all(item.name != "write_text_file" for item in provider.last_tools)
+    assert all(item.name != "write_file" for item in provider.last_tools)
     blocked_result = next(
         message
         for message in provider.tool_histories[1]

@@ -20,7 +20,7 @@
 | Scheduler / Inbox | 单次/五段 cron、离线最多补跑一次、重叠保护、按持久化 `next_run_at` 轮询补偿、立即运行、暂停/恢复/删除；跨会话 Inbox | Unattended 不自动续权；提问、目录/能力、Shell 与外部动作都会安全暂停 |
 | Shell / Sandbox | `run_shell` 明确使用 `host.execute`；`run_sandbox` 使用 `sandbox.execute` 调 Docker/Podman，默认断网、只读根、drop capabilities、no-new-privileges、非 root 与资源上限 | sandbox 只读写已授权 cwd，runtime 或镜像不可用时 fail closed、不回退 host。宿主持久 PTY/后台任务仍属于 `host.execute`，保留逐次审批、路径复核和幂等租约 |
 | 只读版本视图 | `git_status` / `git_diff` / `git_log`，固定 argv、不拼 shell 字符串、输出按已授权目录收窄 | 不走 `run_shell` 是为了拿掉审批摩擦又不给写操作留入口：放行整个 `git` 等于同时放行 `push`、`reset --hard`、`clean -fd`。`git -C` 会顺着找到仓库根，所以每条命令都追加 `-- <已授权目录>` pathspec，否则会吐出用户没授权的那半个仓库的差异 |
-| 代码搜索与读取 | `search_files` 有 ripgrep 时走 ripgrep（尊重 `.gitignore`、跳过二进制与 `node_modules`），否则回落纯 Python；`read_text_file` 返回 `行号<TAB>` 前缀并在截断时给出续读指令 | ripgrep 的 include glob 是一层 override，把 `pattern` 交给 `--glob` 会连 `.gitignore` 一起绕过（`--glob '*'` 把整个 `build/` 列回来），所以 pattern 留在 Python 侧过滤。行号的税是明确的：模型可能把前缀抄进 `replace_in_file` 的 `old_text`，工具描述里必须显式写清楚它不属于文件内容 |
+| 代码搜索与读取 | `search_files` 有 ripgrep 时走 ripgrep（尊重 `.gitignore`、跳过二进制与 `node_modules`），否则回落纯 Python；`read_file` 自动识别文本/PDF，文本返回 `行号<TAB>` 前缀并在截断时给出续读指令 | ripgrep 的 include glob 是一层 override，把 `pattern` 交给 `--glob` 会连 `.gitignore` 一起绕过（`--glob '*'` 把整个 `build/` 列回来），所以 pattern 留在 Python 侧过滤。行号的税是明确的：模型可能把前缀抄进 `replace_in_file` 的 `old_text`，工具描述里必须显式写清楚它不属于文件内容 |
 | 局部编辑 | `replace_in_file` 精确文本替换，默认要求全文唯一命中，命中多处需显式 expected_count | baseline_sha256 挡的是并发写，挡不住「只读了前 500 行就整份重写」——后者校验照样通过而文件后半段被静默丢掉 |
 | 自唤醒 | `sleep(seconds|until)` 把 run 挂起为 sleeping，到点由调度 tick 原子领取并恢复同一份 checkpoint；`wake_on(task_id)` 挂在后台 shell 任务的结束事件上，零模型调用地等它跑完 | 与 waiting_human 分开：那个在等人、界面要提示，这个在等时间、不需要人。墙钟预算按分段计时，睡眠期间没有开着的分段，睡一小时不烧预算。**`wake_on` 刻意不挂起 run**：挂起会释放 worker，而后台进程活在这个 worker 的内存里，换一个 worker 恢复就再也读不到输出了——所以它占着一个 worker 槽位，换来的是「等到的那一刻就是任务结束的那一刻」。同理，本会话还有后台任务在跑时 `sleep` 会被直接拒绝并指向 `wake_on` |
 | 空转熔断 | 按调用签名（工具名 + 规范化参数）计数，同一签名超过 3 次不再执行并回一条可执行纠正指令；连续 2 轮整批都是重复调用就收回全部工具，做一次不带 tool-calling 的补全强制交付回答 | 判据是签名不是工具名：读十个不同文件是正常工作，读同一个文件十遍不是。同批里只拒重复的那几个，否则一次空转会放大成一轮空转。拒绝只是提示——评测里模型无视了 22 次直到预算熔断，所以第二层必须把工具拿走 |
@@ -32,7 +32,7 @@
 | 计划模式 | 会话发起时可选；计划阶段只下发只读与交互工具，`propose_plan` 提交方案后暂停，批准即翻转运行时模式并把步骤变成任务清单；客户端计划卡片支持批准或带修改意见退回 | 批准是 checkpoint 里 `mode` 的翻转，不是 prompt 约定：未批准前写工具既不下发，执行边界也拒绝；准入判据是 `risk`/`execution` 而不是工具名单 |
 | 任务清单 | `todo_write` 整份替换的 pending/in_progress/done 清单，存进 checkpoint、每轮重发在末尾临时块里、前端独立渲染 | 与 `agent_plan_steps` 并存不互相替代：前者是模型主动声明的计划，后者是 runtime 从 tool call 派生的事后日志 |
 | 只读子 Agent | `explore` 独立上下文、共享预算、轮次/调用上限、证据工具记录；调查轮与收尾轮在 `routing.yaml` 里分开登记（收尾轮走 light）；`subagent.progress` 事件逐轮上报进度与自己那份 token 账；轮次与每次工具调用之前都看一眼取消旗 | 过滤所有副作用、`sandbox.execute` / `host.execute` 与 `external.write/destructive`，当前不开放可写子 Agent。**共享预算不等于不记账**：花的仍是同一个 run 的额度，但"这次委派花了多少"要单独报得出来，否则事后只看得到主循环的总量。取消是"下一次调用之前"生效，不是"立刻掐断"——正在跑的那一次工具调用会跑完，它本来就是只读的 |
-| 工具规模治理 | 当前 Persona/WorkMode 范围内的 schema 每轮全量、稳定下发；`search_tool_catalog` 只负责解释和定位，历史 tool_call 的 schema 在切换范围后仍保留 | 不设工具数量和工具执行步数上限；计划模式、只读子 Agent、capability 与审批仍收窄可执行边界。模型调用数、token、墙钟和重复空转熔断继续作为运行安全预算 |
+| 工具规模治理 | 首轮只下发基础工具和 WorkMode 热路径 schema；长尾工具以稳定摘要清单供模型发现，再由 `load_tools` 按准确名称加载，历史 tool_call 的 schema 在切换范围后仍保留 | 不设工具数量和工具执行步数上限；计划模式、只读子 Agent、capability 与审批仍收窄可执行边界。模型调用数、token、墙钟和重复空转熔断继续作为运行安全预算 |
 
 ## 与 OpenWorker 仍存在的差异
 
