@@ -156,6 +156,7 @@ PyInstaller sidecar 不能跨平台编译，macOS、Windows、Linux 必须分别
 | [18 评测与回放层](docs/18-评测与回放层.md) | 三轨回归门禁、baseline/policy/catalog、事件与模型 cassette 回放、nightly/发布流程 |
 | [19 项目全景与面试作战手册](docs/19-项目全景与面试作战手册.md) | 双产品定位、架构全景、技术取舍、项目边界与面试追问题库 |
 | [20 简历项目介绍](docs/20-简历项目介绍.md) | 可复制的简历版本、岗位定制表述与事实边界 |
+| **[21 Agent 岗大白话面试手册](docs/21-Agent岗位大白话面试手册.md)** | **面向 Agent 岗的口语化项目全景：后端、Agent、工具安全、RAG、前端、评测与面试答案** |
 | [ADR](docs/adr/) | 架构决策记录 |
 | [实验台账](docs/experiments/) | 每次优化的"改了什么 → 指标怎么变" |
 
