@@ -52,6 +52,7 @@ def test_main_agent_contract_separates_goal_workflow_authority_and_completion() 
     assert "当前用户请求决定目标" in prompt
     assert "不能改写用户目标" in prompt
     assert "必要动作已有成功工具结果" in prompt
+    assert "字数、格式、字段和范围限制也是完成条件" in prompt
     assert "不得把计划中的动作写成已经完成" in prompt
     assert "多个都合理的可写目标" in prompt
     assert "必须先 ask_user" in prompt
