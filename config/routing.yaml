@@ -88,6 +88,9 @@ routes:
 
   # —— 评测专用。
   eval_memory_injection: main
+  evaluation_generation:
+    tier: main
+    timeout_s: ${EVALUATION_GENERATION_TIMEOUT_S}
 
   # —— 判分：错了会污染整个评测体系，最不该省钱的一档。
   judge: heavy

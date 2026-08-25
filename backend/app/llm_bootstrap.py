@@ -51,6 +51,7 @@ def routing_env(settings: Settings) -> dict[str, str]:
         "TIER_EXTERNAL_MODEL": settings.tier_external_model,
         "TIER_EXTERNAL_CONTEXT_WINDOW_TOKENS": str(settings.tier_external_context_window_tokens),
         "COWORK_MODEL_TIMEOUT_S": str(settings.cowork_model_timeout_s),
+        "EVALUATION_GENERATION_TIMEOUT_S": str(settings.evaluation_generation_timeout_s),
         "EXTERNAL_API_KEY": settings.external_api_key,
         "CLUSTER_API_KEY": settings.cluster_api_key,
     }

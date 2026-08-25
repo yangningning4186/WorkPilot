@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     # Cowork 的一次决策会携带工具 schema、网页结果和跨轮历史，明显比普通聊天更重。
     # 独立配置避免为了复杂任务放宽 Provider 探测等短请求的超时。
     cowork_model_timeout_s: float = Field(default=120.0, gt=0, le=600)
+    # Grounded-generation 会携带 12k 证据并允许 reasoning，30 秒的通用短任务超时会把
+    # 多跳/表格题系统性截断。与 Cowork 分开配置，避免评测调参悄悄改变线上主循环。
+    evaluation_generation_timeout_s: float = Field(default=120.0, gt=0, le=600)
     # 整条模型路由都超时时不丢弃长任务：释放 worker/租约，到点后从最新 checkpoint
     # 继续。次数与 worker 失联恢复共用 run_max_recovery，避免两种故障交替造成无限重投。
     cowork_provider_timeout_retry_base_s: float = Field(default=5.0, gt=0, le=300)

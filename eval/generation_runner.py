@@ -57,9 +57,12 @@ _CITATION = re.compile(r"\[(S[1-9]\d*)\]")
 _CITATION_LIKE = re.compile(r"\[([^\]]*S[^\]]*)\]")
 _SAFE_LABEL = re.compile(r"[^a-zA-Z0-9._-]+")
 _IMPLEMENTATION_FILES = (
+    "backend/app/core/config.py",
+    "backend/app/llm_bootstrap.py",
     "backend/app/rag/kb/index.py",
     "backend/app/rag/kb/service.py",
     "backend/packages/workpilot-ai/src/workpilot_ai/gateway.py",
+    "config/routing.yaml",
     "eval/generation_runner.py",
     "eval/generation_suite.py",
     "eval/report_metrics.py",
@@ -291,6 +294,11 @@ async def run_generation(
         raise ValueError(f"--item-id 不在 suite 中: {sorted(missing)}")
 
     repo_root = _repo_root()
+    routing_path = settings.routing_config_path.expanduser().resolve()
+    if not routing_path.is_file():
+        raise ValueError(
+            f"generation evaluation 要求显式可读的 routing.yaml，实际不存在: {routing_path}"
+        )
     git_sha, git_dirty = _git_state(repo_root)
     if require_clean_git and git_dirty:
         raise ValueError("正式 generation baseline 必须在干净 Git 下运行；先提交或清理工作树")
@@ -349,6 +357,8 @@ async def run_generation(
         "retrieval_engine": catalog.version.retrieval.engine,
         "retrieval_score_source": _score_source(observations),
         "retry_attempts": retry_attempts,
+        "model_timeout_s": settings.evaluation_generation_timeout_s,
+        "routing_fingerprint": hashlib.sha256(routing_path.read_bytes()).hexdigest(),
         "selection": "all" if not item_ids else sorted(item_ids),
     }
     config_hash = _json_hash(config)
@@ -842,7 +852,9 @@ def _parse_args() -> argparse.Namespace:
 
 async def _main() -> None:
     args = _parse_args()
-    settings = Settings()
+    # 文档中的 CLI 从仓库根运行，而服务进程通常从 backend/ 运行；Settings 的相对默认值
+    # 不能同时适配两种 cwd。评测必须钉到仓库内这一份路由表，不能静默退成单 provider。
+    settings = Settings(routing_config_path=_repo_root() / "config/routing.yaml")
     suite = load_generation_suite(args.suite)
     service = LocalKbService(settings.knowledge_base_path.expanduser(), settings=settings)
     if args.command == "prepare-kb":
