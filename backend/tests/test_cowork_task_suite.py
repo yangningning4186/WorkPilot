@@ -24,7 +24,7 @@ def test_cowork_core_suite_has_frozen_coverage() -> None:
 
     assert summary == {
         "name": "cowork-core-50",
-        "version": "1.5.1",
+        "version": "1.6.1",
         "items": 50,
         "splits": {"dev": 39, "test": 11},
         "categories": {
@@ -40,10 +40,10 @@ def test_cowork_core_suite_has_frozen_coverage() -> None:
         },
         "difficulties": {"1": 10, "2": 26, "3": 14},
         "hitl_items": 7,
-        "average_optimal_tool_calls": 2.02,
+        "average_optimal_tool_calls": 1.94,
         "review_status": "approved",
         "reviewer": "行之",
-        "reviewed_at": "2026-08-24T23:24:06+08:00",
+        "reviewed_at": "2026-08-25T10:42:21+08:00",
     }
 
 
@@ -107,12 +107,50 @@ def test_cowork_knowledge_tasks_pin_evidence_contract() -> None:
         assert contracts[0]["prohibited_keys"] == ["chunk_id", "score", "orm"]
 
 
+def test_repaired_cases_pin_solvable_permissions_and_deterministic_assertions() -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    knowledge = next(item for item in suite["items"] if item["id"] == "cowork-core-034")
+    shell = next(item for item in suite["items"] if item["id"] == "cowork-core-040")
+    long_edit = next(item for item in suite["items"] if item["id"] == "cowork-core-044")
+
+    citation_assertion = next(
+        assertion
+        for assertion in knowledge["gold"]["assertions"]
+        if assertion["type"] == "file_contains_evidence_citations"
+    )
+    assert citation_assertion["required_document_ids"] == ["K001", "K002", "K005"]
+    assert "filesystem.write" in shell["granted_capabilities"]
+    baseline = next(
+        assertion
+        for assertion in long_edit["gold"]["assertions"]
+        if assertion["type"] == "baseline_used"
+    )
+    assert baseline["path"] == "notes/long.md"
+
+
 def test_cowork_suite_rejects_tool_label_drift() -> None:
     suite = deepcopy(load_suite(DEFAULT_SUITE))
     suite["items"][0]["gold"]["required_tools"].append("raw_chunk_search")
 
     with pytest.raises(CoworkSuiteError, match="未知工具"):
         validate_suite(suite)
+
+
+def test_current_suite_does_not_require_retired_duplicate_tools() -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    required = {tool for item in suite["items"] for tool in item["gold"]["required_tools"]}
+
+    assert {
+        "list_workspace_roots",
+        "load_skill_resource",
+        "search_tool_catalog",
+        "read_text_file",
+        "write_text_file",
+        "read_pdf",
+        "create_artifact",
+        "browser_find",
+        "list_skills",
+    }.isdisjoint(required)
 
 
 def test_cowork_suite_rejects_test_quota_drift() -> None:
@@ -139,9 +177,9 @@ def test_reading_tasks_require_locator_grounded_citations() -> None:
         tools = item["gold"]["required_tools"]
         assert tools, f"{item['id']}: 阅读任务必须指明该走哪些阅读工具"
         if item["id"] in direct_markdown_items:
-            # Prompt 已给出精确 Markdown 路径时，完整 read_text_file 同样能证明回答来自原文；
+            # Prompt 已给出精确 Markdown 路径时，read_file 同样能证明回答来自原文；
             # 不能为了沉浸阅读 UI 的 locator 协议，否定带章节/行号的正确引用或正确拒答。
-            assert tools == ["read_text_file"]
+            assert tools == ["read_file"]
             continue
         assert all(
             name in {"material_outline", "search_material", "read_material", "reader_goto"}

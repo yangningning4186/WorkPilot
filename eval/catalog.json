@@ -5,7 +5,7 @@
     {
       "id": "cowork-core-dev",
       "kind": "cowork",
-      "suite": "eval/suites/cowork-core-50.json",
+      "suite": "eval/suites/cowork-core-50-v1.6.1.json",
       "policy": "eval/policies/cowork.json",
       "selection": {
         "split": "dev",
@@ -14,13 +14,13 @@
       "baseline": {
         "status": "rebuild_required",
         "path": "eval/snapshots/cowork.json",
-        "reason": "2026-08-24 已在 clean Git bb56b2f、固定 deepseek-v4-flash、token 只计量/20 calls/180000 ms 下完成 39 条 dev live 跑批；随后在 clean Git 33d1824 用复核后的 v1.5.1 对同一 observation 零模型重评分。结果 32/39，通过率 82.05%，无 runner_error 或 budget_exceeded；仍有 7 条任务失败，且 034 暴露 gold 要求 K001/K002/K005、模型实际只可见 S1–S5 的评分口径问题。旧报告、cassette 与快照均保留，剩余失败复核完成前不得晋升。"
+        "reason": "v1.6.1 已于 2026-08-25 由行之重新复核批准；034/044 已通过既有 DeepSeek V4 observation 的零模型重评分。v1.6.0 及更早报告、cassette 与快照继续保留，待 clean Git 下完整重建后再晋升 baseline。"
       }
     },
     {
       "id": "cowork-core-test",
       "kind": "cowork",
-      "suite": "eval/suites/cowork-core-50.json",
+      "suite": "eval/suites/cowork-core-50-v1.6.1.json",
       "policy": "eval/policies/cowork.json",
       "selection": {
         "split": "test",
@@ -29,7 +29,7 @@
       "baseline": {
         "status": "rebuild_required",
         "path": "eval/snapshots/cowork.json",
-        "reason": "冻结 test 基线必须只含 11 条 test，并记录显式访问理由；不得与 39 条 dev 或旧 core-40 快照共用 baseline 语义。"
+        "reason": "v1.6.1 已于 2026-08-25 由行之重新复核批准；040 在固定 deepseek-v4-flash、固定 endpoint、无 token 熔断下定点 live 通过。替换该 observation 后完整 test 为 9/11（81.82%），剩余失败 033/048；当前 git_dirty，仍不得晋升或覆盖旧 baseline。"
       }
     },
     {

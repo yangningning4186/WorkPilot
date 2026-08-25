@@ -20,7 +20,7 @@ from app.cowork.tools import build_default_cowork_registry
 from app.cowork_policy import ACTIVE_CAPABILITIES
 
 SCHEMA_VERSION = "cowork-task-suite.v1"
-DEFAULT_SUITE = Path(__file__).parent / "suites" / "cowork-core-50.json"
+DEFAULT_SUITE = Path(__file__).parent / "suites" / "cowork-core-50-v1.6.1.json"
 EXPECTED_ITEMS = 50
 EXPECTED_SPLITS = {"dev": 39, "test": 11}
 EXPECTED_CATEGORIES = {
@@ -53,13 +53,10 @@ register_connector_tools(_REGISTRY)
 # 按定义不可能漂移。这里只负责让"改错工具名"在不花模型调用的前提下就被拦住。
 _ADAPTER_TOOL_CAPABILITIES: dict[str, frozenset[str]] = {
     # Skill 工具依赖运行期 catalog，所以和 RAG / 浏览器一样不在默认注册表里。
-    "list_skills": frozenset(),
     "load_skill": frozenset(),
-    "load_skill_resource": frozenset(),
     "search_knowledge": frozenset({"knowledge.read"}),
     "browser_open": frozenset({"network.fetch", "browser.read"}),
     "browser_snapshot": frozenset({"browser.read"}),
-    "browser_find": frozenset({"browser.read"}),
     "browser_close": frozenset({"browser.read"}),
 }
 
@@ -73,11 +70,23 @@ RETIRED_TOOLS = frozenset(
         "edit_word",
         "edit_excel",
         "edit_office_file",
+        "list_workspace_roots",
+        "load_skill_resource",
+        "search_tool_catalog",
+        # 仅供旧 checkpoint/cassette 回放，不能再作为新题 gold。
+        "read_text_file",
+        "write_text_file",
+        "read_pdf",
+        "create_artifact",
+        "browser_find",
+        "list_skills",
     }
 )
 
 KNOWN_CAPABILITIES = frozenset(ACTIVE_CAPABILITIES)
-KNOWN_TOOLS = _REGISTRY.names() | frozenset(_ADAPTER_TOOL_CAPABILITIES)
+KNOWN_TOOLS = frozenset(
+    name for name in _REGISTRY.names() if _REGISTRY.get(name).model_visible
+) | frozenset(_ADAPTER_TOOL_CAPABILITIES)
 # 工具执行前会校验的 capability 全集, 用来判断题目给的授权够不够跑通它自己的 gold。
 TOOL_CAPABILITIES: dict[str, frozenset[str]] = {
     **_ADAPTER_TOOL_CAPABILITIES,
@@ -86,7 +95,8 @@ TOOL_CAPABILITIES: dict[str, frozenset[str]] = {
             ({_REGISTRY.get(name).capability} - {None})
             | set(_REGISTRY.get(name).extra_capabilities)
         )
-        for name in _REGISTRY.names()
+        for name in KNOWN_TOOLS
+        if name in _REGISTRY.names()
     },
 }
 
@@ -98,6 +108,7 @@ KNOWN_ASSERTIONS = {
     "evidence_contract",
     "file_absent",
     "file_contains",
+    "file_contains_evidence_citations",
     "file_exists",
     "file_not_contains",
     "files_still_exist",
@@ -269,9 +280,7 @@ def validate_suite(payload: dict[str, Any]) -> None:
             raise CoworkSuiteError(f"{item_id}: category 非法")
         if raw.get("difficulty") not in {1, 2, 3}:
             raise CoworkSuiteError(f"{item_id}: difficulty 非法")
-        expected_item_review = (
-            "approved" if review["status"] == "approved" else "pending_human"
-        )
+        expected_item_review = "approved" if review["status"] == "approved" else "pending_human"
         if raw.get("origin") != "synthetic" or raw.get("review_status") != expected_item_review:
             raise CoworkSuiteError(f"{item_id}: 标注 provenance 非法")
 

@@ -36,18 +36,18 @@ dev（39 条）和冻结 test（11 条）是两个独立 baseline，不会显示
 
 ## Cowork 单 Agent 50 条基线
 
-`cowork-core-50.json` 是 Cowork 的端到端标注候选集：39 条 dev、11 条冻结 test，
+`cowork-core-50-v1.6.1.json` 是当前 Cowork 端到端标注候选集：39 条 dev、11 条冻结 test，
 覆盖 workspace（含只读 git 视图）、artifact、格式 Skill + Shell、Web、knowledge/RAG、工作区文档沉浸阅读
 与安全/HITL，并新增飞书连接器和持久 shell 两类回归任务。每条记录均包含
 可复现 fixture、初始 capability、期望终态、gold 工具、工具顺序/调用预算和确定性成功断言；
 knowledge 类额外强制 `EvidenceBundle` 合约，不允许 `chunk_id`、内部 score 或 ORM 泄漏；
 沉浸阅读路径强制 locator 引用（`[p.N]`）。若 prompt 已给出精确 Markdown 路径，完整
-`read_text_file` 加章节/行号引用也算可溯源，不能强迫它伪造页码；负例则要求在给出任何候选
+`read_file` 加章节/行号引用也算可溯源，不能强迫它伪造页码；负例则要求在给出任何候选
 数字前先明确说明文档不可答，避免仅凭对同名论文的印象编答案。
 
-当前套件由助手起草，因此保留生成来源 `origin=synthetic`；行之已于
-`2026-08-24T23:24:06+08:00` 复核 v1.5.1 并将其批准为 `review_status=approved`。这不把生成来源
-改写成 human，也不解除冻结 test 不得用于调参的约束。
+套件保留生成来源 `origin=synthetic`。行之签字批准的 v1.6.0 原文件继续冻结保留；v1.6.1
+只修复 034 的模型可见引用断言、040 的写权限和 044 的 baseline/空白确定性断言，并于
+`2026-08-25T10:42:21+08:00` 由行之重新复核批准。这不改变冻结 test 不得用于调参的约束。
 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_task_suite
@@ -113,7 +113,7 @@ live Cowork 跑批会自动生成权限 `0600` 的 `model-cassette.json`。在�
 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
-  --suite eval/suites/cowork-core-50.json --label replay-cowork-dev \
+  --suite eval/suites/cowork-core-50-v1.6.1.json --label replay-cowork-dev \
   --split dev --allow-synthetic \
   --replay-cassette eval/outputs/cowork-core/<recorded>/model-cassette.json
 ```

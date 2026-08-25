@@ -832,16 +832,50 @@ def evaluate_assertion(
         elif kind in {"file_contains", "file_not_contains"}:
             path = _workspace_path(workspace, str(assertion["path"]))
             content = path.read_text(encoding="utf-8") if path and path.is_file() else ""
-            matched, missing = _contains_all(content, assertion["values"])
-            passed = (
-                matched
-                if kind == "file_contains"
-                else not any(
-                    _normalize_text(value) in _normalize_text(content)
-                    for value in assertion["values"]
+            if kind == "file_contains":
+                passed, missing = _contains_all(content, assertion["values"])
+                detail = f"path={assertion['path']} missing={missing!r}"
+            else:
+                # 禁止内容必须按原始字节语义检查。空白归一化会把“\t第 ”
+                # 退化成“第”，让任何正常中文行都被误判为带行号的工具输出。
+                hits = [str(value) for value in assertion["values"] if str(value) in content]
+                passed = not hits
+                detail = f"path={assertion['path']} forbidden_hits={hits!r}"
+        elif kind == "file_contains_evidence_citations":
+            path = _workspace_path(workspace, str(assertion["path"]))
+            content = path.read_text(encoding="utf-8") if path and path.is_file() else ""
+            required_ids = {
+                materialized.document_ids[value]
+                for value in assertion["required_document_ids"]
+                if value in materialized.document_ids
+            }
+            citations_by_document: dict[str, set[str]] = {}
+            for call in trace:
+                if call["name"] != "search_knowledge" or call["status"] != "ok":
+                    continue
+                result = call.get("result")
+                if not isinstance(result, dict):
+                    continue
+                for evidence in result.get("evidence", []):
+                    if not isinstance(evidence, dict):
+                        continue
+                    document_id = evidence.get("document_id")
+                    citation_id = evidence.get("citation_id")
+                    if isinstance(document_id, str) and isinstance(citation_id, str):
+                        citations_by_document.setdefault(document_id, set()).add(citation_id)
+            missing_ids = sorted(
+                document_id
+                for document_id in required_ids
+                if not any(
+                    re.search(
+                        rf"(?<![A-Za-z0-9_]){re.escape(citation)}(?![A-Za-z0-9_])",
+                        content,
+                    )
+                    for citation in citations_by_document.get(document_id, set())
                 )
             )
-            detail = f"path={assertion['path']} missing={missing!r}"
+            passed = not missing_ids
+            detail = f"path={assertion['path']} missing_document_citations={missing_ids!r}"
         elif kind == "json_file_equals":
             path = _workspace_path(workspace, str(assertion["path"]))
             actual = (
