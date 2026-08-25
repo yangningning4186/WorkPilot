@@ -266,20 +266,14 @@ def _retrieval_fixture_tree(root: Path, *, ready: bool = False) -> dict[str, Any
     return catalog
 
 
-def test_repository_catalog_is_healthy_and_exposes_remaining_rebuild_warnings() -> None:
+def test_repository_catalog_is_ready() -> None:
     report = doctor_catalog(DEFAULT_CATALOG, repo_root=REPO_ROOT)
 
     assert report.healthy is True
-    assert report.status == "warning"
-    assert [resource.health for resource in report.resources] == [
-        "ready",
-        "ready",
-        "ready",
-        "warning",
-        "ready",
-    ]
+    assert report.status == "ready"
+    assert [resource.health for resource in report.resources] == ["ready"] * 5
     rebuilds = [issue for issue in report.issues if issue.code == "baseline_rebuild_required"]
-    assert {issue.resource_id for issue in rebuilds} == {"grounded-generation"}
+    assert rebuilds == []
 
 
 def test_cli_json_distinguishes_ready_and_warning(capsys: pytest.CaptureFixture[str]) -> None:
@@ -287,14 +281,14 @@ def test_cli_json_distinguishes_ready_and_warning(capsys: pytest.CaptureFixture[
 
     output = json.loads(capsys.readouterr().out)
     assert output["healthy"] is True
-    assert output["status"] == "warning"
+    assert output["status"] == "ready"
     assert output["summary"] == {
         "error_count": 0,
         "invalid": 0,
-        "ready": 4,
+        "ready": 5,
         "resource_count": 5,
-        "warning_count": 1,
-        "warnings": 1,
+        "warning_count": 0,
+        "warnings": 0,
     }
 
 

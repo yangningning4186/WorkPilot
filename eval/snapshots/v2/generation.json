@@ -1,0 +1,2579 @@
+{
+  "calibration_fingerprint": null,
+  "cases": [
+    {
+      "case_id": "002c6594-cee6-5046-9410-d47ec73ece1a",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 29085.857
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3434.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd1d-bcf5-7882-a50f-30ccd8b8fad6",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 11238.098
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4037.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd20-621d-7185-8508-f762a0f307c1",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 8750.122
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4047.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd22-0377-7324-ad37-4d01a4de89b2",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 15116.456
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3806.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd25-a595-747d-a338-0a49a078cdc5",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 3.0,
+          "numerator": 0.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 12055.267
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3800.0
+        }
+      },
+      "segment": "table",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd27-973f-7b6e-9668-6d87c916676f",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 4.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.25
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 91939.938
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 5417.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd28-9cbb-74cb-ad88-535024ede234",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 6.0,
+          "numerator": 0.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 21664.659
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4188.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd2a-5430-76cf-a775-1e4c2d798112",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 51523.32
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4598.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd2c-4d00-7fa2-9c20-f70a4aeb9945",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 3.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.3333333333333333
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 13550.523
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3986.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd2d-64a1-7289-87bb-114469131e75",
+      "error": false,
+      "metrics": {
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 7483.419
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3838.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd2e-62af-7bc2-8a75-af1e9c77d584",
+      "error": false,
+      "metrics": {
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 3691.055
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4389.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd2f-ad7a-7091-9c31-963fcc338e98",
+      "error": false,
+      "metrics": {
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 11727.257
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3729.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd30-aa19-7547-9155-7f70c5b99603",
+      "error": false,
+      "metrics": {
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 32704.187
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4681.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd33-0920-73ff-b60a-94176a590574",
+      "error": false,
+      "metrics": {
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 11139.415
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4451.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd34-3949-7b6d-b109-1e4feef649ce",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 31523.533
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4954.0
+        }
+      },
+      "segment": "table",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd37-e50e-707c-aab2-679a84c03b7c",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 3.0,
+          "numerator": 2.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.6666666666666666
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 93769.283
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 5945.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd37-e520-78f5-863b-63be1797892d",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 0.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 38232.723
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 5158.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd37-e52c-7b82-a4e5-151d6563daff",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 3.0,
+          "numerator": 2.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.6666666666666666
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 42934.647
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 5161.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd37-e534-7379-9cfc-d8a9474101b0",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 71060.942
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 7694.0
+        }
+      },
+      "segment": "table",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd37-e53e-7e6e-bcad-3d993fe52e64",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 14184.638
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4179.0
+        }
+      },
+      "segment": "table",
+      "status": "done"
+    },
+    {
+      "case_id": "019ffd37-e548-7c17-9e7c-76b8d0698b19",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 47108.105
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 6186.0
+        }
+      },
+      "segment": "table",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f5b-7f7c-8768-0b7c0289aa5d",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 13532.992
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 2698.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f5c-76f8-8a87-f7c41bed3662",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 23152.191
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3675.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f5d-70bf-8309-e3a308e29b31",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 0.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 15974.888
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3141.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f5e-709a-a40f-dd41a25e5a20",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 15379.697
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4083.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f5f-7e46-8a1e-12556db5d9e8",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 50439.713
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4106.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f60-78b4-97de-cf246c8ff1c4",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 11630.46
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3582.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f61-7f3c-9070-642ffab616d1",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 9294.944
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3125.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f62-7082-b0b7-3e101421f0ee",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 14463.272
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4225.0
+        }
+      },
+      "segment": "table",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f63-73ee-b25c-27eb5de662a3",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 21636.423
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3845.0
+        }
+      },
+      "segment": "table",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f64-73ac-8c6a-9892abb823eb",
+      "error": false,
+      "metrics": {
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 4121.216
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3599.0
+        }
+      },
+      "segment": "table",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f65-75d1-b8ec-b4ca1740eeca",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 16539.313
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3032.0
+        }
+      },
+      "segment": "table",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f66-7440-9162-abef83fde5a3",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 9045.422
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4556.0
+        }
+      },
+      "segment": "table",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f67-7bfb-bf39-9c128de894fe",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 3.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.3333333333333333
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 16142.28
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3342.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f68-7476-a763-cf1acff038bf",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 3.0,
+          "numerator": 0.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 13352.48
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3878.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f69-794f-bcb9-83e8c5140f95",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 30037.617
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3989.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f6a-75a7-b78a-7dacfd83af2d",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 3.0,
+          "numerator": 0.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 39973.987
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4738.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f6b-7ba4-babd-52f467e91649",
+      "error": false,
+      "metrics": {
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 6043.135
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3979.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f6c-786a-8d82-8ca53dd23db6",
+      "error": false,
+      "metrics": {
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 4635.023
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3747.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f6d-7f5f-9607-80205596c89a",
+      "error": false,
+      "metrics": {
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 4584.497
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3532.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "01a00047-2f6e-7932-9700-5021660b5463",
+      "error": false,
+      "metrics": {
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 3024.306
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 2822.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "08715a81-df61-5e20-ba57-c3fb59cadbdb",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 4.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.25
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 34558.835
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4276.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "1058e7c8-fe9a-5d52-82d9-da5962cdbecf",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 3.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.3333333333333333
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 67102.545
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 5906.0
+        }
+      },
+      "segment": "global",
+      "status": "done"
+    },
+    {
+      "case_id": "24b880a2-2ef3-50b9-8369-789760dc85fd",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 5.0,
+          "numerator": 2.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.4
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 61051.731
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 6117.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "25dd6eb4-b70b-5526-be3a-970e14317188",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 18503.02
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3892.0
+        }
+      },
+      "segment": "table",
+      "status": "done"
+    },
+    {
+      "case_id": "2b930285-462d-55e9-a39f-05b9f93cf7d6",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 19228.04
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3974.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "2fb9c356-2467-568b-b738-c58d2ecd67a1",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 166426.519
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 5458.0
+        }
+      },
+      "segment": "global",
+      "status": "done"
+    },
+    {
+      "case_id": "4b392c1d-28a0-573b-9589-8719a0dfd2f8",
+      "error": false,
+      "metrics": {
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 6800.08
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3465.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "4edc1f15-4961-5e37-8f27-39e3699d8548",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 3.0,
+          "numerator": 2.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.6666666666666666
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 12227.327
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3131.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "559ef21f-5626-5010-b7f6-2834c1dac450",
+      "error": false,
+      "metrics": {
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 3960.008
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3673.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "577513d1-07ac-5c98-8ba3-c080bef8c952",
+      "error": false,
+      "metrics": {
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 226316.547
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 6788.0
+        }
+      },
+      "segment": "global",
+      "status": "done"
+    },
+    {
+      "case_id": "674c315e-ea8b-5333-b993-4ea15d56cad6",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 8962.9
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3525.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "6caf8d68-0497-57d2-8c09-be81e4d12b14",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 31343.775
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4185.0
+        }
+      },
+      "segment": "temporal",
+      "status": "done"
+    },
+    {
+      "case_id": "7f03fc76-b952-5633-9b8c-b2bcddeded4c",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 5.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.2
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 115777.535
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 5010.0
+        }
+      },
+      "segment": "temporal",
+      "status": "done"
+    },
+    {
+      "case_id": "8e7cc6a9-bf4c-5f9e-a66f-33d284d71536",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 15716.819
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3685.0
+        }
+      },
+      "segment": "temporal",
+      "status": "done"
+    },
+    {
+      "case_id": "8efe8cfa-b2a0-5479-8d93-d303427dac86",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 83020.23
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 7978.0
+        }
+      },
+      "segment": "temporal",
+      "status": "done"
+    },
+    {
+      "case_id": "90e184ee-f01f-572f-b8da-6d94edbf2bc5",
+      "error": false,
+      "metrics": {
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 10366.718
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 2992.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "9aede0f8-5a26-5207-a515-bf61f72825d3",
+      "error": false,
+      "metrics": {
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 74528.645
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 5096.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "9b8dd40e-78b1-5cfa-9ffa-d600471b72cd",
+      "error": false,
+      "metrics": {
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 13926.782
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3583.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "a0bc1571-aa71-5e2b-8c6d-0889dfad9302",
+      "error": false,
+      "metrics": {
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 5897.233
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3225.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "a45be51d-01a1-55e3-be04-edcb9ded3a53",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 10386.264
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3580.0
+        }
+      },
+      "segment": "table",
+      "status": "done"
+    },
+    {
+      "case_id": "a794e1a7-7e0c-5365-b3f0-5612b780209e",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 51765.37
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4731.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "b269f254-0ba4-5d44-a431-4f846c90f92d",
+      "error": false,
+      "metrics": {
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 6529.051
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3167.0
+        }
+      },
+      "segment": "global",
+      "status": "done"
+    },
+    {
+      "case_id": "bc09d7af-5620-5c57-8779-5f9951de385f",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 3.0,
+          "numerator": 2.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.6666666666666666
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 94261.58
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 5623.0
+        }
+      },
+      "segment": "multi_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "d8f671c3-bb25-546b-813c-0bb5f4b304fa",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 5.0,
+          "numerator": 2.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.4
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 27746.647
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4800.0
+        }
+      },
+      "segment": "global",
+      "status": "done"
+    },
+    {
+      "case_id": "dd1c722f-0ea6-5bf3-9d8b-e4be95bd4012",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 3.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.3333333333333333
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 51149.589
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3928.0
+        }
+      },
+      "segment": "global",
+      "status": "done"
+    },
+    {
+      "case_id": "e2825246-434a-567a-80dc-d21144b8747c",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 25682.813
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4236.0
+        }
+      },
+      "segment": "single_hop",
+      "status": "done"
+    },
+    {
+      "case_id": "f213b59a-1e4f-5412-b857-229076b2724c",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 9054.961
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3849.0
+        }
+      },
+      "segment": "temporal",
+      "status": "done"
+    },
+    {
+      "case_id": "f32e62f0-d7fb-58cb-811d-375b72429547",
+      "error": false,
+      "metrics": {
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 19270.018
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 3929.0
+        }
+      },
+      "segment": "unanswerable",
+      "status": "done"
+    },
+    {
+      "case_id": "f4e2937a-c8d8-514b-ab72-15986805f71c",
+      "error": false,
+      "metrics": {
+        "citation_gold_alignment": {
+          "denominator": 2.0,
+          "numerator": 1.0
+        },
+        "citation_support_answerable": {
+          "denominator": 1.0,
+          "numerator": 0.5
+        },
+        "citation_wellformed_non_refusal": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "constraint_pass_answerable": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "latency_ms": {
+          "denominator": 1.0,
+          "numerator": 10560.589
+        },
+        "refusal_correct": {
+          "denominator": 1.0,
+          "numerator": 1.0
+        },
+        "total_tokens": {
+          "denominator": 1.0,
+          "numerator": 4182.0
+        }
+      },
+      "segment": "temporal",
+      "status": "done"
+    }
+  ],
+  "config_fingerprint": "77a4b2ee706d73bedce8ead40684dff28bee6b4bd1bbc1ab250e611f06fda5e4",
+  "dataset": "m1-dev-70-v2",
+  "dataset_fingerprint": "9cf11c0bb869fce1425dcb34aebec205153bc3bfd3498bb8f3cfe16390da6f24",
+  "dataset_version": null,
+  "generated_at": "2026-08-25T10:24:46.384089+00:00",
+  "git_dirty": false,
+  "git_sha": "d1f316bdbf7ac876f1a3c476ce791a9c38e72162",
+  "integrity": {
+    "algorithm": "sha256",
+    "value": "43f1ce0265d1a8658e0788dc2aa8ee0f349bc0b455a25dd834af4ad9643c48e9"
+  },
+  "kind": "generation",
+  "label": "deepseek-v4-generation-v2-promotable-20260825",
+  "policy": {
+    "name": "grounded-generation-v1",
+    "sha256": "ec33563c4e48892231e8357544a6463aad343c03de784c60f159cde2a631881d"
+  },
+  "review": {
+    "origin": "human",
+    "reviewed_at": "2026-08-25T00:00:00+08:00",
+    "reviewer": "行之",
+    "status": "approved"
+  },
+  "schema_version": "workpilot-regression-baseline.v1",
+  "selection": {
+    "split_counts": {
+      "dev": 70
+    }
+  },
+  "source_report_sha256": "48f75b1650bc2d83d24ec57b185edba65820f9eeca6f84edfa78528ff5954afe"
+}

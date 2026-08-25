@@ -52,16 +52,15 @@
     {
       "id": "grounded-generation",
       "kind": "generation",
-      "suite": "eval/suites/m1-dev-70.json",
+      "suite": "eval/suites/m1-dev-70-v2.json",
       "policy": "eval/policies/generation.json",
       "selection": {
         "split": "dev",
         "item_count": 70
       },
       "baseline": {
-        "status": "rebuild_required",
-        "path": "eval/snapshots/generation.json",
-        "reason": "现有 snapshot 是历史 runner 报告；且其 citation_validity 只查格式恒为 1.0、constraint_pass 分母含拒答样本。指标口径已于 2026-08-24 重定义为 citation_wellformed_non_refusal / citation_support_answerable / constraint_pass_answerable，baseline 必须按新口径重建。当前架构还没有 generation runner。"
+        "status": "ready",
+        "path": "eval/snapshots/v2/generation.json"
       }
     }
   ],
