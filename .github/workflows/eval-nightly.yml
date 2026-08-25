@@ -1,0 +1,79 @@
+# Full live evaluation is intentionally isolated from PR CI.  It requires a
+# self-hosted runner that owns the frozen local KB/index and the approved model
+# endpoint.  Only privacy-safe regression summaries are uploaded.
+name: Eval Nightly
+
+on:
+  schedule:
+    # 02:00 Asia/Shanghai every day.
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: eval-nightly-v2
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  full-v2:
+    name: Cowork + KB + Generation v2
+    runs-on: [self-hosted, workpilot-eval]
+    timeout-minutes: 360
+    env:
+      PYTHONPATH: backend
+      CLUSTER_API_KEY: ${{ secrets.EVAL_CLUSTER_API_KEY }}
+      TIER_MAIN_BASE_URL: ${{ secrets.EVAL_TIER_MAIN_BASE_URL }}
+      TIER_MAIN_MODEL: deepseek-v4-flash
+      TIER_MAIN_ENABLE_THINKING: "false"
+      RERANK_ENABLED: "false"
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          clean: true
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.11.7"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Sync locked dependencies
+        run: uv sync --project backend --locked
+
+      - name: Verify clean checkout and catalog
+        run: |
+          test -z "$(git status --porcelain --untracked-files=all)"
+          uv run --project backend python -m eval.catalog doctor --catalog eval/catalog.json --json
+
+      - name: Run full live v2 matrix
+        id: matrix
+        run: |
+          uv run --project backend python -m eval.nightly \
+            --authorization-note "scheduled synthetic evaluation authorized by 行之"
+
+      - name: Locate privacy-safe artifacts
+        if: always()
+        id: artifact
+        run: |
+          artifact_dir="$(find eval/outputs/nightly -mindepth 2 -maxdepth 2 -type d -name artifacts -print | sort | tail -1)"
+          test -n "$artifact_dir"
+          echo "path=$artifact_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Upload metrics and doctor output
+        if: always() && steps.artifact.outputs.path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-nightly-${{ github.run_id }}
+          path: ${{ steps.artifact.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Expire local raw packages
+        if: always()
+        run: |
+          uv run --project backend python -m eval.artifact_retention \
+            --older-than-days 30 --keep-latest 7 --apply
