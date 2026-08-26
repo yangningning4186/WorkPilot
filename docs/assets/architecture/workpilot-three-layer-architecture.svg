@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">WorkPilot 三层架构</title>
+  <desc id="desc">WorkPilot 单向依赖架构：入口依赖 Cowork 与 RAG 产品层，产品层依次依赖 runstore、agent_core 与 workpilot-ai。</desc>
+  <defs>
+    <filter id="shadow" x="-10%" y="-20%" width="120%" height="150%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#123b39" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#08746f"/>
+    </marker>
+    <style>
+      .title { font: 700 40px Inter, ui-sans-serif, system-ui, sans-serif; fill: #191d23; }
+      .section { font: 700 27px Inter, ui-sans-serif, system-ui, sans-serif; fill: #191d23; }
+      .badge { font: 800 48px Inter, ui-sans-serif, system-ui, sans-serif; fill: #ffffff; }
+      .layer-tag { font: 700 18px Inter, ui-sans-serif, system-ui, sans-serif; fill: #ffffff; letter-spacing: .5px; }
+      .subtitle { font: italic 600 19px Inter, ui-sans-serif, system-ui, sans-serif; fill: #08746f; }
+      .card-title { font: 700 22px Inter, ui-sans-serif, system-ui, sans-serif; fill: #191d23; }
+      .pill-text { font: 500 15px Inter, ui-sans-serif, system-ui, sans-serif; fill: #263637; }
+      .small { font: 600 14px Inter, ui-sans-serif, system-ui, sans-serif; fill: #08746f; }
+      .dependency { font: 700 21px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #191d23; }
+      .boundary { font: 700 18px Inter, ui-sans-serif, system-ui, sans-serif; fill: #191d23; }
+      .boundary-small { font: 500 15px Inter, ui-sans-serif, system-ui, sans-serif; fill: #263637; }
+      .band { stroke: #08746f; stroke-width: 2; }
+      .card { fill: #ffffff; stroke: #08746f; stroke-width: 1.8; filter: url(#shadow); }
+      .pill { fill: #f8fbfa; stroke: #08746f; stroke-width: 1.3; }
+      .flow { fill: none; stroke: #08746f; stroke-width: 2.7; marker-end: url(#arrow); }
+      .guide { fill: none; stroke: #08746f; stroke-width: 1.6; stroke-dasharray: 6 6; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="900" fill="#fbfbf8"/>
+  <rect x="12" y="12" width="1576" height="876" rx="24" fill="none" stroke="#08746f" stroke-width="3"/>
+  <text x="800" y="58" text-anchor="middle" class="title">WorkPilot · 三层架构</text>
+
+  <!-- Entry points -->
+  <g>
+    <rect x="295" y="78" width="1010" height="52" rx="12" fill="#ffffff" stroke="#08746f" stroke-width="2"/>
+    <path d="M307 78h210v52H307a12 12 0 0 1-12-12V90a12 12 0 0 1 12-12z" fill="#08746f"/>
+    <line x1="517" y1="78" x2="517" y2="130" stroke="#08746f" stroke-width="2"/>
+    <line x1="905" y1="78" x2="905" y2="130" stroke="#08746f" stroke-width="2"/>
+    <text x="406" y="111" text-anchor="middle" class="layer-tag">入口层</text>
+    <text x="711" y="112" text-anchor="middle" class="card-title">Tauri 2 · Next.js 16</text>
+    <text x="1105" y="112" text-anchor="middle" class="card-title">FastAPI · Worker · CLI</text>
+    <path d="M800 130V150" class="flow"/>
+  </g>
+
+  <!-- Layer 3 -->
+  <rect x="58" y="154" width="1328" height="222" rx="20" fill="#f1f8f7" class="band"/>
+  <circle cx="112" cy="254" r="35" fill="#08746f"/>
+  <text x="112" y="271" text-anchor="middle" class="badge">3</text>
+  <rect x="164" y="188" width="120" height="36" rx="7" fill="#08746f"/>
+  <text x="224" y="212" text-anchor="middle" class="layer-tag">第 3 层</text>
+  <text x="164" y="258" class="section">产品 Agent</text>
+  <text x="164" y="289" class="section">业务层</text>
+  <text x="164" y="321" class="subtitle">最懂业务</text>
+
+  <rect x="420" y="176" width="380" height="160" rx="14" class="card"/>
+  <text x="610" y="208" text-anchor="middle" class="card-title">Cowork</text>
+  <rect x="460" y="220" width="300" height="28" rx="7" class="pill"/>
+  <rect x="460" y="254" width="300" height="28" rx="7" class="pill"/>
+  <rect x="460" y="288" width="300" height="28" rx="7" class="pill"/>
+  <text x="610" y="239" text-anchor="middle" class="pill-text">Lead · Board · Workers</text>
+  <text x="610" y="273" text-anchor="middle" class="pill-text">办公 · 论文阅读</text>
+  <text x="610" y="307" text-anchor="middle" class="pill-text">Skills · MCP</text>
+
+  <line x1="855" y1="190" x2="855" y2="316" class="guide"/>
+  <text x="855" y="254" text-anchor="middle" class="small">禁止直接依赖</text>
+
+  <rect x="910" y="176" width="380" height="160" rx="14" class="card"/>
+  <text x="1100" y="208" text-anchor="middle" class="card-title">RAG</text>
+  <rect x="950" y="220" width="300" height="28" rx="7" class="pill"/>
+  <rect x="950" y="254" width="300" height="28" rx="7" class="pill"/>
+  <rect x="950" y="288" width="300" height="28" rx="7" class="pill"/>
+  <text x="1100" y="239" text-anchor="middle" class="pill-text">知识库</text>
+  <text x="1100" y="273" text-anchor="middle" class="pill-text">FAISS · BM25 · RRF</text>
+  <text x="1100" y="307" text-anchor="middle" class="pill-text">检索 · 评测</text>
+
+  <rect x="420" y="342" width="380" height="26" rx="7" class="pill"/>
+  <text x="610" y="360" text-anchor="middle" class="pill-text">全局 · 工作区 · 会话记忆</text>
+
+  <!-- Layer 3 dependencies converge on runstore -->
+  <path d="M610 368V398H575V438" class="flow"/>
+  <path d="M1100 336V398H575V438" class="flow"/>
+
+  <!-- Layer 2 -->
+  <rect x="58" y="404" width="1328" height="170" rx="20" fill="#fbf7eb" stroke="#a88e45" stroke-width="2"/>
+  <circle cx="112" cy="484" r="35" fill="#08746f"/>
+  <text x="112" y="501" text-anchor="middle" class="badge">2</text>
+  <rect x="164" y="432" width="120" height="36" rx="7" fill="#08746f"/>
+  <text x="224" y="456" text-anchor="middle" class="layer-tag">第 2 层</text>
+  <text x="164" y="503" class="section">Agent</text>
+  <text x="164" y="534" class="section">框架层</text>
+  <text x="164" y="560" class="subtitle">不含产品语义</text>
+
+  <rect x="420" y="438" width="310" height="104" rx="14" class="card"/>
+  <text x="575" y="472" text-anchor="middle" class="card-title">runstore</text>
+  <rect x="442" y="490" width="128" height="30" rx="7" class="pill"/>
+  <rect x="580" y="490" width="128" height="30" rx="7" class="pill"/>
+  <text x="506" y="510" text-anchor="middle" class="pill-text">Run · Checkpoint</text>
+  <text x="644" y="510" text-anchor="middle" class="pill-text">事件 · 租约</text>
+
+  <path d="M730 490H785" class="flow"/>
+
+  <rect x="790" y="428" width="530" height="124" rx="14" class="card"/>
+  <text x="1055" y="462" text-anchor="middle" class="card-title">agent_core</text>
+  <rect x="812" y="482" width="108" height="30" rx="7" class="pill"/>
+  <rect x="930" y="482" width="115" height="30" rx="7" class="pill"/>
+  <rect x="1055" y="482" width="135" height="30" rx="7" class="pill"/>
+  <rect x="1200" y="482" width="98" height="30" rx="7" class="pill"/>
+  <text x="866" y="502" text-anchor="middle" class="pill-text">工具循环</text>
+  <text x="988" y="502" text-anchor="middle" class="pill-text">状态 · 事件</text>
+  <text x="1123" y="502" text-anchor="middle" class="pill-text">压缩 · 预算</text>
+  <text x="1249" y="502" text-anchor="middle" class="pill-text">HITL · 幂等</text>
+  <path d="M1055 552V605" class="flow"/>
+
+  <!-- Layer 1 -->
+  <rect x="58" y="600" width="1328" height="142" rx="20" fill="#f0f7f8" class="band"/>
+  <circle cx="112" cy="672" r="35" fill="#08746f"/>
+  <text x="112" y="689" text-anchor="middle" class="badge">1</text>
+  <rect x="164" y="622" width="120" height="36" rx="7" fill="#08746f"/>
+  <text x="224" y="646" text-anchor="middle" class="layer-tag">第 1 层</text>
+  <text x="164" y="688" class="section">模型</text>
+  <text x="164" y="719" class="section">基础设施层</text>
+  <text x="313" y="719" class="subtitle">只懂模型</text>
+
+  <rect x="420" y="614" width="580" height="112" rx="14" class="card"/>
+  <text x="710" y="648" text-anchor="middle" class="card-title">workpilot-ai</text>
+  <rect x="447" y="670" width="160" height="30" rx="7" class="pill"/>
+  <rect x="620" y="670" width="170" height="30" rx="7" class="pill"/>
+  <rect x="803" y="670" width="170" height="30" rx="7" class="pill"/>
+  <text x="527" y="690" text-anchor="middle" class="pill-text">模型网关</text>
+  <text x="705" y="690" text-anchor="middle" class="pill-text">路由 · Fallback</text>
+  <text x="888" y="690" text-anchor="middle" class="pill-text">Provider · 缓存</text>
+
+  <path d="M1000 670H1040" class="flow"/>
+  <rect x="1045" y="614" width="275" height="112" rx="14" class="card"/>
+  <text x="1183" y="648" text-anchor="middle" class="card-title">workpilot-telemetry</text>
+  <rect x="1080" y="670" width="205" height="30" rx="7" class="pill"/>
+  <text x="1183" y="690" text-anchor="middle" class="pill-text">审计 · 成本 · 预算</text>
+
+  <!-- Cross-cutting boundary -->
+  <path d="M1425 164h18q12 0 12 12v248q0 18 18 18h8-8q-18 0-18 18v254q0 12-12 12h-18" fill="none" stroke="#08746f" stroke-width="3"/>
+  <text x="1518" y="410" text-anchor="middle" class="boundary">横切</text>
+  <text x="1518" y="434" text-anchor="middle" class="boundary">安全边界</text>
+  <text x="1508" y="482" text-anchor="middle" class="boundary-small">Capability</text>
+  <text x="1508" y="506" text-anchor="middle" class="boundary-small">Permission Scope</text>
+  <text x="1508" y="530" text-anchor="middle" class="boundary-small">Approval</text>
+
+  <!-- Local state and invariant -->
+  <rect x="205" y="758" width="1160" height="48" rx="11" fill="#ffffff" stroke="#08746f" stroke-width="2"/>
+  <path d="M216 758h190v48H216a11 11 0 0 1-11-11v-26a11 11 0 0 1 11-11z" fill="#08746f"/>
+  <text x="311" y="789" text-anchor="middle" class="layer-tag">本机状态</text>
+  <text x="550" y="789" text-anchor="middle" class="pill-text">SQLite</text>
+  <text x="760" y="789" text-anchor="middle" class="pill-text">JSONL</text>
+  <text x="965" y="789" text-anchor="middle" class="pill-text">KB 索引</text>
+  <text x="1200" y="789" text-anchor="middle" class="pill-text">工作区文件</text>
+
+  <rect x="225" y="820" width="1150" height="56" rx="12" fill="#ffffff" stroke="#08746f" stroke-width="2"/>
+  <text x="800" y="846" text-anchor="middle" class="dependency">入口 → {cowork, rag} → runstore → agent_core → workpilot-ai</text>
+  <text x="800" y="867" text-anchor="middle" class="small">rag ⊥ cowork · 由 import-linter 强制</text>
+</svg>

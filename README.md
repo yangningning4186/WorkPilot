@@ -53,7 +53,7 @@ WorkPilot 是一个运行在本机的 AI 工作助手，把有依据的文档阅
 
 ## 技术架构
 
-![WorkPilot 系统架构图](docs/assets/architecture/workpilot-architecture.png)
+![WorkPilot 三层系统架构图](docs/assets/architecture/workpilot-three-layer-architecture.svg)
 
 | 层 | 技术与实现 |
 |---|---|
