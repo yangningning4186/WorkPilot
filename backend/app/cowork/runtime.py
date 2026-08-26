@@ -222,6 +222,31 @@ class PendingToolCall(TypedDict):
     step_id: str
 
 
+def _independent_board_assignment_batch(calls: Sequence[PendingToolCall]) -> bool:
+    """不同 task + 不同 Worker 的 Board assignment 可并发跑各自的持久 Session。"""
+
+    if len(calls) < 2 or any(call["name"] != "board_assign_task" for call in calls):
+        return False
+    task_ids: set[str] = set()
+    workers: set[str] = set()
+    for call in calls:
+        try:
+            arguments = json.loads(call["arguments"])
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(arguments, dict):
+            return False
+        task_id = arguments.get("task_id")
+        worker = arguments.get("worker")
+        if not isinstance(task_id, str) or not task_id:
+            return False
+        if not isinstance(worker, str) or not worker.strip():
+            return False
+        task_ids.add(task_id)
+        workers.add(worker.strip().lower())
+    return len(task_ids) == len(calls) and len(workers) == len(calls)
+
+
 class CoworkState(TypedDict):
     schema_version: Literal["cowork.v2"]
     run_id: str
@@ -2953,8 +2978,9 @@ class _CoworkExecution:
         if await self._cancellation_requested(state):
             return await self._cancel(state)
         run_id = UUID(state["run_id"])
-        parallel = self.session_factory is not None and self.registry.parallel_safe(
-            [call["name"] for call in pending_calls]
+        parallel = self.session_factory is not None and (
+            self.registry.parallel_safe([call["name"] for call in pending_calls])
+            or _independent_board_assignment_batch(pending_calls)
         )
         outcomes: list[ToolExecutionOutcome] = []
         cancelled_during_batch = False

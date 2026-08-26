@@ -40,6 +40,15 @@ RunEventType = Literal[
     # 只读子 Agent 的调查进度。explore 一次要跑好几轮模型调用，只发 tool.start /
     # tool.result 的话，用户在整段时间里只能看到一张不动的卡片。
     "subagent.progress",
+    # Agent Team / Board 的实时与终态快照；前端据此展示 Worker 返工和验收状态。
+    "team.created",
+    "team.worker.started",
+    "board.task.created",
+    "board.task.review",
+    "board.task.failed",
+    "board.task.reviewed",
+    "board.task.resolved",
+    "team.summary",
     "steering.queued",
     "steering.applied",
     "interrupt",

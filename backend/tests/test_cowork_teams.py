@@ -17,10 +17,13 @@ from app.cowork.runtime import initialize_cowork_state, resume_cowork_after_huma
 from app.cowork.teams import (
     BOARD_ASSIGN_TASK_TOOL_NAME,
     BOARD_CREATE_TASK_TOOL_NAME,
+    BOARD_RESOLVE_TASK_TOOL_NAME,
     BOARD_REVIEW_TASK_TOOL_NAME,
     PROPOSE_TEAM_TOOL_NAME,
     _initial_worker_state,
     register_team_tools,
+    team_run_summary,
+    worker_limits,
 )
 from app.cowork.tools import CoworkToolContext, build_default_cowork_registry
 from app.cowork_store.routing import cowork_store
@@ -309,23 +312,58 @@ async def test_lead_uses_board_and_worker_gets_only_assignment_envelope_and_scop
     assert {tool.name for tool in gateway.tools}
     assert all(registry.get(tool.name).path_argument is not None for tool in gateway.tools)
 
-    reviewed = await registry.execute(
+    rejected = await registry.execute(
         BOARD_REVIEW_TASK_TOOL_NAME,
-        {"task_id": str(task_id), "accepted": True, "feedback": "证据满足验收标准"},
+        {"task_id": str(task_id), "accepted": False, "feedback": "补充重试证据"},
         context=replace(
             base_context,
             plan_step_id=uuid7(),
             tool_call_id="board-review-1",
         ),
     )
+    assert rejected.output["status"] == "open"
+    assert rejected.output["rejection_reason"] == "补充重试证据"
+
+    reassigned = await registry.execute(
+        BOARD_ASSIGN_TASK_TOOL_NAME,
+        {"task_id": str(task_id), "worker": "files"},
+        context=replace(
+            base_context,
+            plan_step_id=uuid7(),
+            tool_call_id="board-assign-2",
+        ),
+    )
+    assert reassigned.output["status"] == "review"
+    assert reassigned.output["attempt_count"] == 2
+    retry_users = [message for message in gateway.histories[2] if message.role == "user"]
+    retry_envelope = json.loads(retry_users[-1].content)
+    assert retry_envelope["review_feedback"] == "补充重试证据"
+    assert "越界读取被拒绝" in retry_envelope["previous_worker_report"]
+    assert retry_envelope["attempt"] == 2
+
+    reviewed = await registry.execute(
+        BOARD_REVIEW_TASK_TOOL_NAME,
+        {"task_id": str(task_id), "accepted": True, "feedback": "证据满足验收标准"},
+        context=replace(
+            base_context,
+            plan_step_id=uuid7(),
+            tool_call_id="board-review-2",
+        ),
+    )
     assert reviewed.output["status"] == "done"
+    assert reviewed.output["completion_kind"] == "complete"
+    assert reviewed.output["rejection_reason"] == "补充重试证据"
     stored_task = store_sql(
-        "SELECT status, worker_report, review_comment FROM cowork_board_tasks WHERE id = ?",
+        """SELECT status, attempt_count, completion_kind, worker_report, review_comment,
+                  last_rejection_comment FROM cowork_board_tasks WHERE id = ?""",
         (str(task_id),),
     )[0]
     assert stored_task["status"] == "done"
+    assert stored_task["attempt_count"] == 2
+    assert stored_task["completion_kind"] == "complete"
     assert "越界读取被拒绝" in str(stored_task["worker_report"])
     assert stored_task["review_comment"] == "证据满足验收标准"
+    assert stored_task["last_rejection_comment"] == "补充重试证据"
     persisted_session = store_sql(
         "SELECT status, active_task_id, state FROM cowork_team_worker_sessions WHERE team_id = ?",
         (str(team.id),),
@@ -333,8 +371,207 @@ async def test_lead_uses_board_and_worker_gets_only_assignment_envelope_and_scop
     assert persisted_session["status"] == "idle"
     assert persisted_session["active_task_id"] is None
     worker_state = json.loads(str(persisted_session["state"]))
-    # system + assignment + assistant tool request + tool result + final report
-    assert len(worker_state["messages"]) == 5
+    # 首轮 5 条 + 返工 assignment + 第二次 final report。
+    assert len(worker_state["messages"]) == 7
     assert "LEAD_SECRET_SHOULD_NOT_REACH_WORKER" not in json.dumps(
         worker_state["messages"], ensure_ascii=False
+    )
+
+
+async def test_board_can_resolve_open_task_as_partial_or_cancelled(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Agent Team resolution")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="显式收束未完成任务",
+        budget_tokens=10_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await cowork_store().create_team(
+        lead_conversation_id=conversation_id,
+        proposal_call_id="resolution-proposal",
+        note="",
+        members=[
+            {
+                "name": "reviewer",
+                "role": "检查材料",
+                "reason": "独立执行",
+                "state": cast("dict[str, Any]", _initial_worker_state()),
+            }
+        ],
+    )
+    registry = build_default_cowork_registry()
+    register_team_tools(registry)
+    context = _context(
+        db_session,
+        gateway=_WorkerGateway(tmp_path / "outside"),
+        conversation_id=conversation_id,
+        run_id=run.id,
+        tool_call_id="create-partial",
+    )
+
+    async def create(title: str, call_id: str) -> UUID:
+        result = await registry.execute(
+            BOARD_CREATE_TASK_TOOL_NAME,
+            {
+                "title": title,
+                "description": "检查已有材料",
+                "acceptance_criteria": "给出结论",
+                "resource_scope": [{"path": str(tmp_path), "access_mode": "read_only"}],
+            },
+            context=replace(context, plan_step_id=uuid7(), tool_call_id=call_id),
+        )
+        return UUID(str(result.output["task_id"]))
+
+    partial_id = await create("保留部分结果", "create-partial")
+    cancelled_id = await create("不再继续", "create-cancelled")
+    partial = await registry.execute(
+        BOARD_RESOLVE_TASK_TOOL_NAME,
+        {
+            "task_id": str(partial_id),
+            "resolution": "accept_partial",
+            "reason": "用户确认接受当前结果",
+        },
+        context=replace(context, plan_step_id=uuid7(), tool_call_id="resolve-partial"),
+    )
+    cancelled = await registry.execute(
+        BOARD_RESOLVE_TASK_TOOL_NAME,
+        {
+            "task_id": str(cancelled_id),
+            "resolution": "cancel",
+            "reason": "用户决定停止该分支",
+        },
+        context=replace(context, plan_step_id=uuid7(), tool_call_id="resolve-cancelled"),
+    )
+
+    assert (partial.output["status"], partial.output["completion_kind"]) == ("done", "partial")
+    assert (cancelled.output["status"], cancelled.output["completion_kind"]) == (
+        "cancelled",
+        "cancelled",
+    )
+    summary = await team_run_summary(lead_conversation_id=conversation_id)
+    assert summary is not None and summary["completion_status"] == "partial"
+
+
+async def test_worker_limits_expand_for_wider_retried_tasks(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Agent Team limits")
+    await cowork_store().create_team(
+        lead_conversation_id=conversation_id,
+        proposal_call_id="limits-proposal",
+        note="",
+        members=[
+            {
+                "name": "worker",
+                "role": "分析",
+                "reason": "独立执行",
+                "state": cast("dict[str, Any]", _initial_worker_state()),
+            }
+        ],
+    )
+    task = await cowork_store().create_board_task(
+        lead_conversation_id=conversation_id,
+        title="复杂任务",
+        description="分析两个相互独立的目录",
+        acceptance_criteria="检查架构；检查测试；检查安全；提供证据；给出建议",
+        resource_scope=[
+            {"path": str(tmp_path / "a"), "access_mode": "read_only"},
+            {"path": str(tmp_path / "b"), "access_mode": "read_only"},
+        ],
+    )
+    initial = worker_limits(task, decision_cap=8_192)
+    retried = worker_limits(replace(task, attempt_count=3), decision_cap=8_192)
+
+    assert initial.rounds > 4 and initial.tool_calls > 8
+    assert initial.decision_tokens > 2_048 and initial.summary_tokens > 1_536
+    assert retried.rounds > initial.rounds
+    assert retried.tool_calls > initial.tool_calls
+
+
+async def test_run_finishes_partial_when_team_board_still_has_open_tasks(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Agent Team partial run")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="汇报团队当前结果",
+        budget_tokens=20_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    await cowork_store().create_team(
+        lead_conversation_id=conversation_id,
+        proposal_call_id="partial-run-proposal",
+        note="",
+        members=[
+            {
+                "name": "worker",
+                "role": "分析",
+                "reason": "独立执行",
+                "state": cast("dict[str, Any]", _initial_worker_state()),
+            }
+        ],
+    )
+    await cowork_store().create_board_task(
+        lead_conversation_id=conversation_id,
+        title="仍待完成",
+        description="尚未分配",
+        acceptance_criteria="完成分析",
+        resource_scope=[{"path": str(tmp_path), "access_mode": "read_only"}],
+    )
+    registry = build_default_cowork_registry()
+    register_team_tools(registry)
+    bus = InMemoryRunBus()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    provider = NativeToolProvider([_final_completion("当前只能交付已有结果。")])
+
+    await cowork_run(
+        {
+            "settings": get_settings(),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    completed = await get_run(db_session, run.id)
+    assert completed is not None and completed.status == "partial"
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    summary = next(event for event in events if event.type == "team.summary")
+    assert summary.payload["completion_status"] == "partial"
+    assert summary.payload["tasks"][0]["status"] == "open"
+    assert any(
+        event.type == "run.done" and event.payload["status"] == "partial"
+        for event in events
     )

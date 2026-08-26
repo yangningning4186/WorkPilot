@@ -65,6 +65,7 @@ InteractionStatus = Literal["pending", "answered", "approved", "rejected", "canc
 TeamStatus = Literal["active", "paused", "archived"]
 TeamWorkerSessionStatus = Literal["idle", "running", "failed"]
 BoardTaskStatus = Literal["open", "in_progress", "blocked", "review", "done", "cancelled"]
+BoardCompletionKind = Literal["pending", "complete", "partial", "cancelled"]
 ScheduleKind = Literal["once", "cron"]
 # 常驻审批规则。`once` 不落库——它就是现在这套一次性 call-id 集合，留在这里只是为了让
 # API 的取值是闭合的。
@@ -481,8 +482,12 @@ class BoardTaskRecord:
     status: BoardTaskStatus
     assignee_worker_id: UUID | None
     assignment_call_id: str | None
+    attempt_count: int
+    completion_kind: BoardCompletionKind
     worker_report: str | None
     review_comment: str | None
+    last_rejection_comment: str | None
+    last_error: str | None
     created_at: datetime
     updated_at: datetime
 

@@ -31,6 +31,14 @@ export type RunEventType =
   | "reading.annotated"
   // 只读子 Agent 的调查进度，挂在发起它的那次 explore 工具调用上。
   | "subagent.progress"
+  | "team.created"
+  | "team.worker.started"
+  | "board.task.created"
+  | "board.task.review"
+  | "board.task.failed"
+  | "board.task.reviewed"
+  | "board.task.resolved"
+  | "team.summary"
   | "steering.queued"
   | "steering.applied"
   | "interrupt"
@@ -323,6 +331,58 @@ export interface SubagentProgressPayload {
   answer_chars?: number;
 }
 
+export type BoardTaskStatus =
+  | "open"
+  | "in_progress"
+  | "blocked"
+  | "review"
+  | "done"
+  | "cancelled";
+
+export type BoardCompletionKind = "pending" | "complete" | "partial" | "cancelled";
+
+export interface TeamWorkerPayload {
+  name: string;
+  role: string;
+  session_id: string;
+}
+
+export interface BoardTaskPayload {
+  task_id: string;
+  title: string;
+  description: string;
+  acceptance_criteria: string;
+  resource_scope: Array<{ path: string; access_mode: "read_only" | "read_write" }>;
+  status: BoardTaskStatus;
+  completion_kind: BoardCompletionKind;
+  assignee: string | null;
+  attempt_count: number;
+  retry_count: number;
+  worker_report: string | null;
+  review_comment: string | null;
+  rejection_reason: string | null;
+  last_error: string | null;
+}
+
+export interface TeamCreatedPayload {
+  team_id: string;
+  workers: TeamWorkerPayload[];
+}
+
+export interface TeamWorkerStartedPayload {
+  task_id: string;
+  worker: string;
+  session_id: string;
+  attempt_count: number;
+  retry_count: number;
+}
+
+export interface TeamSummaryPayload extends TeamCreatedPayload {
+  completion_status: "complete" | "partial";
+  tasks: BoardTaskPayload[];
+  counts: Record<BoardTaskStatus, number>;
+}
+
 /** run 自己挂起到某个时间点：在等时间，不是在等人，不需要用户操作。 */
 export interface RunSleepingPayload {
   wake_at: string;
@@ -343,7 +403,7 @@ export interface ArtifactPayload {
 export interface RunDonePayload {
   workflow_type: "answer" | "literature_review" | "cowork";
   effect_ref?: string | null;
-  status?: "done" | "failed" | "cancelled" | "budget_exceeded";
+  status?: "done" | "partial" | "failed" | "cancelled" | "budget_exceeded";
 }
 
 export type RunEventData =
@@ -367,6 +427,10 @@ export type RunEventData =
   | ReadingGotoPayload
   | ReadingAnnotatedPayload
   | SubagentProgressPayload
+  | TeamCreatedPayload
+  | TeamWorkerStartedPayload
+  | BoardTaskPayload
+  | TeamSummaryPayload
   | RunSleepingPayload
   | RunDonePayload
   | ErrorPayload;

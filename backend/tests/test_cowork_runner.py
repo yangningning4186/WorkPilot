@@ -13,6 +13,7 @@ import pytest
 from docx import Document
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid6 import uuid7
 
 from app.api.dependencies import (
     get_run_bus,
@@ -37,6 +38,7 @@ from app.cowork.permissions import (
 from app.cowork.runtime import (
     _encode_tool_result,
     _external_action_sha256,
+    _independent_board_assignment_batch,
     initialize_cowork_state,
     load_cowork_checkpoint,
 )
@@ -1352,6 +1354,119 @@ async def test_cowork_runner_executes_parallel_safe_read_batch_concurrently(
         "read-b-call",
     ]
     assert canonical[3] == {"role": "assistant", "content": "两个来源均已读取。"}
+
+
+async def test_cowork_runner_executes_independent_board_assignments_concurrently(
+    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
+) -> None:
+    del db_engine
+
+    class AssignmentArgs(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        task_id: str
+        worker: str
+
+    active = 0
+    max_active = 0
+    both_started = asyncio.Event()
+
+    async def assign(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+        nonlocal active, max_active
+        del context
+        args = AssignmentArgs.model_validate(raw.model_dump())
+        active += 1
+        max_active = max(max_active, active)
+        if active == 2:
+            both_started.set()
+        try:
+            await asyncio.wait_for(both_started.wait(), timeout=1)
+            return CoworkToolResult(output={"task_id": args.task_id, "worker": args.worker})
+        finally:
+            active -= 1
+
+    registry = CoworkToolRegistry()
+    registry.register(
+        CoworkToolSpec(
+            name="board_assign_task",
+            description="分配独立团队任务",
+            args_model=AssignmentArgs,
+            risk="write",
+            effect="store",
+            parallel_safe=False,
+            handler=assign,
+        )
+    )
+    conversation_id = await ensure_conversation(db_session, title="Concurrent team assignments")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="并发分配两个独立 Worker",
+        budget_tokens=10_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    bus = InMemoryRunBus()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    first_task = str(uuid7())
+    second_task = str(uuid7())
+    calls = (
+        ToolCall(
+            id="assign-architecture",
+            name="board_assign_task",
+            arguments=json.dumps({"task_id": first_task, "worker": "architecture"}),
+        ),
+        ToolCall(
+            id="assign-testing",
+            name="board_assign_task",
+            arguments=json.dumps({"task_id": second_task, "worker": "testing"}),
+        ),
+    )
+    assert _independent_board_assignment_batch(
+        [
+            {
+                "call_id": call.id,
+                "name": call.name,
+                "arguments": call.arguments,
+                "step_idx": index,
+                "step_id": str(uuid7()),
+            }
+            for index, call in enumerate(calls)
+        ]
+    )
+    provider = NativeToolProvider(
+        [_tool_completion(*calls), _final_completion("两个 Worker 均已返回。")]
+    )
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    completed = await get_run(db_session, run.id)
+    assert completed is not None and completed.status == "done"
+    assert registry.get("board_assign_task").parallel_safe is False
+    assert max_active == 2
 
 
 async def test_cowork_runner_has_no_tool_step_count_limit(

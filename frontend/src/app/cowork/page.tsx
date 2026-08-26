@@ -145,9 +145,55 @@ const READING_PROMPTS = [
 ];
 
 const INSPECTOR_WIDTH_STORAGE_KEY = "workpilot:cowork-inspector-width";
+const READER_SESSION_STORAGE_PREFIX = "workpilot:cowork-reader:";
 const DEFAULT_INSPECTOR_WIDTH = 400;
 const MIN_INSPECTOR_WIDTH = 300;
 const MAX_INSPECTOR_WIDTH = 720;
+
+interface StoredReaderSession {
+  workMode: CoworkWorkMode;
+  path: string;
+  locator: number;
+  open: boolean;
+}
+
+const DEFAULT_READER_SESSION: StoredReaderSession = {
+  workMode: "office",
+  path: "",
+  locator: 1,
+  open: true,
+};
+
+function readReaderSession(conversationId: string): StoredReaderSession {
+  try {
+    const raw = window.sessionStorage.getItem(`${READER_SESSION_STORAGE_PREFIX}${conversationId}`);
+    if (raw === null) return DEFAULT_READER_SESSION;
+    const parsed = JSON.parse(raw) as Partial<StoredReaderSession>;
+    return {
+      workMode: parsed.workMode === "reading" ? "reading" : "office",
+      path: typeof parsed.path === "string" ? parsed.path : "",
+      locator:
+        typeof parsed.locator === "number" && Number.isFinite(parsed.locator)
+          ? Math.max(1, Math.floor(parsed.locator))
+          : 1,
+      open: typeof parsed.open === "boolean" ? parsed.open : true,
+    };
+  } catch {
+    // sessionStorage 被禁用或旧值损坏时按默认办公模式启动；不能让一条 UI 草稿挡住会话。
+    return DEFAULT_READER_SESSION;
+  }
+}
+
+function writeReaderSession(conversationId: string, state: StoredReaderSession): void {
+  try {
+    window.sessionStorage.setItem(
+      `${READER_SESSION_STORAGE_PREFIX}${conversationId}`,
+      JSON.stringify(state),
+    );
+  } catch {
+    // 阅读器恢复只是本机体验增强，存储配额或隐私模式失败不能影响正常对话。
+  }
+}
 
 function clampInspectorWidth(width: number): number {
   if (typeof window === "undefined") return Math.max(MIN_INSPECTOR_WIDTH, Math.min(MAX_INSPECTOR_WIDTH, width));
@@ -308,6 +354,7 @@ export default function CoworkPage() {
   // 上的 filesystem.read 授权决定，这里填一个未授权路径也越不过去。
   const [readingPath, setReadingPath] = useState("");
   const [readingPickerPath, setReadingPickerPath] = useState<string | null>(null);
+  const [readingLocator, setReadingLocator] = useState(1);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [mountedKb, setMountedKb] = useState<string | null>(null);
   // 首屏初始化尚未拿到 conversation_id 时，知识库选择也必须是一个真实 draft，不能让
@@ -346,6 +393,16 @@ export default function CoworkPage() {
   useEffect(() => {
     conversationIdRef.current = conversationId;
   }, [conversationId]);
+
+  useEffect(() => {
+    if (conversationId === null) return;
+    writeReaderSession(conversationId, {
+      workMode,
+      path: readingPath,
+      locator: readingLocator,
+      open: readerOpen,
+    });
+  }, [conversationId, readerOpen, readingLocator, readingPath, workMode]);
 
   useEffect(() => {
     const savedWidth = Number.parseFloat(window.localStorage.getItem(INSPECTOR_WIDTH_STORAGE_KEY) ?? "");
@@ -515,9 +572,17 @@ export default function CoworkPage() {
           selected = items.find((item) => item.id === requestedId) ?? items[0];
         }
         if (cancelled) return;
+        const restoredReader = selected === undefined
+          ? DEFAULT_READER_SESSION
+          : readReaderSession(selected.id);
         setConversations(items);
         setArchivedConversations(archivedResponse.items);
         setProviders(providerResponse.items.filter((item) => item.enabled));
+        setWorkMode(restoredReader.workMode);
+        setReadingPath(restoredReader.path);
+        setReadingPickerPath(null);
+        setReadingLocator(restoredReader.locator);
+        setReaderOpen(restoredReader.open);
         setConversationId(selected?.id ?? null);
         setRunId(selected?.active_run_id ?? null);
       } catch (reason) {
@@ -569,7 +634,10 @@ export default function CoworkPage() {
   }, [conversationId, run.cursor]);
 
   useEffect(() => {
-    if (conversationId === null || (run.phase !== "done" && run.artifactEvents.length === 0)) {
+    if (
+      conversationId === null
+      || (!["done", "partial"].includes(run.phase) && run.artifactEvents.length === 0)
+    ) {
       return;
     }
     fetchCoworkArtifacts(conversationId)
@@ -583,7 +651,7 @@ export default function CoworkPage() {
   useEffect(() => {
     if (
       conversationId === null ||
-      (run.phase !== "done" && run.phase !== "cancelled" && run.phase !== "error")
+      (!["done", "partial", "cancelled", "error"].includes(run.phase))
     ) {
       return;
     }
@@ -595,7 +663,7 @@ export default function CoworkPage() {
   useEffect(() => {
     if (
       runId === null
-      || !["done", "cancelled", "budget_exceeded", "error"].includes(run.phase)
+      || !["done", "partial", "cancelled", "budget_exceeded", "error"].includes(run.phase)
     ) return;
     const finishedRunId = runId;
     let cancelled = false;
@@ -680,6 +748,7 @@ export default function CoworkPage() {
     setWorkMode("office");
     setReadingPath("");
     setReadingPickerPath(null);
+    setReadingLocator(1);
     setReaderOpen(true);
     setLocatorRequest(null);
     setArtifactRailOpen(true);
@@ -699,6 +768,7 @@ export default function CoworkPage() {
       "",
       `/cowork?conversation=${encodeURIComponent(item.id)}`,
     );
+    const restoredReader = readReaderSession(item.id);
     setOpenConversationMenuId(null);
     setConversationId(item.id);
     setRunId(item.active_run_id ?? null);
@@ -716,7 +786,11 @@ export default function CoworkPage() {
     setActivePrompt(null);
     setAttachments([]);
     setWorkspaceDraftPath(null);
+    setWorkMode(restoredReader.workMode);
+    setReadingPath(restoredReader.path);
     setReadingPickerPath(null);
+    setReadingLocator(restoredReader.locator);
+    setReaderOpen(restoredReader.open);
     setArtifactRailOpen(true);
     setKnowledgeBaseDraft(null);
     setKnowledgeBaseDraftDirty(false);
@@ -1006,6 +1080,7 @@ export default function CoworkPage() {
       if (selected === null) return;
       setReadingPath(selected);
       setReadingPickerPath(selected);
+      setReadingLocator(1);
     } catch (reason) {
       setNotice(readableError(reason));
     }
@@ -1595,6 +1670,7 @@ export default function CoworkPage() {
                         onChange={(event) => {
                           setReadingPath(event.target.value);
                           setReadingPickerPath(null);
+                          setReadingLocator(1);
                         }}
                         placeholder="要读的文档，例如 papers/attention.pdf"
                         type="text"
@@ -1701,6 +1777,7 @@ export default function CoworkPage() {
                           startedAt={run.startedAt}
                           steps={run.steps}
                           subagentRuns={run.subagentRuns}
+                          team={run.team}
                           todos={run.todos}
                         />
 
@@ -1736,7 +1813,7 @@ export default function CoworkPage() {
                         )}
 
                         {(runAnswer !== "" || run.error !== null) && (
-                          <div className={`workdesk-run-answer${run.phase === "budget_exceeded" ? " budget" : run.error !== null ? " error" : run.phase === "cancelled" ? " cancelled" : ""}`}>
+                          <div className={`workdesk-run-answer${run.phase === "budget_exceeded" ? " budget" : run.error !== null ? " error" : run.phase === "cancelled" ? " cancelled" : run.phase === "partial" ? " partial" : ""}`}>
                             {run.error !== null && <p role="alert">{run.error}</p>}
                             {runAnswer !== "" && <AnswerMarkdown onSelectLocator={workMode === "reading" ? requestLocator : undefined} text={runAnswer} />}
                           </div>
@@ -1984,7 +2061,7 @@ export default function CoworkPage() {
                       <div className="workdesk-run-setting-field workdesk-reading-setting">
                         <span><strong>阅读文档</strong><small>相对默认工作区或已授权的绝对路径</small></span>
                         <div>
-                          <input aria-label="要阅读的文档路径" disabled={busy || running || conversationArchived} onChange={(event) => { setReadingPath(event.target.value); setReadingPickerPath(null); }} placeholder="papers/attention.pdf" value={readingPath} />
+                          <input aria-label="要阅读的文档路径" disabled={busy || running || conversationArchived} onChange={(event) => { setReadingPath(event.target.value); setReadingPickerPath(null); setReadingLocator(1); }} placeholder="papers/attention.pdf" value={readingPath} />
                           <button disabled={busy || running || conversationArchived || !desktopReady} onClick={() => void selectReadingDocument()} type="button">选择</button>
                         </div>
                       </div>
@@ -2126,8 +2203,10 @@ export default function CoworkPage() {
           conversationId={conversationId}
           jump={run.readerJump}
           key={readerPath}
+          initialLocator={readingLocator}
           onAskSelection={askAboutSelection}
           onClose={() => setReaderOpen(false)}
+          onLocatorChange={setReadingLocator}
           path={readerPath}
           requestedLocator={locatorRequest}
         />

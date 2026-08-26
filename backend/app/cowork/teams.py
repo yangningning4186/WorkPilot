@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 from uuid import UUID, uuid5
@@ -35,6 +35,7 @@ BOARD_CREATE_TASK_TOOL_NAME = "board_create_task"
 BOARD_LIST_TASKS_TOOL_NAME = "board_list_tasks"
 BOARD_ASSIGN_TASK_TOOL_NAME = "board_assign_task"
 BOARD_REVIEW_TASK_TOOL_NAME = "board_review_task"
+BOARD_RESOLVE_TASK_TOOL_NAME = "board_resolve_task"
 TEAM_TOOL_NAMES = frozenset(
     {
         PROPOSE_TEAM_TOOL_NAME,
@@ -42,12 +43,17 @@ TEAM_TOOL_NAMES = frozenset(
         BOARD_LIST_TASKS_TOOL_NAME,
         BOARD_ASSIGN_TASK_TOOL_NAME,
         BOARD_REVIEW_TASK_TOOL_NAME,
+        BOARD_RESOLVE_TASK_TOOL_NAME,
     }
 )
 
 MAX_TEAM_MEMBERS = 4
-MAX_WORKER_ROUNDS = 4
-MAX_WORKER_TOOL_CALLS = 8
+BASE_WORKER_ROUNDS = 4
+BASE_WORKER_TOOL_CALLS = 8
+MAX_WORKER_ROUNDS = 10
+MAX_WORKER_TOOL_CALLS = 26
+BASE_WORKER_DECISION_TOKENS = 2_048
+BASE_WORKER_SUMMARY_TOKENS = 1_536
 
 TEAM_WORKER_SYSTEM_PROMPT = """你是 WorkPilot Agent Team 中的持久 Worker。
 
@@ -134,6 +140,47 @@ class BoardReviewTaskArgs(_StrictArgs):
         if not self.accepted and not self.feedback:
             raise ValueError("拒绝验收时必须给出可执行的 feedback")
         return self
+
+
+class BoardResolveTaskArgs(_StrictArgs):
+    task_id: UUID
+    resolution: Literal["accept_partial", "cancel"]
+    reason: str = Field(min_length=1, max_length=4000)
+
+    @model_validator(mode="after")
+    def normalize_reason(self) -> BoardResolveTaskArgs:
+        self.reason = self.reason.strip()
+        if not self.reason:
+            raise ValueError("部分接受或取消任务时必须说明 reason")
+        return self
+
+
+@dataclass(frozen=True)
+class WorkerLimits:
+    rounds: int
+    tool_calls: int
+    decision_tokens: int
+    summary_tokens: int
+
+
+def worker_limits(task: BoardTaskRecord, *, decision_cap: int) -> WorkerLimits:
+    """按任务可见元数据扩容；不扫描内容，也不扩大 Worker 的资源权限。"""
+
+    scope_units = max(0, len(task.resource_scope) - 1) * 2
+    text_chars = len(task.description) + len(task.acceptance_criteria)
+    text_units = min(2, text_chars // 1_200)
+    criteria_units = min(
+        2,
+        sum(task.acceptance_criteria.count(separator) for separator in ("；", ";", "\n")) // 2,
+    )
+    retry_units = min(2, max(0, task.attempt_count - 1))
+    complexity = min(6, scope_units + text_units + criteria_units + retry_units)
+    return WorkerLimits(
+        rounds=min(MAX_WORKER_ROUNDS, BASE_WORKER_ROUNDS + complexity),
+        tool_calls=min(MAX_WORKER_TOOL_CALLS, BASE_WORKER_TOOL_CALLS + complexity * 3),
+        decision_tokens=min(decision_cap, BASE_WORKER_DECISION_TOKENS + complexity * 768),
+        summary_tokens=min(decision_cap, BASE_WORKER_SUMMARY_TOKENS + complexity * 640),
+    )
 
 
 type _WorkerRole = Literal["system", "user", "assistant", "tool"]
@@ -231,11 +278,47 @@ def _task_output(task: BoardTaskRecord, workers: list[TeamWorkerRecord]) -> dict
         "acceptance_criteria": task.acceptance_criteria,
         "resource_scope": task.resource_scope,
         "status": task.status,
+        "completion_kind": task.completion_kind,
         "assignee": (
             None if task.assignee_worker_id is None else names.get(task.assignee_worker_id)
         ),
+        "attempt_count": task.attempt_count,
+        "retry_count": max(0, task.attempt_count - 1),
         "worker_report": task.worker_report,
         "review_comment": task.review_comment,
+        "rejection_reason": task.last_rejection_comment,
+        "last_error": task.last_error,
+    }
+
+
+async def team_run_summary(*, lead_conversation_id: UUID) -> dict[str, Any] | None:
+    """终态前生成可回放的 Board 快照，并判断是否只能算部分完成。"""
+
+    team = await cowork_store().get_team_for_lead(lead_conversation_id=lead_conversation_id)
+    if team is None:
+        return None
+    workers = await cowork_store().list_team_workers(team_id=team.id)
+    tasks = await cowork_store().list_board_tasks(lead_conversation_id=lead_conversation_id)
+    nonterminal = [task for task in tasks if task.status not in {"done", "cancelled"}]
+    partial = bool(nonterminal) or any(
+        task.completion_kind in {"partial", "cancelled"} for task in tasks
+    )
+    return {
+        "team_id": str(team.id),
+        "completion_status": "partial" if partial else "complete",
+        "workers": [
+            {
+                "name": worker.name,
+                "role": worker.role,
+                "session_id": str(worker.session_id),
+            }
+            for worker in workers
+        ],
+        "tasks": [_task_output(task, workers) for task in tasks],
+        "counts": {
+            status: sum(task.status == status for task in tasks)
+            for status in ("open", "in_progress", "blocked", "review", "done", "cancelled")
+        },
     }
 
 
@@ -283,6 +366,10 @@ class _TeamWorkerRuntime:
         self.tools = registry.team_worker_tool_definitions() if task.resource_scope else []
         self.allowed_tools = frozenset(tool.name for tool in self.tools)
         self.gateway = cast("ToolCompletionClient", context.gateway)
+        self.limits = worker_limits(
+            task,
+            decision_cap=context.settings.cowork_decision_max_tokens,
+        )
         self.path_scope = tuple(
             (
                 item["path"],
@@ -344,11 +431,20 @@ class _TeamWorkerRuntime:
 
     def _start_assignment(self, state: TeamWorkerState) -> TeamWorkerState:
         updated = json_state(state)
-        envelope = {
+        envelope: dict[str, Any] = {
             "task_description": f"{self.task.title}\n\n{self.task.description}",
             "acceptance_criteria": self.task.acceptance_criteria,
             "resource_scope": self.task.resource_scope,
         }
+        if self.task.attempt_count > 1:
+            envelope.update(
+                {
+                    "review_feedback": self.task.last_rejection_comment or "",
+                    "previous_worker_report": self.task.worker_report or "",
+                    "previous_worker_error": self.task.last_error or "",
+                    "attempt": self.task.attempt_count,
+                }
+            )
         updated["messages"].append(
             {
                 "role": "user",
@@ -366,7 +462,7 @@ class _TeamWorkerRuntime:
         return json_state(updated)
 
     async def decide(self, state: TeamWorkerState) -> TeamWorkerState:
-        if state["rounds_used"] >= MAX_WORKER_ROUNDS:
+        if state["rounds_used"] >= self.limits.rounds:
             return await self._summarize(state)
         updated = json_state(state)
         updated["rounds_used"] += 1
@@ -377,14 +473,14 @@ class _TeamWorkerRuntime:
                 tools=self.tools,
                 parallel_tool_calls=False,
                 task_type="cowork_team_worker",
-                max_tokens=min(2048, self.context.settings.cowork_decision_max_tokens),
+                max_tokens=self.limits.decision_tokens,
                 temperature=0.0,
             )
             if self.tools
             else await self.context.gateway.complete(
                 messages,
                 task_type="cowork_team_worker",
-                max_tokens=min(2048, self.context.settings.cowork_decision_max_tokens),
+                max_tokens=self.limits.decision_tokens,
                 temperature=0.0,
             )
         )
@@ -405,10 +501,11 @@ class _TeamWorkerRuntime:
         calls = list(updated["pending_calls"])
         updated["pending_calls"] = []
         for call in calls:
-            if updated["calls_used"] >= MAX_WORKER_TOOL_CALLS:
+            if updated["calls_used"] >= self.limits.tool_calls:
                 updated["status"] = "answered"
                 updated["report"] = (
-                    f"Worker 已达到 {MAX_WORKER_TOOL_CALLS} 次工具调用上限；验收前请检查已有证据。"
+                    f"Worker 已达到 {self.limits.tool_calls} 次工具调用上限；"
+                    "验收前请检查已有证据。"
                 )
                 break
             updated["calls_used"] += 1
@@ -472,7 +569,7 @@ class _TeamWorkerRuntime:
                 ),
             ],
             task_type="cowork_team_worker_summary",
-            max_tokens=min(1536, self.context.settings.cowork_decision_max_tokens),
+            max_tokens=self.limits.summary_tokens,
             temperature=0.0,
         )
         updated = json_state(state)
@@ -576,6 +673,13 @@ def register_team_tools(registry: CoworkToolRegistry) -> None:
             worker_name=args.worker.strip().lower(),
             assignment_call_id=context.tool_call_id,
         )
+        runtime = _TeamWorkerRuntime(
+            registry=registry,
+            context=context,
+            task=task,
+            worker=worker,
+            session=session,
+        )
         await _emit(
             context,
             "team.worker.started",
@@ -583,15 +687,27 @@ def register_team_tools(registry: CoworkToolRegistry) -> None:
                 "task_id": str(task.id),
                 "worker": worker.name,
                 "session_id": str(session.id),
+                "attempt_count": task.attempt_count,
+                "retry_count": max(0, task.attempt_count - 1),
+                "limits": {
+                    "rounds": runtime.limits.rounds,
+                    "tool_calls": runtime.limits.tool_calls,
+                    "decision_tokens": runtime.limits.decision_tokens,
+                    "summary_tokens": runtime.limits.summary_tokens,
+                },
             },
         )
-        task = await _TeamWorkerRuntime(
-            registry=registry,
-            context=context,
-            task=task,
-            worker=worker,
-            session=session,
-        ).run()
+        try:
+            task = await runtime.run()
+        except Exception:
+            failed_tasks = await cowork_store().list_board_tasks(
+                lead_conversation_id=context.conversation_id
+            )
+            failed_task = next((item for item in failed_tasks if item.id == task.id), None)
+            if failed_task is not None:
+                workers = await cowork_store().list_team_workers(team_id=failed_task.team_id)
+                await _emit(context, "board.task.failed", _task_output(failed_task, workers))
+            raise
         workers = await cowork_store().list_team_workers(team_id=task.team_id)
         output = _task_output(task, workers)
         output["worker_session_id"] = str(session.id)
@@ -610,6 +726,19 @@ def register_team_tools(registry: CoworkToolRegistry) -> None:
         output = _task_output(task, workers)
         await _emit(context, "board.task.reviewed", output)
         return CoworkToolResult(output=output, effect_ref=f"board-task:{task.id}:review")
+
+    async def board_resolve_task(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+        args = BoardResolveTaskArgs.model_validate(raw.model_dump())
+        task = await cowork_store().resolve_board_task(
+            lead_conversation_id=context.conversation_id,
+            task_id=args.task_id,
+            resolution=args.resolution,
+            reason=args.reason,
+        )
+        workers = await cowork_store().list_team_workers(team_id=task.team_id)
+        output = _task_output(task, workers)
+        await _emit(context, "board.task.resolved", output)
+        return CoworkToolResult(output=output, effect_ref=f"board-task:{task.id}:resolution")
 
     registry.register_deferred(
         CoworkToolSpec(
@@ -686,10 +815,28 @@ def register_team_tools(registry: CoworkToolRegistry) -> None:
         ),
         group="Agent Teams",
     )
+    registry.register_deferred(
+        CoworkToolSpec(
+            name=BOARD_RESOLVE_TASK_TOOL_NAME,
+            description=(
+                "显式收束无法继续执行的 open/blocked/review Board task。"
+                "resolution=accept_partial 会保留已有报告并标记为部分完成；"
+                "resolution=cancel 会取消任务。两种操作都必须说明 reason。"
+            ),
+            args_model=BoardResolveTaskArgs,
+            risk="write",
+            effect="store",
+            parallel_safe=False,
+            handler=board_resolve_task,
+        ),
+        group="Agent Teams",
+    )
     registry.add_system_instructions(
         "需要多个长期协作角色时，先 load_tools(propose_team) 并单独提出编制；用户批准前不得"
         "创建 Worker。批准后通过 Board 的 create → assign → review 流程协调，Lead 不能把"
-        "自己的对话历史复制给 Worker，且只有 Lead 验收后 task 才能 done。"
+        "自己的对话历史复制给 Worker，且只有 Lead 验收后 task 才能 done。返工会自动携带"
+        "上次报告与验收意见；如果用户明确接受部分成果或取消任务，使用 board_resolve_task，"
+        "不要对 open/blocked task 调 board_review_task。结束回答前必须检查 Board 状态。"
     )
 
 
@@ -697,9 +844,12 @@ __all__ = [
     "BOARD_ASSIGN_TASK_TOOL_NAME",
     "BOARD_CREATE_TASK_TOOL_NAME",
     "BOARD_LIST_TASKS_TOOL_NAME",
+    "BOARD_RESOLVE_TASK_TOOL_NAME",
     "BOARD_REVIEW_TASK_TOOL_NAME",
     "PROPOSE_TEAM_TOOL_NAME",
     "TEAM_TOOL_NAMES",
     "TeamWorkerState",
     "register_team_tools",
+    "team_run_summary",
+    "worker_limits",
 ]

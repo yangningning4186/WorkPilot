@@ -21,6 +21,10 @@ import {
   type StepUpdatePayload,
   type StreamEnvelope,
   type SubagentProgressPayload,
+  type BoardTaskPayload,
+  type TeamCreatedPayload,
+  type TeamSummaryPayload,
+  type TeamWorkerStartedPayload,
   type ToolActivityPayload,
   type ReadingAnnotatedPayload,
   type ReadingGotoPayload,
@@ -75,6 +79,7 @@ export type CoworkRunPhase =
   | "waiting_human"
   | "sleeping"
   | "done"
+  | "partial"
   | "budget_exceeded"
   | "cancelled"
   | "error";
@@ -153,6 +158,8 @@ export interface CoworkRunView {
    * 的历史在事件流里本来就查得到。
    */
   subagentRuns: SubagentProgressPayload[];
+  /** Agent Team 的 roster 与 Board 真相；终态由 team.summary 原子覆盖。 */
+  team: TeamSummaryPayload | null;
   /**
    * 本次运行里被免审批放行的调用。要在时间线上看得见——否则用户只会看到一条命令
    * 凭空执行了，也无从判断该去撤销哪条规则。
@@ -182,6 +189,7 @@ const EMPTY: CoworkRunView = {
   readerAnnotation: null,
   interrupt: null,
   subagentRuns: [],
+  team: null,
   waivedApprovals: [],
   sleepingUntil: null,
   error: null,
@@ -198,6 +206,7 @@ export function createEmptyCoworkRunView(phase: CoworkRunPhase = "idle"): Cowork
     todos: [],
     memoryWrites: [],
     subagentRuns: [],
+    team: null,
     waivedApprovals: [],
   };
 }
@@ -239,6 +248,24 @@ function upsertStep(
   return current === undefined
     ? [...steps, next].sort((left, right) => left.idx - right.idx)
     : steps.map((item) => (item.id === data.step_id ? next : item));
+}
+
+function upsertBoardTask(
+  team: TeamSummaryPayload | null,
+  task: BoardTaskPayload,
+): TeamSummaryPayload {
+  const current = team ?? {
+    team_id: "",
+    completion_status: "partial",
+    workers: [],
+    tasks: [],
+    counts: { open: 0, in_progress: 0, blocked: 0, review: 0, done: 0, cancelled: 0 },
+  };
+  const seen = current.tasks.some((item) => item.task_id === task.task_id);
+  const tasks = seen
+    ? current.tasks.map((item) => (item.task_id === task.task_id ? task : item))
+    : [...current.tasks, task];
+  return { ...current, tasks };
 }
 
 export function applyCoworkEvent(state: CoworkRunView, envelope: StreamEnvelope): CoworkRunView {
@@ -359,6 +386,51 @@ export function applyCoworkEvent(state: CoworkRunView, envelope: StreamEnvelope)
           : [...state.subagentRuns, data],
       };
     }
+    case "team.created": {
+      const data = envelope.data as TeamCreatedPayload;
+      return {
+        ...next,
+        phase: "executing",
+        team: {
+          team_id: data.team_id,
+          completion_status: "partial",
+          workers: data.workers,
+          tasks: state.team?.tasks ?? [],
+          counts: state.team?.counts
+            ?? { open: 0, in_progress: 0, blocked: 0, review: 0, done: 0, cancelled: 0 },
+        },
+      };
+    }
+    case "team.worker.started": {
+      const data = envelope.data as TeamWorkerStartedPayload;
+      const current = state.team?.tasks.find((item) => item.task_id === data.task_id);
+      if (current === undefined) return next;
+      return {
+        ...next,
+        phase: "executing",
+        team: upsertBoardTask(state.team, {
+          ...current,
+          status: "in_progress",
+          assignee: data.worker,
+          attempt_count: data.attempt_count,
+          retry_count: data.retry_count,
+        }),
+      };
+    }
+    case "board.task.created":
+    case "board.task.review":
+    case "board.task.failed":
+    case "board.task.reviewed":
+    case "board.task.resolved": {
+      return {
+        ...next,
+        phase: "executing",
+        team: upsertBoardTask(state.team, envelope.data as BoardTaskPayload),
+      };
+    }
+    case "team.summary": {
+      return { ...next, team: envelope.data as TeamSummaryPayload };
+    }
     case "memory.saved": {
       const data = envelope.data as MemorySavedPayload;
       const seen = state.memoryWrites.find((item) => item.memory.id === data.memory.id);
@@ -453,6 +525,7 @@ export function applyCoworkEvent(state: CoworkRunView, envelope: StreamEnvelope)
       if (data.status === "cancelled") return { ...next, phase: "cancelled", finishedAt: eventTime };
       if (data.status === "budget_exceeded") return { ...next, phase: "budget_exceeded", finishedAt: eventTime };
       if (data.status === "failed") return { ...next, phase: "error", finishedAt: eventTime };
+      if (data.status === "partial") return { ...next, phase: "partial", finishedAt: eventTime };
       return { ...next, phase: "done", finishedAt: eventTime };
     }
     case "error": {

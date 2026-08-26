@@ -1287,6 +1287,7 @@ const server = createServer((request, response) => {
       const finalAnswer = "已将季度汇报改为管理层语气，并保留原有数据。";
       const waitsForCancel = body.goal.includes("保持运行直到我停止");
       const waitsForDirectoryApproval = body.goal.includes("请求目录授权");
+      const showsPartialTeam = body.goal.includes("展示 Agent Team 部分完成");
       const fixtureScenarioName = coworkFixtureScenario(body.goal);
       const conversationTitle = fixtureScenarioName === null
         ? "优化季度汇报管理层表达"
@@ -1330,10 +1331,73 @@ const server = createServer((request, response) => {
         { type: "conversation.title", data: { conversation_id: conversationId, title: conversationTitle } },
         { type: "run.done", data: { workflow_type: "cowork", status: "done" } },
             ];
+      const partialTaskBase = {
+        description: "检查授权工作区",
+        acceptance_criteria: "给出证据和改进建议",
+        resource_scope: [{ path: "/Users/demo/WorkPilot", access_mode: "read_only" }],
+        worker_report: "已完成当前预算允许的检查。",
+        review_comment: "",
+        last_error: null,
+      };
+      const partialTeamEvents = showsPartialTeam
+        ? [
+            { type: "plan", data: { workflow_type: "cowork", mode: "dynamic_tool_loop", tools: [] } },
+            {
+              type: "team.created",
+              data: {
+                team_id: `${runId}-team`,
+                workers: [
+                  { name: "architecture", role: "分析整体架构和模块边界", session_id: `${runId}-architecture` },
+                  { name: "testing", role: "检查测试覆盖和失败风险", session_id: `${runId}-testing` },
+                ],
+              },
+            },
+            {
+              type: "team.summary",
+              data: {
+                team_id: `${runId}-team`,
+                completion_status: "partial",
+                workers: [
+                  { name: "architecture", role: "分析整体架构和模块边界", session_id: `${runId}-architecture` },
+                  { name: "testing", role: "检查测试覆盖和失败风险", session_id: `${runId}-testing` },
+                ],
+                tasks: [
+                  {
+                    ...partialTaskBase,
+                    task_id: `${runId}-architecture-task`,
+                    title: "整体架构与模块边界分析",
+                    status: "open",
+                    completion_kind: "pending",
+                    assignee: "architecture",
+                    attempt_count: 3,
+                    retry_count: 2,
+                    rejection_reason: "仍缺少主要脚本的模块边界证据。",
+                  },
+                  {
+                    ...partialTaskBase,
+                    task_id: `${runId}-testing-task`,
+                    title: "测试覆盖与失败风险检查",
+                    status: "done",
+                    completion_kind: "complete",
+                    assignee: "testing",
+                    attempt_count: 2,
+                    retry_count: 1,
+                    rejection_reason: "首次报告没有覆盖关键失败路径。",
+                  },
+                ],
+                counts: { open: 1, in_progress: 0, blocked: 0, review: 0, done: 1, cancelled: 0 },
+              },
+            },
+            { type: "message.snapshot", data: { text: "团队检查已结束，其中一项仍需返工。" } },
+            { type: "message.done", data: { message_id: `${runId}-message`, status: "completed" } },
+            { type: "conversation.title", data: { conversation_id: conversationId, title: conversationTitle } },
+            { type: "run.done", data: { workflow_type: "cowork", status: "partial" } },
+          ]
+        : null;
       const fixtureEvents = fixtureScenarioName === null
         ? null
         : SCENARIOS[fixtureScenarioName].events;
-      const events = fixtureEvents === null
+      const events = partialTeamEvents ?? (fixtureEvents === null
         ? standardEvents
         : [
             { type: "plan", data: { workflow_type: "cowork", mode: "dynamic_tool_loop", tools: [] } },
@@ -1342,7 +1406,7 @@ const server = createServer((request, response) => {
             ...(fixtureEvents.some((event) => event.type === "error")
               ? []
               : [{ type: "run.done", data: { workflow_type: "cowork", status: "done" } }]),
-          ];
+          ]);
       coworkEventLogs.set(runId, events);
       const session = currentSession(request);
       const conversation = session?.conversations.get(conversationId);

@@ -544,6 +544,15 @@ class CoworkStore(Protocol):
         feedback: str,
     ) -> BoardTaskRecord: ...
 
+    async def resolve_board_task(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        task_id: UUID,
+        resolution: Literal["accept_partial", "cancel"],
+        reason: str,
+    ) -> BoardTaskRecord: ...
+
     # 长期记忆
     async def remember_cowork_memory(
         self,

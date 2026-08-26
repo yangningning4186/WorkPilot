@@ -31,9 +31,36 @@ WorkPilot 提供四种能力：
 | **问**（知识库） | ✅ 已实现 | "我读过的论文里，谁在做负样本构造？" | 一个 KB 就是一个目录；FAISS + BM25 两路 RRF，可选本机 cross-encoder 精排，引用到文件 + 页码；找不到就**说找不到**，不编 |
 | **做** | ✅ 已实现 | "把我这个月读的 8 篇 RAG 论文整理成综述，按方法分类" | 模型自己维护任务清单；可选计划模式先出方案再批准；每步可见、可中断、可从 checkpoint 恢复 |
 | **编辑** | ✅ 已实现 | "把这份 Word 的结论改得更精炼，并更新 Excel 汇总公式" | 会话级目录授权；权限内直接写入 `.md` / `.docx` / `.xlsx`，有冲突检测、备份和原子替换 |
+| **协作**（Agent Team） | ✅ 已实现 | "让架构、测试、安全三个 Worker 并行审查这个项目" | Lead 维护共享 Board；独立 assignment 真并发；拒绝返工保留反馈与上一版报告；未收口时明确标记“部分完成” |
 | **记住** | ✅ 已实现 | "以后回答先给结论，再补依据" | global / workspace / conversation 三级作用域；**不覆盖，只失效**——改写留下历史 |
 | **无人值守** | ✅ 已实现 | "每天早上七点跑一遍 CI 并把失败摘要发到群里" | 单次/cron 计划、离线补跑一次、重叠保护；需要人时安全暂停进 Inbox |
 | **想起** | 🔭 长期蓝图 | "今天这篇和三个月前那篇有什么关联" | 依赖尚未实现的知识图谱与每日 digest |
+
+---
+
+## 产品演示
+
+| Cowork 首页 | 日常办公与产物预览 |
+|---|---|
+| ![WorkPilot Cowork 首页](docs/assets/demo/首页.png) | ![日常办公预览](docs/assets/demo/日常办公预览.png) |
+
+| 论文阅读 | Agentic RAG |
+|---|---|
+| ![论文阅读与引用联动](docs/assets/demo/阅读论文.png) | ![Agentic RAG](docs/assets/demo/Agentic%20RAG.png) |
+
+| 知识库 | 三级记忆管理 |
+|---|---|
+| ![知识库](docs/assets/demo/知识库.png) | ![记忆管理页](docs/assets/demo/记忆管理页.png) |
+
+| Skill 自动蒸馏与晋升 | MCP 连接器 |
+|---|---|
+| ![Skill 自动蒸馏与晋升](docs/assets/demo/skill自动蒸馏与晋升.png) | ![MCP 连接器](docs/assets/demo/MCP连接器.png) |
+
+| 自动化任务 | 模型与密钥 |
+|---|---|
+| ![自动化任务](docs/assets/demo/自动化任务.png) | ![模型与密钥](docs/assets/demo/模型与密钥.png) |
+
+> 替换演示图时保留相同文件名即可；新增图片放入 `docs/assets/demo/`，再用相对路径 `![说明](docs/assets/demo/文件名.png)` 引用。
 
 ---
 
@@ -58,7 +85,7 @@ badcase 来自我每天的真实使用，不是编出来的测试用例。
 | 桌面 | Tauri 2 · 随机 localhost sidecar + 每次启动注入的 token |
 | 前端 | Next.js 16 (App Router) · React 19 · TypeScript · 原生 CSS · react-markdown · 自写 SSE 客户端 |
 | 后端 | Python 3.12 · FastAPI · Pydantic |
-| Agent | 自研确定性工具循环 · checkpoint · 三维预算 · 逐次审批 · `tool_invocations` 调用租约 |
+| Agent | 自研确定性工具循环 · checkpoint · 三维预算 · 逐次审批 · `tool_invocations` 调用租约 · Lead/Worker Agent Team · 共享 Board |
 | 阅读 | locator 寻址（PDF 按页 / 文本按节）· 三层匹配 · block 级 bbox · 阅读器联动 · 内容哈希锚定的持久批注 |
 | 知识库 | MinerU / PyMuPDF 解析 · LlamaIndex + FAISS/BM25 · 同一 KB 多版索引 · 显式 active 与版本级 embedding 签名 |
 | 记忆 | 两阶段事实抽取 · 时序有效性（不覆盖只失效）· 三级作用域 · 模型按 id 改写 |
@@ -70,7 +97,7 @@ badcase 来自我每天的真实使用，不是编出来的测试用例。
 
 ### 长期蓝图（尚未实现）
 
-可写多 Agent 委派、个人知识图谱、每日 digest、Obsidian/Zotero/web_clip connector 仍在
+个人知识图谱、每日 digest、Obsidian/Zotero/web_clip connector 仍在
 [MVP Backlog](docs/11-MVP边界.md#5-backlog按解锁顺序)。
 
 **明确不做的**：语义缓存（错误命中会安静地返回"看起来对"的答案，在一个把接地当核心承诺
@@ -166,7 +193,7 @@ PyInstaller sidecar 不能跨平台编译，macOS、Windows、Linux 必须分别
 
 ## 项目状态
 
-**状态快照：2026-08-24。** 形态从"要发公网 demo 的 Web 服务"转成**桌面应用**：
+**状态快照：2026-08-26。** 形态从"要发公网 demo 的 Web 服务"转成**桌面应用**：
 PostgreSQL / Redis / Arq / pgvector / MinIO / Langfuse 全部退役（净删 2.5 万行），
 沉浸阅读并成一档工作模式，知识库索引随后改为多版并存。三条 ADR 记录了这次转向：
 [0012](docs/adr/0012-退役postgres与redis改用本机文件.md)、
@@ -179,6 +206,9 @@ PostgreSQL / Redis / Arq / pgvector / MinIO / Langfuse 全部退役（净删 2.5
   `tool_invocations` 成功确认后的本地去重、空转熔断、上下文压缩、自唤醒
 - **审批三档**：计划模式（只读）· 逐次审批（默认）· 免审批；常驻规则只省"再问一次"，
   **不放大 capability**
+- **Agent Team**：Lead 通过共享 Board 分派 Worker；无依赖 assignment 并发执行，返工携带
+  review feedback 与上一版报告；运行结束强制核验任务状态，支持接受部分完成或取消，并在界面
+  展示每个 Worker 的重试次数、拒绝原因与最终状态
 - **阅读**：locator 寻址、三层匹配、引文校验回 bbox、`reader_goto` 驱动阅读器；
   `reader_annotate` 逐字校验后按内容哈希持久化，面板可看备注与删除
 - **知识库**：一个 KB 多版索引并存，每版固化 embedding 与检索配置；显式 active、
@@ -189,7 +219,7 @@ PostgreSQL / Redis / Arq / pgvector / MinIO / Langfuse 全部退役（净删 2.5
 - **无人值守**：单次/cron 计划、离线补跑一次、重叠保护、跨会话 Inbox、飞书镜像
 - **成本**：`light/main/heavy/external` 路由、fallback、确定性升档、进程内精确缓存、
   GPU 批次摊销口径、每日费用闸门（整数微美元）
-- **测试**：后端 881 个用例，前端 42 个 Playwright E2E；不依赖 Docker 服务
+- **测试**：后端 956 个用例，前端 44 个 Playwright E2E；不依赖 Docker 服务
 - 夜间 gate 已在**检索轨与生成轨**双双点亮：两份 baseline 快照均已提交，
   检索轨的通过 / 阻断 / 拒判三条路径各用真报告实跑验证过
 - 独立 validation 19 条上，heavy Judge accuracy/QWK 为 **0.9474/0.8725**，

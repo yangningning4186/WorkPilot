@@ -85,6 +85,31 @@ test.describe("Cowork 工作台", () => {
     )).toBe(true);
   });
 
+  test("Agent Team 展示返工次数、拒绝原因和部分完成终态", async ({ page }) => {
+    await page.goto("/cowork");
+    await loginAsAdmin(page);
+
+    await page
+      .getByLabel("你想让 Cowork 完成什么？")
+      .fill("展示 Agent Team 部分完成");
+    await page.getByRole("button", { name: /开始执行/ }).click();
+
+    const activity = page.getByLabel("任务进度");
+    await expect(activity.locator(".workdesk-run-process-state")).toContainText("部分完成");
+    const team = page.getByLabel("Agent Team 状态");
+    await expect(team).toBeVisible();
+    await expect(team).toContainText("1/2 已收束");
+    await expect(team).toContainText("architecture");
+    await expect(team).toContainText("testing");
+    await expect(team).toContainText("已返工 2 次");
+    await expect(team).toContainText("待返工");
+    await expect(team).toContainText("已完成");
+
+    const architecture = team.locator(".workdesk-team-task", { hasText: "architecture" });
+    await architecture.getByText("最近拒绝原因", { exact: true }).click();
+    await expect(architecture).toContainText("仍缺少主要脚本的模块边界证据。");
+  });
+
   test("输入区把低频配置收进运行设置，并随内容舒展", async ({ page }) => {
     await page.goto("/cowork");
     await loginAsAdmin(page);
@@ -419,7 +444,7 @@ test.describe("Cowork 工作台", () => {
     await page.getByLabel("你想让 Cowork 完成什么？").fill("总结这篇论文");
     await page.getByRole("button", { name: /开始执行/ }).click();
 
-    const reader = page.getByLabel("阅读器");
+    const reader = page.getByRole("complementary", { name: "阅读器" });
     await expect(reader.getByText("paper.pdf", { exact: true })).toBeVisible();
 
     // 画布画出了东西，文本层摆出了 span：两件事都得成立，缺一个就是"看得见但选不中"
@@ -428,10 +453,53 @@ test.describe("Cowork 工作台", () => {
     await expect
       .poll(() => canvas.evaluate((node: HTMLCanvasElement) => node.width))
       .toBeGreaterThan(0);
+    await expect(canvas).toHaveAttribute("data-render-state", "ready");
     await expect(reader.locator(".textLayer span").first()).toBeAttached();
     await expect
       .poll(() => reader.locator(".textLayer").innerText())
       .toContain("Attention");
+
+    // macOS/Tauri 的 WebView 在窗口切出后可能回收 canvas 像素，但 DOM 与 pdf.js document
+    // 仍然存在。模拟这条路径：先清空画布，再让窗口恢复焦点，当前页必须自动重绘。
+    const paintedColour = () =>
+      canvas.evaluate((node: HTMLCanvasElement) => {
+        const context = node.getContext("2d");
+        if (context === null || node.width === 0 || node.height === 0) return 0;
+        const pixels = context.getImageData(0, 0, node.width, node.height).data;
+        const pixelStride = Math.max(1, Math.floor(pixels.length / 4 / 400));
+        let colour = 0;
+        for (let pixel = 0; pixel < pixels.length / 4; pixel += pixelStride) {
+          const index = pixel * 4;
+          colour += (pixels[index] ?? 0) + (pixels[index + 1] ?? 0) + (pixels[index + 2] ?? 0);
+        }
+        return colour;
+      });
+    await expect.poll(paintedColour).toBeGreaterThan(0);
+    const colourImmediatelyAfterDiscard = await canvas.evaluate((node: HTMLCanvasElement) => {
+      const context = node.getContext("2d");
+      if (context === null) return -1;
+      context.clearRect(0, 0, node.width, node.height);
+      const pixel = context.getImageData(0, 0, 1, 1).data;
+      const colour = (pixel[0] ?? 0) + (pixel[1] ?? 0) + (pixel[2] ?? 0);
+      // 在同一个浏览器任务里先读取清空后的像素，再模拟 WebView 恢复可见；避免测试运行器
+      // 自己的窗口焦点事件提前触发重绘，把“已回收”状态覆盖掉。
+      document.dispatchEvent(new Event("visibilitychange"));
+      return colour;
+    });
+    expect(colourImmediatelyAfterDiscard).toBe(0);
+    await expect.poll(paintedColour).toBeGreaterThan(0);
+
+    // 侧栏页面是独立 Next.js 路由，会卸载整个 Cowork 页面。返回同一会话后不但要重新
+    // 打开论文，也要回到离开前正在看的页，而不是悄悄退回办公模式或第 1 页。
+    await reader.getByRole("button", { name: "下一页" }).click();
+    await expect(reader).toContainText("第 2 / 2 页");
+    await page.getByRole("link", { name: "知识库", exact: true }).click();
+    await expect(page).toHaveURL(/\/knowledge$/);
+    await page.locator(".workdesk-brand").click();
+    await expect(page).toHaveURL(/\/cowork/);
+    const restoredReader = page.getByRole("complementary", { name: "阅读器" });
+    await expect(restoredReader.getByText("paper.pdf", { exact: true })).toBeVisible();
+    await expect(restoredReader).toContainText("第 2 / 2 页");
 
     const calls = await mockRequests(request);
     expect(calls.some((item) => item.path.endsWith("/reading/file"))).toBe(true);

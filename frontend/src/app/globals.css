@@ -6533,6 +6533,58 @@ html.workdesk-pane-resizing * { cursor: col-resize !important; user-select: none
 .workdesk-run-tasks li.in_progress > span,
 .workdesk-run-tasks li.in_progress > p { color: var(--workdesk-accent); }
 
+.workdesk-team-board {
+  margin: 8px 0 11px;
+  padding: 10px;
+  border: 1px solid #e4e9e6;
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgb(248 251 249 / 92%), rgb(244 248 246 / 70%));
+}
+.workdesk-team-board > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.workdesk-team-board > header > div { display: flex; align-items: center; gap: 7px; }
+.workdesk-team-board > header strong { color: #46524c; font-size: 10px; font-weight: 720; letter-spacing: .01em; }
+.workdesk-team-board > header small { color: #929b96; font-size: 8px; font-weight: 550; }
+.workdesk-team-signal { width: 7px; height: 7px; border-radius: 50%; background: var(--workdesk-accent); box-shadow: 0 0 0 3px rgb(29 128 98 / 10%); }
+.workdesk-team-empty { margin: 0; color: #8d9691; font-size: 9px; }
+.workdesk-team-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 7px; }
+.workdesk-team-task {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #e6ebe8;
+  border-left: 3px solid #b9c3be;
+  border-radius: 9px;
+  background: rgb(255 255 255 / 86%);
+}
+.workdesk-team-task.is-done { border-left-color: var(--workdesk-accent); }
+.workdesk-team-task.is-running { border-left-color: #4c8cd8; }
+.workdesk-team-task.is-review { border-left-color: #7b73c8; }
+.workdesk-team-task.is-partial,
+.workdesk-team-task.is-open { border-left-color: #d49a35; }
+.workdesk-team-task.is-blocked { border-left-color: #cf6556; }
+.workdesk-team-task.is-cancelled { border-left-color: #9ba19e; opacity: .82; }
+.workdesk-team-task > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.workdesk-team-task > header > div { display: grid; min-width: 0; gap: 1px; }
+.workdesk-team-task > header strong { overflow: hidden; color: #424c47; font: 650 9px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.workdesk-team-task > header span { color: #9ca39f; font-size: 7.5px; }
+.workdesk-team-task > header em { flex: 0 0 auto; padding: 2px 5px; border-radius: 999px; background: #eef2f0; color: #737c77; font-size: 7px; font-style: normal; font-weight: 650; }
+.workdesk-team-task.is-done > header em { background: #e5f3ed; color: var(--workdesk-accent); }
+.workdesk-team-task.is-partial > header em,
+.workdesk-team-task.is-open > header em { background: #fff3dc; color: #9d6815; }
+.workdesk-team-task.is-running > header em { background: #e8f1fc; color: #3975bb; }
+.workdesk-team-task.is-review > header em { background: #efedfb; color: #655bb4; }
+.workdesk-team-task.is-blocked > header em { background: #fbe9e5; color: #b4493a; }
+.workdesk-team-task h4 { margin: 7px 0 0; color: #5b655f; font-size: 9.5px; font-weight: 620; line-height: 1.4; }
+.workdesk-team-role { display: -webkit-box; margin: 4px 0 0; overflow: hidden; color: #929a96; font-size: 8px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.workdesk-team-retry { width: fit-content; margin: 6px 0 0; padding: 2px 5px; border-radius: 4px; background: #fff5e4; color: #9a6b21; font-size: 7.5px; }
+.workdesk-team-feedback { margin-top: 6px; }
+.workdesk-team-feedback summary { width: fit-content; color: #9b6a22; cursor: pointer; font-size: 8px; font-weight: 600; list-style: none; }
+.workdesk-team-feedback summary::before { margin-right: 4px; content: "›"; }
+.workdesk-team-feedback[open] summary::before { content: "⌄"; }
+.workdesk-team-feedback p,
+.workdesk-team-error { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; font-size: 8px; line-height: 1.5; }
+.workdesk-team-feedback p { color: #7d7465; }
+.workdesk-team-error { color: #ae4e42; }
+
 .workdesk-tool-trace { margin: 0; padding: 0; }
 .workdesk-tool-trace > summary::before { content: none; }
 .workdesk-tool-trace > summary > span { display: block; flex: none; }
@@ -6595,7 +6647,9 @@ html.workdesk-pane-resizing * { cursor: col-resize !important; user-select: none
 }
 .workdesk-run-answer.error,
 .workdesk-run-answer.budget,
-.workdesk-run-answer.cancelled { padding: 10px 12px; border-radius: 10px; }
+.workdesk-run-answer.cancelled,
+.workdesk-run-answer.partial { padding: 10px 12px; border-radius: 10px; }
+.workdesk-run-answer.partial { border: 1px solid #f0ddb9; background: #fffaf1; }
 .workdesk-chat-artifacts { padding: 13px 0 0; border-top: 0; background: transparent; }
 
 .workdesk-stage.is-chat > .workdesk-composer {

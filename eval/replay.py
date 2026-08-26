@@ -35,6 +35,7 @@ RunPhase = Literal[
     "executing",
     "waiting_human",
     "done",
+    "partial",
     "refused",
     "error",
 ]
@@ -63,6 +64,14 @@ KNOWN_EVENT_TYPES = frozenset(
         "reading.goto",
         "reading.annotated",
         "subagent.progress",
+        "team.created",
+        "team.worker.started",
+        "board.task.created",
+        "board.task.review",
+        "board.task.failed",
+        "board.task.reviewed",
+        "board.task.resolved",
+        "team.summary",
         "steering.queued",
         "steering.applied",
         "interrupt",
@@ -75,7 +84,7 @@ KNOWN_EVENT_TYPES = frozenset(
     }
 )
 TERMINAL_EVENT_TYPES = frozenset({"message.done", "run.done", "error"})
-FINISHED_PHASES = frozenset({"done", "refused", "error"})
+FINISHED_PHASES = frozenset({"done", "partial", "refused", "error"})
 TOOL_FINISH_EVENT_TYPES = frozenset({"tool.result", "tool.error"})
 
 _SEQ_PATTERN = re.compile(r"[1-9][0-9]*\Z")
@@ -437,7 +446,8 @@ def apply_envelope(state: ReplayState, envelope: Mapping[str, Any]) -> ReplaySta
     if event_type == "artifact":
         return replace(next_state, artifacts=(*state.artifacts, copy.deepcopy(data)))
     if event_type == "run.done":
-        return replace(next_state, interrupt=None, phase="done")
+        phase: RunPhase = "partial" if data.get("status") == "partial" else "done"
+        return replace(next_state, interrupt=None, phase=phase)
     if event_type == "error":
         return replace(next_state, error=copy.deepcopy(data), phase="error")
     return next_state

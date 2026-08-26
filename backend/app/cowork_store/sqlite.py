@@ -455,8 +455,12 @@ CREATE TABLE IF NOT EXISTS cowork_board_tasks (
         CHECK (status IN ('open','in_progress','blocked','review','done','cancelled')),
     assignee_worker_id TEXT REFERENCES cowork_team_workers(id) ON DELETE SET NULL,
     assignment_call_id TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    completion_kind TEXT NOT NULL DEFAULT 'pending',
     worker_report TEXT,
     review_comment TEXT,
+    last_rejection_comment TEXT,
+    last_error TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -550,7 +554,7 @@ CREATE TABLE IF NOT EXISTS memory_extraction_jobs (
 CREATE INDEX IF NOT EXISTS ix_local_memory_jobs_dispatch
 ON memory_extraction_jobs(available_at, id) WHERE status IN ('queued','running');
 
-PRAGMA user_version = 13;
+PRAGMA user_version = 14;
 """
 
 _MEMORY_INDEX_SCHEMA = """
@@ -596,9 +600,9 @@ class SqliteCoworkStore:
         connection = self._connect()
         try:
             database_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if database_version > 13:
+            if database_version > 14:
                 raise RuntimeError(
-                    f"cowork.db schema v{database_version} 高于当前应用支持的 v13，拒绝降级打开"
+                    f"cowork.db schema v{database_version} 高于当前应用支持的 v14，拒绝降级打开"
                 )
             connection.executescript(_SCHEMA)
             conversation_columns = {
@@ -692,6 +696,39 @@ class SqliteCoworkStore:
             # 这些索引引用记忆合并后新增的 invalid_at。必须等旧库补完列再创建，
             # 否则 executescript 会先报 no such column，迁移代码永远没有机会执行。
             connection.executescript(_MEMORY_INDEX_SCHEMA)
+            board_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(cowork_board_tasks)").fetchall()
+            }
+            for column, ddl in (
+                ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("completion_kind", "TEXT NOT NULL DEFAULT 'pending'"),
+                ("last_rejection_comment", "TEXT"),
+                ("last_error", "TEXT"),
+            ):
+                if column not in board_columns:
+                    connection.execute(
+                        f"ALTER TABLE cowork_board_tasks ADD COLUMN {column} {ddl}"
+                    )
+            # v13 及更早没有尝试次数和独立拒绝字段；已有 assignment 至少算一次，open
+            # 任务当前的 review_comment 就是最近拒绝原因。只能保守回填可证明的下界，
+            # 不能根据消息文本猜历史到底重试过几轮。
+            connection.execute(
+                """UPDATE cowork_board_tasks SET attempt_count = 1
+                   WHERE attempt_count = 0
+                     AND (assignment_call_id IS NOT NULL OR worker_report IS NOT NULL)"""
+            )
+            connection.execute(
+                """UPDATE cowork_board_tasks SET last_rejection_comment = review_comment
+                   WHERE last_rejection_comment IS NULL AND status = 'open'
+                     AND review_comment IS NOT NULL AND review_comment <> ''"""
+            )
+            connection.execute(
+                """UPDATE cowork_board_tasks SET completion_kind =
+                       CASE status WHEN 'done' THEN 'complete'
+                                   WHEN 'cancelled' THEN 'cancelled'
+                                   ELSE completion_kind END"""
+            )
             # v12: run 创建先落 initializing，checkpoint 与初始事件同事务完成后才可派发。
             # 旧版进程如果在初始化途中退出，新的 sidecar 不可能继续那条 HTTP 调用；启动时
             # 明确标失败，避免会话永远被一条不可执行的活跃 run 卡住。
@@ -711,7 +748,7 @@ class SqliteCoworkStore:
                        'initializing','queued','executing','waiting_human','sleeping'
                    )"""
             )
-            connection.execute("PRAGMA user_version = 13")
+            connection.execute("PRAGMA user_version = 14")
         finally:
             connection.close()
         try:
@@ -1086,7 +1123,7 @@ class SqliteCoworkStore:
         def operation(connection: sqlite3.Connection) -> bool:
             active = connection.execute(
                 """SELECT 1 FROM agent_runs WHERE conversation_id = ?
-                   AND status NOT IN ('done','failed','cancelled','budget_exceeded') LIMIT 1""",
+                   AND status NOT IN ('done','partial','failed','cancelled','budget_exceeded') LIMIT 1""",
                 (str(conversation_id),),
             ).fetchone()
             if active is not None:
@@ -1137,7 +1174,7 @@ class SqliteCoworkStore:
         def operation(connection: sqlite3.Connection) -> bool:
             leased_worker = connection.execute(
                 """SELECT 1 FROM agent_runs WHERE conversation_id = ?
-                   AND status NOT IN ('done','failed','cancelled','budget_exceeded')
+                   AND status NOT IN ('done','partial','failed','cancelled','budget_exceeded')
                    AND worker_id IS NOT NULL AND lease_until IS NOT NULL
                    AND lease_until > ? LIMIT 1""",
                 (str(conversation_id), _iso()),
@@ -1614,7 +1651,7 @@ class SqliteCoworkStore:
                    JOIN agent_checkpoints AS checkpoints ON checkpoints.run_id = runs.id
                    WHERE runs.conversation_id = ? AND runs.id <> ?
                      AND runs.workflow_type = 'cowork'
-                     AND runs.status IN ('done','failed','cancelled','budget_exceeded')
+                     AND runs.status IN ('done','partial','failed','cancelled','budget_exceeded')
                      AND runs.created_at < ?
                    ORDER BY runs.created_at DESC, checkpoints.checkpoint_id DESC LIMIT 1""",
                 (current["conversation_id"], str(run_id), current["created_at"]),
@@ -3430,7 +3467,8 @@ class SqliteCoworkStore:
             connection.execute(
                 """UPDATE cowork_board_tasks SET
                        status = 'in_progress', assignee_worker_id = ?, assignment_call_id = ?,
-                       review_comment = NULL, updated_at = ?
+                       attempt_count = attempt_count + 1, completion_kind = 'pending',
+                       updated_at = ?
                    WHERE id = ?""",
                 (str(worker_row["id"]), assignment_call_id, timestamp, str(task_id)),
             )
@@ -3495,6 +3533,7 @@ class SqliteCoworkStore:
             state=state,
             task_status="review",
             worker_report=worker_report,
+            last_error=None,
             session_status="idle",
         )
 
@@ -3511,7 +3550,8 @@ class SqliteCoworkStore:
             task_id=task_id,
             state=state,
             task_status="blocked",
-            worker_report=error,
+            worker_report=None,
+            last_error=error,
             session_status="idle",
         )
 
@@ -3522,7 +3562,8 @@ class SqliteCoworkStore:
         task_id: UUID,
         state: dict[str, Any],
         task_status: str,
-        worker_report: str,
+        worker_report: str | None,
+        last_error: str | None,
         session_status: str,
     ) -> BoardTaskRecord:
         timestamp = _iso()
@@ -3536,12 +3577,14 @@ class SqliteCoworkStore:
             if session_row is None:
                 raise ValueError("Worker Session 已不再执行这条 Board task")
             changed = connection.execute(
-                """UPDATE cowork_board_tasks SET status = ?, worker_report = ?, updated_at = ?
+                """UPDATE cowork_board_tasks SET status = ?,
+                          worker_report = COALESCE(?, worker_report), last_error = ?, updated_at = ?
                    WHERE id = ? AND status = 'in_progress'
                      AND assignee_worker_id = ?""",
                 (
                     task_status,
                     worker_report,
+                    last_error,
                     timestamp,
                     str(task_id),
                     str(session_row["worker_id"]),
@@ -3585,20 +3628,59 @@ class SqliteCoworkStore:
             if row["status"] != "review":
                 raise ValueError("只有处于 review 的 Board task 可以验收")
             next_status = "done" if accepted else "open"
+            completion_kind = "complete" if accepted else "pending"
             connection.execute(
                 """UPDATE cowork_board_tasks SET
-                       status = ?, review_comment = ?,
-                       assignee_worker_id = CASE WHEN ? THEN assignee_worker_id ELSE NULL END,
-                       assignment_call_id = CASE WHEN ? THEN assignment_call_id ELSE NULL END,
+                       status = ?, completion_kind = ?, review_comment = ?,
+                       last_rejection_comment = CASE WHEN ? THEN last_rejection_comment ELSE ? END,
                        updated_at = ? WHERE id = ?""",
                 (
                     next_status,
+                    completion_kind,
                     feedback,
                     int(accepted),
-                    int(accepted),
+                    feedback,
                     timestamp,
                     str(task_id),
                 ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task_id),)
+            ).fetchone()
+            assert updated is not None
+            return self._board_task_record(updated)
+
+        return await self._write(operation)
+
+    async def resolve_board_task(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        task_id: UUID,
+        resolution: Literal["accept_partial", "cancel"],
+        reason: str,
+    ) -> BoardTaskRecord:
+        """显式收束无法继续执行的任务；不会伪造一次 Worker review。"""
+
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> BoardTaskRecord:
+            row = connection.execute(
+                """SELECT tasks.* FROM cowork_board_tasks AS tasks
+                   JOIN cowork_teams AS teams ON teams.id = tasks.team_id
+                   WHERE tasks.id = ? AND teams.lead_conversation_id = ?""",
+                (str(task_id), str(lead_conversation_id)),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Board task 不存在或不属于当前 Lead 会话")
+            if row["status"] not in {"open", "blocked", "review"}:
+                raise ValueError("只有 open/blocked/review 的 Board task 可以部分接受或取消")
+            status = "done" if resolution == "accept_partial" else "cancelled"
+            completion_kind = "partial" if resolution == "accept_partial" else "cancelled"
+            connection.execute(
+                """UPDATE cowork_board_tasks SET status = ?, completion_kind = ?,
+                          review_comment = ?, updated_at = ? WHERE id = ?""",
+                (status, completion_kind, reason, timestamp, str(task_id)),
             )
             updated = connection.execute(
                 "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task_id),)
@@ -4109,7 +4191,7 @@ class SqliteCoworkStore:
             cancelled_rows = connection.execute(
                 """SELECT id FROM agent_runs
                    WHERE cancel_requested_at IS NOT NULL
-                     AND status NOT IN ('done','failed','cancelled','budget_exceeded')
+                     AND status NOT IN ('done','partial','failed','cancelled','budget_exceeded')
                      AND (status IN ('queued','waiting_human','sleeping')
                           OR (status = 'executing' AND (lease_until IS NULL OR lease_until < ?)))
                    ORDER BY updated_at LIMIT ?""",
@@ -4136,7 +4218,7 @@ class SqliteCoworkStore:
                                  WHERE checkpoints.run_id = runs.id) AS has_checkpoint
                    FROM agent_runs AS runs
                    WHERE runs.cancel_requested_at IS NULL
-                     AND runs.status NOT IN ('done','failed','cancelled','budget_exceeded')
+                     AND runs.status NOT IN ('done','partial','failed','cancelled','budget_exceeded')
                      AND runs.lease_until IS NOT NULL AND runs.lease_until < ?
                    ORDER BY runs.lease_until LIMIT ?""",
                 (now, limit),
@@ -4847,8 +4929,16 @@ class SqliteCoworkStore:
             assignment_call_id=(
                 None if row["assignment_call_id"] is None else str(row["assignment_call_id"])
             ),
+            attempt_count=int(row["attempt_count"]),
+            completion_kind=row["completion_kind"],
             worker_report=None if row["worker_report"] is None else str(row["worker_report"]),
             review_comment=(None if row["review_comment"] is None else str(row["review_comment"])),
+            last_rejection_comment=(
+                None
+                if row["last_rejection_comment"] is None
+                else str(row["last_rejection_comment"])
+            ),
+            last_error=None if row["last_error"] is None else str(row["last_error"]),
             created_at=cast(datetime, _datetime(row["created_at"])),
             updated_at=cast(datetime, _datetime(row["updated_at"])),
         )
