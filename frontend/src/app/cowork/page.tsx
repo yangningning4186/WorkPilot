@@ -101,6 +101,29 @@ const RETIRED_CAPABILITIES = new Set([
   "external.action",
 ]);
 
+interface TeamProposalMember {
+  name: string;
+  role: string;
+  reason: string;
+}
+
+function teamProposalMembers(payload: Record<string, unknown>): TeamProposalMember[] {
+  const args = payload.arguments;
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return [];
+  const members = (args as Record<string, unknown>).members;
+  if (!Array.isArray(members)) return [];
+  return members.flatMap((member) => {
+    if (typeof member !== "object" || member === null || Array.isArray(member)) return [];
+    const record = member as Record<string, unknown>;
+    if (typeof record.name !== "string" || typeof record.role !== "string") return [];
+    return [{
+      name: record.name,
+      role: record.role,
+      reason: typeof record.reason === "string" ? record.reason : "",
+    }];
+  });
+}
+
 const OFFICE_PROMPTS = [
   { label: "文档处理", prompt: "整理工作空间里的 Word 文档，统一格式并提炼一页摘要。" },
   { label: "表格分析", prompt: "分析工作空间里的 Excel 表格，检查异常数据并补齐必要公式。" },
@@ -1291,6 +1314,17 @@ export default function CoworkPage() {
     ? interactionPayload.steps.filter((item): item is string => typeof item === "string")
     : [];
   const planNotes = typeof interactionPayload.notes === "string" ? interactionPayload.notes : "";
+  const isTeamProposal =
+    run.interrupt?.kind === "external_approval" && interactionPayload.tool === "propose_team";
+  const proposedTeamMembers = isTeamProposal ? teamProposalMembers(interactionPayload) : [];
+  const proposedTeamArgs =
+    typeof interactionPayload.arguments === "object"
+      && interactionPayload.arguments !== null
+      && !Array.isArray(interactionPayload.arguments)
+      ? interactionPayload.arguments as Record<string, unknown>
+      : {};
+  const teamProposalNote =
+    typeof proposedTeamArgs.note === "string" ? proposedTeamArgs.note : "";
   const runAnswer = useSmoothStreamText(run.answer, steering);
   const hasConversation = messages.length > 0 || runId !== null;
   const hasComposerMaterials = attachments.length > 0;
@@ -1805,6 +1839,36 @@ export default function CoworkPage() {
                       <small>批准后这些步骤会成为任务清单，写入类工具才会解锁。要改的话直接写在下面。</small>
                       <textarea aria-label="对这个计划的修改意见" disabled={responding} maxLength={4000} onChange={(event) => setInteractionAnswer(event.target.value)} placeholder="想改哪里？留空直接批准" rows={2} value={interactionAnswer} />
                       <div className="workdesk-inbox-actions"><button disabled={responding || interactionAnswer.trim() === ""} onClick={() => void respondToInteraction({ approved: false, answer: interactionAnswer.trim() })} type="button">按这些意见重做计划</button><button className="primary" disabled={responding} onClick={() => void respondToInteraction({ approved: true, answer: interactionAnswer.trim() || undefined })} type="button">批准并开始执行</button></div>
+                    </>
+                  ) : isTeamProposal ? (
+                    <>
+                      <div className="workdesk-team-proposal-heading">
+                        <div>
+                          <h3>组建一支 Agent Team？</h3>
+                          <p>批准后会预创建 {proposedTeamMembers.length} 个独立持久 Worker Session。</p>
+                        </div>
+                        <span>{proposedTeamMembers.length}/{4} workers</span>
+                      </div>
+                      <div className="workdesk-team-roster" aria-label="拟议的 Worker roster">
+                        {proposedTeamMembers.map((member, index) => (
+                          <article key={`${member.name}:${index}`}>
+                            <b>{member.name.slice(0, 1).toUpperCase()}</b>
+                            <div>
+                              <strong>{member.name}</strong>
+                              <p>{member.role}</p>
+                              {member.reason !== "" && <small>{member.reason}</small>}
+                            </div>
+                            <em>待创建</em>
+                          </article>
+                        ))}
+                      </div>
+                      {teamProposalNote !== "" && <p className="workdesk-team-note">{teamProposalNote}</p>}
+                      <div className="workdesk-team-boundary">
+                        <strong>隔离边界</strong>
+                        <span>Worker 不继承当前对话历史，只通过 Board 接收任务描述、验收标准与资源范围。</span>
+                      </div>
+                      <small>创建 Session 本身不调用模型；Worker 首次收到 Board assignment 时才开始计费。团队编制不能被自动模式或常驻规则跳过。</small>
+                      <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">暂不组建</button><button className="primary" disabled={responding || proposedTeamMembers.length === 0} onClick={() => void respondToInteraction({ approved: true, remember: "once" })} type="button">批准并创建团队</button></div>
                     </>
                   ) : run.interrupt.kind === "external_approval" ? (
                     <>

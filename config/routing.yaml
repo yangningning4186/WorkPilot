@@ -77,6 +77,15 @@ routes:
     tier: light
     timeout_s: ${COWORK_MODEL_TIMEOUT_S}
 
+  # —— Agent Team Worker：和 explore 一样，工具决策留在 main；轮次耗尽后的纯总结走 light。
+  # Worker Session 独立持久化，但模型调用仍走 Lead 当前 run 的同一预算网关与超时口径。
+  cowork_team_worker:
+    tier: main
+    timeout_s: ${COWORK_MODEL_TIMEOUT_S}
+  cowork_team_worker_summary:
+    tier: light
+    timeout_s: ${COWORK_MODEL_TIMEOUT_S}
+
   # —— 改写：高频、对单次质量不敏感。
   edit_rewrite: light
   cowork_compaction:

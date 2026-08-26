@@ -347,6 +347,9 @@ class CoworkToolContext:
     # ``load_tools`` 只能加载本轮 Persona/Capability 允许的扩展工具。空集合代表没有
     # 可加载项，不代表放开全部；安全边界不能依赖模型是否看到了 manifest。
     loadable_tool_names: frozenset[str] = frozenset()
+    # Team Worker 的二次资源边界。None 表示普通 Lead 会话只走 session_root；空元组表示
+    # Worker 不得调用任何路径工具。每项是 (canonical_path, read_only|read_write)。
+    path_scope: tuple[tuple[str, Literal["read_only", "read_write"]], ...] | None = None
     # 长工具的进度出口，见 ToolProgressEmitter。None 表示这次执行没有事件流可写。
     emit_progress: ToolProgressEmitter | None = None
 
@@ -403,6 +406,36 @@ def _path_decision(authorization: Any, *, capability: Capability) -> dict[str, A
     }
 
 
+def _enforce_worker_path_scope(
+    context: CoworkToolContext,
+    *,
+    target_path: Path,
+    capability: Capability,
+) -> None:
+    """在 Lead 既有目录授权之内，再收窄到 Board task 明示的必要资源。"""
+
+    if context.path_scope is None:
+        return
+    target = target_path.resolve(strict=False)
+    for raw_root, access_mode in context.path_scope:
+        root = Path(raw_root).resolve(strict=False)
+        if target != root and not target.is_relative_to(root):
+            continue
+        if capability != "filesystem.read" and access_mode != "read_write":
+            continue
+        context.authorization_annotations.append(
+            {
+                "mechanism": "team_task_resource_scope",
+                "capability": capability,
+                "scope_path": str(root),
+                "access_mode": access_mode,
+                "target_path": str(target),
+            }
+        )
+        return
+    raise CoworkToolError("目标路径不在当前 Board task 分配给 Worker 的资源范围内")
+
+
 @dataclass(frozen=True)
 class CoworkToolSpec:
     name: str
@@ -424,6 +457,9 @@ class CoworkToolSpec:
     execution: ToolExecution = "local"
     input_schema: dict[str, Any] | None = None
     approval_required: bool = False
+    # 某些动作（当前是创建 Agent Team）即使会话处于 auto，也必须让用户逐次看见并批准。
+    # 这和 standing approval 分开：false 同时禁止 auto 与常驻规则豁免。
+    approval_can_be_waived: bool = True
     # 必须独占一批模型调用：不需要逐次审批，但同批的后续调用会拿到失效的控件编号。
     exclusive: bool = False
     # 生成常驻审批规则时，哪几个参数决定了"后果落在哪里"。用户勾"以后同样的目标不用再问"
@@ -458,6 +494,7 @@ class CoworkToolSpec:
             "parallel_safe": self.parallel_safe,
             "execution": self.execution,
             "approval_required": self.approval_required,
+            "approval_can_be_waived": self.approval_can_be_waived,
             "exclusive": self.exclusive,
             "extra_capabilities": list(self.extra_capabilities),
             "search_aliases": list(self.search_aliases),
@@ -645,8 +682,11 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
         exclude: frozenset[str],
         query: str | None = None,
         max_tools: int | None = None,
+        parallel_safe_only: bool = False,
     ) -> list[ToolDefinition]:
         # 子 Agent 仍按副作用与 capability 收窄，但不再对安全候选的 schema 数量截断。
+        # 并行 explore 必须进一步排除依赖共享浏览器/终端状态的工具；仅标成 read 不代表
+        # 它可以安全地和另一个分支同时执行（例如 browser_close 会修改共享浏览器会话）。
         _ = (query, max_tools)
         candidates = self.tool_definitions()
         definitions: list[ToolDefinition] = []
@@ -659,6 +699,31 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
                 or spec.effect != "none"
                 or spec.risk != "read"
                 or (spec.capability or "").startswith("external.")
+                or (parallel_safe_only and not spec.parallel_safe)
+            ):
+                continue
+            definitions.append(definition)
+        return definitions
+
+    def team_worker_tool_definitions(self) -> list[ToolDefinition]:
+        """返回可被 Board task 资源范围硬约束的 Worker 工具。
+
+        Worker 不拿交互、Shell、连接器、浏览器或 Team 控制工具；路径型文件工具会先过
+        Lead 的 session_root，再过 ``CoworkToolContext.path_scope``。因此持久 Worker
+        Session 不能借 Lead 的宽历史或全局能力越过本次任务范围。
+        """
+
+        definitions: list[ToolDefinition] = []
+        for definition in self.tool_definitions():
+            spec = self._tools[definition.name]
+            if (
+                not spec.model_visible
+                or spec.execution != "local"
+                or spec.handler is None
+                or spec.approval_required
+                or spec.path_argument is None
+                or spec.capability not in PATH_CAPABILITIES
+                or spec.effect not in {"none", "filesystem"}
             ):
                 continue
             definitions.append(definition)
@@ -749,6 +814,11 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
                 context.session,
                 conversation_id=context.conversation_id,
                 target_path=requested_path,
+                capability=capability,
+            )
+            _enforce_worker_path_scope(
+                context,
+                target_path=authorization.target_path,
                 capability=capability,
             )
             authorization_decisions.append(_path_decision(authorization, capability=capability))

@@ -6661,6 +6661,20 @@ html.workdesk-pane-resizing * { cursor: col-resize !important; user-select: none
 .workdesk-plan-steps li > span { display: grid; flex: 0 0 auto; width: 16px; height: 16px; place-items: center; border-radius: 50%; background: rgb(23 107 88 / 10%); color: var(--workdesk-accent); font-size: 8px; font-weight: 700; }
 .workdesk-plan-steps li > p { margin: 0; color: var(--workdesk-ink); font-size: 10px; line-height: 1.5; }
 .workdesk-plan-notes { padding: 8px 10px; border-left: 2px solid #cfded7; background: rgb(255 255 255 / 62%); }
+.workdesk-team-proposal-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.workdesk-team-proposal-heading > div { display: grid; gap: 3px; }
+.workdesk-team-proposal-heading > span { flex: 0 0 auto; padding: 4px 7px; border: 1px solid #c9ddd4; border-radius: 999px; background: rgb(255 255 255 / 68%); color: var(--workdesk-accent); font: 700 8px/1 var(--font-mono); letter-spacing: .02em; }
+.workdesk-team-roster { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.workdesk-team-roster article { display: grid; min-width: 0; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 9px; border: 1px solid #d6e3dd; border-radius: 11px; background: rgb(255 255 255 / 78%); box-shadow: 0 4px 12px rgb(25 60 47 / 4%); }
+.workdesk-team-roster article > b { display: grid; width: 28px; height: 28px; place-items: center; border-radius: 9px; background: linear-gradient(145deg, #dceee6, #c8e2d7); color: #176b58; font-size: 10px; }
+.workdesk-team-roster article > div { display: grid; min-width: 0; gap: 1px; }
+.workdesk-team-roster article strong { overflow: hidden; color: var(--workdesk-ink); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.workdesk-team-roster article p { color: #56635d; font-size: 8px; }
+.workdesk-team-roster article small { overflow: hidden; color: var(--workdesk-faint); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.workdesk-team-roster article em { align-self: start; padding: 3px 5px; border-radius: 999px; background: #f0f4f2; color: #74817b; font-size: 7px; font-style: normal; }
+.workdesk-team-note { padding: 8px 10px; border-left: 2px solid #9fc5b4; background: rgb(255 255 255 / 58%); }
+.workdesk-team-boundary { display: flex; align-items: flex-start; gap: 8px; padding: 9px 10px; border: 1px solid #d6e3dd; border-radius: 10px; background: #edf6f2; color: #4f5d57; font-size: 8px; line-height: 1.5; }
+.workdesk-team-boundary strong { flex: 0 0 auto; color: var(--workdesk-accent); font-size: 8px; }
 .workdesk-inbox-card textarea[rows="2"] { min-height: 48px; }
 .workdesk-plan-toggle { display: flex; height: 28px; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid #d7ded9; border-radius: 999px; background: #fff; color: #5b635e; font-size: 9px; font-weight: 650; cursor: pointer; transition: background 140ms ease, border-color 140ms ease, color 140ms ease; }
 .workdesk-plan-toggle:hover:not(:disabled) { border-color: #9db9ac; color: var(--workdesk-accent); }
@@ -6682,6 +6696,10 @@ html.workdesk-pane-resizing * { cursor: col-resize !important; user-select: none
 .workdesk-stop:disabled { cursor: wait; opacity: .62; }
 .workdesk-stop svg { width: 12px; height: 12px; stroke-width: 1.8; }
 .workdesk-stop span { width: auto !important; height: auto !important; border-radius: 0 !important; background: transparent !important; color: inherit; animation: none !important; }
+@media (max-width: 680px) {
+  .workdesk-team-roster { grid-template-columns: 1fr; }
+  .workdesk-team-boundary { display: grid; gap: 3px; }
+}
 .workdesk-artifact-panel > header > span { display: grid; width: 20px; height: 20px; place-items: center; border-radius: 10px; background: #f0f1f0; color: #858b88; font-size: 8px; }
 .workdesk-panel-empty { margin: 20px 0 6px; color: var(--workdesk-faint); font-size: 9px; }
 

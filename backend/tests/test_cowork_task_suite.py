@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -45,6 +46,28 @@ def test_cowork_core_suite_has_frozen_coverage() -> None:
         "reviewer": "行之",
         "reviewed_at": "2026-08-25T10:42:21+08:00",
     }
+
+
+def test_agent_teams_candidate_suite_covers_delegation_and_opt_out() -> None:
+    path = Path(__file__).parents[2] / "eval" / "suites" / "agent-teams-dev-v1.json"
+    suite = load_suite(path)
+
+    assert summarize_suite(suite) == {
+        "name": "agent-teams-dev",
+        "version": "1.0",
+        "items": 2,
+        "splits": {"dev": 2},
+        "categories": {"agent_team": 2},
+        "difficulties": {"1": 1, "2": 1},
+        "hitl_items": 1,
+        "average_optimal_tool_calls": 1.5,
+        "review_status": "pending_human_review",
+        "reviewer": None,
+        "reviewed_at": None,
+    }
+    propose, opt_out = suite["items"]
+    assert propose["gold"]["required_tools"] == ["load_tools", "propose_team"]
+    assert "propose_team" in opt_out["gold"]["forbidden_tools"]
 
 
 def test_cowork_suite_approval_requires_complete_auditable_signoff() -> None:

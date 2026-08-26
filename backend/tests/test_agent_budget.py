@@ -3,6 +3,8 @@
 这里证明的是"超限一定停"，不是"预算数字定得对"——上限本身是运营参数，不是被测行为。
 """
 
+import asyncio
+
 import pytest
 
 from app.agent_core.budget import (
@@ -67,6 +69,29 @@ class RecordingEmbeddingGateway(RecordingGateway):
         )
 
 
+class BlockingGateway(RecordingGateway):
+    """让第一只请求保持飞行状态，用于检查未结算预留是否参与共享预算。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def complete(
+        self,
+        messages: list[Message],
+        *,
+        task_type: str = "generate",
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> CompletionResult:
+        del messages, task_type, max_tokens, temperature
+        self.dispatched += 1
+        self.started.set()
+        await self.release.wait()
+        return CompletionResult(text="回答", model="fake-chat", provider="fake", usage=self.usage)
+
+
 def _messages(chars: int = 40) -> list[Message]:
     return [Message(role="user", content="字" * chars)]
 
@@ -85,6 +110,26 @@ async def test_call_budget_trips_before_dispatching_the_next_call() -> None:
     assert gateway.dispatched == 2
     assert excinfo.value.dimension == "calls"
     assert meter.budget["used_calls"] == 2
+
+
+async def test_concurrent_call_reservation_blocks_second_request_before_dispatch() -> None:
+    meter = BudgetMeter(review_budget(max_calls=1), chars_per_token=1.0)
+    gateway = BlockingGateway()
+    budgeted = BudgetedGateway(gateway, meter)
+
+    first = asyncio.create_task(budgeted.complete(_messages(), max_tokens=10))
+    await gateway.started.wait()
+    with pytest.raises(RunBudgetExceededError) as excinfo:
+        await budgeted.complete(_messages(), max_tokens=10)
+
+    assert excinfo.value.dimension == "calls"
+    assert gateway.dispatched == 1
+    # 第一只仍在飞行，尚未结算进 used_calls；第二只仍必须被共享预留挡住。
+    assert meter.budget["used_calls"] == 0
+
+    gateway.release.set()
+    await first
+    assert meter.budget["used_calls"] == 1
 
 
 async def test_token_budget_reserves_worst_case_before_dispatching() -> None:

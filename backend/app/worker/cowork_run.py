@@ -44,6 +44,7 @@ from app.cowork.shell_tasks import CoworkShellTaskManager
 from app.cowork.skills.candidate_store import schedule_skill_distillation
 from app.cowork.skills.distillation import successful_tool_names
 from app.cowork.subagent import register_readonly_subagent
+from app.cowork.teams import register_team_tools
 from app.cowork.tools import CoworkToolRegistry, build_default_cowork_registry
 from app.cowork_store.factory import local_cowork_stores
 from app.knowledge_contracts import RagService
@@ -317,6 +318,7 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                 register_scheduler_tools(registry)
                 register_memory_tools(registry)
                 register_readonly_subagent(registry)
+                register_team_tools(registry)
                 register_rag_tools(registry, rag)
             else:
                 registry = configured_registry

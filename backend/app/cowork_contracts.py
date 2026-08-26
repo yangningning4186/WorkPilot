@@ -62,6 +62,9 @@ InteractionKind = Literal[
     "plan_approval",
 ]
 InteractionStatus = Literal["pending", "answered", "approved", "rejected", "cancelled"]
+TeamStatus = Literal["active", "paused", "archived"]
+TeamWorkerSessionStatus = Literal["idle", "running", "failed"]
+BoardTaskStatus = Literal["open", "in_progress", "blocked", "review", "done", "cancelled"]
 ScheduleKind = Literal["once", "cron"]
 # 常驻审批规则。`once` 不落库——它就是现在这套一次性 call-id 集合，留在这里只是为了让
 # API 的取值是闭合的。
@@ -427,6 +430,61 @@ class InboxRecord:
     created_at: datetime
     responded_at: datetime | None
     unattended: bool
+
+
+@dataclass(frozen=True)
+class TeamRecord:
+    """Lead 会话批准后创建的一支持久 Agent Team。"""
+
+    id: UUID
+    lead_conversation_id: UUID
+    proposal_call_id: str
+    status: TeamStatus
+    note: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class TeamWorkerRecord:
+    id: UUID
+    team_id: UUID
+    name: str
+    role: str
+    reason: str
+    session_id: UUID
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class TeamWorkerSessionRecord:
+    """Worker 自己的持久会话；state 只含 Worker 历史，不含 Lead messages。"""
+
+    id: UUID
+    team_id: UUID
+    worker_id: UUID
+    status: TeamWorkerSessionStatus
+    active_task_id: UUID | None
+    state: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class BoardTaskRecord:
+    id: UUID
+    team_id: UUID
+    title: str
+    description: str
+    acceptance_criteria: str
+    resource_scope: list[dict[str, str]]
+    status: BoardTaskStatus
+    assignee_worker_id: UUID | None
+    assignment_call_id: str | None
+    worker_report: str | None
+    review_comment: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)

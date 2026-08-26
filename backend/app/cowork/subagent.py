@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
-from typing import Any, cast
+from dataclasses import replace
+from typing import Any, Literal, TypedDict, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.agent_core.budget import ToolCompletionClient
+from app.agent_core.budget import RunBudgetExceededError, ToolCompletionClient
+from app.agent_core.loop import run_tool_loop
+from app.agent_core.state import json_state
 from app.cowork.tools import (
     CoworkToolContext,
     CoworkToolRegistry,
     CoworkToolResult,
     CoworkToolSpec,
 )
-from workpilot_ai.types import CompletionResult, Message
+from workpilot_ai.types import CompletionResult, Message, ToolCall, ToolDefinition
 
 READONLY_SUBAGENT_SYSTEM_PROMPT = """你是 WorkPilot 的隔离只读研究子 Agent。
 
@@ -48,172 +50,219 @@ class ExploreArgs(BaseModel):
     max_rounds: int = Field(default=3, ge=1, le=4)
 
 
-@dataclass
-class _SubagentRun:
-    """一次 explore 的进度、用量与终止条件。
+type _SubagentRole = Literal["system", "user", "assistant", "tool"]
+type _SubagentStatus = Literal["active", "answered", "round_limit", "call_limit", "cancelled"]
 
-    `used_tokens` 是子 Agent 自己那一份账：它花的仍是当前 run 的同一份预算（约束 5 的
-    熔断照旧由 BudgetedGateway 判），但"这次调查花了多少"必须单独报得出来，否则事后
-    只能看到主循环的总量，无从判断委派到底省了还是费了。
-    """
 
-    context: CoworkToolContext
+class _SubagentToolCall(TypedDict):
+    id: str
+    name: str
+    arguments: str
+
+
+class _SubagentMessage(TypedDict):
+    role: _SubagentRole
+    content: str
+    tool_calls: list[_SubagentToolCall]
+    tool_call_id: str | None
+
+
+class _SubagentState(TypedDict):
+    """一次 explore 的完整、可 JSON 序列化 Agent 状态。"""
+
+    messages: list[_SubagentMessage]
+    pending_calls: list[_SubagentToolCall]
+    status: _SubagentStatus
+    answer: str
     max_rounds: int
-    rounds_used: int = 0
-    calls_used: int = 0
-    used_tokens: int = 0
-    evidence: list[str] = field(default_factory=list)
+    rounds_used: int
+    calls_used: int
+    used_tokens: int
+    evidence_tools: list[str]
+
+
+def _message_from_state(message: _SubagentMessage) -> Message:
+    return Message(
+        role=message["role"],
+        content=message["content"],
+        tool_calls=tuple(ToolCall(**call) for call in message["tool_calls"]),
+        tool_call_id=message["tool_call_id"],
+    )
+
+
+def _assistant_message(completion: CompletionResult) -> _SubagentMessage:
+    return {
+        "role": "assistant",
+        "content": completion.text,
+        "tool_calls": [
+            {"id": call.id, "name": call.name, "arguments": call.arguments}
+            for call in completion.tool_calls
+        ],
+        "tool_call_id": None,
+    }
+
+
+class _ReadonlySubagentRuntime:
+    """在隔离 JSON 状态上运行通用 Agent Loop；服务对象不进入 checkpoint 状态。"""
+
+    def __init__(
+        self,
+        *,
+        registry: CoworkToolRegistry,
+        context: CoworkToolContext,
+        tools: list[ToolDefinition],
+    ) -> None:
+        self.registry = registry
+        self.context = context
+        self.tools = tools
+        self.allowed_tools = frozenset(tool.name for tool in tools)
+        self.gateway = cast("ToolCompletionClient", context.gateway)
 
     @property
     def cancelled(self) -> bool:
         event = self.context.cancel_event
         return event is not None and event.is_set()
 
-    def charge(self, completion: CompletionResult) -> None:
-        self.used_tokens += completion.usage.input_tokens + completion.usage.output_tokens
-
-    async def emit(self, phase: str, **fields: Any) -> None:
-        emitter = self.context.emit_progress
-        if emitter is None:
-            return
-        await emitter(
-            SUBAGENT_EVENT,
-            {
-                # 两个 id 都带：step_id 让进度挂回时间线上那一步，tool_call_id 让同一步里
-                # 并存的多次调查互相分得开。
-                "step_id": str(self.context.plan_step_id),
-                "tool_call_id": self.context.tool_call_id,
-                "agent": "explore",
-                "phase": phase,
-                "round": self.rounds_used,
-                "max_rounds": self.max_rounds,
-                "calls_used": self.calls_used,
-                "used_tokens": self.used_tokens,
-                **fields,
-            },
+    async def run(self, *, question: str, max_rounds: int) -> CoworkToolResult:
+        state = json_state(
+            _SubagentState(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": READONLY_SUBAGENT_SYSTEM_PROMPT,
+                        "tool_calls": [],
+                        "tool_call_id": None,
+                    },
+                    {
+                        "role": "user",
+                        "content": question,
+                        "tool_calls": [],
+                        "tool_call_id": None,
+                    },
+                ],
+                pending_calls=[],
+                status="active",
+                answer="",
+                max_rounds=max_rounds,
+                rounds_used=0,
+                calls_used=0,
+                used_tokens=0,
+                evidence_tools=[],
+            )
         )
-
-    def result(self, *, answer: str, status: str) -> CoworkToolResult:
-        return CoworkToolResult(
-            output={
-                "answer": answer,
-                "status": status,
-                "evidence_tools": list(self.evidence),
-                "rounds": self.rounds_used,
-                "calls_used": self.calls_used,
-                "used_tokens": self.used_tokens,
-                "read_only": True,
-            }
+        await self._emit(state, "started", question=question[:200])
+        state = await run_tool_loop(
+            state,
+            decide=self.decide,
+            execute_tools=self.execute_tools,
+            is_active=lambda current: current["status"] == "active",
+            has_pending_tools=lambda current: bool(current["pending_calls"]),
         )
+        return self._result(state)
 
+    async def decide(self, state: _SubagentState) -> _SubagentState:
+        if self.cancelled:
+            return await self._finish(state, status="cancelled", answer=_CANCELLED_ANSWER)
+        if state["rounds_used"] >= state["max_rounds"]:
+            return await self._summarize(state)
 
-async def _cancel(run: _SubagentRun) -> CoworkToolResult:
-    """中止但**不抛异常**：抛出去只会变成一条"工具执行失败"，把用户主动停止说成故障，
-    而且会连同已经核实的证据一起丢掉。返回正常结果，主循环在下一个批次边界照常落取消态。
-    """
-
-    await run.emit("finished", status="cancelled")
-    return run.result(answer=_CANCELLED_ANSWER, status="cancelled")
-
-
-def register_readonly_subagent(registry: CoworkToolRegistry) -> None:
-    async def explore(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
-        args = ExploreArgs.model_validate(raw.model_dump())
-        tools = registry.read_only_tool_definitions(
-            exclude=frozenset({"explore"}),
-            query=args.question,
+        updated = json_state(state)
+        updated["rounds_used"] += 1
+        completion = await self.gateway.complete_with_tools(
+            [_message_from_state(message) for message in updated["messages"]],
+            tools=self.tools,
+            # 分支之间由主 Runtime 并发；单个隔离分支内部保持确定性的工具顺序。
+            parallel_tool_calls=False,
+            task_type="cowork_readonly_subagent",
+            max_tokens=min(2048, self.context.settings.cowork_decision_max_tokens),
+            temperature=0.0,
         )
-        allowed_tools = frozenset(tool.name for tool in tools)
-        messages = [
-            Message(
-                role="system",
-                content=READONLY_SUBAGENT_SYSTEM_PROMPT,
-            ),
-            Message(role="user", content=args.question),
+        self._charge(updated, completion)
+        updated["messages"].append(_assistant_message(completion))
+        if not completion.tool_calls:
+            return await self._finish(updated, status="answered", answer=completion.text)
+
+        updated["pending_calls"] = [
+            {"id": call.id, "name": call.name, "arguments": call.arguments}
+            for call in completion.tool_calls
         ]
-        gateway = cast("ToolCompletionClient", context.gateway)
-        run = _SubagentRun(context=context, max_rounds=args.max_rounds)
-        await run.emit("started", question=args.question[:200])
+        await self._emit(
+            updated,
+            "round",
+            planned_tools=[call.name for call in completion.tool_calls],
+        )
+        return json_state(updated)
 
-        for _ in range(args.max_rounds):
-            # 停止要在**下一次调用之前**生效。主循环的取消判定在两批工具之间，
-            # explore 一跑就是四次模型调用加八次工具调用，不在这里自己看一眼，
-            # 用户按下停止之后还要等一整轮调查跑完才停得下来。
-            if run.cancelled:
-                return await _cancel(run)
-            run.rounds_used += 1
-            completion = await gateway.complete_with_tools(
-                messages,
-                tools=tools,
-                parallel_tool_calls=False,
-                task_type="cowork_readonly_subagent",
-                max_tokens=min(2048, context.settings.cowork_decision_max_tokens),
-                temperature=0.0,
-            )
-            run.charge(completion)
-            messages.append(
-                Message(
-                    role="assistant",
-                    content=completion.text,
-                    tool_calls=completion.tool_calls,
+    async def execute_tools(self, state: _SubagentState) -> _SubagentState:
+        updated = json_state(state)
+        pending_calls = list(updated["pending_calls"])
+        updated["pending_calls"] = []
+        for call in pending_calls:
+            if self.cancelled:
+                return await self._finish(
+                    updated,
+                    status="cancelled",
+                    answer=_CANCELLED_ANSWER,
                 )
+            if updated["calls_used"] >= MAX_TOOL_CALLS:
+                return await self._finish(
+                    updated,
+                    status="call_limit",
+                    answer=f"只读子 Agent 已达到 {MAX_TOOL_CALLS} 次工具调用上限。",
+                )
+            updated["calls_used"] += 1
+            try:
+                raw_arguments = json.loads(call["arguments"])
+                if not isinstance(raw_arguments, dict):
+                    raise ValueError("arguments 必须是 object")
+                result = await self.registry.execute(
+                    call["name"],
+                    cast("dict[str, Any]", raw_arguments),
+                    context=replace(
+                        self.context,
+                        tool_call_id=f"{self.context.tool_call_id}:{call['id']}",
+                    ),
+                    allowed=self.allowed_tools,
+                )
+                content = json.dumps(
+                    {"ok": True, "result": result.output},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                updated["evidence_tools"].append(call["name"])
+                await self._emit(updated, "tool", tool_name=call["name"], ok=True)
+            except RunBudgetExceededError:
+                # 预算是所有 explore 与主循环共享的硬边界，不能降级成一条普通工具错误。
+                raise
+            except Exception as error:
+                content = json.dumps(
+                    {"ok": False, "error": str(error)},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                await self._emit(
+                    updated,
+                    "tool",
+                    tool_name=call["name"],
+                    ok=False,
+                    error=str(error),
+                )
+            updated["messages"].append(
+                {
+                    "role": "tool",
+                    "content": content,
+                    "tool_calls": [],
+                    "tool_call_id": call["id"],
+                }
             )
-            if not completion.tool_calls:
-                await run.emit("finished", status="answered", answer_chars=len(completion.text))
-                return run.result(answer=completion.text, status="answered")
-            await run.emit(
-                "round",
-                planned_tools=[call.name for call in completion.tool_calls],
-            )
-            for call in completion.tool_calls:
-                if run.cancelled:
-                    return await _cancel(run)
-                run.calls_used += 1
-                if run.calls_used > MAX_TOOL_CALLS:
-                    answer = f"只读子 Agent 已达到 {MAX_TOOL_CALLS} 次工具调用上限。"
-                    await run.emit("finished", status="call_limit")
-                    return run.result(answer=answer, status="call_limit")
-                try:
-                    arguments = json.loads(call.arguments)
-                    if not isinstance(arguments, dict):
-                        raise ValueError("arguments 必须是 object")
-                    result = await registry.execute(
-                        call.name,
-                        arguments,
-                        context=CoworkToolContext(
-                            session=context.session,
-                            gateway=context.gateway,
-                            settings=context.settings,
-                            conversation_id=context.conversation_id,
-                            run_id=context.run_id,
-                            worker_id=context.worker_id,
-                            plan_step_id=context.plan_step_id,
-                            tool_call_id=f"{context.tool_call_id}:{call.id}",
-                            cancel_event=context.cancel_event,
-                        ),
-                        allowed=allowed_tools,
-                    )
-                    content = json.dumps(
-                        {"ok": True, "result": result.output},
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                    run.evidence.append(call.name)
-                    await run.emit("tool", tool_name=call.name, ok=True)
-                except Exception as error:
-                    content = json.dumps(
-                        {"ok": False, "error": str(error)},
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                    await run.emit("tool", tool_name=call.name, ok=False, error=str(error))
-                messages.append(Message(role="tool", content=content, tool_call_id=call.id))
+        return json_state(updated)
 
-        if run.cancelled:
-            return await _cancel(run)
-        final = await context.gateway.complete(
+    async def _summarize(self, state: _SubagentState) -> _SubagentState:
+        if self.cancelled:
+            return await self._finish(state, status="cancelled", answer=_CANCELLED_ANSWER)
+        final = await self.context.gateway.complete(
             [
-                *messages,
+                *[_message_from_state(message) for message in state["messages"]],
                 Message(
                     role="user",
                     content=(
@@ -223,28 +272,101 @@ def register_readonly_subagent(registry: CoworkToolRegistry) -> None:
                 ),
             ],
             task_type="cowork_readonly_subagent_summary",
-            max_tokens=min(1536, context.settings.cowork_decision_max_tokens),
+            max_tokens=min(1536, self.context.settings.cowork_decision_max_tokens),
             temperature=0.0,
         )
-        run.charge(final)
-        await run.emit("finished", status="round_limit", answer_chars=len(final.text))
-        return run.result(answer=final.text, status="round_limit")
+        updated = json_state(state)
+        self._charge(updated, final)
+        return await self._finish(updated, status="round_limit", answer=final.text)
+
+    @staticmethod
+    def _charge(state: _SubagentState, completion: CompletionResult) -> None:
+        # 这份分支账包含在共享 BudgetedGateway 总账内，只用于观测单分支成本。
+        state["used_tokens"] += completion.usage.input_tokens + completion.usage.output_tokens
+
+    async def _finish(
+        self,
+        state: _SubagentState,
+        *,
+        status: _SubagentStatus,
+        answer: str,
+    ) -> _SubagentState:
+        updated = json_state(state)
+        updated["status"] = status
+        updated["answer"] = answer
+        updated["pending_calls"] = []
+        await self._emit(updated, "finished", status=status, answer_chars=len(answer))
+        return json_state(updated)
+
+    async def _emit(self, state: _SubagentState, phase: str, **fields: Any) -> None:
+        emitter = self.context.emit_progress
+        if emitter is None:
+            return
+        await emitter(
+            SUBAGENT_EVENT,
+            {
+                # 两个 id 都带：step_id 让进度挂回时间线上那一步，tool_call_id 让并发分支
+                # 互相分得开。
+                "step_id": str(self.context.plan_step_id),
+                "tool_call_id": self.context.tool_call_id,
+                "agent": "explore",
+                "phase": phase,
+                "round": state["rounds_used"],
+                "max_rounds": state["max_rounds"],
+                "calls_used": state["calls_used"],
+                "used_tokens": state["used_tokens"],
+                **fields,
+            },
+        )
+
+    @staticmethod
+    def _result(state: _SubagentState) -> CoworkToolResult:
+        return CoworkToolResult(
+            output={
+                "answer": state["answer"],
+                "status": state["status"],
+                "evidence_tools": list(state["evidence_tools"]),
+                "rounds": state["rounds_used"],
+                "calls_used": state["calls_used"],
+                "used_tokens": state["used_tokens"],
+                "read_only": True,
+            }
+        )
+
+
+def register_readonly_subagent(registry: CoworkToolRegistry) -> None:
+    async def explore(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+        args = ExploreArgs.model_validate(raw.model_dump())
+        tools = registry.read_only_tool_definitions(
+            exclude=frozenset({"explore"}),
+            query=args.question,
+            parallel_safe_only=True,
+        )
+        runtime = _ReadonlySubagentRuntime(
+            registry=registry,
+            context=context,
+            tools=tools,
+        )
+        return await runtime.run(question=args.question, max_rounds=args.max_rounds)
 
     registry.register_deferred(
         CoworkToolSpec(
             name="explore",
             description=(
-                "启动一个独立上下文、共享本轮预算的只读子 Agent，用于并行思路中的资料调查、"
-                "代码定位或网页证据收集。它只能看到只读工具，不能写文件或执行外部动作。"
+                "启动一个完整但隔离上下文、共享当前 run 总预算的只读子 Agent，用于资料调查、"
+                "代码定位或网页证据收集。多个互相独立的方向应在同一轮返回多个 explore 调用，"
+                "Runtime 会并发执行；每个分支只看到自己的问题与只读并发安全工具。"
             ),
             args_model=ExploreArgs,
             risk="read",
             effect="none",
-            parallel_safe=False,
+            parallel_safe=True,
             handler=explore,
         ),
         group="子 Agent",
     )
     registry.add_system_instructions(
-        "复杂调查可调用 explore 委派一个隔离只读子 Agent；其模型与工具调用仍计入当前 run 预算。"
+        "复杂调查可调用 explore 委派隔离只读子 Agent；多个独立调查方向要在同一轮一次返回多个 "
+        "explore，Runtime 会并发执行。各分支不继承主历史，只接收自己的问题，模型与工具调用仍计入"
+        "当前 run 的共享总预算。"
     )

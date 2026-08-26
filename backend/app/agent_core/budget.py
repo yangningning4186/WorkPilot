@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator, Callable
 from typing import Literal, Protocol, cast
@@ -135,6 +136,11 @@ class BudgetMeter:
         self._chars_per_token = chars_per_token
         self._clock = clock or (lambda: int(time.monotonic() * 1000))
         self._segment_started_ms = self._clock()
+        # `reserve` 到 `settle` 之间可能同时挂着多个 explore 模型请求。事件循环里预留本身
+        # 没有 await，因此这两项足以成为原子账本；不能只看已结算量，否则并发分支会一起
+        # 通过调用前检查，事后才发现共享预算已经穿透。
+        self._reserved_calls = 0
+        self._reserved_tokens = 0
 
     @property
     def budget(self) -> BudgetState:
@@ -178,18 +184,25 @@ class BudgetMeter:
 
         self.check_wall()
         call_limit = self._budget["max_calls"]
-        if call_limit > 0 and self._budget["used_calls"] + 1 > call_limit:
-            raise RunBudgetExceededError(
-                "calls", used=self._budget["used_calls"] + 1, limit=call_limit
-            )
-        projected = self._budget["used_tokens"] + projected_tokens
+        projected_calls = self._budget["used_calls"] + self._reserved_calls + 1
+        if call_limit > 0 and projected_calls > call_limit:
+            raise RunBudgetExceededError("calls", used=projected_calls, limit=call_limit)
+        projected = self._budget["used_tokens"] + self._reserved_tokens + projected_tokens
         token_limit = self._budget["max_tokens"]
         if token_limit > 0 and projected > token_limit:
             raise RunBudgetExceededError("tokens", used=projected, limit=token_limit)
+        self._reserved_calls += 1
+        self._reserved_tokens += projected_tokens
 
-    def settle(self, usage: Usage) -> None:
+    def release(self, *, projected_tokens: int) -> None:
+        """释放一个可证明未发出的请求预留，不产生实际用量。"""
+
+        self._release_reservation(projected_tokens=projected_tokens)
+
+    def settle(self, usage: Usage, *, projected_tokens: int) -> None:
         """调用成功后按实际用量结算。"""
 
+        self._release_reservation(projected_tokens=projected_tokens)
         self._budget["used_calls"] += 1
         self._budget["used_tokens"] += usage.input_tokens + usage.output_tokens
 
@@ -200,13 +213,21 @@ class BudgetMeter:
         少记会让熔断失效，多记只是让这个 run 早一点停。
         """
 
+        self._release_reservation(projected_tokens=projected_tokens)
         self._budget["used_calls"] += 1
         self._budget["used_tokens"] += projected_tokens
 
-    def settle_rejected(self) -> None:
+    def settle_rejected(self, *, projected_tokens: int) -> None:
         """服务端明确因上下文过长拒绝：记一次调用，但没有生成 token 用量。"""
 
+        self._release_reservation(projected_tokens=projected_tokens)
         self._budget["used_calls"] += 1
+
+    def _release_reservation(self, *, projected_tokens: int) -> None:
+        if self._reserved_calls <= 0 or self._reserved_tokens < projected_tokens:
+            raise RuntimeError("模型预算预留账本不一致")
+        self._reserved_calls -= 1
+        self._reserved_tokens -= projected_tokens
 
     def project_tokens(
         self,
@@ -262,14 +283,18 @@ class BudgetedGateway:
             )
         except (ProviderNotDispatchedError, ModelContextOverflowError):
             # 能证明请求没发出去, 不记账。这是唯一允许不记账的失败。
+            self._meter.release(projected_tokens=projected)
             raise
         except ProviderContextOverflowError:
-            self._meter.settle_rejected()
+            self._meter.settle_rejected(projected_tokens=projected)
+            raise
+        except asyncio.CancelledError:
+            self._meter.settle_conservative(projected_tokens=projected)
             raise
         except Exception:
             self._meter.settle_conservative(projected_tokens=projected)
             raise
-        self._meter.settle(result.usage)
+        self._meter.settle(result.usage, projected_tokens=projected)
         return result
 
     async def complete_with_tools(
@@ -295,14 +320,18 @@ class BudgetedGateway:
                 temperature=temperature,
             )
         except (ProviderNotDispatchedError, ModelContextOverflowError):
+            self._meter.release(projected_tokens=projected)
             raise
         except ProviderContextOverflowError:
-            self._meter.settle_rejected()
+            self._meter.settle_rejected(projected_tokens=projected)
+            raise
+        except asyncio.CancelledError:
+            self._meter.settle_conservative(projected_tokens=projected)
             raise
         except Exception:
             self._meter.settle_conservative(projected_tokens=projected)
             raise
-        self._meter.settle(result.usage)
+        self._meter.settle(result.usage, projected_tokens=projected)
         return result
 
     async def stream_with_tools(
@@ -338,13 +367,20 @@ class BudgetedGateway:
                 temperature=temperature,
             ):
                 if chunk.result is not None:
-                    self._meter.settle(chunk.result.usage)
+                    self._meter.settle(chunk.result.usage, projected_tokens=projected)
                     settled = True
                 yield chunk
         except (ProviderNotDispatchedError, ModelContextOverflowError):
+            if not settled:
+                self._meter.release(projected_tokens=projected)
             raise
         except ProviderContextOverflowError:
-            self._meter.settle_rejected()
+            if not settled:
+                self._meter.settle_rejected(projected_tokens=projected)
+            raise
+        except asyncio.CancelledError:
+            if not settled:
+                self._meter.settle_conservative(projected_tokens=projected)
             raise
         except Exception:
             if not settled:
@@ -370,12 +406,16 @@ class BudgetedGateway:
         try:
             result = await gateway.embed(texts, task_type=task_type)
         except (ProviderNotDispatchedError, ModelContextOverflowError):
+            self._meter.release(projected_tokens=projected)
             raise
         except ProviderContextOverflowError:
-            self._meter.settle_rejected()
+            self._meter.settle_rejected(projected_tokens=projected)
+            raise
+        except asyncio.CancelledError:
+            self._meter.settle_conservative(projected_tokens=projected)
             raise
         except Exception:
             self._meter.settle_conservative(projected_tokens=projected)
             raise
-        self._meter.settle(result.usage)
+        self._meter.settle(result.usage, projected_tokens=projected)
         return result

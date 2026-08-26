@@ -2331,15 +2331,18 @@ class _CoworkExecution:
                     events=[("tool.error", {"tool": call.name, "error": str(error)})],
                 )
             spec = self.registry.get(call.name)
-            waived, detail = await self._standing_approval(
-                updated,
-                tool=call.name,
-                target=(
-                    action_target(call.name, request, fields=spec.approval_target_fields)
-                    if spec.approval_target_fields
-                    else None
-                ),
-            )
+            waived = False
+            detail = None
+            if spec.approval_can_be_waived:
+                waived, detail = await self._standing_approval(
+                    updated,
+                    tool=call.name,
+                    target=(
+                        action_target(call.name, request, fields=spec.approval_target_fields)
+                        if spec.approval_target_fields
+                        else None
+                    ),
+                )
             if not waived:
                 return await self._pause_for_external_approval(updated, call, request)
             updated["approved_calls"].append(call.id)
@@ -2622,10 +2625,16 @@ class _CoworkExecution:
             status="running",
         )
         spec = self.registry.get(call.name)
+        warning = (
+            "批准后会预创建独立持久 Worker Session，并允许 Lead 通过 Board 分配任务。"
+            "Worker 不继承 Lead 历史，模型调用计入执行任务时所在 run 的预算。"
+            if call.name == "propose_team"
+            else "该工具会修改外部系统；批准默认仅对本次 tool call 有效。"
+        )
         approval_request = {
             "tool": call.name,
             "arguments": arguments,
-            "warning": "该工具会修改外部系统；批准默认仅对本次 tool call 有效。",
+            "warning": warning,
             "command_sha256": _external_action_sha256(call.name, arguments),
             # 只有工具自己声明了"哪几个参数决定后果落在哪里"，才谈得上按目标常驻授权。
             # 没声明目标字段时只能批准这一次，不能退化成整只工具的宽泛规则。

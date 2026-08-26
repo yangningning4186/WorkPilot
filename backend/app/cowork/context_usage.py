@@ -33,6 +33,7 @@ from app.cowork.runtime import (
 )
 from app.cowork.skills.catalog import builtin_disabled_names
 from app.cowork.subagent import register_readonly_subagent
+from app.cowork.teams import register_team_tools
 from app.cowork.todos import TodoItem, normalize_todos
 from app.cowork.tools import CoworkToolRegistry, build_default_cowork_registry
 from app.cowork.work_modes import render_reading_viewport_block
@@ -97,6 +98,7 @@ def _context_registry(
     register_scheduler_tools(registry)
     register_memory_tools(registry)
     register_readonly_subagent(registry)
+    register_team_tools(registry)
     register_rag_tools(registry, rag)
     _CONTEXT_REGISTRY_CACHE = (key, registry)
     return registry

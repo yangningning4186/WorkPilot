@@ -13,9 +13,10 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from app.cowork.connector_tools import register_connector_tools
+from app.cowork.teams import register_team_tools
 from app.cowork.tools import build_default_cowork_registry
 from app.cowork_policy import ACTIVE_CAPABILITIES
 
@@ -46,6 +47,7 @@ EXPECTED_CATEGORIES = {
 # 而套件校验一声不吭——它照的是自己那份过期的镜子。
 _REGISTRY = build_default_cowork_registry()
 register_connector_tools(_REGISTRY)
+register_team_tools(_REGISTRY)
 
 # 只有需要运行期对象(RAG service、浏览器管理器)才注册的工具进不了默认注册表,
 # 它们的 capability 在这里显式声明。这份声明**允许**过期, 因为它不是最后一道关:
@@ -247,19 +249,54 @@ def _validate_tool_labels(item_id: str, gold: dict[str, Any]) -> None:
         raise CoworkSuiteError(f"{item_id}: optimal/max_tool_calls 非法")
 
 
+def _coverage_contract(
+    payload: Mapping[str, Any],
+) -> tuple[int, dict[str, int], dict[str, int], str]:
+    """核心冻结集保持硬配额；小型候选集必须显式声明自己的覆盖契约。"""
+
+    raw = payload.get("coverage_contract")
+    if raw is None:
+        return EXPECTED_ITEMS, dict(EXPECTED_SPLITS), dict(EXPECTED_CATEGORIES), "cowork-core-"
+    if not isinstance(raw, dict):
+        raise CoworkSuiteError("coverage_contract 必须是对象")
+    items = raw.get("items")
+    splits = raw.get("splits")
+    categories = raw.get("categories")
+    id_prefix = raw.get("id_prefix")
+    if not isinstance(items, int) or items < 1:
+        raise CoworkSuiteError("coverage_contract.items 必须是正整数")
+    if not isinstance(splits, dict) or not splits:
+        raise CoworkSuiteError("coverage_contract.splits 必须是非空对象")
+    if not isinstance(categories, dict) or not categories:
+        raise CoworkSuiteError("coverage_contract.categories 必须是非空对象")
+    if not isinstance(id_prefix, str) or not id_prefix.strip():
+        raise CoworkSuiteError("coverage_contract.id_prefix 必须是非空字符串")
+    if any(
+        not isinstance(key, str) or not key or not isinstance(value, int) or value < 1
+        for key, value in [*splits.items(), *categories.items()]
+    ):
+        raise CoworkSuiteError("coverage_contract 配额必须是非空名称到正整数的映射")
+    expected_splits = cast("dict[str, int]", splits)
+    expected_categories = cast("dict[str, int]", categories)
+    if sum(expected_splits.values()) != items or sum(expected_categories.values()) != items:
+        raise CoworkSuiteError("coverage_contract 的 split/category 配额之和必须等于 items")
+    return items, expected_splits, expected_categories, id_prefix.strip()
+
+
 def validate_suite(payload: dict[str, Any]) -> None:
     if payload.get("schema_version") != SCHEMA_VERSION:
         raise CoworkSuiteError("schema_version 不匹配")
     if payload.get("origin") != "synthetic":
         raise CoworkSuiteError("origin 必须保留题目生成来源 synthetic")
     review = suite_review(payload)
+    expected_items, expected_splits, expected_categories, id_prefix = _coverage_contract(payload)
 
     fixtures = payload.get("fixtures")
     if not isinstance(fixtures, dict) or not fixtures:
         raise CoworkSuiteError("fixtures 必须是非空对象")
     items = payload.get("items")
-    if not isinstance(items, list) or len(items) != EXPECTED_ITEMS:
-        raise CoworkSuiteError(f"任务必须恰好 {EXPECTED_ITEMS} 条")
+    if not isinstance(items, list) or len(items) != expected_items:
+        raise CoworkSuiteError(f"任务必须恰好 {expected_items} 条")
 
     ids: list[str] = []
     prompts: list[str] = []
@@ -267,16 +304,16 @@ def validate_suite(payload: dict[str, Any]) -> None:
         if not isinstance(raw, dict):
             raise CoworkSuiteError("item 必须是对象")
         item_id = raw.get("id")
-        if not isinstance(item_id, str) or not item_id.startswith("cowork-core-"):
+        if not isinstance(item_id, str) or not item_id.startswith(id_prefix):
             raise CoworkSuiteError(f"非法 item id: {item_id!r}")
         ids.append(item_id)
         prompt = raw.get("prompt")
         if not isinstance(prompt, str) or len(prompt.strip()) < 8:
             raise CoworkSuiteError(f"{item_id}: prompt 过短")
         prompts.append(prompt.strip())
-        if raw.get("split") not in EXPECTED_SPLITS:
+        if raw.get("split") not in expected_splits:
             raise CoworkSuiteError(f"{item_id}: split 非法")
-        if raw.get("category") not in EXPECTED_CATEGORIES:
+        if raw.get("category") not in expected_categories:
             raise CoworkSuiteError(f"{item_id}: category 非法")
         if raw.get("difficulty") not in {1, 2, 3}:
             raise CoworkSuiteError(f"{item_id}: difficulty 非法")
@@ -329,9 +366,9 @@ def validate_suite(payload: dict[str, Any]) -> None:
         raise CoworkSuiteError("prompt 重复")
     split_counts = Counter(str(item["split"]) for item in items)
     category_counts = Counter(str(item["category"]) for item in items)
-    if dict(split_counts) != EXPECTED_SPLITS:
+    if dict(split_counts) != expected_splits:
         raise CoworkSuiteError(f"split 配额漂移: {dict(split_counts)}")
-    if dict(category_counts) != EXPECTED_CATEGORIES:
+    if dict(category_counts) != expected_categories:
         raise CoworkSuiteError(f"category 配额漂移: {dict(category_counts)}")
 
 

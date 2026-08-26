@@ -19,6 +19,7 @@ from app.cowork_contracts import (
     ApprovalRuleScope,
     ArtifactKind,
     ArtifactRecord,
+    BoardTaskRecord,
     Capability,
     CapabilityGrantRecord,
     ChannelSubscriptionRecord,
@@ -37,6 +38,9 @@ from app.cowork_contracts import (
     ScheduleView,
     SessionRootRecord,
     SteeringRecord,
+    TeamRecord,
+    TeamWorkerRecord,
+    TeamWorkerSessionRecord,
     ThreadSessionRecord,
     UnroutedRecord,
 )
@@ -463,6 +467,82 @@ class CoworkStore(Protocol):
     ) -> InboxRecord | None: ...
 
     async def cancel_pending_interaction(self, *, run_id: UUID) -> None: ...
+
+    # Agent Teams / Board
+    async def create_team(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        proposal_call_id: str,
+        note: str,
+        members: Sequence[dict[str, Any]],
+    ) -> tuple[TeamRecord, list[TeamWorkerRecord]]: ...
+
+    async def get_team_for_lead(self, *, lead_conversation_id: UUID) -> TeamRecord | None: ...
+
+    async def list_team_workers(self, *, team_id: UUID) -> list[TeamWorkerRecord]: ...
+
+    async def create_board_task(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        title: str,
+        description: str,
+        acceptance_criteria: str,
+        resource_scope: Sequence[dict[str, str]],
+    ) -> BoardTaskRecord: ...
+
+    async def list_board_tasks(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        status: str | None = None,
+        assignee: str | None = None,
+    ) -> list[BoardTaskRecord]: ...
+
+    async def start_board_task(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        task_id: UUID,
+        worker_name: str,
+        assignment_call_id: str,
+    ) -> tuple[BoardTaskRecord, TeamWorkerRecord, TeamWorkerSessionRecord]: ...
+
+    async def save_team_worker_session(
+        self,
+        *,
+        session_id: UUID,
+        task_id: UUID,
+        state: dict[str, Any],
+    ) -> TeamWorkerSessionRecord: ...
+
+    async def complete_board_task(
+        self,
+        *,
+        session_id: UUID,
+        task_id: UUID,
+        state: dict[str, Any],
+        worker_report: str,
+    ) -> BoardTaskRecord: ...
+
+    async def fail_board_task(
+        self,
+        *,
+        session_id: UUID,
+        task_id: UUID,
+        state: dict[str, Any],
+        error: str,
+    ) -> BoardTaskRecord: ...
+
+    async def review_board_task(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        task_id: UUID,
+        accepted: bool,
+        feedback: str,
+    ) -> BoardTaskRecord: ...
 
     # 长期记忆
     async def remember_cowork_memory(

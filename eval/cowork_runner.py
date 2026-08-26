@@ -25,6 +25,11 @@ from typing import Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pymupdf
+from docx import Document
+from openpyxl import Workbook, load_workbook
+from pptx import Presentation
+from pydantic import BaseModel
+
 from app.core.config import Settings
 from app.core.db import DbSession as AsyncSession
 from app.core.db import SessionFactory, close_database, session_factory
@@ -51,6 +56,7 @@ from app.cowork.runtime import (
     load_cowork_checkpoint,
     resume_cowork_after_human,
 )
+from app.cowork.teams import register_team_tools
 from app.cowork.tools import (
     CoworkToolContext,
     CoworkToolError,
@@ -70,12 +76,6 @@ from app.knowledge_contracts import EvidenceBundle, EvidenceSegment, RagSearchRe
 from app.llm_bootstrap import build_model_gateway
 from app.runstore.runs import append_message, create_run, ensure_conversation, get_run
 from app.worker.cowork_run import cowork_run
-from docx import Document
-from openpyxl import Workbook, load_workbook
-from pptx import Presentation
-from pydantic import BaseModel
-from workpilot_ai.gateway import ModelGateway
-
 from eval.cowork_task_suite import (
     DEFAULT_SUITE,
     load_suite,
@@ -91,6 +91,7 @@ from eval.model_cassette import (
     ReplayingModelGateway,
     cassette_sha256,
 )
+from workpilot_ai.gateway import ModelGateway
 
 REPORT_SCHEMA_VERSION = "cowork-eval-report.v1"
 OBSERVATION_SCHEMA_VERSION = "cowork-observation.v1"
@@ -397,6 +398,7 @@ def build_fixture_registry(
     # 连接器写操作在 handler 执行前就会进入生产审批闸门，因此不接触真实凭据也能稳定
     # 评测「选对飞书专用工具 + 审批前零外部副作用」这两件事。
     register_connector_tools(registry)
+    register_team_tools(registry)
     fixtures = materialized.fixtures
 
     async def fixture_fetch(_: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
