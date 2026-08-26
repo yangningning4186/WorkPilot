@@ -144,6 +144,44 @@ class _CountingGateway:
         )
 
 
+class _ConcurrentGateway:
+    """两条分支都进入模型调用后才放行；串行实现会直接超时。"""
+
+    def __init__(self) -> None:
+        self.active = 0
+        self.peak_active = 0
+        self.both_started = asyncio.Event()
+        self.histories: dict[str, list[Message]] = {}
+        self.tool_names: set[str] = set()
+
+    async def complete_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool = True,
+        task_type: str = "generate",
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> CompletionResult:
+        del parallel_tool_calls, task_type, max_tokens, temperature
+        question = messages[1].content
+        self.histories[question] = list(messages)
+        self.tool_names.update(tool.name for tool in tools)
+        self.active += 1
+        self.peak_active = max(self.peak_active, self.active)
+        if self.active == 2:
+            self.both_started.set()
+        await self.both_started.wait()
+        self.active -= 1
+        return CompletionResult(
+            text=f"回答：{question}",
+            model="fake-chat",
+            provider="deterministic_test",
+            usage=Usage(input_tokens=4, output_tokens=2),
+        )
+
+
 def _context(
     gateway: object,
     *,
@@ -166,6 +204,48 @@ def _context(
         cancel_event=cancel_event,
         emit_progress=None if events is None else emit,
     )
+
+
+@pytest.mark.asyncio
+async def test_multiple_explores_run_concurrently_with_isolated_histories() -> None:
+    registry = build_default_cowork_registry()
+    register_readonly_subagent(registry)
+    gateway = _ConcurrentGateway()
+    base_context = _context(gateway)
+
+    assert registry.get("explore").parallel_safe is True
+    assert registry.parallel_safe(["explore", "explore"]) is True
+
+    first, second = await asyncio.wait_for(
+        asyncio.gather(
+            registry.execute(
+                "explore",
+                {"question": "只调查模块 A", "max_rounds": 1},
+                context=dataclasses.replace(base_context, tool_call_id="explore-a"),
+            ),
+            registry.execute(
+                "explore",
+                {"question": "只调查模块 B", "max_rounds": 1},
+                context=dataclasses.replace(base_context, tool_call_id="explore-b"),
+            ),
+        ),
+        timeout=1,
+    )
+
+    assert gateway.peak_active == 2
+    assert first.output["answer"] == "回答：只调查模块 A"
+    assert second.output["answer"] == "回答：只调查模块 B"
+    assert [
+        message.content for message in gateway.histories["只调查模块 A"] if message.role == "user"
+    ] == ["只调查模块 A"]
+    assert [
+        message.content for message in gateway.histories["只调查模块 B"] if message.role == "user"
+    ] == ["只调查模块 B"]
+    # read/effect=none 仍不等于并发安全；共享浏览器状态和 todo 写入都不能进入分支工具集。
+    assert "browser_snapshot" not in gateway.tool_names
+    assert "todo_write" not in gateway.tool_names
+    assert gateway.tool_names
+    assert all(registry.get(name).parallel_safe for name in gateway.tool_names)
 
 
 @pytest.mark.asyncio

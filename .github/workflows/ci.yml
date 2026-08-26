@@ -64,6 +64,7 @@ jobs:
         run: |
           PYTHONPATH=.:.. uv run python -m eval.catalog doctor --catalog ../eval/catalog.json --json
           PYTHONPATH=.:.. uv run python -m eval.replay verify ../eval/replays/run-protocol-v1.json --format json
+          PYTHONPATH=.:.. uv run python -m eval.full_chain_cassette ../eval/replays/full-chain-v1.json --format json
 
       # conftest 用 tmp_path_factory 建每个测试自己的本地 store，没有迁移步骤。
       - name: pytest

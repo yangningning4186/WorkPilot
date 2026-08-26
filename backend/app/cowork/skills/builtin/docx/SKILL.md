@@ -9,7 +9,7 @@ anti_trigger:
   - 用户处理的是飞书云文档而不是本地 DOCX
 tools:
   - list_files
-  - write_text_file
+  - write_file
   - run_shell
 status: active
 ---
@@ -19,8 +19,11 @@ WorkPilot 随附的 `python-docx` 处理；只有批注、修订等库不支持�
 
 ## 工作流
 
-1. 用 `list_files` 定位源文件，不要用 `read_text_file` 读取 DOCX。
-2. 新建一个短小 Python 脚本到工作区；脚本参数使用相对路径，Shell 的 cwd 设为该工作区。
+1. 用 `list_files` 定位源文件，不要用 `read_file` 读取 DOCX。
+2. 若任务只读且用户要求不修改任何文件，用单次 `run_shell` 调用 `python -c` 在内存中打开文档并
+   输出所需段落/表格；不得创建辅助脚本、备份或产物。需要创建或修改时，才新建一个短小 Python
+   脚本通过 `write_file`（`purpose=workspace`）写到工作区；脚本参数使用相对路径，Shell 的
+   cwd 设为该工作区。
 3. 默认把结果写成 `<原名>-workpilot.docx`，不覆盖原件。用户明确要求原地修改时，脚本先用
    `shutil.copy2` 在 `.workpilot-backups/` 生成带时间戳的副本，再修改目标。
 4. 用 `run_shell` 前台执行脚本；需要多条连续命令时设置 `persistent_session=true`。

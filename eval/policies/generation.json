@@ -14,12 +14,13 @@
       "max_absolute_regression": 0
     },
     {
-      "name": "citation_validity_non_refusal",
+      "name": "citation_wellformed_non_refusal",
       "direction": "higher",
-      "max_absolute_regression": 0
+      "max_absolute_regression": 0,
+      "min_candidate": 1
     },
     {
-      "name": "constraint_pass",
+      "name": "citation_support_answerable",
       "direction": "higher",
       "max_absolute_regression": 0
     },

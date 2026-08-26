@@ -55,9 +55,9 @@ Tauri desktop
 - Tool registry 已登记通用文件列举/读写/搜索、本地 PDF、公开网页/远程 PDF、
   Artifact 生成、格式 Skill、运行中交互与受控 `run_shell`，并为每个工具声明
   capability、risk、effect 和 parallel-safe 属性。
-- 主 Cowork 每轮下发当前 Persona/WorkMode 范围内的全部工具 schema，不再按目标相关度或
-  数量裁剪；`search_tool_catalog` 只用于解释和定位工具。计划模式与只读子 Agent 仍按副作用
-  收窄工具面，capability、审批和路径边界仍在执行入口强制检查。
+- 主 Cowork 首轮只下发基础工具和 WorkMode 热路径 schema；长尾能力以稳定的
+  `extended_tools` 名称/摘要清单注入，需要时按准确名称调用 `load_tools`。计划模式与只读
+  子 Agent 仍按副作用收窄工具面，capability、审批和路径边界仍在执行入口强制检查。
 - Provider profile 支持 OpenAI、Anthropic、Gemini、DeepSeek、Qwen、Ollama 和兼容端点；
   API key 由数据库外 0600 主密钥加密，会话可独立选择 Provider 与模型覆盖。
 - GitHub、飞书、企业微信、微信公众号和腾讯文档连接器支持 OAuth/令牌生命周期；飞书账号
@@ -92,8 +92,10 @@ Tauri desktop
   登记时同时冻结有界文本 diff；Office/PDF 先抽取段落、单元格与公式、幻灯片文字或页文本，
   不展示无意义的二进制差异。快照只用于事后审阅，不是并发写冲突门禁；单文件超过 2 MiB、
   无执行前基线或解析失败时显式返回 unavailable。
-- `read_text_file` 有字节/行数上限并返回 SHA-256；`write_text_file` 与
-  `create_artifact` 覆盖既有文件时强制校验该 SHA，原子替换并保留有界备份。
+- `read_file` 自动识别 UTF-8 文本与 PDF，文本读取有字节/行数上限并返回 SHA-256；
+  `write_file` 用 `purpose=workspace|artifact` 区分普通工作文件和登记交付物，覆盖既有文件时
+  强制校验该 SHA，原子替换并保留有界备份。旧入口仅为 checkpoint/cassette 回放保留，不向
+  新模型暴露。
 - `search_files` 只搜索授权 root 中的文件名与 UTF-8 文本，跳过隐藏、依赖、
   备份目录、二进制文件和符号链接，扫描数、单文件大小与结果数均有上限。
 - `fetch_url` 要求会话级 `network.read` 授权，仅接受 HTTP(S)，每次重定向

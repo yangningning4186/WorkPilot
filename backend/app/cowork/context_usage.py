@@ -16,7 +16,7 @@ from app.core.db import DbSession as AsyncSession
 from app.cowork.automation_tools import register_scheduler_tools
 from app.cowork.browser_tools import register_browser_tools
 from app.cowork.capabilities import CapabilityActivation, build_work_capability_registry
-from app.cowork.connector_tools import register_connector_tools
+from app.cowork.connector_tools import connected_connector_kinds, register_connector_tools
 from app.cowork.environment import render_roots_block, render_workspace_files_block
 from app.cowork.extensions import register_skill_tools
 from app.cowork.memory_tools import register_memory_tools
@@ -33,6 +33,7 @@ from app.cowork.runtime import (
 )
 from app.cowork.skills.catalog import builtin_disabled_names
 from app.cowork.subagent import register_readonly_subagent
+from app.cowork.teams import register_team_tools
 from app.cowork.todos import TodoItem, normalize_todos
 from app.cowork.tools import CoworkToolRegistry, build_default_cowork_registry
 from app.cowork.work_modes import render_reading_viewport_block
@@ -69,6 +70,7 @@ def _context_registry(
     # 出厂 Skill 随代码走、进程内不会变，所以不进 revision；但**停用标记**会变，
     # 少了它，关掉一个出厂 Skill 之后上下文估算还按开着的算。
     builtin_revision = tuple(sorted(builtin_disabled_names(skills_root)))
+    connector_kinds = connected_connector_kinds(settings)
     project_revision = tuple(
         sorted(
             (str(path), path.stat().st_mtime_ns, path.stat().st_size)
@@ -85,16 +87,18 @@ def _context_registry(
         skill_revision,
         builtin_revision,
         project_revision,
+        tuple(sorted(connector_kinds)),
     )
     if _CONTEXT_REGISTRY_CACHE is not None and _CONTEXT_REGISTRY_CACHE[0] == key:
         return _CONTEXT_REGISTRY_CACHE[1]
     registry = build_default_cowork_registry()
     register_skill_tools(registry, settings, project_roots=project_roots)
     register_browser_tools(registry)
-    register_connector_tools(registry)
+    register_connector_tools(registry, enabled_kinds=connector_kinds)
     register_scheduler_tools(registry)
     register_memory_tools(registry)
     register_readonly_subagent(registry)
+    register_team_tools(registry)
     register_rag_tools(registry, rag)
     _CONTEXT_REGISTRY_CACHE = (key, registry)
     return registry

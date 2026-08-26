@@ -58,6 +58,9 @@ logs/
 
 # 本地渲染与人工 QA 临时产物
 /tmp/
+manual-test-kit/authorized/.workpilot-backups/
+manual-test-kit/authorized/output/
+manual-test-kit/authorized/*.py
 
 # 实验跑批产物（体积大且可复现，台账里记结论即可）
 eval/outputs/pareto/

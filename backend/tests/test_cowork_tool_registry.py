@@ -43,14 +43,34 @@ def test_path_capability_requires_path_argument() -> None:
 def test_pathless_meta_tools_have_no_capability() -> None:
     registry = build_default_cowork_registry()
 
-    for name in (
-        "search_tool_catalog",
-        "ask_user",
-        "request_directory",
-        "request_capability",
-        "list_workspace_roots",
-    ):
+    for name in ("ask_user", "request_directory", "request_capability"):
         assert registry.get(name).capability is None
+
+
+def test_retired_duplicate_tools_are_not_registered() -> None:
+    names = build_default_cowork_registry().names()
+
+    assert {
+        "list_workspace_roots",
+        "load_skill_resource",
+        "search_tool_catalog",
+    }.isdisjoint(names)
+
+
+def test_consolidated_tools_are_visible_and_legacy_names_are_hidden() -> None:
+    registry = build_default_cowork_registry()
+    visible = {item.name for item in registry.tool_definitions_for("处理工作区文件")}
+    deferred = registry.deferred_tool_names()
+
+    assert {"read_file", "write_file"} <= visible
+    assert {
+        "read_text_file",
+        "write_text_file",
+        "read_pdf",
+        "create_artifact",
+    }.isdisjoint(visible | deferred)
+    assert registry.get("read_text_file").replacement == "read_file"
+    assert registry.get("create_artifact").replacement == "write_file"
 
 
 def test_request_capability_schema_does_not_advertise_retired_office_grants() -> None:

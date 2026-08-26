@@ -8,7 +8,7 @@ trigger:
 anti_trigger:
   - 问题跨多份文档、需要先检索资料库（那是 search_knowledge）
   - 用户要的是改写或生成文档，不是读它
-  - 只需要文件的字面内容，不需要引用与定位（用 read_text_file 更直接）
+  - 只需要文件的字面内容，不需要引用与定位（用 read_file 更直接）
 tools:
   - material_outline
   - search_material
@@ -53,7 +53,7 @@ status: active
 
 ## 常见错法
 
-- 用 `read_text_file` 读 PDF 再谈页码：那条路没有 locator，你报的页码是猜的。
+- 用 `read_file` 读 PDF 再谈页码：那条路没有 locator，你报的页码是猜的。
 - 一次 `read_material` 拉走整份文档：预算烧完了，而且回答会退化成泛泛的总结。
   先 outline 再定位再读，是省钱也是让回答具体。
 - 引用一段 `search_material` 的片段：片段边界不是句子边界，你可能正在引用半句话。

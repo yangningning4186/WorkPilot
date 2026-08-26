@@ -9,7 +9,7 @@ anti_trigger:
   - 用户处理的是飞书原生幻灯片
 tools:
   - list_files
-  - write_text_file
+  - write_file
   - run_shell
 status: active
 ---
@@ -20,7 +20,9 @@ status: active
 ## 工作流
 
 1. 用 `list_files` 定位源文件和可用图片，先确定要求的页数与结构。
-2. 在工作区写 Python 脚本。新建时先定义页面尺寸、字体、色板和版式函数；修改时从
+2. 若任务只读且用户要求不修改任何文件，用单次 `run_shell` 调用 `python -c` 在内存中打开演示文稿
+   并输出所需页标题/文本；不得创建辅助脚本、备份或产物。需要创建或修改时，才在工作区写 Python
+   脚本。新建时先定义页面尺寸、字体、色板和版式函数；修改时从
    `Presentation(source)` 开始，不要无故重建整份文件。
 3. 默认输出 `<原名>-workpilot.pptx`；明确要求覆盖时先在 `.workpilot-backups/` 生成时间戳备份。
 4. 用前台 `run_shell` 执行。保存后重新打开，检查 `len(slides)`、每页标题、关键文本、图片关系

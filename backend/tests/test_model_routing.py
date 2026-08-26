@@ -55,6 +55,7 @@ ENV = {
     "EXTERNAL_API_KEY": "external-key",
     "CLUSTER_API_KEY": "cluster-key",
     "COWORK_MODEL_TIMEOUT_S": "120",
+    "EVALUATION_GENERATION_TIMEOUT_S": "120",
 }
 
 
@@ -173,6 +174,7 @@ def test_repo_routing_table_loads_and_covers_the_documented_task_types() -> None
     table = load_routing_table(REPO_ROUTING, ENV)
 
     assert table.tier_for("cowork_decision") == "main"
+    assert table.tier_for("evaluation_generation") == "main"
     assert table.tier_for("edit_rewrite") == "light"
     assert table.tier_for("cowork_compaction") == "main"
     # 子 Agent 的两轮分开登记：调查轮要 tool-calling 所以留在甜点档，收尾轮不带工具，
@@ -185,6 +187,7 @@ def test_repo_routing_table_loads_and_covers_the_documented_task_types() -> None
     assert table.tiers["light"].primary.context_window_tokens == 32768
     assert table.tiers["main"].primary.context_window_tokens == 102400
     assert {endpoint.timeout_s for endpoint in table.chain("cowork_decision")} == {120.0}
+    assert {endpoint.timeout_s for endpoint in table.chain("evaluation_generation")} == {120.0}
     assert {endpoint.timeout_s for endpoint in table.chain("cowork_compaction")} == {120.0}
     assert table.chain("conversation_title")[0].timeout_s == 30.0
 

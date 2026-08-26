@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from "react";
 
-import type { SubagentProgressPayload, TodoItem } from "@/lib/run-protocol";
+import type {
+  BoardTaskPayload,
+  SubagentProgressPayload,
+  TeamSummaryPayload,
+  TodoItem,
+} from "@/lib/run-protocol";
 import type { CoworkProgressStep, CoworkRunPhase } from "@/lib/use-cowork-run";
 
 const TOOL_LABELS: Record<string, string> = {
@@ -12,7 +17,6 @@ const TOOL_LABELS: Record<string, string> = {
   propose_plan: "提交执行计划",
   todo_write: "更新任务清单",
   run_shell: "执行 Shell 命令",
-  list_workspace_roots: "确认工作目录",
   list_files: "列出文件",
   read_text_file: "读取文本",
   write_text_file: "写入文本",
@@ -34,11 +38,15 @@ const TOOL_LABELS: Record<string, string> = {
   browser_close: "关闭浏览器",
   explore: "委派只读调查",
   create_artifact: "生成交付物",
-  search_tool_catalog: "搜索工具目录",
   load_tools: "加载扩展工具",
   list_skills: "查看可用技能",
   load_skill: "加载格式 Skill",
-  load_skill_resource: "读取 Skill 资源",
+  propose_team: "提交团队编制",
+  board_create_task: "创建团队任务",
+  board_list_tasks: "查看团队任务",
+  board_assign_task: "分配团队任务",
+  board_review_task: "验收团队任务",
+  board_resolve_task: "收束团队任务",
 };
 
 const SUBAGENT_STOP_LABELS: Record<string, string> = {
@@ -70,6 +78,8 @@ function phaseLabel(phase: CoworkRunPhase): string {
       return "等待后继续";
     case "done":
       return "已完成";
+    case "partial":
+      return "部分完成";
     case "budget_exceeded":
       return "未完成";
     case "cancelled":
@@ -81,6 +91,75 @@ function phaseLabel(phase: CoworkRunPhase): string {
     default:
       return "正在执行";
   }
+}
+
+function boardTaskStatus(task: BoardTaskPayload): { label: string; tone: string } {
+  if (task.status === "done" && task.completion_kind === "partial") {
+    return { label: "部分完成", tone: "partial" };
+  }
+  const labels: Record<BoardTaskPayload["status"], { label: string; tone: string }> = {
+    open: { label: task.attempt_count > 0 ? "待返工" : "待分配", tone: "open" },
+    in_progress: { label: "执行中", tone: "running" },
+    blocked: { label: "已阻塞", tone: "blocked" },
+    review: { label: "待验收", tone: "review" },
+    done: { label: "已完成", tone: "done" },
+    cancelled: { label: "已取消", tone: "cancelled" },
+  };
+  return labels[task.status];
+}
+
+export function TeamBoardPanel({ team }: { team: TeamSummaryPayload | null }) {
+  if (team === null || (team.workers.length === 0 && team.tasks.length === 0)) return null;
+  const workerRoles = new Map(team.workers.map((worker) => [worker.name, worker.role]));
+  const terminal = team.tasks.filter((task) =>
+    task.status === "done" || task.status === "cancelled"
+  ).length;
+  return (
+    <section className="workdesk-team-board" aria-label="Agent Team 状态">
+      <header>
+        <div>
+          <span className="workdesk-team-signal" aria-hidden />
+          <strong>Agent Team</strong>
+        </div>
+        <small>{terminal}/{team.tasks.length} 已收束</small>
+      </header>
+      {team.tasks.length === 0 ? (
+        <p className="workdesk-team-empty">团队已创建，正在拆分任务。</p>
+      ) : (
+        <div className="workdesk-team-grid">
+          {team.tasks.map((task) => {
+            const status = boardTaskStatus(task);
+            const worker = task.assignee ?? "待分配 Worker";
+            return (
+              <article className={`workdesk-team-task is-${status.tone}`} key={task.task_id}>
+                <header>
+                  <div>
+                    <strong>{worker}</strong>
+                    <span>{task.attempt_count > 0 ? `第 ${task.attempt_count} 次执行` : "尚未执行"}</span>
+                  </div>
+                  <em>{status.label}</em>
+                </header>
+                <h4>{task.title}</h4>
+                {workerRoles.get(worker) !== undefined && (
+                  <p className="workdesk-team-role">{workerRoles.get(worker)}</p>
+                )}
+                {task.retry_count > 0 && (
+                  <p className="workdesk-team-retry">已返工 {task.retry_count} 次</p>
+                )}
+                {task.rejection_reason && (
+                  <details className="workdesk-team-feedback">
+                    <summary>最近拒绝原因</summary>
+                    <p>{task.rejection_reason}</p>
+                  </details>
+                )}
+                {task.last_error && <p className="workdesk-team-error">{task.last_error}</p>}
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function stepTitle(step: CoworkProgressStep): string {
@@ -131,6 +210,7 @@ export function RunActivityPanel({
   steps,
   todos,
   subagentRuns,
+  team,
   progressSummary,
 }: {
   phase: CoworkRunPhase;
@@ -140,6 +220,7 @@ export function RunActivityPanel({
   steps: CoworkProgressStep[];
   todos: TodoItem[];
   subagentRuns: SubagentProgressPayload[];
+  team: TeamSummaryPayload | null;
   progressSummary: string;
 }) {
   const [processOpen, setProcessOpen] = useState(true);
@@ -205,6 +286,8 @@ export function RunActivityPanel({
               </ol>
             </details>
           )}
+
+          <TeamBoardPanel team={team} />
 
           <details className="workdesk-tool-trace" open={traceOpen}>
             <summary

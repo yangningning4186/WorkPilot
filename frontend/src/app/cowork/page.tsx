@@ -101,6 +101,29 @@ const RETIRED_CAPABILITIES = new Set([
   "external.action",
 ]);
 
+interface TeamProposalMember {
+  name: string;
+  role: string;
+  reason: string;
+}
+
+function teamProposalMembers(payload: Record<string, unknown>): TeamProposalMember[] {
+  const args = payload.arguments;
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return [];
+  const members = (args as Record<string, unknown>).members;
+  if (!Array.isArray(members)) return [];
+  return members.flatMap((member) => {
+    if (typeof member !== "object" || member === null || Array.isArray(member)) return [];
+    const record = member as Record<string, unknown>;
+    if (typeof record.name !== "string" || typeof record.role !== "string") return [];
+    return [{
+      name: record.name,
+      role: record.role,
+      reason: typeof record.reason === "string" ? record.reason : "",
+    }];
+  });
+}
+
 const OFFICE_PROMPTS = [
   { label: "文档处理", prompt: "整理工作空间里的 Word 文档，统一格式并提炼一页摘要。" },
   { label: "表格分析", prompt: "分析工作空间里的 Excel 表格，检查异常数据并补齐必要公式。" },
@@ -122,9 +145,55 @@ const READING_PROMPTS = [
 ];
 
 const INSPECTOR_WIDTH_STORAGE_KEY = "workpilot:cowork-inspector-width";
+const READER_SESSION_STORAGE_PREFIX = "workpilot:cowork-reader:";
 const DEFAULT_INSPECTOR_WIDTH = 400;
 const MIN_INSPECTOR_WIDTH = 300;
 const MAX_INSPECTOR_WIDTH = 720;
+
+interface StoredReaderSession {
+  workMode: CoworkWorkMode;
+  path: string;
+  locator: number;
+  open: boolean;
+}
+
+const DEFAULT_READER_SESSION: StoredReaderSession = {
+  workMode: "office",
+  path: "",
+  locator: 1,
+  open: true,
+};
+
+function readReaderSession(conversationId: string): StoredReaderSession {
+  try {
+    const raw = window.sessionStorage.getItem(`${READER_SESSION_STORAGE_PREFIX}${conversationId}`);
+    if (raw === null) return DEFAULT_READER_SESSION;
+    const parsed = JSON.parse(raw) as Partial<StoredReaderSession>;
+    return {
+      workMode: parsed.workMode === "reading" ? "reading" : "office",
+      path: typeof parsed.path === "string" ? parsed.path : "",
+      locator:
+        typeof parsed.locator === "number" && Number.isFinite(parsed.locator)
+          ? Math.max(1, Math.floor(parsed.locator))
+          : 1,
+      open: typeof parsed.open === "boolean" ? parsed.open : true,
+    };
+  } catch {
+    // sessionStorage 被禁用或旧值损坏时按默认办公模式启动；不能让一条 UI 草稿挡住会话。
+    return DEFAULT_READER_SESSION;
+  }
+}
+
+function writeReaderSession(conversationId: string, state: StoredReaderSession): void {
+  try {
+    window.sessionStorage.setItem(
+      `${READER_SESSION_STORAGE_PREFIX}${conversationId}`,
+      JSON.stringify(state),
+    );
+  } catch {
+    // 阅读器恢复只是本机体验增强，存储配额或隐私模式失败不能影响正常对话。
+  }
+}
 
 function clampInspectorWidth(width: number): number {
   if (typeof window === "undefined") return Math.max(MIN_INSPECTOR_WIDTH, Math.min(MAX_INSPECTOR_WIDTH, width));
@@ -285,6 +354,7 @@ export default function CoworkPage() {
   // 上的 filesystem.read 授权决定，这里填一个未授权路径也越不过去。
   const [readingPath, setReadingPath] = useState("");
   const [readingPickerPath, setReadingPickerPath] = useState<string | null>(null);
+  const [readingLocator, setReadingLocator] = useState(1);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [mountedKb, setMountedKb] = useState<string | null>(null);
   // 首屏初始化尚未拿到 conversation_id 时，知识库选择也必须是一个真实 draft，不能让
@@ -323,6 +393,16 @@ export default function CoworkPage() {
   useEffect(() => {
     conversationIdRef.current = conversationId;
   }, [conversationId]);
+
+  useEffect(() => {
+    if (conversationId === null) return;
+    writeReaderSession(conversationId, {
+      workMode,
+      path: readingPath,
+      locator: readingLocator,
+      open: readerOpen,
+    });
+  }, [conversationId, readerOpen, readingLocator, readingPath, workMode]);
 
   useEffect(() => {
     const savedWidth = Number.parseFloat(window.localStorage.getItem(INSPECTOR_WIDTH_STORAGE_KEY) ?? "");
@@ -492,9 +572,17 @@ export default function CoworkPage() {
           selected = items.find((item) => item.id === requestedId) ?? items[0];
         }
         if (cancelled) return;
+        const restoredReader = selected === undefined
+          ? DEFAULT_READER_SESSION
+          : readReaderSession(selected.id);
         setConversations(items);
         setArchivedConversations(archivedResponse.items);
         setProviders(providerResponse.items.filter((item) => item.enabled));
+        setWorkMode(restoredReader.workMode);
+        setReadingPath(restoredReader.path);
+        setReadingPickerPath(null);
+        setReadingLocator(restoredReader.locator);
+        setReaderOpen(restoredReader.open);
         setConversationId(selected?.id ?? null);
         setRunId(selected?.active_run_id ?? null);
       } catch (reason) {
@@ -546,7 +634,10 @@ export default function CoworkPage() {
   }, [conversationId, run.cursor]);
 
   useEffect(() => {
-    if (conversationId === null || (run.phase !== "done" && run.artifactEvents.length === 0)) {
+    if (
+      conversationId === null
+      || (!["done", "partial"].includes(run.phase) && run.artifactEvents.length === 0)
+    ) {
       return;
     }
     fetchCoworkArtifacts(conversationId)
@@ -560,7 +651,7 @@ export default function CoworkPage() {
   useEffect(() => {
     if (
       conversationId === null ||
-      (run.phase !== "done" && run.phase !== "cancelled" && run.phase !== "error")
+      (!["done", "partial", "cancelled", "error"].includes(run.phase))
     ) {
       return;
     }
@@ -572,7 +663,7 @@ export default function CoworkPage() {
   useEffect(() => {
     if (
       runId === null
-      || !["done", "cancelled", "budget_exceeded", "error"].includes(run.phase)
+      || !["done", "partial", "cancelled", "budget_exceeded", "error"].includes(run.phase)
     ) return;
     const finishedRunId = runId;
     let cancelled = false;
@@ -657,6 +748,7 @@ export default function CoworkPage() {
     setWorkMode("office");
     setReadingPath("");
     setReadingPickerPath(null);
+    setReadingLocator(1);
     setReaderOpen(true);
     setLocatorRequest(null);
     setArtifactRailOpen(true);
@@ -676,6 +768,7 @@ export default function CoworkPage() {
       "",
       `/cowork?conversation=${encodeURIComponent(item.id)}`,
     );
+    const restoredReader = readReaderSession(item.id);
     setOpenConversationMenuId(null);
     setConversationId(item.id);
     setRunId(item.active_run_id ?? null);
@@ -693,7 +786,11 @@ export default function CoworkPage() {
     setActivePrompt(null);
     setAttachments([]);
     setWorkspaceDraftPath(null);
+    setWorkMode(restoredReader.workMode);
+    setReadingPath(restoredReader.path);
     setReadingPickerPath(null);
+    setReadingLocator(restoredReader.locator);
+    setReaderOpen(restoredReader.open);
     setArtifactRailOpen(true);
     setKnowledgeBaseDraft(null);
     setKnowledgeBaseDraftDirty(false);
@@ -983,6 +1080,7 @@ export default function CoworkPage() {
       if (selected === null) return;
       setReadingPath(selected);
       setReadingPickerPath(selected);
+      setReadingLocator(1);
     } catch (reason) {
       setNotice(readableError(reason));
     }
@@ -1291,6 +1389,17 @@ export default function CoworkPage() {
     ? interactionPayload.steps.filter((item): item is string => typeof item === "string")
     : [];
   const planNotes = typeof interactionPayload.notes === "string" ? interactionPayload.notes : "";
+  const isTeamProposal =
+    run.interrupt?.kind === "external_approval" && interactionPayload.tool === "propose_team";
+  const proposedTeamMembers = isTeamProposal ? teamProposalMembers(interactionPayload) : [];
+  const proposedTeamArgs =
+    typeof interactionPayload.arguments === "object"
+      && interactionPayload.arguments !== null
+      && !Array.isArray(interactionPayload.arguments)
+      ? interactionPayload.arguments as Record<string, unknown>
+      : {};
+  const teamProposalNote =
+    typeof proposedTeamArgs.note === "string" ? proposedTeamArgs.note : "";
   const runAnswer = useSmoothStreamText(run.answer, steering);
   const hasConversation = messages.length > 0 || runId !== null;
   const hasComposerMaterials = attachments.length > 0;
@@ -1561,6 +1670,7 @@ export default function CoworkPage() {
                         onChange={(event) => {
                           setReadingPath(event.target.value);
                           setReadingPickerPath(null);
+                          setReadingLocator(1);
                         }}
                         placeholder="要读的文档，例如 papers/attention.pdf"
                         type="text"
@@ -1667,6 +1777,7 @@ export default function CoworkPage() {
                           startedAt={run.startedAt}
                           steps={run.steps}
                           subagentRuns={run.subagentRuns}
+                          team={run.team}
                           todos={run.todos}
                         />
 
@@ -1702,7 +1813,7 @@ export default function CoworkPage() {
                         )}
 
                         {(runAnswer !== "" || run.error !== null) && (
-                          <div className={`workdesk-run-answer${run.phase === "budget_exceeded" ? " budget" : run.error !== null ? " error" : run.phase === "cancelled" ? " cancelled" : ""}`}>
+                          <div className={`workdesk-run-answer${run.phase === "budget_exceeded" ? " budget" : run.error !== null ? " error" : run.phase === "cancelled" ? " cancelled" : run.phase === "partial" ? " partial" : ""}`}>
                             {run.error !== null && <p role="alert">{run.error}</p>}
                             {runAnswer !== "" && <AnswerMarkdown onSelectLocator={workMode === "reading" ? requestLocator : undefined} text={runAnswer} />}
                           </div>
@@ -1805,6 +1916,36 @@ export default function CoworkPage() {
                       <small>批准后这些步骤会成为任务清单，写入类工具才会解锁。要改的话直接写在下面。</small>
                       <textarea aria-label="对这个计划的修改意见" disabled={responding} maxLength={4000} onChange={(event) => setInteractionAnswer(event.target.value)} placeholder="想改哪里？留空直接批准" rows={2} value={interactionAnswer} />
                       <div className="workdesk-inbox-actions"><button disabled={responding || interactionAnswer.trim() === ""} onClick={() => void respondToInteraction({ approved: false, answer: interactionAnswer.trim() })} type="button">按这些意见重做计划</button><button className="primary" disabled={responding} onClick={() => void respondToInteraction({ approved: true, answer: interactionAnswer.trim() || undefined })} type="button">批准并开始执行</button></div>
+                    </>
+                  ) : isTeamProposal ? (
+                    <>
+                      <div className="workdesk-team-proposal-heading">
+                        <div>
+                          <h3>组建一支 Agent Team？</h3>
+                          <p>批准后会预创建 {proposedTeamMembers.length} 个独立持久 Worker Session。</p>
+                        </div>
+                        <span>{proposedTeamMembers.length}/{4} workers</span>
+                      </div>
+                      <div className="workdesk-team-roster" aria-label="拟议的 Worker roster">
+                        {proposedTeamMembers.map((member, index) => (
+                          <article key={`${member.name}:${index}`}>
+                            <b>{member.name.slice(0, 1).toUpperCase()}</b>
+                            <div>
+                              <strong>{member.name}</strong>
+                              <p>{member.role}</p>
+                              {member.reason !== "" && <small>{member.reason}</small>}
+                            </div>
+                            <em>待创建</em>
+                          </article>
+                        ))}
+                      </div>
+                      {teamProposalNote !== "" && <p className="workdesk-team-note">{teamProposalNote}</p>}
+                      <div className="workdesk-team-boundary">
+                        <strong>隔离边界</strong>
+                        <span>Worker 不继承当前对话历史，只通过 Board 接收任务描述、验收标准与资源范围。</span>
+                      </div>
+                      <small>创建 Session 本身不调用模型；Worker 首次收到 Board assignment 时才开始计费。团队编制不能被自动模式或常驻规则跳过。</small>
+                      <div className="workdesk-inbox-actions"><button disabled={responding} onClick={() => void respondToInteraction({ approved: false })} type="button">暂不组建</button><button className="primary" disabled={responding || proposedTeamMembers.length === 0} onClick={() => void respondToInteraction({ approved: true, remember: "once" })} type="button">批准并创建团队</button></div>
                     </>
                   ) : run.interrupt.kind === "external_approval" ? (
                     <>
@@ -1920,7 +2061,7 @@ export default function CoworkPage() {
                       <div className="workdesk-run-setting-field workdesk-reading-setting">
                         <span><strong>阅读文档</strong><small>相对默认工作区或已授权的绝对路径</small></span>
                         <div>
-                          <input aria-label="要阅读的文档路径" disabled={busy || running || conversationArchived} onChange={(event) => { setReadingPath(event.target.value); setReadingPickerPath(null); }} placeholder="papers/attention.pdf" value={readingPath} />
+                          <input aria-label="要阅读的文档路径" disabled={busy || running || conversationArchived} onChange={(event) => { setReadingPath(event.target.value); setReadingPickerPath(null); setReadingLocator(1); }} placeholder="papers/attention.pdf" value={readingPath} />
                           <button disabled={busy || running || conversationArchived || !desktopReady} onClick={() => void selectReadingDocument()} type="button">选择</button>
                         </div>
                       </div>
@@ -2062,8 +2203,10 @@ export default function CoworkPage() {
           conversationId={conversationId}
           jump={run.readerJump}
           key={readerPath}
+          initialLocator={readingLocator}
           onAskSelection={askAboutSelection}
           onClose={() => setReaderOpen(false)}
+          onLocatorChange={setReadingLocator}
           path={readerPath}
           requestedLocator={locatorRequest}
         />

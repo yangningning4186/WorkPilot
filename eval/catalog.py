@@ -17,6 +17,7 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -25,6 +26,12 @@ POLICY_SCHEMA_VERSION = "workpilot-regression-policy.v1"
 BASELINE_SCHEMA_VERSION = "workpilot-regression-baseline.v1"
 REPLAY_SCHEMA = "workpilot.run-replay-bundle"
 REPLAY_SCHEMA_VERSION = 1
+FULL_CHAIN_CASSETTE_SCHEMA = "workpilot.full-chain-cassette"
+FULL_CHAIN_CASSETTE_VERSION = 1
+FULL_CHAIN_CASSETTE_MODE = "strict_ordered_record_replay"
+FULL_CHAIN_CASSETTE_CHANNELS = frozenset({"rag", "tool", "external_effect"})
+CANONICALIZATION = "workpilot-json-sort-keys-utf8-v1"
+REFUSAL_CALIBRATION_SCHEMA = "workpilot-refusal-calibration.v1"
 
 DEFAULT_CATALOG = Path(__file__).resolve().with_name("catalog.json")
 DEFAULT_REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -153,6 +160,17 @@ class _ResolvedJson:
     path: Path
     payload: object
     raw_bytes: bytes
+
+
+@dataclass(frozen=True)
+class _TrackSelection:
+    split: str
+    item_count: int
+    case_ids: frozenset[str]
+
+    @property
+    def split_counts(self) -> dict[str, int]:
+        return {self.split: self.item_count}
 
 
 def canonical_json(value: object) -> str:
@@ -294,6 +312,281 @@ def _validate_policy(
     return policy
 
 
+def _suite_review(payload: Mapping[str, object]) -> dict[str, object]:
+    nested = payload.get("review")
+    review = nested if isinstance(nested, Mapping) else {}
+    return {
+        "origin": payload.get("origin"),
+        "status": payload.get("review_status") or review.get("status"),
+        "reviewer": payload.get("reviewer") or review.get("reviewer"),
+        "reviewed_at": payload.get("reviewed_at") or review.get("reviewed_at"),
+    }
+
+
+def _valid_reviewed_at(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def _validate_track_selection(
+    raw: Mapping[str, object],
+    *,
+    suite: _ResolvedJson | None,
+    resource_id: str,
+    issues: list[CatalogIssue],
+) -> _TrackSelection | None:
+    value = raw.get("selection")
+    if not isinstance(value, Mapping):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "track_selection_invalid",
+                "track 必须显式声明 selection.split 和 selection.item_count",
+                resource_id,
+            )
+        )
+        return None
+    split = value.get("split")
+    item_count = value.get("item_count")
+    if split not in {"dev", "test"} or (
+        isinstance(item_count, bool) or not isinstance(item_count, int) or item_count < 1
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "track_selection_invalid",
+                "selection.split 必须是 dev/test，item_count 必须是正整数",
+                resource_id,
+            )
+        )
+        return None
+    case_ids: set[str] = set()
+    if suite is not None and isinstance(suite.payload, Mapping):
+        items = suite.payload.get("items")
+        if isinstance(items, list):
+            selected = [
+                item for item in items if isinstance(item, Mapping) and item.get("split") == split
+            ]
+            if len(selected) != item_count:
+                issues.append(
+                    CatalogIssue(
+                        "error",
+                        "track_selection_mismatch",
+                        f"selection 声明 {split}={item_count}，suite 实际为 {len(selected)}",
+                        resource_id,
+                    )
+                )
+            for item in selected:
+                case_id = item.get("id") or item.get("item_id")
+                if isinstance(case_id, str) and case_id:
+                    if case_id in case_ids:
+                        issues.append(
+                            CatalogIssue(
+                                "error",
+                                "suite_case_id_duplicate",
+                                f"suite 选择内存在重复 case id: {case_id}",
+                                resource_id,
+                            )
+                        )
+                    case_ids.add(case_id)
+        else:
+            declared_count = suite.payload.get("item_count")
+            if isinstance(declared_count, int) and declared_count != item_count:
+                issues.append(
+                    CatalogIssue(
+                        "error",
+                        "track_selection_mismatch",
+                        f"selection.item_count={item_count}，suite.item_count={declared_count}",
+                        resource_id,
+                    )
+                )
+    return _TrackSelection(str(split), int(item_count), frozenset(case_ids))
+
+
+def _gold_document_hashes(document: _ResolvedJson | None) -> set[str]:
+    if document is None or not isinstance(document.payload, Mapping):
+        return set()
+    items = document.payload.get("items")
+    if not isinstance(items, list):
+        return set()
+    hashes: set[str] = set()
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        groups = item.get("gold_evidence_groups")
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            alternatives = group.get("alternatives") if isinstance(group, Mapping) else None
+            if not isinstance(alternatives, list):
+                continue
+            for alternative in alternatives:
+                content_hash = (
+                    alternative.get("content_hash") if isinstance(alternative, Mapping) else None
+                )
+                if isinstance(content_hash, str):
+                    hashes.add(content_hash)
+    return hashes
+
+
+def _validate_retrieval_calibration(
+    value: object,
+    *,
+    evaluation_suite: _ResolvedJson | None,
+    baseline_ready: bool,
+    resource_id: str,
+    repo_root: Path,
+    issues: list[CatalogIssue],
+) -> _ResolvedJson | None:
+    if not isinstance(value, Mapping):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "calibration_declaration_invalid",
+                "retrieval track 必须声明独立 calibration suite 与状态",
+                resource_id,
+            )
+        )
+        return None
+    status = value.get("status")
+    if status not in _BASELINE_STATUSES:
+        issues.append(
+            CatalogIssue(
+                "error",
+                "calibration_status_invalid",
+                f"calibration.status 必须是 {sorted(_BASELINE_STATUSES)} 之一",
+                resource_id,
+            )
+        )
+    calibration_suite = _resolve_json(
+        value.get("suite"),
+        field="calibration.suite",
+        resource_id=resource_id,
+        repo_root=repo_root,
+        issues=issues,
+    )
+    if calibration_suite is not None and not isinstance(calibration_suite.payload, Mapping):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "calibration_suite_invalid",
+                "calibration suite 根节点必须是对象",
+                resource_id,
+            )
+        )
+    overlap = _gold_document_hashes(evaluation_suite) & _gold_document_hashes(calibration_suite)
+    if overlap:
+        issues.append(
+            CatalogIssue(
+                "error",
+                "calibration_suite_leakage",
+                f"calibration/evaluation gold 共享 {len(overlap)} 个证据文档",
+                resource_id,
+            )
+        )
+    if status == "rebuild_required":
+        reason = value.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "calibration_rebuild_reason_missing",
+                    "calibration rebuild_required 必须提供非空 reason",
+                    resource_id,
+                )
+            )
+        if baseline_ready:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "calibration_not_ready",
+                    "retrieval baseline ready 前 calibration 必须先 ready",
+                    resource_id,
+                )
+            )
+        return None
+    if status != "ready":
+        return None
+    artifact = _resolve_json(
+        value.get("path"),
+        field="calibration.path",
+        resource_id=resource_id,
+        repo_root=repo_root,
+        issues=issues,
+    )
+    if artifact is None or not isinstance(artifact.payload, Mapping):
+        if artifact is not None:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "calibration_artifact_invalid",
+                    "calibration artifact 根节点必须是对象",
+                    resource_id,
+                )
+            )
+        return artifact
+    payload = artifact.payload
+    suite_review = (
+        _suite_review(calibration_suite.payload)
+        if calibration_suite is not None and isinstance(calibration_suite.payload, Mapping)
+        else {}
+    )
+    if (
+        suite_review.get("status") != "approved"
+        or not isinstance(suite_review.get("reviewer"), str)
+        or not _valid_reviewed_at(suite_review.get("reviewed_at"))
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "calibration_suite_not_approved",
+                "ready calibration suite 必须 approved 并包含完整复核信息",
+                resource_id,
+            )
+        )
+    expected_suite_sha = (
+        hashlib.sha256(calibration_suite.raw_bytes).hexdigest()
+        if calibration_suite is not None
+        else None
+    )
+    if (
+        payload.get("schema_version") != REFUSAL_CALIBRATION_SCHEMA
+        or payload.get("dataset_sha256") != expected_suite_sha
+        or not isinstance(payload.get("reviewer"), str)
+        or not _valid_reviewed_at(payload.get("reviewed_at"))
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "calibration_artifact_invalid",
+                "calibration artifact 的 schema/suite SHA/reviewer/reviewed_at 无效",
+                resource_id,
+            )
+        )
+    integrity = payload.get("integrity")
+    unsigned = {key: item for key, item in payload.items() if key != "integrity"}
+    if (
+        not isinstance(integrity, Mapping)
+        or integrity.get("algorithm") != "sha256"
+        or integrity.get("value")
+        != hashlib.sha256(canonical_json(unsigned).encode("utf-8")).hexdigest()
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "calibration_integrity_invalid",
+                "calibration artifact 完整性校验失败",
+                resource_id,
+            )
+        )
+    return artifact
+
+
 def _validate_ready_baseline(
     document: _ResolvedJson | None,
     *,
@@ -301,6 +594,8 @@ def _validate_ready_baseline(
     suite: _ResolvedJson | None,
     policy_document: _ResolvedJson | None,
     policy: Mapping[str, object] | None,
+    selection: _TrackSelection | None,
+    calibration_artifact: _ResolvedJson | None,
     resource_id: str,
     issues: list[CatalogIssue],
 ) -> None:
@@ -340,6 +635,17 @@ def _validate_ready_baseline(
                 resource_id,
             )
         )
+    if suite is not None:
+        actual_suite_sha = hashlib.sha256(suite.raw_bytes).hexdigest()
+        if baseline.get("dataset_fingerprint") != actual_suite_sha:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "baseline_suite_hash_mismatch",
+                    "baseline.dataset_fingerprint 与当前 suite 文件 SHA256 不一致",
+                    resource_id,
+                )
+            )
     for field in ("generated_at", "label"):
         if not isinstance(baseline.get(field), str) or not str(baseline[field]).strip():
             issues.append(
@@ -369,6 +675,66 @@ def _validate_ready_baseline(
                 resource_id,
             )
         )
+    if baseline.get("git_dirty") is not False:
+        issues.append(
+            CatalogIssue(
+                "error",
+                "baseline_git_dirty",
+                "ready baseline.git_dirty 必须明确为 false",
+                resource_id,
+            )
+        )
+    suite_review = (
+        _suite_review(suite.payload)
+        if suite is not None and isinstance(suite.payload, Mapping)
+        else {}
+    )
+    baseline_review = baseline.get("review")
+    if (
+        suite_review.get("status") != "approved"
+        or not isinstance(suite_review.get("reviewer"), str)
+        or not _valid_reviewed_at(suite_review.get("reviewed_at"))
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "suite_review_not_approved",
+                "ready track 的 suite 必须 approved，并有 reviewer 和带时区的 reviewed_at",
+                resource_id,
+            )
+        )
+    if not isinstance(baseline_review, Mapping) or any(
+        baseline_review.get(field) != suite_review.get(field)
+        for field in ("origin", "status", "reviewer", "reviewed_at")
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "baseline_review_mismatch",
+                "baseline 固定的 review provenance 与当前 suite 不一致",
+                resource_id,
+            )
+        )
+    if kind == "retrieval" and not _is_sha256(baseline.get("calibration_fingerprint")):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "baseline_calibration_invalid",
+                "ready retrieval baseline 必须固定独立校准文件 SHA256",
+                resource_id,
+            )
+        )
+    if kind == "retrieval" and calibration_artifact is not None:
+        expected_calibration_sha = hashlib.sha256(calibration_artifact.raw_bytes).hexdigest()
+        if baseline.get("calibration_fingerprint") != expected_calibration_sha:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "baseline_calibration_mismatch",
+                    "baseline 固定的 calibration SHA256 与 catalog artifact 不一致",
+                    resource_id,
+                )
+            )
     baseline_policy = baseline.get("policy")
     if not isinstance(baseline_policy, Mapping):
         issues.append(
@@ -411,6 +777,37 @@ def _validate_ready_baseline(
                 resource_id,
             )
         )
+    elif selection is not None:
+        baseline_selection = baseline.get("selection")
+        split_counts = (
+            baseline_selection.get("split_counts")
+            if isinstance(baseline_selection, Mapping)
+            else None
+        )
+        if split_counts != selection.split_counts or len(cases) != selection.item_count:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "baseline_selection_mismatch",
+                    "baseline 的 split/count 与 catalog track selection 不一致",
+                    resource_id,
+                )
+            )
+        if selection.case_ids:
+            baseline_ids = {
+                case.get("case_id")
+                for case in cases
+                if isinstance(case, Mapping) and isinstance(case.get("case_id"), str)
+            }
+            if baseline_ids != set(selection.case_ids):
+                issues.append(
+                    CatalogIssue(
+                        "error",
+                        "baseline_case_ids_mismatch",
+                        "baseline case_id 集合与 suite 所选 split 不一致",
+                        resource_id,
+                    )
+                )
     integrity = baseline.get("integrity")
     if not isinstance(integrity, Mapping) or integrity.get("algorithm") != "sha256":
         issues.append(
@@ -483,6 +880,12 @@ def _validate_track(
         issues.append(
             CatalogIssue("error", "suite_not_object", "suite 根节点必须是对象", resource_id)
         )
+    selection = _validate_track_selection(
+        raw,
+        suite=suite,
+        resource_id=resource_id,
+        issues=issues,
+    )
     policy_document = _resolve_json(
         raw.get("policy"),
         field="policy",
@@ -518,6 +921,18 @@ def _validate_track(
         repo_root=repo_root,
         issues=issues,
     )
+    calibration_artifact = (
+        _validate_retrieval_calibration(
+            raw.get("calibration"),
+            evaluation_suite=suite,
+            baseline_ready=status == "ready",
+            resource_id=resource_id,
+            repo_root=repo_root,
+            issues=issues,
+        )
+        if kind == "retrieval"
+        else None
+    )
     if status == "ready":
         _validate_ready_baseline(
             baseline,
@@ -525,6 +940,8 @@ def _validate_track(
             suite=suite,
             policy_document=policy_document,
             policy=policy,
+            selection=selection,
+            calibration_artifact=calibration_artifact,
             resource_id=resource_id,
             issues=issues,
         )
@@ -566,21 +983,23 @@ def _validate_replay(
     resource_id, id_issue = _resource_id(raw.get("id"), fallback=fallback)
     if id_issue is not None:
         issues.append(id_issue)
-    if raw.get("kind") != "event":
+    kind = raw.get("kind")
+    if kind not in {"event", "cassette"}:
         issues.append(
             CatalogIssue(
                 "error",
                 "replay_kind_invalid",
-                "replay kind 目前只支持 'event'",
+                "replay kind 必须是 event 或 cassette",
                 resource_id,
             )
         )
-    if raw.get("mode") != "offline_validation_only":
+    expected_mode = "offline_validation_only" if kind == "event" else "offline_no_live_io"
+    if raw.get("mode") != expected_mode:
         issues.append(
             CatalogIssue(
                 "error",
                 "replay_mode_invalid",
-                "event replay 必须显式声明 offline_validation_only",
+                f"{kind or 'unknown'} replay 必须显式声明 {expected_mode}",
                 resource_id,
             )
         )
@@ -604,6 +1023,9 @@ def _validate_replay(
         )
         return resource_id, "replay bundle invalid"
     bundle = document.payload
+    if kind == "cassette":
+        _validate_full_chain_cassette(bundle, resource_id=resource_id, issues=issues)
+        return resource_id, "offline RAG/tool/external-effect cassette declared"
     if (
         bundle.get("schema") != REPLAY_SCHEMA
         or bundle.get("schema_version") != REPLAY_SCHEMA_VERSION
@@ -627,6 +1049,116 @@ def _validate_replay(
             )
         )
     return resource_id, "offline event replay bundle declared"
+
+
+def _validate_full_chain_cassette(
+    bundle: Mapping[str, object],
+    *,
+    resource_id: str,
+    issues: list[CatalogIssue],
+) -> None:
+    if (
+        bundle.get("schema") != FULL_CHAIN_CASSETTE_SCHEMA
+        or bundle.get("schema_version") != FULL_CHAIN_CASSETTE_VERSION
+        or bundle.get("mode") != FULL_CHAIN_CASSETTE_MODE
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "cassette_schema_invalid",
+                f"cassette 必须是 {FULL_CHAIN_CASSETTE_SCHEMA} v{FULL_CHAIN_CASSETTE_VERSION}",
+                resource_id,
+            )
+        )
+    if bundle.get("origin") != "synthetic" or bundle.get("data_classification") != "synthetic":
+        issues.append(
+            CatalogIssue(
+                "error",
+                "cassette_data_classification_invalid",
+                "提交到 catalog 的 cassette 必须是 synthetic，不得包含运行时敏感数据",
+                resource_id,
+            )
+        )
+
+    integrity = bundle.get("integrity")
+    unsigned = {key: value for key, value in bundle.items() if key != "integrity"}
+    if (
+        not isinstance(integrity, Mapping)
+        or integrity.get("algorithm") != "sha256"
+        or integrity.get("canonicalization") != CANONICALIZATION
+        or integrity.get("value")
+        != hashlib.sha256(canonical_json(unsigned).encode("utf-8")).hexdigest()
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "cassette_integrity_mismatch",
+                "cassette 顶层完整性摘要不匹配",
+                resource_id,
+            )
+        )
+
+    interactions = bundle.get("interactions")
+    if not isinstance(interactions, list) or not interactions:
+        issues.append(
+            CatalogIssue(
+                "error",
+                "cassette_interactions_invalid",
+                "cassette interactions 必须是非空数组",
+                resource_id,
+            )
+        )
+        return
+    previous = "0" * 64
+    channels: set[str] = set()
+    for seq, interaction in enumerate(interactions, 1):
+        if not isinstance(interaction, Mapping):
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "cassette_interaction_invalid",
+                    f"interaction {seq} 必须是对象",
+                    resource_id,
+                )
+            )
+            continue
+        channel = interaction.get("channel")
+        request = interaction.get("request")
+        request_sha = hashlib.sha256(canonical_json(request).encode("utf-8")).hexdigest()
+        body = {key: value for key, value in interaction.items() if key != "interaction_sha256"}
+        interaction_sha = hashlib.sha256(canonical_json(body).encode("utf-8")).hexdigest()
+        valid = (
+            interaction.get("seq") == seq
+            and channel in FULL_CHAIN_CASSETTE_CHANNELS
+            and isinstance(interaction.get("operation"), str)
+            and bool(str(interaction.get("operation")).strip())
+            and interaction.get("request_sha256") == request_sha
+            and interaction.get("previous_sha256") == previous
+            and interaction.get("interaction_sha256") == interaction_sha
+            and isinstance(interaction.get("outcome"), Mapping)
+        )
+        if not valid:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "cassette_interaction_invalid",
+                    f"interaction {seq} 的顺序、请求摘要或 hash chain 无效",
+                    resource_id,
+                )
+            )
+        if isinstance(channel, str):
+            channels.add(channel)
+        previous = interaction_sha
+    missing = FULL_CHAIN_CASSETTE_CHANNELS - channels
+    if missing:
+        issues.append(
+            CatalogIssue(
+                "error",
+                "cassette_channels_missing",
+                f"cassette 缺少全链路 channel: {sorted(missing)}",
+                resource_id,
+            )
+        )
 
 
 def doctor_catalog(

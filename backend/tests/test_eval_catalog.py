@@ -26,7 +26,14 @@ def _write_json(path: Path, payload: object) -> None:
 
 
 def _fixture_tree(root: Path, *, baseline_status: str = "rebuild_required") -> dict[str, Any]:
-    suite = {"name": "suite-v1", "items": [{"id": "case-1"}]}
+    suite = {
+        "name": "suite-v1",
+        "origin": "synthetic",
+        "review_status": "approved",
+        "reviewer": "fixture-owner",
+        "reviewed_at": "2026-08-24T00:00:00+00:00",
+        "items": [{"id": "case-1", "split": "dev"}],
+    }
     policy = {
         "schema_version": "workpilot-regression-policy.v1",
         "name": "cowork-policy-v1",
@@ -56,6 +63,7 @@ def _fixture_tree(root: Path, *, baseline_status: str = "rebuild_required") -> d
                 "kind": "cowork",
                 "suite": "suites/suite.json",
                 "policy": "policies/cowork.json",
+                "selection": {"split": "dev", "item_count": 1},
                 "baseline": baseline,
             }
         ],
@@ -82,15 +90,25 @@ def _codes(report) -> set[str]:
 
 def _promote_valid_baseline(root: Path) -> None:
     policy_path = root / "policies/cowork.json"
+    suite_path = root / "suites/suite.json"
     body: dict[str, Any] = {
         "schema_version": BASELINE_SCHEMA_VERSION,
         "generated_at": "2026-08-24T00:00:00+00:00",
         "kind": "cowork",
         "dataset": "suite-v1",
         "dataset_version": "1",
-        "dataset_fingerprint": "a" * 64,
+        "dataset_fingerprint": hashlib.sha256(suite_path.read_bytes()).hexdigest(),
         "config_fingerprint": "b" * 64,
         "git_sha": "c" * 40,
+        "git_dirty": False,
+        "review": {
+            "origin": "synthetic",
+            "status": "approved",
+            "reviewer": "fixture-owner",
+            "reviewed_at": "2026-08-24T00:00:00+00:00",
+        },
+        "selection": {"split_counts": {"dev": 1}},
+        "calibration_fingerprint": None,
         "label": "baseline-v1",
         "policy": {
             "name": "cowork-policy-v1",
@@ -116,23 +134,142 @@ def _promote_valid_baseline(root: Path) -> None:
     _write_json(root / "baselines/cowork.json", body)
 
 
-def test_repository_catalog_is_healthy_but_exposes_legacy_baseline_warnings() -> None:
+def _retrieval_fixture_tree(root: Path, *, ready: bool = False) -> dict[str, Any]:
+    catalog = _fixture_tree(root, baseline_status="ready" if ready else "rebuild_required")
+    evaluation_suite = {
+        "name": "retrieval-eval-v1",
+        "origin": "synthetic",
+        "review": {
+            "status": "approved",
+            "reviewer": "fixture-owner",
+            "reviewed_at": "2026-08-24T00:00:00+00:00",
+        },
+        "items": [
+            {
+                "item_id": "r1",
+                "split": "dev",
+                "answerable": True,
+                "gold_evidence_groups": [{"alternatives": [{"content_hash": "a" * 64}]}],
+            }
+        ],
+    }
+    calibration_suite = {
+        "name": "retrieval-calibration-v1",
+        "origin": "synthetic",
+        "review": {
+            "status": "approved",
+            "reviewer": "fixture-owner",
+            "reviewed_at": "2026-08-24T00:00:00+00:00",
+        },
+        "items": [
+            {
+                "item_id": "c1",
+                "split": "dev",
+                "answerable": True,
+                "gold_evidence_groups": [{"alternatives": [{"content_hash": "b" * 64}]}],
+            }
+        ],
+    }
+    _write_json(root / "suites/retrieval.json", evaluation_suite)
+    _write_json(root / "suites/calibration.json", calibration_suite)
+    policy = json.loads((root / "policies/cowork.json").read_text(encoding="utf-8"))
+    policy.update(name="retrieval-policy-v1", report_kind="retrieval")
+    _write_json(root / "policies/retrieval.json", policy)
+    track = catalog["tracks"][0]
+    track.update(
+        id="kb-retrieval",
+        kind="retrieval",
+        suite="suites/retrieval.json",
+        policy="policies/retrieval.json",
+        selection={"split": "dev", "item_count": 1},
+        calibration={
+            "status": "rebuild_required",
+            "suite": "suites/calibration.json",
+            "reason": "calibration not promoted",
+        },
+    )
+    if not ready:
+        return catalog
+
+    calibration: dict[str, Any] = {
+        "schema_version": "workpilot-refusal-calibration.v1",
+        "dataset": "retrieval-calibration-v1",
+        "dataset_sha256": hashlib.sha256(
+            (root / "suites/calibration.json").read_bytes()
+        ).hexdigest(),
+        "source_report_sha256": "d" * 64,
+        "score_source": "fusion",
+        "threshold": 0.02,
+        "method": "macro_f1_grid_v1",
+        "reviewer": "threshold-owner",
+        "reviewed_at": "2026-08-24T01:00:00+00:00",
+    }
+    calibration["integrity"] = {
+        "algorithm": "sha256",
+        "value": hashlib.sha256(canonical_json(calibration).encode()).hexdigest(),
+    }
+    _write_json(root / "calibrations/refusal.json", calibration)
+    track["calibration"] = {
+        "status": "ready",
+        "suite": "suites/calibration.json",
+        "path": "calibrations/refusal.json",
+    }
+    policy_path = root / "policies/retrieval.json"
+    baseline: dict[str, Any] = {
+        "schema_version": BASELINE_SCHEMA_VERSION,
+        "generated_at": "2026-08-24T02:00:00+00:00",
+        "kind": "retrieval",
+        "dataset": "retrieval-eval-v1",
+        "dataset_fingerprint": hashlib.sha256(
+            (root / "suites/retrieval.json").read_bytes()
+        ).hexdigest(),
+        "config_fingerprint": "c" * 64,
+        "git_sha": "e" * 40,
+        "git_dirty": False,
+        "review": {
+            "origin": "synthetic",
+            "status": "approved",
+            "reviewer": "fixture-owner",
+            "reviewed_at": "2026-08-24T00:00:00+00:00",
+        },
+        "selection": {"split_counts": {"dev": 1}},
+        "calibration_fingerprint": hashlib.sha256(
+            (root / "calibrations/refusal.json").read_bytes()
+        ).hexdigest(),
+        "label": "retrieval-v1",
+        "policy": {
+            "name": "retrieval-policy-v1",
+            "sha256": hashlib.sha256(
+                canonical_json(json.loads(policy_path.read_text(encoding="utf-8"))).encode()
+            ).hexdigest(),
+        },
+        "source_report_sha256": "f" * 64,
+        "cases": [
+            {
+                "case_id": "r1",
+                "segment": "single_hop",
+                "status": "done",
+                "error": False,
+                "metrics": {"task_success": {"numerator": 1, "denominator": 1}},
+            }
+        ],
+    }
+    baseline["integrity"] = {
+        "algorithm": "sha256",
+        "value": hashlib.sha256(canonical_json(baseline).encode()).hexdigest(),
+    }
+    _write_json(root / "baselines/cowork.json", baseline)
+    return catalog
+
+
+def test_repository_catalog_is_ready() -> None:
     report = doctor_catalog(DEFAULT_CATALOG, repo_root=REPO_ROOT)
 
     assert report.healthy is True
-    assert report.status == "warning"
-    assert [resource.health for resource in report.resources] == [
-        "warning",
-        "warning",
-        "warning",
-        "ready",
-    ]
+    assert report.status == "ready"
+    assert [resource.health for resource in report.resources] == ["ready"] * 6
     rebuilds = [issue for issue in report.issues if issue.code == "baseline_rebuild_required"]
-    assert {issue.resource_id for issue in rebuilds} == {
-        "cowork-core",
-        "kb-retrieval",
-        "grounded-generation",
-    }
+    assert rebuilds == []
 
 
 def test_cli_json_distinguishes_ready_and_warning(capsys: pytest.CaptureFixture[str]) -> None:
@@ -140,15 +277,39 @@ def test_cli_json_distinguishes_ready_and_warning(capsys: pytest.CaptureFixture[
 
     output = json.loads(capsys.readouterr().out)
     assert output["healthy"] is True
-    assert output["status"] == "warning"
+    assert output["status"] == "ready"
     assert output["summary"] == {
         "error_count": 0,
         "invalid": 0,
-        "ready": 1,
-        "resource_count": 4,
-        "warning_count": 3,
-        "warnings": 3,
+        "ready": 6,
+        "resource_count": 6,
+        "warning_count": 0,
+        "warnings": 0,
     }
+
+
+def test_full_chain_cassette_is_checked_for_integrity(tmp_path: Path) -> None:
+    catalog = _fixture_tree(tmp_path)
+    source = REPO_ROOT / "eval/replays/full-chain-v1.json"
+    cassette = json.loads(source.read_text(encoding="utf-8"))
+    _write_json(tmp_path / "replays/full-chain.json", cassette)
+    catalog["replay_suites"].append(
+        {
+            "id": "full-chain-v1",
+            "kind": "cassette",
+            "mode": "offline_no_live_io",
+            "path": "replays/full-chain.json",
+        }
+    )
+
+    healthy = _doctor(tmp_path, catalog)
+    assert not {code for code in _codes(healthy) if code.startswith("cassette_")}
+
+    cassette["interactions"][0]["request"]["request"]["query"] = "tampered"
+    _write_json(tmp_path / "replays/full-chain.json", cassette)
+    tampered = _doctor(tmp_path, catalog)
+    assert "cassette_integrity_mismatch" in _codes(tampered)
+    assert "cassette_interaction_invalid" in _codes(tampered)
 
 
 def test_rebuild_required_is_a_warning_not_a_failure(tmp_path: Path) -> None:
@@ -172,6 +333,39 @@ def test_ready_baseline_requires_promoted_schema_and_then_becomes_ready(tmp_path
     assert ready.healthy is True
     assert ready.status == "ready"
     assert all(resource.health == "ready" for resource in ready.resources)
+
+
+def test_retrieval_calibration_is_independent_and_bound_to_ready_baseline(
+    tmp_path: Path,
+) -> None:
+    catalog = _retrieval_fixture_tree(tmp_path, ready=True)
+    assert _doctor(tmp_path, catalog).status == "ready"
+
+    baseline_path = tmp_path / "baselines/cowork.json"
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    baseline["calibration_fingerprint"] = "0" * 64
+    baseline.pop("integrity")
+    baseline["integrity"] = {
+        "algorithm": "sha256",
+        "value": hashlib.sha256(canonical_json(baseline).encode()).hexdigest(),
+    }
+    _write_json(baseline_path, baseline)
+
+    report = _doctor(tmp_path, catalog)
+    assert report.healthy is False
+    assert "baseline_calibration_mismatch" in _codes(report)
+
+
+def test_retrieval_calibration_gold_cannot_overlap_evaluation(tmp_path: Path) -> None:
+    catalog = _retrieval_fixture_tree(tmp_path)
+    calibration_path = tmp_path / "suites/calibration.json"
+    calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+    calibration["items"][0]["gold_evidence_groups"][0]["alternatives"][0]["content_hash"] = "a" * 64
+    _write_json(calibration_path, calibration)
+
+    report = _doctor(tmp_path, catalog)
+    assert report.healthy is False
+    assert "calibration_suite_leakage" in _codes(report)
 
 
 @pytest.mark.parametrize(
@@ -283,6 +477,15 @@ def test_policy_kind_must_match_track_kind(tmp_path: Path) -> None:
         (
             lambda baseline: baseline["integrity"].update(value="0" * 64),
             "baseline_integrity_mismatch",
+        ),
+        (lambda baseline: baseline.update(git_dirty=True), "baseline_git_dirty"),
+        (
+            lambda baseline: baseline["review"].update(reviewer="somebody-else"),
+            "baseline_review_mismatch",
+        ),
+        (
+            lambda baseline: baseline["selection"]["split_counts"].update(dev=2),
+            "baseline_selection_mismatch",
         ),
     ],
 )

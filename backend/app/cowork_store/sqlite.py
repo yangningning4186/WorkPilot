@@ -39,6 +39,7 @@ from app.cowork_contracts import (
     ApprovalRuleScope,
     ArtifactRecord,
     ArtifactRegistrationError,
+    BoardTaskRecord,
     CapabilityDeniedError,
     CapabilityGrantRecord,
     ChannelSubscriptionRecord,
@@ -59,6 +60,9 @@ from app.cowork_contracts import (
     SessionRootNotFoundError,
     SessionRootRecord,
     SteeringRecord,
+    TeamRecord,
+    TeamWorkerRecord,
+    TeamWorkerSessionRecord,
     ThreadSessionRecord,
     UnattendedInboxRecord,
     UnroutedRecord,
@@ -403,6 +407,66 @@ CREATE TABLE IF NOT EXISTS cowork_inbox_items (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_local_pending_inbox
 ON cowork_inbox_items(run_id) WHERE status = 'pending';
 
+-- Agent Team 的编制、Worker Session 与 Board 共用同一控制面数据库。Worker Session
+-- 预创建时只落一份空闲 JSON state，不触发模型；第一条 Board assignment 才产生调用。
+CREATE TABLE IF NOT EXISTS cowork_teams (
+    id TEXT PRIMARY KEY,
+    lead_conversation_id TEXT NOT NULL UNIQUE
+        REFERENCES conversations(id) ON DELETE CASCADE,
+    proposal_call_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active','paused','archived')),
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cowork_team_workers (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL REFERENCES cowork_teams(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    session_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    UNIQUE (team_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS cowork_team_worker_sessions (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL REFERENCES cowork_teams(id) ON DELETE CASCADE,
+    worker_id TEXT NOT NULL UNIQUE REFERENCES cowork_team_workers(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'idle'
+        CHECK (status IN ('idle','running','failed')),
+    active_task_id TEXT,
+    state TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cowork_board_tasks (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL REFERENCES cowork_teams(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    acceptance_criteria TEXT NOT NULL,
+    resource_scope TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open','in_progress','blocked','review','done','cancelled')),
+    assignee_worker_id TEXT REFERENCES cowork_team_workers(id) ON DELETE SET NULL,
+    assignment_call_id TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    completion_kind TEXT NOT NULL DEFAULT 'pending',
+    worker_report TEXT,
+    review_comment TEXT,
+    last_rejection_comment TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_local_board_tasks_team_status
+ON cowork_board_tasks(team_id, status, created_at, id);
+
 CREATE TABLE IF NOT EXISTS cowork_steering_messages (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
@@ -490,7 +554,7 @@ CREATE TABLE IF NOT EXISTS memory_extraction_jobs (
 CREATE INDEX IF NOT EXISTS ix_local_memory_jobs_dispatch
 ON memory_extraction_jobs(available_at, id) WHERE status IN ('queued','running');
 
-PRAGMA user_version = 11;
+PRAGMA user_version = 14;
 """
 
 _MEMORY_INDEX_SCHEMA = """
@@ -536,9 +600,9 @@ class SqliteCoworkStore:
         connection = self._connect()
         try:
             database_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if database_version > 12:
+            if database_version > 14:
                 raise RuntimeError(
-                    f"cowork.db schema v{database_version} 高于当前应用支持的 v12，拒绝降级打开"
+                    f"cowork.db schema v{database_version} 高于当前应用支持的 v14，拒绝降级打开"
                 )
             connection.executescript(_SCHEMA)
             conversation_columns = {
@@ -632,6 +696,37 @@ class SqliteCoworkStore:
             # 这些索引引用记忆合并后新增的 invalid_at。必须等旧库补完列再创建，
             # 否则 executescript 会先报 no such column，迁移代码永远没有机会执行。
             connection.executescript(_MEMORY_INDEX_SCHEMA)
+            board_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(cowork_board_tasks)").fetchall()
+            }
+            for column, ddl in (
+                ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("completion_kind", "TEXT NOT NULL DEFAULT 'pending'"),
+                ("last_rejection_comment", "TEXT"),
+                ("last_error", "TEXT"),
+            ):
+                if column not in board_columns:
+                    connection.execute(f"ALTER TABLE cowork_board_tasks ADD COLUMN {column} {ddl}")
+            # v13 及更早没有尝试次数和独立拒绝字段；已有 assignment 至少算一次，open
+            # 任务当前的 review_comment 就是最近拒绝原因。只能保守回填可证明的下界，
+            # 不能根据消息文本猜历史到底重试过几轮。
+            connection.execute(
+                """UPDATE cowork_board_tasks SET attempt_count = 1
+                   WHERE attempt_count = 0
+                     AND (assignment_call_id IS NOT NULL OR worker_report IS NOT NULL)"""
+            )
+            connection.execute(
+                """UPDATE cowork_board_tasks SET last_rejection_comment = review_comment
+                   WHERE last_rejection_comment IS NULL AND status = 'open'
+                     AND review_comment IS NOT NULL AND review_comment <> ''"""
+            )
+            connection.execute(
+                """UPDATE cowork_board_tasks SET completion_kind =
+                       CASE status WHEN 'done' THEN 'complete'
+                                   WHEN 'cancelled' THEN 'cancelled'
+                                   ELSE completion_kind END"""
+            )
             # v12: run 创建先落 initializing，checkpoint 与初始事件同事务完成后才可派发。
             # 旧版进程如果在初始化途中退出，新的 sidecar 不可能继续那条 HTTP 调用；启动时
             # 明确标失败，避免会话永远被一条不可执行的活跃 run 卡住。
@@ -651,7 +746,7 @@ class SqliteCoworkStore:
                        'initializing','queued','executing','waiting_human','sleeping'
                    )"""
             )
-            connection.execute("PRAGMA user_version = 12")
+            connection.execute("PRAGMA user_version = 14")
         finally:
             connection.close()
         try:
@@ -688,6 +783,10 @@ class SqliteCoworkStore:
             "cowork_schedules",
             "cowork_inbox_items",
             "cowork_steering_messages",
+            "cowork_teams",
+            "cowork_team_workers",
+            "cowork_team_worker_sessions",
+            "cowork_board_tasks",
             "cowork_memories",
         }
         if table not in allowed:
@@ -750,6 +849,10 @@ class SqliteCoworkStore:
             "cowork_schedules",
             "cowork_inbox_items",
             "cowork_steering_messages",
+            "cowork_teams",
+            "cowork_team_workers",
+            "cowork_team_worker_sessions",
+            "cowork_board_tasks",
             "cowork_memories",
         }
         if table not in allowed or not columns:
@@ -1018,7 +1121,7 @@ class SqliteCoworkStore:
         def operation(connection: sqlite3.Connection) -> bool:
             active = connection.execute(
                 """SELECT 1 FROM agent_runs WHERE conversation_id = ?
-                   AND status NOT IN ('done','failed','cancelled','budget_exceeded') LIMIT 1""",
+                   AND status NOT IN ('done','partial','failed','cancelled','budget_exceeded') LIMIT 1""",
                 (str(conversation_id),),
             ).fetchone()
             if active is not None:
@@ -1069,7 +1172,7 @@ class SqliteCoworkStore:
         def operation(connection: sqlite3.Connection) -> bool:
             leased_worker = connection.execute(
                 """SELECT 1 FROM agent_runs WHERE conversation_id = ?
-                   AND status NOT IN ('done','failed','cancelled','budget_exceeded')
+                   AND status NOT IN ('done','partial','failed','cancelled','budget_exceeded')
                    AND worker_id IS NOT NULL AND lease_until IS NOT NULL
                    AND lease_until > ? LIMIT 1""",
                 (str(conversation_id), _iso()),
@@ -1546,7 +1649,7 @@ class SqliteCoworkStore:
                    JOIN agent_checkpoints AS checkpoints ON checkpoints.run_id = runs.id
                    WHERE runs.conversation_id = ? AND runs.id <> ?
                      AND runs.workflow_type = 'cowork'
-                     AND runs.status IN ('done','failed','cancelled','budget_exceeded')
+                     AND runs.status IN ('done','partial','failed','cancelled','budget_exceeded')
                      AND runs.created_at < ?
                    ORDER BY runs.created_at DESC, checkpoints.checkpoint_id DESC LIMIT 1""",
                 (current["conversation_id"], str(run_id), current["created_at"]),
@@ -3091,6 +3194,500 @@ class SqliteCoworkStore:
 
         await self._write(operation)
 
+    # ---- Agent Teams / Board -----------------------------------------------
+    async def create_team(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        proposal_call_id: str,
+        note: str,
+        members: Sequence[dict[str, Any]],
+    ) -> tuple[TeamRecord, list[TeamWorkerRecord]]:
+        """审批通过后原子创建 roster 与零 token 的空闲 Worker Session。"""
+
+        timestamp = _iso()
+
+        def operation(
+            connection: sqlite3.Connection,
+        ) -> tuple[TeamRecord, list[TeamWorkerRecord]]:
+            existing = connection.execute(
+                "SELECT * FROM cowork_teams WHERE proposal_call_id = ?",
+                (proposal_call_id,),
+            ).fetchone()
+            if existing is not None:
+                team = self._team_record(existing)
+                rows = connection.execute(
+                    "SELECT * FROM cowork_team_workers WHERE team_id = ? ORDER BY created_at, id",
+                    (str(team.id),),
+                ).fetchall()
+                return team, [self._team_worker_record(row) for row in rows]
+            if (
+                connection.execute(
+                    "SELECT 1 FROM conversations WHERE id = ?", (str(lead_conversation_id),)
+                ).fetchone()
+                is None
+            ):
+                raise ConversationNotFoundError(str(lead_conversation_id))
+            if (
+                connection.execute(
+                    "SELECT 1 FROM cowork_teams WHERE lead_conversation_id = ?",
+                    (str(lead_conversation_id),),
+                ).fetchone()
+                is not None
+            ):
+                raise ValueError("当前 Lead 会话已经创建过 Agent Team")
+
+            team_id = uuid7()
+            connection.execute(
+                """INSERT INTO cowork_teams(
+                       id, lead_conversation_id, proposal_call_id, status, note,
+                       created_at, updated_at
+                   ) VALUES (?, ?, ?, 'active', ?, ?, ?)""",
+                (
+                    str(team_id),
+                    str(lead_conversation_id),
+                    proposal_call_id,
+                    note,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            workers: list[TeamWorkerRecord] = []
+            for member in members:
+                worker_id = uuid7()
+                session_id = uuid7()
+                connection.execute(
+                    """INSERT INTO cowork_team_workers(
+                           id, team_id, name, role, reason, session_id, created_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        str(worker_id),
+                        str(team_id),
+                        str(member["name"]),
+                        str(member["role"]),
+                        str(member.get("reason") or ""),
+                        str(session_id),
+                        timestamp,
+                    ),
+                )
+                connection.execute(
+                    """INSERT INTO cowork_team_worker_sessions(
+                           id, team_id, worker_id, status, active_task_id, state,
+                           created_at, updated_at
+                       ) VALUES (?, ?, ?, 'idle', NULL, ?, ?, ?)""",
+                    (
+                        str(session_id),
+                        str(team_id),
+                        str(worker_id),
+                        canonical_json(cast("dict[str, Any]", member["state"])),
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                row = connection.execute(
+                    "SELECT * FROM cowork_team_workers WHERE id = ?", (str(worker_id),)
+                ).fetchone()
+                assert row is not None
+                workers.append(self._team_worker_record(row))
+            row = connection.execute(
+                "SELECT * FROM cowork_teams WHERE id = ?", (str(team_id),)
+            ).fetchone()
+            assert row is not None
+            return self._team_record(row), workers
+
+        return await self._write(operation)
+
+    async def get_team_for_lead(self, *, lead_conversation_id: UUID) -> TeamRecord | None:
+        return await self._read(
+            lambda connection: (
+                None
+                if (
+                    row := connection.execute(
+                        "SELECT * FROM cowork_teams WHERE lead_conversation_id = ?",
+                        (str(lead_conversation_id),),
+                    ).fetchone()
+                )
+                is None
+                else self._team_record(row)
+            )
+        )
+
+    async def list_team_workers(self, *, team_id: UUID) -> list[TeamWorkerRecord]:
+        return await self._read(
+            lambda connection: [
+                self._team_worker_record(row)
+                for row in connection.execute(
+                    "SELECT * FROM cowork_team_workers WHERE team_id = ? ORDER BY created_at, id",
+                    (str(team_id),),
+                ).fetchall()
+            ]
+        )
+
+    async def create_board_task(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        title: str,
+        description: str,
+        acceptance_criteria: str,
+        resource_scope: Sequence[dict[str, str]],
+    ) -> BoardTaskRecord:
+        task_id = uuid7()
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> BoardTaskRecord:
+            team = connection.execute(
+                """SELECT id FROM cowork_teams
+                   WHERE lead_conversation_id = ? AND status = 'active'""",
+                (str(lead_conversation_id),),
+            ).fetchone()
+            if team is None:
+                raise ValueError("当前会话没有已批准且处于 active 的 Agent Team")
+            connection.execute(
+                """INSERT INTO cowork_board_tasks(
+                       id, team_id, title, description, acceptance_criteria,
+                       resource_scope, status, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
+                (
+                    str(task_id),
+                    str(team["id"]),
+                    title,
+                    description,
+                    acceptance_criteria,
+                    canonical_json(resource_scope),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task_id),)
+            ).fetchone()
+            assert row is not None
+            return self._board_task_record(row)
+
+        return await self._write(operation)
+
+    async def list_board_tasks(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        status: str | None = None,
+        assignee: str | None = None,
+    ) -> list[BoardTaskRecord]:
+        def operation(connection: sqlite3.Connection) -> list[BoardTaskRecord]:
+            clauses = ["teams.lead_conversation_id = ?"]
+            params: list[Any] = [str(lead_conversation_id)]
+            if status is not None:
+                clauses.append("tasks.status = ?")
+                params.append(status)
+            if assignee is not None:
+                clauses.append("workers.name = ?")
+                params.append(assignee)
+            rows = connection.execute(
+                """SELECT tasks.* FROM cowork_board_tasks AS tasks
+                   JOIN cowork_teams AS teams ON teams.id = tasks.team_id
+                   LEFT JOIN cowork_team_workers AS workers
+                     ON workers.id = tasks.assignee_worker_id
+                   WHERE """
+                + " AND ".join(clauses)
+                + " ORDER BY tasks.created_at, tasks.id",
+                tuple(params),
+            ).fetchall()
+            return [self._board_task_record(row) for row in rows]
+
+        return await self._read(operation)
+
+    async def start_board_task(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        task_id: UUID,
+        worker_name: str,
+        assignment_call_id: str,
+    ) -> tuple[BoardTaskRecord, TeamWorkerRecord, TeamWorkerSessionRecord]:
+        timestamp = _iso()
+
+        def operation(
+            connection: sqlite3.Connection,
+        ) -> tuple[BoardTaskRecord, TeamWorkerRecord, TeamWorkerSessionRecord]:
+            row = connection.execute(
+                """SELECT tasks.*, teams.lead_conversation_id
+                   FROM cowork_board_tasks AS tasks
+                   JOIN cowork_teams AS teams ON teams.id = tasks.team_id
+                   WHERE tasks.id = ?""",
+                (str(task_id),),
+            ).fetchone()
+            if row is None or str(row["lead_conversation_id"]) != str(lead_conversation_id):
+                raise ValueError("Board task 不存在或不属于当前 Lead 会话")
+            worker_row = connection.execute(
+                """SELECT * FROM cowork_team_workers
+                   WHERE team_id = ? AND name = ?""",
+                (str(row["team_id"]), worker_name),
+            ).fetchone()
+            if worker_row is None:
+                raise ValueError(f"团队中没有名为 {worker_name!r} 的 Worker")
+            session_row = connection.execute(
+                "SELECT * FROM cowork_team_worker_sessions WHERE worker_id = ?",
+                (str(worker_row["id"]),),
+            ).fetchone()
+            assert session_row is not None
+
+            same_assignment = (
+                row["status"] == "in_progress"
+                and row["assignment_call_id"] == assignment_call_id
+                and row["assignee_worker_id"] == worker_row["id"]
+                and session_row["status"] == "running"
+                and session_row["active_task_id"] == str(task_id)
+            )
+            if same_assignment:
+                return (
+                    self._board_task_record(row),
+                    self._team_worker_record(worker_row),
+                    self._team_worker_session_record(session_row),
+                )
+            same_assignment_finished = (
+                row["status"] in {"review", "done", "blocked"}
+                and row["assignment_call_id"] == assignment_call_id
+                and row["assignee_worker_id"] == worker_row["id"]
+                and session_row["status"] == "idle"
+            )
+            if same_assignment_finished:
+                return (
+                    self._board_task_record(row),
+                    self._team_worker_record(worker_row),
+                    self._team_worker_session_record(session_row),
+                )
+            if row["status"] not in {"open", "blocked"}:
+                raise ValueError("只有 open/blocked 的 Board task 可以分配")
+            if session_row["status"] != "idle":
+                raise ValueError(f"Worker {worker_name!r} 当前仍有任务在执行")
+
+            connection.execute(
+                """UPDATE cowork_board_tasks SET
+                       status = 'in_progress', assignee_worker_id = ?, assignment_call_id = ?,
+                       attempt_count = attempt_count + 1, completion_kind = 'pending',
+                       updated_at = ?
+                   WHERE id = ?""",
+                (str(worker_row["id"]), assignment_call_id, timestamp, str(task_id)),
+            )
+            connection.execute(
+                """UPDATE cowork_team_worker_sessions SET
+                       status = 'running', active_task_id = ?, updated_at = ?
+                   WHERE id = ?""",
+                (str(task_id), timestamp, str(session_row["id"])),
+            )
+            task_row = connection.execute(
+                "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task_id),)
+            ).fetchone()
+            current_session = connection.execute(
+                "SELECT * FROM cowork_team_worker_sessions WHERE id = ?",
+                (str(session_row["id"]),),
+            ).fetchone()
+            assert task_row is not None and current_session is not None
+            return (
+                self._board_task_record(task_row),
+                self._team_worker_record(worker_row),
+                self._team_worker_session_record(current_session),
+            )
+
+        return await self._write(operation)
+
+    async def save_team_worker_session(
+        self,
+        *,
+        session_id: UUID,
+        task_id: UUID,
+        state: dict[str, Any],
+    ) -> TeamWorkerSessionRecord:
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> TeamWorkerSessionRecord:
+            changed = connection.execute(
+                """UPDATE cowork_team_worker_sessions SET state = ?, updated_at = ?
+                   WHERE id = ? AND status = 'running' AND active_task_id = ?""",
+                (canonical_json(state), timestamp, str(session_id), str(task_id)),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("Worker Session 已不再执行这条 Board task")
+            row = connection.execute(
+                "SELECT * FROM cowork_team_worker_sessions WHERE id = ?", (str(session_id),)
+            ).fetchone()
+            assert row is not None
+            return self._team_worker_session_record(row)
+
+        return await self._write(operation)
+
+    async def complete_board_task(
+        self,
+        *,
+        session_id: UUID,
+        task_id: UUID,
+        state: dict[str, Any],
+        worker_report: str,
+    ) -> BoardTaskRecord:
+        return await self._finish_worker_task(
+            session_id=session_id,
+            task_id=task_id,
+            state=state,
+            task_status="review",
+            worker_report=worker_report,
+            last_error=None,
+            session_status="idle",
+        )
+
+    async def fail_board_task(
+        self,
+        *,
+        session_id: UUID,
+        task_id: UUID,
+        state: dict[str, Any],
+        error: str,
+    ) -> BoardTaskRecord:
+        return await self._finish_worker_task(
+            session_id=session_id,
+            task_id=task_id,
+            state=state,
+            task_status="blocked",
+            worker_report=None,
+            last_error=error,
+            session_status="idle",
+        )
+
+    async def _finish_worker_task(
+        self,
+        *,
+        session_id: UUID,
+        task_id: UUID,
+        state: dict[str, Any],
+        task_status: str,
+        worker_report: str | None,
+        last_error: str | None,
+        session_status: str,
+    ) -> BoardTaskRecord:
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> BoardTaskRecord:
+            session_row = connection.execute(
+                """SELECT * FROM cowork_team_worker_sessions
+                   WHERE id = ? AND status = 'running' AND active_task_id = ?""",
+                (str(session_id), str(task_id)),
+            ).fetchone()
+            if session_row is None:
+                raise ValueError("Worker Session 已不再执行这条 Board task")
+            changed = connection.execute(
+                """UPDATE cowork_board_tasks SET status = ?,
+                          worker_report = COALESCE(?, worker_report), last_error = ?, updated_at = ?
+                   WHERE id = ? AND status = 'in_progress'
+                     AND assignee_worker_id = ?""",
+                (
+                    task_status,
+                    worker_report,
+                    last_error,
+                    timestamp,
+                    str(task_id),
+                    str(session_row["worker_id"]),
+                ),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("Board task 状态已经变化，拒绝覆盖 Worker 结果")
+            connection.execute(
+                """UPDATE cowork_team_worker_sessions SET
+                       status = ?, active_task_id = NULL, state = ?, updated_at = ?
+                   WHERE id = ?""",
+                (session_status, canonical_json(state), timestamp, str(session_id)),
+            )
+            row = connection.execute(
+                "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task_id),)
+            ).fetchone()
+            assert row is not None
+            return self._board_task_record(row)
+
+        return await self._write(operation)
+
+    async def review_board_task(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        task_id: UUID,
+        accepted: bool,
+        feedback: str,
+    ) -> BoardTaskRecord:
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> BoardTaskRecord:
+            row = connection.execute(
+                """SELECT tasks.* FROM cowork_board_tasks AS tasks
+                   JOIN cowork_teams AS teams ON teams.id = tasks.team_id
+                   WHERE tasks.id = ? AND teams.lead_conversation_id = ?""",
+                (str(task_id), str(lead_conversation_id)),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Board task 不存在或不属于当前 Lead 会话")
+            if row["status"] != "review":
+                raise ValueError("只有处于 review 的 Board task 可以验收")
+            next_status = "done" if accepted else "open"
+            completion_kind = "complete" if accepted else "pending"
+            connection.execute(
+                """UPDATE cowork_board_tasks SET
+                       status = ?, completion_kind = ?, review_comment = ?,
+                       last_rejection_comment = CASE WHEN ? THEN last_rejection_comment ELSE ? END,
+                       updated_at = ? WHERE id = ?""",
+                (
+                    next_status,
+                    completion_kind,
+                    feedback,
+                    int(accepted),
+                    feedback,
+                    timestamp,
+                    str(task_id),
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task_id),)
+            ).fetchone()
+            assert updated is not None
+            return self._board_task_record(updated)
+
+        return await self._write(operation)
+
+    async def resolve_board_task(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        task_id: UUID,
+        resolution: Literal["accept_partial", "cancel"],
+        reason: str,
+    ) -> BoardTaskRecord:
+        """显式收束无法继续执行的任务；不会伪造一次 Worker review。"""
+
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> BoardTaskRecord:
+            row = connection.execute(
+                """SELECT tasks.* FROM cowork_board_tasks AS tasks
+                   JOIN cowork_teams AS teams ON teams.id = tasks.team_id
+                   WHERE tasks.id = ? AND teams.lead_conversation_id = ?""",
+                (str(task_id), str(lead_conversation_id)),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Board task 不存在或不属于当前 Lead 会话")
+            if row["status"] not in {"open", "blocked", "review"}:
+                raise ValueError("只有 open/blocked/review 的 Board task 可以部分接受或取消")
+            status = "done" if resolution == "accept_partial" else "cancelled"
+            completion_kind = "partial" if resolution == "accept_partial" else "cancelled"
+            connection.execute(
+                """UPDATE cowork_board_tasks SET status = ?, completion_kind = ?,
+                          review_comment = ?, updated_at = ? WHERE id = ?""",
+                (status, completion_kind, reason, timestamp, str(task_id)),
+            )
+            updated = connection.execute(
+                "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task_id),)
+            ).fetchone()
+            assert updated is not None
+            return self._board_task_record(updated)
+
+        return await self._write(operation)
+
     async def create_schedule(
         self,
         *,
@@ -3592,7 +4189,7 @@ class SqliteCoworkStore:
             cancelled_rows = connection.execute(
                 """SELECT id FROM agent_runs
                    WHERE cancel_requested_at IS NOT NULL
-                     AND status NOT IN ('done','failed','cancelled','budget_exceeded')
+                     AND status NOT IN ('done','partial','failed','cancelled','budget_exceeded')
                      AND (status IN ('queued','waiting_human','sleeping')
                           OR (status = 'executing' AND (lease_until IS NULL OR lease_until < ?)))
                    ORDER BY updated_at LIMIT ?""",
@@ -3619,7 +4216,7 @@ class SqliteCoworkStore:
                                  WHERE checkpoints.run_id = runs.id) AS has_checkpoint
                    FROM agent_runs AS runs
                    WHERE runs.cancel_requested_at IS NULL
-                     AND runs.status NOT IN ('done','failed','cancelled','budget_exceeded')
+                     AND runs.status NOT IN ('done','partial','failed','cancelled','budget_exceeded')
                      AND runs.lease_until IS NOT NULL AND runs.lease_until < ?
                    ORDER BY runs.lease_until LIMIT ?""",
                 (now, limit),
@@ -4265,6 +4862,83 @@ class SqliteCoworkStore:
             created_at=cast(datetime, _datetime(row["created_at"])),
             responded_at=_datetime(row["responded_at"]),
             unattended=bool(row["unattended"]),
+        )
+
+    @staticmethod
+    def _team_record(row: sqlite3.Row) -> TeamRecord:
+        return TeamRecord(
+            id=UUID(row["id"]),
+            lead_conversation_id=UUID(row["lead_conversation_id"]),
+            proposal_call_id=str(row["proposal_call_id"]),
+            status=row["status"],
+            note=str(row["note"]),
+            created_at=cast(datetime, _datetime(row["created_at"])),
+            updated_at=cast(datetime, _datetime(row["updated_at"])),
+        )
+
+    @staticmethod
+    def _team_worker_record(row: sqlite3.Row) -> TeamWorkerRecord:
+        return TeamWorkerRecord(
+            id=UUID(row["id"]),
+            team_id=UUID(row["team_id"]),
+            name=str(row["name"]),
+            role=str(row["role"]),
+            reason=str(row["reason"]),
+            session_id=UUID(row["session_id"]),
+            created_at=cast(datetime, _datetime(row["created_at"])),
+        )
+
+    @staticmethod
+    def _team_worker_session_record(row: sqlite3.Row) -> TeamWorkerSessionRecord:
+        state = json.loads(str(row["state"]))
+        if not isinstance(state, dict):  # pragma: no cover - 写入端固定为 JSON object
+            raise ValueError("Worker Session state 必须是 JSON object")
+        return TeamWorkerSessionRecord(
+            id=UUID(row["id"]),
+            team_id=UUID(row["team_id"]),
+            worker_id=UUID(row["worker_id"]),
+            status=row["status"],
+            active_task_id=(None if row["active_task_id"] is None else UUID(row["active_task_id"])),
+            state=cast("dict[str, Any]", state),
+            created_at=cast(datetime, _datetime(row["created_at"])),
+            updated_at=cast(datetime, _datetime(row["updated_at"])),
+        )
+
+    @staticmethod
+    def _board_task_record(row: sqlite3.Row) -> BoardTaskRecord:
+        raw_scope = json.loads(str(row["resource_scope"]))
+        if not isinstance(raw_scope, list):  # pragma: no cover - 写入端固定为 JSON array
+            raise ValueError("Board task resource_scope 必须是 JSON array")
+        return BoardTaskRecord(
+            id=UUID(row["id"]),
+            team_id=UUID(row["team_id"]),
+            title=str(row["title"]),
+            description=str(row["description"]),
+            acceptance_criteria=str(row["acceptance_criteria"]),
+            resource_scope=[
+                {str(key): str(value) for key, value in item.items()}
+                for item in raw_scope
+                if isinstance(item, dict)
+            ],
+            status=row["status"],
+            assignee_worker_id=(
+                None if row["assignee_worker_id"] is None else UUID(row["assignee_worker_id"])
+            ),
+            assignment_call_id=(
+                None if row["assignment_call_id"] is None else str(row["assignment_call_id"])
+            ),
+            attempt_count=int(row["attempt_count"]),
+            completion_kind=row["completion_kind"],
+            worker_report=None if row["worker_report"] is None else str(row["worker_report"]),
+            review_comment=(None if row["review_comment"] is None else str(row["review_comment"])),
+            last_rejection_comment=(
+                None
+                if row["last_rejection_comment"] is None
+                else str(row["last_rejection_comment"])
+            ),
+            last_error=None if row["last_error"] is None else str(row["last_error"]),
+            created_at=cast(datetime, _datetime(row["created_at"])),
+            updated_at=cast(datetime, _datetime(row["updated_at"])),
         )
 
     @staticmethod

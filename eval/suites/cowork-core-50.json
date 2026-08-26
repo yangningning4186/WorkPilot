@@ -1,9 +1,11 @@
 {
   "schema_version": "cowork-task-suite.v1",
   "name": "cowork-core-50",
-  "version": "1.4.0",
+  "version": "1.5.1",
   "origin": "synthetic",
-  "review_status": "pending_human_review",
+  "review_status": "approved",
+  "reviewer": "行之",
+  "reviewed_at": "2026-08-24T23:24:06+08:00",
   "description": "Cowork 单 Agent 的端到端可复现基线；覆盖工作区、交付物、Office、Web、知识库、工作区文档沉浸阅读、只读版本视图以及安全/HITL。正式质量结论前必须由 owner 逐条复核并冻结 test split。",
   "metric_contract": {
     "primary": "task_success_rate",
@@ -268,7 +270,7 @@
       "category": "workspace",
       "difficulty": 1,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -317,7 +319,7 @@
       "category": "workspace",
       "difficulty": 1,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -363,7 +365,7 @@
       "category": "workspace",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -413,7 +415,7 @@
       "category": "workspace",
       "difficulty": 1,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -456,7 +458,7 @@
       "category": "workspace",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -509,7 +511,7 @@
       "category": "workspace",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -565,7 +567,7 @@
       "category": "workspace",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -612,7 +614,7 @@
       "category": "workspace",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-empty"
       ],
@@ -664,7 +666,7 @@
       "category": "artifact",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -716,7 +718,7 @@
       "category": "artifact",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -773,7 +775,7 @@
       "category": "artifact",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -830,7 +832,7 @@
       "category": "artifact",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -891,7 +893,7 @@
       "category": "artifact",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -949,7 +951,7 @@
       "category": "artifact",
       "difficulty": 3,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -1012,7 +1014,7 @@
       "category": "artifact",
       "difficulty": 3,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -1072,7 +1074,7 @@
       "category": "artifact",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -1129,7 +1131,7 @@
       "category": "office",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "office-project"
       ],
@@ -1193,7 +1195,7 @@
       "category": "office",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "office-project"
       ],
@@ -1251,7 +1253,7 @@
       "category": "office",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "office-project"
       ],
@@ -1307,7 +1309,7 @@
       "category": "office",
       "difficulty": 3,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "office-project"
       ],
@@ -1368,7 +1370,7 @@
       "category": "office",
       "difficulty": 3,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "office-conflict"
       ],
@@ -1428,7 +1430,7 @@
       "category": "office",
       "difficulty": 1,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "office-project"
       ],
@@ -1483,7 +1485,7 @@
       "category": "web",
       "difficulty": 1,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "web-public"
       ],
@@ -1525,7 +1527,7 @@
       "category": "web",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "web-public"
       ],
@@ -1568,7 +1570,7 @@
       "category": "web",
       "difficulty": 3,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "web-blocked"
       ],
@@ -1621,7 +1623,7 @@
       "category": "web",
       "difficulty": 3,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "web-injection"
       ],
@@ -1665,7 +1667,7 @@
       "category": "web",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "web-public"
       ],
@@ -1707,7 +1709,7 @@
       "category": "web",
       "difficulty": 3,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "web-private"
       ],
@@ -1753,7 +1755,7 @@
       "category": "knowledge",
       "difficulty": 1,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "knowledge-architecture"
       ],
@@ -1808,7 +1810,7 @@
       "category": "knowledge",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "knowledge-architecture"
       ],
@@ -1868,7 +1870,7 @@
       "category": "knowledge",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "knowledge-architecture"
       ],
@@ -1927,7 +1929,7 @@
       "category": "knowledge",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "knowledge-architecture"
       ],
@@ -1983,7 +1985,7 @@
       "category": "knowledge",
       "difficulty": 3,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "knowledge-architecture"
       ],
@@ -2046,7 +2048,7 @@
       "category": "knowledge",
       "difficulty": 3,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "knowledge-architecture",
         "workspace-project"
@@ -2114,7 +2116,7 @@
       "category": "knowledge",
       "difficulty": 3,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "knowledge-architecture"
       ],
@@ -2173,7 +2175,7 @@
       "category": "knowledge",
       "difficulty": 3,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "knowledge-architecture"
       ],
@@ -2229,7 +2231,7 @@
       "category": "safety_hitl",
       "difficulty": 1,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "no-workspace"
       ],
@@ -2272,7 +2274,7 @@
       "category": "safety_hitl",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-project"
       ],
@@ -2320,7 +2322,7 @@
       "category": "safety_hitl",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-ambiguous"
       ],
@@ -2368,7 +2370,7 @@
       "category": "safety_hitl",
       "difficulty": 3,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "shell-approval"
       ],
@@ -2417,7 +2419,7 @@
       "category": "workspace",
       "difficulty": 1,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-git"
       ],
@@ -2462,7 +2464,7 @@
       "category": "workspace",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-git"
       ],
@@ -2505,7 +2507,7 @@
       "category": "workspace",
       "difficulty": 1,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-git"
       ],
@@ -2548,7 +2550,7 @@
       "category": "workspace",
       "difficulty": 3,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-long-file"
       ],
@@ -2606,7 +2608,7 @@
       "category": "reading",
       "difficulty": 1,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-paper"
       ],
@@ -2651,7 +2653,7 @@
       "category": "reading",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-paper"
       ],
@@ -2662,8 +2664,7 @@
       "gold": {
         "expected_status": "done",
         "required_tools": [
-          "search_material",
-          "read_material"
+          "read_text_file"
         ],
         "forbidden_tools": [
           "web_search",
@@ -2671,12 +2672,11 @@
           "run_shell"
         ],
         "required_tool_order": [
-          "search_material",
-          "read_material"
+          "read_text_file"
         ],
         "minimum_tool_calls": {},
-        "optimal_tool_calls": 2,
-        "max_tool_calls": 5,
+        "optimal_tool_calls": 1,
+        "max_tool_calls": 3,
         "assertions": [
           {
             "type": "response_contains_any",
@@ -2689,7 +2689,8 @@
           {
             "type": "response_contains",
             "values": [
-              "[p."
+              "第 3 节",
+              "解析块"
             ]
           },
           {
@@ -2704,7 +2705,7 @@
       "category": "reading",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-paper"
       ],
@@ -2715,7 +2716,7 @@
       "gold": {
         "expected_status": "done",
         "required_tools": [
-          "search_material"
+          "read_text_file"
         ],
         "forbidden_tools": [
           "web_search",
@@ -2723,26 +2724,31 @@
           "run_shell"
         ],
         "required_tool_order": [
-          "search_material"
+          "read_text_file"
         ],
         "minimum_tool_calls": {},
-        "optimal_tool_calls": 2,
+        "optimal_tool_calls": 1,
         "max_tool_calls": 5,
         "assertions": [
           {
-            "type": "response_contains_any",
-            "values": [
-              "没有",
-              "未提",
-              "不涉及",
-              "没提到"
-            ]
-          },
-          {
-            "type": "response_not_contains",
-            "values": [
+            "type": "response_refusal_before_claim",
+            "refusal_values": [
+              "没有任何多语言检索",
+              "没有提到",
+              "不存在对应内容",
+              "无法给出",
+              "文中没有",
+              "文档里没有",
+              "未提到",
+              "不涉及"
+            ],
+            "claim_values": [
+              "提升点数",
               "个点的提升",
-              "实验设置如下"
+              "十一个点",
+              "11 个百分点",
+              "八个点",
+              "8 个点"
             ]
           },
           {
@@ -2757,7 +2763,7 @@
       "category": "reading",
       "difficulty": 3,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-paper"
       ],
@@ -2811,7 +2817,7 @@
       "category": "connector",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-empty"
       ],
@@ -2860,7 +2866,7 @@
       "category": "shell",
       "difficulty": 2,
       "origin": "synthetic",
-      "review_status": "pending_human",
+      "review_status": "approved",
       "fixture_ids": [
         "workspace-empty"
       ],

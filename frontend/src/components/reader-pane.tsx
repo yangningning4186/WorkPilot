@@ -85,6 +85,8 @@ function readableError(reason: unknown): string {
 export interface ReaderPaneProps {
   conversationId: string;
   path: string;
+  /** 路由切换回来时恢复当前页；真正页数拿到后仍会收敛到合法范围。 */
+  initialLocator?: number;
   /** 模型最近一次跳转。`seq` 变化即表示"又跳了一次"，即使落点相同。 */
   jump: (ReadingGotoPayload & { seq: number }) | null;
   /**
@@ -106,20 +108,23 @@ export interface ReaderPaneProps {
    * `reading_viewport`，这里的文字只是让对话读起来有上下文。
    */
   onAskSelection: (quote: string, locator: number) => void;
+  onLocatorChange?: (locator: number) => void;
   onClose: () => void;
 }
 
 export function ReaderPane({
   conversationId,
   path,
+  initialLocator = 1,
   jump,
   requestedLocator,
   annotated,
   onAskSelection,
+  onLocatorChange,
   onClose,
 }: ReaderPaneProps) {
   const [material, setMaterial] = useState<ReadingMaterial | null>(null);
-  const [locator, setLocator] = useState(1);
+  const [locator, setLocator] = useState(() => Math.max(1, Math.floor(initialLocator)));
   const [unitText, setUnitText] = useState("");
   const [highlights, setHighlights] = useState<ReadingLocation[]>([]);
   const [quote, setQuote] = useState("");
@@ -184,7 +189,10 @@ export function ReaderPane({
     if (path.trim() === "") return;
     fetchReadingMaterial(conversationId, path)
       .then((loaded) => {
-        if (!cancelled) setMaterial(loaded);
+        if (!cancelled) {
+          setMaterial(loaded);
+          setLocator((current) => Math.min(current, Math.max(1, loaded.unit_count)));
+        }
       })
       .catch((reason: unknown) => {
         if (!cancelled) setError(readableError(reason));
@@ -270,6 +278,10 @@ export function ReaderPane({
   useEffect(() => {
     setReadingViewport({ locator });
   }, [locator]);
+
+  useEffect(() => {
+    onLocatorChange?.(locator);
+  }, [locator, onLocatorChange]);
 
   useEffect(() => {
     setReadingViewport({ selection: selection?.quote ?? "" });

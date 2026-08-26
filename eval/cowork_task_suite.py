@@ -11,15 +11,17 @@ import argparse
 import json
 from collections import Counter
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from app.cowork.connector_tools import register_connector_tools
+from app.cowork.teams import register_team_tools
 from app.cowork.tools import build_default_cowork_registry
 from app.cowork_policy import ACTIVE_CAPABILITIES
 
 SCHEMA_VERSION = "cowork-task-suite.v1"
-DEFAULT_SUITE = Path(__file__).parent / "suites" / "cowork-core-50.json"
+DEFAULT_SUITE = Path(__file__).parent / "suites" / "cowork-core-50-v1.6.1.json"
 EXPECTED_ITEMS = 50
 EXPECTED_SPLITS = {"dev": 39, "test": 11}
 EXPECTED_CATEGORIES = {
@@ -45,6 +47,7 @@ EXPECTED_CATEGORIES = {
 # 而套件校验一声不吭——它照的是自己那份过期的镜子。
 _REGISTRY = build_default_cowork_registry()
 register_connector_tools(_REGISTRY)
+register_team_tools(_REGISTRY)
 
 # 只有需要运行期对象(RAG service、浏览器管理器)才注册的工具进不了默认注册表,
 # 它们的 capability 在这里显式声明。这份声明**允许**过期, 因为它不是最后一道关:
@@ -52,13 +55,10 @@ register_connector_tools(_REGISTRY)
 # 按定义不可能漂移。这里只负责让"改错工具名"在不花模型调用的前提下就被拦住。
 _ADAPTER_TOOL_CAPABILITIES: dict[str, frozenset[str]] = {
     # Skill 工具依赖运行期 catalog，所以和 RAG / 浏览器一样不在默认注册表里。
-    "list_skills": frozenset(),
     "load_skill": frozenset(),
-    "load_skill_resource": frozenset(),
     "search_knowledge": frozenset({"knowledge.read"}),
     "browser_open": frozenset({"network.fetch", "browser.read"}),
     "browser_snapshot": frozenset({"browser.read"}),
-    "browser_find": frozenset({"browser.read"}),
     "browser_close": frozenset({"browser.read"}),
 }
 
@@ -72,11 +72,23 @@ RETIRED_TOOLS = frozenset(
         "edit_word",
         "edit_excel",
         "edit_office_file",
+        "list_workspace_roots",
+        "load_skill_resource",
+        "search_tool_catalog",
+        # 仅供旧 checkpoint/cassette 回放，不能再作为新题 gold。
+        "read_text_file",
+        "write_text_file",
+        "read_pdf",
+        "create_artifact",
+        "browser_find",
+        "list_skills",
     }
 )
 
 KNOWN_CAPABILITIES = frozenset(ACTIVE_CAPABILITIES)
-KNOWN_TOOLS = _REGISTRY.names() | frozenset(_ADAPTER_TOOL_CAPABILITIES)
+KNOWN_TOOLS = frozenset(
+    name for name in _REGISTRY.names() if _REGISTRY.get(name).model_visible
+) | frozenset(_ADAPTER_TOOL_CAPABILITIES)
 # 工具执行前会校验的 capability 全集, 用来判断题目给的授权够不够跑通它自己的 gold。
 TOOL_CAPABILITIES: dict[str, frozenset[str]] = {
     **_ADAPTER_TOOL_CAPABILITIES,
@@ -85,7 +97,8 @@ TOOL_CAPABILITIES: dict[str, frozenset[str]] = {
             ({_REGISTRY.get(name).capability} - {None})
             | set(_REGISTRY.get(name).extra_capabilities)
         )
-        for name in _REGISTRY.names()
+        for name in KNOWN_TOOLS
+        if name in _REGISTRY.names()
     },
 }
 
@@ -97,6 +110,7 @@ KNOWN_ASSERTIONS = {
     "evidence_contract",
     "file_absent",
     "file_contains",
+    "file_contains_evidence_citations",
     "file_exists",
     "file_not_contains",
     "files_still_exist",
@@ -116,6 +130,7 @@ KNOWN_ASSERTIONS = {
     "response_contains_any",
     "response_max_chars",
     "response_not_contains",
+    "response_refusal_before_claim",
     "tool_error_expected",
     "tool_error_recovered",
     "xlsx_cells_equal",
@@ -124,6 +139,35 @@ KNOWN_ASSERTIONS = {
 
 class CoworkSuiteError(ValueError):
     """任务集违反冻结 schema。"""
+
+
+def suite_review(payload: Mapping[str, Any]) -> dict[str, str | None]:
+    """返回可审计的套件复核状态，并拒绝半批准状态。"""
+
+    status = payload.get("review_status")
+    if status not in {"pending_human_review", "approved"}:
+        raise CoworkSuiteError("review_status 必须是 pending_human_review 或 approved")
+    reviewer = payload.get("reviewer")
+    reviewed_at = payload.get("reviewed_at")
+    if status == "pending_human_review":
+        if reviewer is not None or reviewed_at is not None:
+            raise CoworkSuiteError("pending_human_review 不能提前填写 reviewer/reviewed_at")
+        return {"status": status, "reviewer": None, "reviewed_at": None}
+    if not isinstance(reviewer, str) or not reviewer.strip():
+        raise CoworkSuiteError("approved 套件必须填写 reviewer")
+    if not isinstance(reviewed_at, str) or not reviewed_at.strip():
+        raise CoworkSuiteError("approved 套件必须填写 reviewed_at")
+    try:
+        parsed = datetime.fromisoformat(reviewed_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise CoworkSuiteError("reviewed_at 必须是 ISO-8601 时间") from error
+    if parsed.tzinfo is None:
+        raise CoworkSuiteError("reviewed_at 必须包含时区")
+    return {
+        "status": status,
+        "reviewer": reviewer.strip(),
+        "reviewed_at": reviewed_at.strip(),
+    }
 
 
 def load_suite(path: Path = DEFAULT_SUITE) -> dict[str, Any]:
@@ -205,20 +249,54 @@ def _validate_tool_labels(item_id: str, gold: dict[str, Any]) -> None:
         raise CoworkSuiteError(f"{item_id}: optimal/max_tool_calls 非法")
 
 
+def _coverage_contract(
+    payload: Mapping[str, Any],
+) -> tuple[int, dict[str, int], dict[str, int], str]:
+    """核心冻结集保持硬配额；小型候选集必须显式声明自己的覆盖契约。"""
+
+    raw = payload.get("coverage_contract")
+    if raw is None:
+        return EXPECTED_ITEMS, dict(EXPECTED_SPLITS), dict(EXPECTED_CATEGORIES), "cowork-core-"
+    if not isinstance(raw, dict):
+        raise CoworkSuiteError("coverage_contract 必须是对象")
+    items = raw.get("items")
+    splits = raw.get("splits")
+    categories = raw.get("categories")
+    id_prefix = raw.get("id_prefix")
+    if not isinstance(items, int) or items < 1:
+        raise CoworkSuiteError("coverage_contract.items 必须是正整数")
+    if not isinstance(splits, dict) or not splits:
+        raise CoworkSuiteError("coverage_contract.splits 必须是非空对象")
+    if not isinstance(categories, dict) or not categories:
+        raise CoworkSuiteError("coverage_contract.categories 必须是非空对象")
+    if not isinstance(id_prefix, str) or not id_prefix.strip():
+        raise CoworkSuiteError("coverage_contract.id_prefix 必须是非空字符串")
+    if any(
+        not isinstance(key, str) or not key or not isinstance(value, int) or value < 1
+        for key, value in [*splits.items(), *categories.items()]
+    ):
+        raise CoworkSuiteError("coverage_contract 配额必须是非空名称到正整数的映射")
+    expected_splits = cast("dict[str, int]", splits)
+    expected_categories = cast("dict[str, int]", categories)
+    if sum(expected_splits.values()) != items or sum(expected_categories.values()) != items:
+        raise CoworkSuiteError("coverage_contract 的 split/category 配额之和必须等于 items")
+    return items, expected_splits, expected_categories, id_prefix.strip()
+
+
 def validate_suite(payload: dict[str, Any]) -> None:
     if payload.get("schema_version") != SCHEMA_VERSION:
         raise CoworkSuiteError("schema_version 不匹配")
     if payload.get("origin") != "synthetic":
-        raise CoworkSuiteError("未经 owner 复核的套件 origin 必须是 synthetic")
-    if payload.get("review_status") != "pending_human_review":
-        raise CoworkSuiteError("套件必须保持 pending_human_review")
+        raise CoworkSuiteError("origin 必须保留题目生成来源 synthetic")
+    review = suite_review(payload)
+    expected_items, expected_splits, expected_categories, id_prefix = _coverage_contract(payload)
 
     fixtures = payload.get("fixtures")
     if not isinstance(fixtures, dict) or not fixtures:
         raise CoworkSuiteError("fixtures 必须是非空对象")
     items = payload.get("items")
-    if not isinstance(items, list) or len(items) != EXPECTED_ITEMS:
-        raise CoworkSuiteError(f"任务必须恰好 {EXPECTED_ITEMS} 条")
+    if not isinstance(items, list) or len(items) != expected_items:
+        raise CoworkSuiteError(f"任务必须恰好 {expected_items} 条")
 
     ids: list[str] = []
     prompts: list[str] = []
@@ -226,20 +304,21 @@ def validate_suite(payload: dict[str, Any]) -> None:
         if not isinstance(raw, dict):
             raise CoworkSuiteError("item 必须是对象")
         item_id = raw.get("id")
-        if not isinstance(item_id, str) or not item_id.startswith("cowork-core-"):
+        if not isinstance(item_id, str) or not item_id.startswith(id_prefix):
             raise CoworkSuiteError(f"非法 item id: {item_id!r}")
         ids.append(item_id)
         prompt = raw.get("prompt")
         if not isinstance(prompt, str) or len(prompt.strip()) < 8:
             raise CoworkSuiteError(f"{item_id}: prompt 过短")
         prompts.append(prompt.strip())
-        if raw.get("split") not in EXPECTED_SPLITS:
+        if raw.get("split") not in expected_splits:
             raise CoworkSuiteError(f"{item_id}: split 非法")
-        if raw.get("category") not in EXPECTED_CATEGORIES:
+        if raw.get("category") not in expected_categories:
             raise CoworkSuiteError(f"{item_id}: category 非法")
         if raw.get("difficulty") not in {1, 2, 3}:
             raise CoworkSuiteError(f"{item_id}: difficulty 非法")
-        if raw.get("origin") != "synthetic" or raw.get("review_status") != "pending_human":
+        expected_item_review = "approved" if review["status"] == "approved" else "pending_human"
+        if raw.get("origin") != "synthetic" or raw.get("review_status") != expected_item_review:
             raise CoworkSuiteError(f"{item_id}: 标注 provenance 非法")
 
         fixture_ids = _non_empty_strings(raw.get("fixture_ids"), label=f"{item_id}.fixture_ids")
@@ -287,15 +366,16 @@ def validate_suite(payload: dict[str, Any]) -> None:
         raise CoworkSuiteError("prompt 重复")
     split_counts = Counter(str(item["split"]) for item in items)
     category_counts = Counter(str(item["category"]) for item in items)
-    if dict(split_counts) != EXPECTED_SPLITS:
+    if dict(split_counts) != expected_splits:
         raise CoworkSuiteError(f"split 配额漂移: {dict(split_counts)}")
-    if dict(category_counts) != EXPECTED_CATEGORIES:
+    if dict(category_counts) != expected_categories:
         raise CoworkSuiteError(f"category 配额漂移: {dict(category_counts)}")
 
 
 def summarize_suite(payload: dict[str, Any]) -> dict[str, Any]:
     validate_suite(payload)
     items = payload["items"]
+    review = suite_review(payload)
     return {
         "name": payload["name"],
         "version": payload["version"],
@@ -307,7 +387,9 @@ def summarize_suite(payload: dict[str, Any]) -> dict[str, Any]:
         "average_optimal_tool_calls": round(
             sum(item["gold"]["optimal_tool_calls"] for item in items) / len(items), 2
         ),
-        "review_status": payload["review_status"],
+        "review_status": review["status"],
+        "reviewer": review["reviewer"],
+        "reviewed_at": review["reviewed_at"],
     }
 
 

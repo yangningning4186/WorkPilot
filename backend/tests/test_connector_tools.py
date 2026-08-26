@@ -28,9 +28,10 @@ from app.cowork.connector_tools import (
     _feishu_drive_list_request,
     _feishu_task_action_request,
     _runtime_request,
+    connected_connector_kinds,
     register_connector_tools,
 )
-from app.cowork.connectors import ConnectorAccountRecord
+from app.cowork.connectors import ConnectorAccountRecord, create_connector_account
 from app.cowork.oauth_connectors import _exchange_code
 from app.cowork.tools import build_default_cowork_registry
 from app.schemas.connectors import ConnectorKind
@@ -263,7 +264,7 @@ def test_tool_catalog_defers_extensions_until_explicitly_loaded() -> None:
     registered = {item["name"] for item in registry.catalog()}
 
     initial = {item.name for item in registry.tool_definitions_for("整理本地项目文件")}
-    assert {"search_tool_catalog", "load_tools"} <= initial
+    assert "load_tools" in initial
     assert {"act_connector_api", "browser_open"}.isdisjoint(initial)
     assert initial < registered
 
@@ -304,8 +305,8 @@ def test_tool_catalog_defers_extensions_until_explicitly_loaded() -> None:
     assert resumed_tools == activated
 
 
-def test_github_account_task_discovers_connectors_in_manifest_before_loading() -> None:
-    """真实 badcase：GitHub URL 同时命中 web/git，不能把连接器入口挤出目录。"""
+def test_github_account_task_keeps_generic_api_as_named_advanced_fallback() -> None:
+    """GitHub URL 会同时命中 web/git；通用 API 不进常规目录但仍可准确加载。"""
 
     registry = build_default_cowork_registry()
     register_browser_tools(registry)
@@ -328,9 +329,12 @@ def test_github_account_task_discovers_connectors_in_manifest_before_loading() -
     assert {"list_connectors", "read_connector_api", "act_connector_api"}.isdisjoint(names)
 
     manifest = registry.deferred_tools_manifest()
-    assert all(
-        name in manifest for name in ("list_connectors", "read_connector_api", "act_connector_api")
-    )
+    assert "list_connectors" in manifest
+    assert "read_connector_api" not in manifest
+    assert "act_connector_api" not in manifest
+    instructions = registry.system_instructions()
+    assert "read_connector_api/act_connector_api" in instructions
+    assert "GitHub" in instructions
 
     searched = {item["name"] for item in registry.search_tools("github", max_results=8)}
     assert {"list_connectors", "read_connector_api", "act_connector_api"} <= searched
@@ -348,6 +352,48 @@ def test_feishu_calendar_and_base_are_first_class_catalog_capabilities() -> None
     specs = {item["name"]: item for item in registry.catalog()}
     assert specs["feishu_calendar_event_action"]["approval_required"] is True
     assert specs["feishu_base_record_action"]["approval_required"] is True
+    assert "external_approval" in specs["feishu_calendar_event_action"]["description"]
+    instructions = registry.system_instructions()
+    assert "account_id 时直接使用" in instructions
+    assert "不要提前用 ask_user" in instructions
+    assert "属于高级 fallback" in instructions
+
+
+def test_connected_accounts_control_connector_surface(tmp_path: Path) -> None:
+    settings = get_settings().model_copy(update={"cowork_data_path": tmp_path})
+    store = LocalSecretStore(tmp_path / "master.key")
+    create_connector_account(
+        settings,
+        kind="feishu",
+        name="飞书主账号",
+        auth_type="token",
+        client_id=None,
+        client_secret=None,
+        access_token="test-token",
+        refresh_token=None,
+        redirect_uri=None,
+        scopes=[],
+        config={},
+        enabled=True,
+        secret_store=store,
+    )
+
+    kinds = connected_connector_kinds(settings)
+    registry = build_default_cowork_registry()
+    register_connector_tools(registry, enabled_kinds=kinds)
+
+    assert kinds == frozenset({"feishu"})
+    assert "feishu_calendar_events" in registry.names()
+    assert "read_connector_api" in registry.names()  # 可按准确名称加载的高级 fallback
+    manifest = registry.deferred_tools_manifest()
+    assert "feishu_calendar_events" in manifest
+    assert "read_connector_api" not in manifest
+    assert "act_connector_api" not in manifest
+
+    empty = build_default_cowork_registry()
+    register_connector_tools(empty, enabled_kinds=frozenset())
+    assert "list_connectors" not in empty.names()
+    assert "feishu_calendar_events" not in empty.names()
 
 
 def test_initial_tool_catalog_is_stable_across_topic_switches() -> None:
@@ -490,7 +536,7 @@ def test_news_goals_discover_web_tools_without_query_based_schema_growth(goal: s
     assert "fetch_url" not in manifest
 
 
-def test_core_file_shell_skill_and_web_tools_are_never_deferred() -> None:
+def test_default_tool_surface_keeps_core_tools_and_defers_admin_routes() -> None:
     registry = build_default_cowork_registry()
     from app.cowork.extensions import register_skill_tools
 
@@ -499,18 +545,29 @@ def test_core_file_shell_skill_and_web_tools_are_never_deferred() -> None:
         "web_search",
         "fetch_url",
         "load_skill",
-        "list_workspace_roots",
         "list_files",
         "search_files",
-        "read_text_file",
-        "write_text_file",
+        "read_file",
+        "write_file",
         "replace_in_file",
-        "create_artifact",
         "run_shell",
     }
+    on_demand = {"run_sandbox"}
+    hidden_compatibility = {
+        "read_text_file",
+        "write_text_file",
+        "create_artifact",
+        "read_pdf",
+        "list_skills",
+    }
+    initial = {item.name for item in registry.tool_definitions_for("任意任务")}
+    deferred = registry.deferred_tool_names()
 
-    assert core <= {item.name for item in registry.tool_definitions_for("任意任务")}
-    assert core.isdisjoint(registry.deferred_tool_names())
+    assert core <= initial
+    assert core.isdisjoint(deferred)
+    assert on_demand.isdisjoint(initial)
+    assert on_demand <= deferred
+    assert hidden_compatibility.isdisjoint(initial | deferred)
 
 
 def test_tool_catalog_matches_english_aliases_for_chinese_web_tools() -> None:
@@ -539,7 +596,6 @@ def test_read_only_subagent_catalog_is_unbounded_but_excludes_external_actions()
     assert len(tools) > 1
     assert {"browser_snapshot", "web_search"} <= names
     assert "browser_open" not in names
-    assert "search_tool_catalog" not in names
     assert "act_connector_api" not in names
     assert "read_connector_api" not in names
 

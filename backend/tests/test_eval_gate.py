@@ -94,6 +94,7 @@ def _retrieval_report(
         "theta": 0.5,
         "alpha": 0.5,
         "refusal_threshold": 0.35,
+        "refusal_threshold_source": "dev_calibrated",
         **(config or {}),
     }
     return {

@@ -131,15 +131,10 @@ def build_work_capability_registry(
                 owned_tools=frozenset(
                     {
                         "list_files",
-                        "read_text_file",
-                        "read_pdf",
-                        "write_text_file",
-                        "create_artifact",
+                        "read_file",
+                        "write_file",
                         "run_shell",
-                        "run_sandbox",
-                        "list_skills",
                         "load_skill",
-                        "load_skill_resource",
                     }
                 ),
                 applies=_office_applies,

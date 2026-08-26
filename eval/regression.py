@@ -14,7 +14,9 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import sys
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -90,6 +92,13 @@ class NormalizedReport:
     dataset_fingerprint: str | None
     config_fingerprint: str | None
     git_sha: str | None
+    git_dirty: bool | None
+    dataset_origin: str | None
+    review_status: str | None
+    reviewer: str | None
+    reviewed_at: str | None
+    split_counts: tuple[tuple[str, int], ...]
+    calibration_fingerprint: str | None
     label: str | None
     baseline_policy_name: str | None
     baseline_policy_sha256: str | None
@@ -347,6 +356,7 @@ def _detect_kind(payload: dict[str, Any], path: Path) -> str:
 def _normalize_cowork(payload: dict[str, Any], path: Path) -> NormalizedReport:
     raw_items = payload.get("items")
     cases: list[NormalizedCase] = []
+    split_counts: tuple[tuple[str, int], ...] = ()
     # 旧的 cowork.json 只存了 item_id -> bool。保留读取能力，方便给出明确的 suite
     # 不兼容结论；新 baseline 一律由 snapshot 子命令生成完整逐指标投影。
     if isinstance(raw_items, dict):
@@ -361,6 +371,7 @@ def _normalize_cowork(payload: dict[str, Any], path: Path) -> NormalizedReport:
                 )
             )
     elif isinstance(raw_items, list) and raw_items:
+        split_counts = _split_counts(raw_items)
         for index, item in enumerate(raw_items):
             if not isinstance(item, dict):
                 raise RegressionRefused(f"Cowork items[{index}] 必须是对象")
@@ -409,6 +420,13 @@ def _normalize_cowork(payload: dict[str, Any], path: Path) -> NormalizedReport:
         dataset_fingerprint=dataset_fingerprint,
         config_fingerprint=config_fingerprint,
         git_sha=_optional_string(payload.get("git_sha") or reproducibility.get("git_sha")),
+        git_dirty=_optional_bool(reproducibility.get("git_dirty")),
+        dataset_origin=_optional_string(manifest.get("suite_origin")),
+        review_status=_optional_string(manifest.get("suite_review_status")),
+        reviewer=_optional_string(manifest.get("suite_reviewer")),
+        reviewed_at=_optional_string(manifest.get("suite_reviewed_at")),
+        split_counts=split_counts,
+        calibration_fingerprint=None,
         label=_optional_string(payload.get("label") or manifest.get("label")),
         baseline_policy_name=None,
         baseline_policy_sha256=None,
@@ -498,6 +516,10 @@ def _normalize_legacy(payload: dict[str, Any], path: Path, kind: str) -> Normali
         )
     suite_value = payload.get("suite")
     suite: dict[str, Any] = dict(suite_value) if isinstance(suite_value, dict) else {}
+    reproducibility_value = payload.get("reproducibility")
+    reproducibility = dict(reproducibility_value) if isinstance(reproducibility_value, dict) else {}
+    calibration_value = config.get("refusal_calibration")
+    calibration = dict(calibration_value) if isinstance(calibration_value, dict) else {}
     fingerprint = _optional_string(
         payload.get("dataset_fingerprint")
         or config.get("dataset_fingerprint")
@@ -511,6 +533,13 @@ def _normalize_legacy(payload: dict[str, Any], path: Path, kind: str) -> Normali
         dataset_fingerprint=fingerprint,
         config_fingerprint=_optional_string(payload.get("config_hash")) or content_sha256(config),
         git_sha=_optional_string(payload.get("git_sha")),
+        git_dirty=_optional_bool(reproducibility.get("git_dirty")),
+        dataset_origin=_optional_string(suite.get("origin") or config.get("origin")),
+        review_status=_optional_string(suite.get("review_status")),
+        reviewer=_optional_string(suite.get("reviewer")),
+        reviewed_at=_optional_string(suite.get("reviewed_at")),
+        split_counts=_split_counts(raw_items),
+        calibration_fingerprint=_optional_string(calibration.get("sha256")),
         label=_optional_string(payload.get("label")),
         baseline_policy_name=None,
         baseline_policy_sha256=None,
@@ -520,6 +549,19 @@ def _normalize_legacy(payload: dict[str, Any], path: Path, kind: str) -> Normali
 
 def _optional_string(value: object) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
+
+
+def _optional_bool(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _split_counts(items: Sequence[object]) -> tuple[tuple[str, int], ...]:
+    counts = Counter(
+        str(item.get("split"))
+        for item in items
+        if isinstance(item, Mapping) and isinstance(item.get("split"), str)
+    )
+    return tuple(sorted(counts.items()))
 
 
 def _load_baseline_payload(payload: dict[str, Any], path: Path) -> NormalizedReport:
@@ -546,6 +588,25 @@ def _load_baseline_payload(payload: dict[str, Any], path: Path) -> NormalizedRep
         or any(character not in "0123456789abcdef" for character in policy_sha256)
     ):
         raise RegressionRefused(f"baseline policy 绑定不完整: {path}")
+    review_value = payload.get("review")
+    review = dict(review_value) if isinstance(review_value, dict) else {}
+    selection_value = payload.get("selection")
+    selection = dict(selection_value) if isinstance(selection_value, dict) else {}
+    raw_split_counts = selection.get("split_counts")
+    split_counts = (
+        tuple(
+            sorted(
+                (str(key), int(value))
+                for key, value in raw_split_counts.items()
+                if isinstance(key, str)
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+                and value > 0
+            )
+        )
+        if isinstance(raw_split_counts, dict)
+        else ()
+    )
     cases: list[NormalizedCase] = []
     for index, raw in enumerate(raw_cases):
         if not isinstance(raw, dict) or not isinstance(raw.get("metrics"), dict):
@@ -575,6 +636,13 @@ def _load_baseline_payload(payload: dict[str, Any], path: Path) -> NormalizedRep
         dataset_fingerprint=_optional_string(payload.get("dataset_fingerprint")),
         config_fingerprint=_optional_string(payload.get("config_fingerprint")),
         git_sha=_optional_string(payload.get("git_sha")),
+        git_dirty=_optional_bool(payload.get("git_dirty")),
+        dataset_origin=_optional_string(review.get("origin")),
+        review_status=_optional_string(review.get("status")),
+        reviewer=_optional_string(review.get("reviewer")),
+        reviewed_at=_optional_string(review.get("reviewed_at")),
+        split_counts=split_counts,
+        calibration_fingerprint=_optional_string(payload.get("calibration_fingerprint")),
         label=_optional_string(payload.get("label")),
         baseline_policy_name=policy_name,
         baseline_policy_sha256=policy_sha256,
@@ -600,6 +668,15 @@ def build_baseline(report: NormalizedReport, policy: RegressionPolicy) -> dict[s
         "dataset_fingerprint": report.dataset_fingerprint,
         "config_fingerprint": report.config_fingerprint,
         "git_sha": report.git_sha,
+        "git_dirty": report.git_dirty,
+        "review": {
+            "origin": report.dataset_origin,
+            "status": report.review_status,
+            "reviewer": report.reviewer,
+            "reviewed_at": report.reviewed_at,
+        },
+        "selection": {"split_counts": dict(report.split_counts)},
+        "calibration_fingerprint": report.calibration_fingerprint,
         "label": report.label,
         "policy": {"name": policy.name, "sha256": policy.sha256},
         "source_report_sha256": hashlib.sha256(report.path.read_bytes()).hexdigest(),
@@ -617,14 +694,36 @@ def _validate_snapshot_provenance(report: NormalizedReport, policy: RegressionPo
     _ = report.by_id  # 触发重复 case_id 校验。
     if not report.dataset or report.dataset == "unknown":
         raise RegressionRefused("缺少 dataset 的报告不能晋升 baseline")
-    if policy.require_same_dataset_fingerprint and not report.dataset_fingerprint:
-        raise RegressionRefused("缺少 dataset/suite fingerprint 的报告不能晋升 baseline")
-    if policy.require_same_config and not report.config_fingerprint:
-        raise RegressionRefused("缺少 config fingerprint 的报告不能晋升 baseline")
-    if not report.git_sha:
-        raise RegressionRefused("缺少 Git SHA 的报告不能晋升 baseline")
+    if policy.require_same_dataset_fingerprint and not _is_sha256(report.dataset_fingerprint):
+        raise RegressionRefused("缺少合法 dataset/suite fingerprint 的报告不能晋升 baseline")
+    if policy.require_same_config and not _is_sha256(report.config_fingerprint):
+        raise RegressionRefused("缺少合法 config fingerprint 的报告不能晋升 baseline")
+    if not isinstance(report.git_sha, str) or not re.fullmatch(
+        r"(?:[0-9a-f]{40}|[0-9a-f]{64})", report.git_sha
+    ):
+        raise RegressionRefused("缺少合法 Git SHA 的报告不能晋升 baseline")
+    if report.git_dirty is not False:
+        raise RegressionRefused("Git dirty 或状态缺失的报告不能晋升 baseline")
+    if report.review_status != "approved" or not report.reviewer or not report.reviewed_at:
+        raise RegressionRefused("题库未 approved 或缺少 reviewer/reviewed_at，不能晋升 baseline")
+    try:
+        reviewed_at = datetime.fromisoformat(report.reviewed_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise RegressionRefused("reviewed_at 不是合法 ISO-8601 时间，不能晋升 baseline") from error
+    if reviewed_at.tzinfo is None:
+        raise RegressionRefused("reviewed_at 必须包含时区，不能晋升 baseline")
+    if not report.dataset_origin:
+        raise RegressionRefused("报告缺少 suite origin，不能晋升 baseline")
+    if not report.split_counts:
+        raise RegressionRefused("报告缺少 split 选择信息，不能晋升 baseline")
+    if report.kind == "retrieval" and not _is_sha256(report.calibration_fingerprint):
+        raise RegressionRefused("检索报告缺少独立拒答校准 fingerprint，不能晋升 baseline")
     if not report.label:
         raise RegressionRefused("缺少 run label 的报告不能晋升 baseline")
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
 def _validate_policy_kind(report: NormalizedReport, policy: RegressionPolicy) -> None:
@@ -722,6 +821,22 @@ def _validate_compatibility(
     *,
     allow_config_drift: bool,
 ) -> None:
+    if baseline.git_dirty is not False or candidate.git_dirty is not False:
+        raise RegressionRefused("baseline/candidate 必须都来自 Git clean 工作树")
+    if (
+        baseline.review_status != "approved"
+        or candidate.review_status != "approved"
+        or not baseline.reviewer
+        or not candidate.reviewer
+        or not baseline.reviewed_at
+        or not candidate.reviewed_at
+    ):
+        raise RegressionRefused("baseline/candidate 都必须固定已批准题库的复核 provenance")
+    if any(
+        getattr(baseline, field) != getattr(candidate, field)
+        for field in ("dataset_origin", "review_status", "reviewer", "reviewed_at")
+    ):
+        raise RegressionRefused("baseline/candidate 的题库复核 provenance 不一致")
     if baseline.kind != candidate.kind:
         raise RegressionRefused(
             f"报告类型不一致: baseline={baseline.kind}, candidate={candidate.kind}"
@@ -754,6 +869,16 @@ def _validate_compatibility(
             raise RegressionRefused(
                 "受控配置 fingerprint 不一致；确认是有意实验后使用 --allow-config-drift"
             )
+    if baseline.split_counts != candidate.split_counts:
+        raise RegressionRefused(
+            f"split 选择不一致: baseline={dict(baseline.split_counts)}, "
+            f"candidate={dict(candidate.split_counts)}"
+        )
+    if baseline.kind == "retrieval":
+        if not baseline.calibration_fingerprint or not candidate.calibration_fingerprint:
+            raise RegressionRefused("retrieval baseline/candidate 缺少独立校准 fingerprint")
+        if baseline.calibration_fingerprint != candidate.calibration_fingerprint:
+            raise RegressionRefused("retrieval baseline/candidate 使用了不同的独立拒答校准")
 
 
 def _evaluate_metric(

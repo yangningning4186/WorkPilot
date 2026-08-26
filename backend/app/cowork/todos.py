@@ -1,7 +1,7 @@
 """Cowork 任务清单：模型自己维护、前端直接渲染的结构化 todo。
 
 和 `agent_plan_steps` 的区别是方向。plan step 是 runtime 从每次 tool call 派生的
-**事后日志**（"调用了 read_text_file"），用于溯源；todo 是模型对"这件事分几步、
+**事后日志**（"调用了 read_file"），用于溯源；todo 是模型对"这件事分几步、
 现在到第几步"的**主动声明**，用于让人看懂进度。两者都要有，互相替代不了。
 
 清单存在 `CoworkState` 里（约束 2：状态必须是可 JSON 序列化的 TypedDict）。工具

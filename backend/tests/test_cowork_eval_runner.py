@@ -11,7 +11,11 @@ from app.core.config import get_settings
 from app.core.db import session_factory
 from app.knowledge_contracts import RagSearchRequest
 from eval.cowork_runner import (
+    CoworkRunnerError,
     FixtureRagService,
+    MaterializedCase,
+    _evaluation_settings,
+    _fixture_work_mode,
     _metric_slice,
     evaluate_assertion,
     materialize_case,
@@ -108,9 +112,8 @@ def test_materialize_and_score_workspace_case(tmp_path: Path) -> None:
     assert materialized.workspace is not None
     assert (materialized.workspace / "notes/project.md").is_file()
     trace = [
-        {"name": "list_workspace_roots", "status": "ok", "arguments": {}, "result": {}},
         {"name": "search_files", "status": "ok", "arguments": {}, "result": {}},
-        {"name": "read_text_file", "status": "ok", "arguments": {}, "result": {}},
+        {"name": "read_file", "status": "ok", "arguments": {}, "result": {}},
     ]
     observation = {
         "status": "done",
@@ -172,6 +175,116 @@ def test_metric_slice_uses_nearest_rank_p95() -> None:
     assert metrics["tokens"]["p95"] == 19_000
 
 
+def test_evaluation_settings_disable_token_fuse() -> None:
+    base = get_settings().model_copy(
+        update={
+            "run_budget_tokens": 100_000,
+            "run_budget_calls": 20,
+            "run_budget_wall_ms": 180_000,
+        }
+    )
+
+    settings = _evaluation_settings(
+        base,
+        budget_tokens=None,
+        budget_calls=None,
+        budget_wall_ms=None,
+    )
+
+    assert settings.run_budget_tokens == 0
+    assert settings.run_budget_calls == 20
+    assert settings.run_budget_wall_ms == 180_000
+    with pytest.raises(CoworkRunnerError, match="禁用 token 熔断"):
+        _evaluation_settings(
+            base,
+            budget_tokens=100_000,
+            budget_calls=None,
+            budget_wall_ms=None,
+        )
+
+
+def test_no_files_changed_ignores_git_internal_metadata(tmp_path: Path) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = next(value for value in suite["items"] if value["id"] == "cowork-core-041")
+    materialized = materialize_case(suite, item, case_root=tmp_path / "case")
+    assert not any(Path(relative).parts[0] == ".git" for relative in materialized.before_files)
+
+    legacy = MaterializedCase(
+        workspace=materialized.workspace,
+        fixtures=materialized.fixtures,
+        before_files={**materialized.before_files, ".git/index": "before"},
+        document_ids=materialized.document_ids,
+    )
+    result = evaluate_assertion(
+        {"type": "no_files_changed"},
+        response="只读取版本视图",
+        status="done",
+        interrupt=None,
+        trace=[],
+        artifacts=[],
+        materialized=legacy,
+        after_files={**materialized.before_files, ".git/index": "after"},
+    )
+
+    assert result.passed is True
+    assert "changed=[]" in result.detail
+
+
+def test_unanswerable_reading_requires_refusal_before_numeric_claim(tmp_path: Path) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = next(value for value in suite["items"] if value["id"] == "cowork-core-047")
+    materialized = materialize_case(suite, item, case_root=tmp_path / "case")
+    assertion = next(
+        value
+        for value in item["gold"]["assertions"]
+        if value["type"] == "response_refusal_before_claim"
+    )
+
+    correct_refusal = evaluate_assertion(
+        assertion,
+        response=(
+            "这份文档里没有任何关于多语言检索的内容，没有提到对应的提升点数。"
+            "文中另有十一个点，但那是领域子集差距。"
+        ),
+        status="done",
+        interrupt=None,
+        trace=[],
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+    natural_no_report_refusal = evaluate_assertion(
+        assertion,
+        response=(
+            "这份文档没有报告任何多语言检索提升，也没有多语言实验设置。"
+            "文档另有八个点的提升，但语境不是多语言。"
+        ),
+        status="done",
+        interrupt=None,
+        trace=[],
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+    contradictory_claim = evaluate_assertion(
+        assertion,
+        response=(
+            "多语言检索提升了十一个点。实验设置是材料科学和法律子集。"
+            "不过文中没有给出多语言独立实验。"
+        ),
+        status="done",
+        interrupt=None,
+        trace=[],
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+
+    assert correct_refusal.passed is True
+    assert natural_no_report_refusal.passed is True
+    assert contradictory_claim.passed is False
+
+
 def test_hitl_assertion_can_pin_tool_arguments(tmp_path: Path) -> None:
     suite = load_suite(DEFAULT_SUITE)
     item = next(value for value in suite["items"] if value["id"] == "cowork-core-050")
@@ -194,6 +307,35 @@ def test_hitl_assertion_can_pin_tool_arguments(tmp_path: Path) -> None:
             },
         },
         trace=[{"name": "run_shell", "status": "interrupt", "arguments": {}}],
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+
+    assert result.passed is True
+
+
+def test_write_capability_hitl_accepts_read_write_directory_upgrade(tmp_path: Path) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = next(value for value in suite["items"] if value["id"] == "cowork-core-038")
+    materialized = materialize_case(suite, item, case_root=tmp_path / "case")
+    assertion = next(
+        value for value in item["gold"]["assertions"] if value["type"] == "hitl_interrupt"
+    )
+
+    result = evaluate_assertion(
+        assertion,
+        response="",
+        status="waiting_human",
+        interrupt={
+            "kind": "directory_request",
+            "request": {
+                "access_mode": "read_write",
+                "reason": "当前只读工作区需要升级为可写",
+                "suggested_path": str(materialized.workspace),
+            },
+        },
+        trace=[],
         artifacts=[],
         materialized=materialized,
         after_files=materialized.before_files,
@@ -280,6 +422,147 @@ def test_evidence_contract_aggregates_multiple_search_calls(tmp_path: Path) -> N
     assert result.passed is True
 
 
+def test_artifact_citations_use_model_visible_ids_for_required_documents(
+    tmp_path: Path,
+) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = next(value for value in suite["items"] if value["id"] == "cowork-core-034")
+    materialized = materialize_case(suite, item, case_root=tmp_path / "case")
+    assertion = next(
+        value
+        for value in item["gold"]["assertions"]
+        if value["type"] == "file_contains_evidence_citations"
+    )
+    artifact = materialized.workspace / assertion["path"]
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("SearchPipeline [S8]\nagent_core [S2]\nHTTP adapter [S11]\n")
+    trace = [
+        {
+            "name": "search_knowledge",
+            "status": "ok",
+            "arguments": {"query": "architecture"},
+            "result": {
+                "evidence": [
+                    {
+                        "citation_id": citation_id,
+                        "document_id": materialized.document_ids[fixture_id],
+                    }
+                    for fixture_id, citation_id in (
+                        ("K001", "S8"),
+                        ("K002", "S2"),
+                        ("K005", "S11"),
+                    )
+                ]
+            },
+        }
+    ]
+
+    result = evaluate_assertion(
+        assertion,
+        response="",
+        status="done",
+        interrupt=None,
+        trace=trace,
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+
+    assert result.passed is True
+
+    # S8 不能被 S80 冒充；引用标识按完整 token 匹配。
+    artifact.write_text("SearchPipeline [S80]\nagent_core [S20]\nHTTP adapter [S110]\n")
+    false_positive = evaluate_assertion(
+        assertion,
+        response="",
+        status="done",
+        interrupt=None,
+        trace=trace,
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+    assert false_positive.passed is False
+
+
+def test_file_not_contains_preserves_whitespace_semantics(tmp_path: Path) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = next(value for value in suite["items"] if value["id"] == "cowork-core-044")
+    materialized = materialize_case(suite, item, case_root=tmp_path / "case")
+    assertion = next(
+        value for value in item["gold"]["assertions"] if value["type"] == "file_not_contains"
+    )
+    path = materialized.workspace / assertion["path"]
+    content = path.read_text(encoding="utf-8").replace("STATUS=draft", "STATUS=final")
+    path.write_text(content, encoding="utf-8")
+
+    result = evaluate_assertion(
+        assertion,
+        response="",
+        status="done",
+        interrupt=None,
+        trace=[],
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+
+    assert result.passed is True
+
+
+def test_no_path_guessed_allows_current_workspace_probe(tmp_path: Path) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = next(value for value in suite["items"] if value["id"] == "cowork-core-037")
+    materialized = materialize_case(suite, item, case_root=tmp_path / "case")
+    assertion = next(
+        value for value in item["gold"]["assertions"] if value["type"] == "no_path_guessed"
+    )
+
+    probe = evaluate_assertion(
+        assertion,
+        response="",
+        status="waiting_human",
+        interrupt=None,
+        trace=[
+            {
+                "name": "list_files",
+                "status": "failed",
+                "arguments": {"path": "."},
+                "result": None,
+            },
+            {
+                "name": "request_directory",
+                "status": "interrupt",
+                "arguments": {"access_mode": "read_only"},
+                "result": None,
+            },
+        ],
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+    assert probe.passed is True
+
+    guessed = evaluate_assertion(
+        assertion,
+        response="",
+        status="waiting_human",
+        interrupt=None,
+        trace=[
+            {
+                "name": "list_files",
+                "status": "failed",
+                "arguments": {"path": "/Users/example/project"},
+                "result": None,
+            }
+        ],
+        artifacts=[],
+        materialized=materialized,
+        after_files=materialized.before_files,
+    )
+    assert guessed.passed is False
+
+
 def test_rescore_report_reuses_observations_without_model(tmp_path: Path) -> None:
     suite = load_suite(DEFAULT_SUITE)
     item = suite["items"][0]
@@ -289,9 +572,8 @@ def test_rescore_report_reuses_observations_without_model(tmp_path: Path) -> Non
         "response": "负责人林琪，计划发布日期 2026-09-15，来源 notes/project.md。",
         "interrupt": None,
         "tool_trace": [
-            {"name": "list_workspace_roots", "status": "ok", "arguments": {}, "result": {}},
             {"name": "search_files", "status": "ok", "arguments": {}, "result": {}},
-            {"name": "read_text_file", "status": "ok", "arguments": {}, "result": {}},
+            {"name": "read_file", "status": "ok", "arguments": {}, "result": {}},
         ],
         "artifacts": [],
         "latency_ms": 123,
@@ -340,9 +622,8 @@ async def test_run_case_executes_real_cowork_graph(db_engine: AsyncEngine, tmp_p
     item = suite["items"][0]
     provider = ScriptedCoworkProvider(
         [
-            _tool("roots", "list_workspace_roots", {}),
             _tool("search", "search_files", {"path": ".", "query": "Atlas"}),
-            _tool("read", "read_text_file", {"path": "notes/project.md"}),
+            _tool("read", "read_file", {"path": "notes/project.md"}),
             _final("计划发布日期为 2026-09-15，负责人是林琪，来源 notes/project.md。"),
         ]
     )
@@ -371,10 +652,20 @@ async def test_run_case_executes_real_cowork_graph(db_engine: AsyncEngine, tmp_p
     assert record["observation"]["status"] == "done"
     assert record["score"]["task_success"] is True
     assert record["score"]["tool_selection"]["actual_sequence"] == [
-        "list_workspace_roots",
         "search_files",
-        "read_text_file",
+        "read_file",
     ]
+
+
+def test_reading_case_uses_application_reading_mode_and_fixture_path(tmp_path: Path) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = next(value for value in suite["items"] if value["id"] == "cowork-core-048")
+    materialized = materialize_case(suite, item, case_root=tmp_path / "case")
+
+    work_mode, reading_path = _fixture_work_mode(item, materialized)
+
+    assert work_mode == "reading"
+    assert reading_path == str((materialized.workspace / "papers/rag-survey.md").resolve())
 
 
 @pytest.mark.integration
@@ -481,9 +772,8 @@ async def test_run_suite_starts_and_isolates_records_in_its_own_package(
     gateway = ModelGateway(
         ScriptedCoworkProvider(
             [
-                _tool("roots", "list_workspace_roots", {}),
                 _tool("search", "search_files", {"path": ".", "query": "Atlas"}),
-                _tool("read", "read_text_file", {"path": "notes/project.md"}),
+                _tool("read", "read_file", {"path": "notes/project.md"}),
                 _final("计划发布日期为 2026-09-15，负责人是林琪，来源 notes/project.md。"),
             ]
         ),
@@ -516,7 +806,7 @@ async def test_run_suite_starts_and_isolates_records_in_its_own_package(
     cassette = package / "model-cassette.json"
     assert cassette.is_file()
     assert report["model_io"]["mode"] == "record"
-    assert report["model_io"]["recorded_model_interactions"] == 4
+    assert report["model_io"]["recorded_model_interactions"] == 3
 
     def _network_gateway_must_not_be_built(*args, **kwargs):
         del args, kwargs

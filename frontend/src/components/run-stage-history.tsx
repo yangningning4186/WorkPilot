@@ -9,6 +9,7 @@ import {
   type CoworkModelStage,
   type CoworkRunView,
 } from "@/lib/use-cowork-run";
+import { TeamBoardPanel } from "@/components/run-activity-panel";
 
 function StageList({ stages }: { stages: CoworkModelStage[] }) {
   return (
@@ -81,7 +82,11 @@ export function HistoricalRunStageHistory({ runId }: { runId: string }) {
     <section className="workdesk-historical-stages">
       <button aria-expanded={open} onClick={() => setOpen((value) => !value)} type="button">
         <span>阶段记录</span>
-        <small>{view === null ? "" : `${view.modelStages.length} 个阶段`}</small>
+        <small>
+          {view === null
+            ? ""
+            : `${view.modelStages.length} 个阶段${view.team === null ? "" : ` · ${view.team.tasks.length} 个团队任务`}`}
+        </small>
         <i aria-hidden>⌄</i>
       </button>
       {open && (
@@ -90,10 +95,13 @@ export function HistoricalRunStageHistory({ runId }: { runId: string }) {
             <p className="error">{error}</p>
           ) : view === null ? (
             <p className="loading"><i />正在回放运行记录…</p>
-          ) : view.modelStages.length === 0 ? (
+          ) : view.modelStages.length === 0 && view.team === null ? (
             <p className="empty">这次运行没有阶段性说明或思考记录。</p>
           ) : (
-            <StageList stages={view.modelStages} />
+            <>
+              <TeamBoardPanel team={view.team} />
+              <StageList stages={view.modelStages} />
+            </>
           )}
         </div>
       )}

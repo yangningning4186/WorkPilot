@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import math
 import re
 import subprocess
 import time
@@ -60,6 +61,7 @@ _IMPLEMENTATION_FILES = (
     "eval/metrics/diagnostics.py",
     "eval/metrics/refusal.py",
     "eval/metrics/retrieval.py",
+    "eval/refusal_calibration.py",
 )
 
 
@@ -69,6 +71,166 @@ def adaptive_rrf_min_score(*, rrf_k: int, consensus_rank: int) -> float:
     if rrf_k < 1 or consensus_rank < 1:
         raise ValueError("rrf_k 和 consensus_rank 必须为正数")
     return 1.0 / rrf_k + 1.0 / (rrf_k + consensus_rank - 1)
+
+
+# 拒答阈值的来源。`eval_best` 被显式列出来只是为了能明确拒绝它：拿本次评测集上
+# macro-F1 最优的阈值回填进配置，等于在评测集上拟合，报出来的拒答指标不再有外推意义。
+REFUSAL_THRESHOLD_SOURCES: frozenset[str] = frozenset(
+    {"dev_calibrated", "independent_calibration", "manual"}
+)
+_FORBIDDEN_THRESHOLD_SOURCES: frozenset[str] = frozenset({"eval_best", "test_calibrated"})
+REFUSAL_CALIBRATION_SCHEMA = "workpilot-refusal-calibration.v1"
+
+
+@dataclass(frozen=True)
+class RefusalCalibration:
+    threshold: float
+    score_source: str
+    dataset: str
+    dataset_sha256: str
+    source_report_sha256: str
+    method: str
+    reviewer: str
+    reviewed_at: str
+    sha256: str
+
+    def to_config(self) -> dict[str, object]:
+        return {
+            "schema_version": REFUSAL_CALIBRATION_SCHEMA,
+            "dataset": self.dataset,
+            "dataset_sha256": self.dataset_sha256,
+            "source_report_sha256": self.source_report_sha256,
+            "score_source": self.score_source,
+            "threshold": self.threshold,
+            "method": self.method,
+            "reviewer": self.reviewer,
+            "reviewed_at": self.reviewed_at,
+            "sha256": self.sha256,
+        }
+
+
+def load_refusal_calibration(
+    path: Path,
+    *,
+    evaluation_dataset_sha256: str,
+) -> RefusalCalibration:
+    raw = path.read_bytes()
+    payload = json.loads(raw)
+    if not isinstance(payload, dict) or payload.get("schema_version") != REFUSAL_CALIBRATION_SCHEMA:
+        raise ValueError(f"拒答校准文件必须是 {REFUSAL_CALIBRATION_SCHEMA}")
+    integrity = payload.get("integrity")
+    if not isinstance(integrity, dict) or integrity.get("algorithm") != "sha256":
+        raise ValueError("拒答校准文件缺少 sha256 完整性信息")
+    unsigned = {key: value for key, value in payload.items() if key != "integrity"}
+    if integrity.get("value") != _json_hash(unsigned):
+        raise ValueError("拒答校准文件完整性校验失败")
+    dataset_sha256 = str(payload.get("dataset_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", dataset_sha256):
+        raise ValueError("拒答校准 dataset_sha256 非法")
+    if dataset_sha256 == evaluation_dataset_sha256:
+        raise ValueError("拒答阈值不能在本次 evaluation suite 自身上标定")
+    source_report_sha256 = str(payload.get("source_report_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", source_report_sha256):
+        raise ValueError("拒答校准 source_report_sha256 非法")
+    threshold_raw = payload.get("threshold")
+    if isinstance(threshold_raw, bool) or not isinstance(threshold_raw, int | float):
+        raise TypeError("拒答校准 threshold 必须是有限数字")
+    threshold = float(threshold_raw)
+    if not math.isfinite(threshold):
+        raise ValueError("拒答校准 threshold 必须是有限数字")
+    score_source = str(payload.get("score_source") or "")
+    if score_source not in {"rerank", "fusion", "dense", "lexical"}:
+        raise ValueError("拒答校准 score_source 非法")
+    reviewer = str(payload.get("reviewer") or "").strip()
+    reviewed_at = str(payload.get("reviewed_at") or "").strip()
+    method = str(payload.get("method") or "").strip()
+    dataset = str(payload.get("dataset") or "").strip()
+    if not reviewer or not reviewed_at or not method or not dataset:
+        raise ValueError("拒答校准缺少 dataset/method/reviewer/reviewed_at")
+    try:
+        parsed = datetime.fromisoformat(reviewed_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("拒答校准 reviewed_at 必须是 ISO-8601 时间") from error
+    if parsed.tzinfo is None:
+        raise ValueError("拒答校准 reviewed_at 必须包含时区")
+    return RefusalCalibration(
+        threshold=threshold,
+        score_source=score_source,
+        dataset=dataset,
+        dataset_sha256=dataset_sha256,
+        source_report_sha256=source_report_sha256,
+        method=method,
+        reviewer=reviewer,
+        reviewed_at=reviewed_at,
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def validate_refusal_threshold(
+    *,
+    threshold: float | None,
+    source: str | None,
+    score_source: str | None,
+    observed_scores: Sequence[float],
+) -> None:
+    """fail-closed 地把拒答阈值绑到具体排序器的量纲和一个合法来源上。
+
+    dense cosine、RRF 与 cross-encoder 不共享量纲：把 0.35 这种为归一化打分器
+    定的阈值套到 RRF 分数（上界约 2/rrf_k）上，会把全部可答题判成拒答，而所有
+    检索指标照常输出——这是无声失败，必须挡在写报告之前。
+    """
+
+    if threshold is None:
+        return
+    if source not in REFUSAL_THRESHOLD_SOURCES:
+        if source in _FORBIDDEN_THRESHOLD_SOURCES:
+            raise ValueError(
+                f"refusal_threshold_source={source} 不允许：该阈值取自评测集自身的最优点，"
+                "属于在评测集上拟合。请在 dev split 上标定后传 --refusal-threshold-source dev_calibrated"
+            )
+        raise ValueError(
+            "设置 --refusal-threshold 时必须同时声明 --refusal-threshold-source，"
+            f"取值范围 {sorted(REFUSAL_THRESHOLD_SOURCES)}，例如 dev_calibrated"
+        )
+    if not score_source:
+        raise ValueError(
+            "无法确定 top_score 的排序器来源，拒绝套用拒答阈值。"
+            "检查 config.retrieval_score_source 是否为空"
+        )
+    finite = [float(score) for score in observed_scores]
+    if not finite:
+        raise ValueError("本次跑批没有任何 top_score，无法校验拒答阈值是否落在该排序器的量纲内")
+    low, high = min(finite), max(finite)
+    if not low <= threshold <= high:
+        raise ValueError(
+            f"拒答阈值 {threshold:g} 落在 {score_source} 分数的实测区间 "
+            f"[{low:.6g}, {high:.6g}] 之外，套用它会把几乎所有题判到同一侧。"
+            f"请在 dev split 上按 {score_source} 的量纲重新标定阈值"
+        )
+
+
+def resolve_actual_score_source(
+    observations: Sequence[dict[str, Any]],
+    *,
+    rerank_required: bool,
+) -> str:
+    """从真实命中结果确定分数量纲；评测不允许静默混用或 rerank 降级。"""
+
+    sources = {
+        str(item["retrieval_score_source"])
+        for item in observations
+        if item.get("error") is None and item.get("retrieval_score_source")
+    }
+    if not sources:
+        raise ValueError("本次跑批没有可确认的 retrieval_score_source")
+    if len(sources) != 1:
+        raise ValueError(f"同一次评测混用了多个检索分数量纲: {sorted(sources)}")
+    actual = next(iter(sources))
+    if rerank_required and actual != "rerank":
+        raise ValueError(
+            f"配置要求 rerank，但真实 score_source={actual}；reranker fallback 不能用于正式评测"
+        )
+    return actual
 
 
 @dataclass(frozen=True)
@@ -326,9 +488,11 @@ async def run_evaluation(
     theta: float,
     alpha: float,
     refusal_threshold: float | None,
+    refusal_threshold_source: str | None,
     output_dir: Path | None,
     include_test: bool,
     test_access_note: str | None,
+    refusal_calibration: RefusalCalibration | None = None,
     rrf_lexical_weight: float | None = None,
     adaptive_top_k_enabled: bool = False,
     adaptive_max_top_k: int = 10,
@@ -377,6 +541,17 @@ async def run_evaluation(
         for span in item.spans:
             catalog.validate_span(span)
 
+    if refusal_calibration is None:
+        if refusal_threshold is not None or refusal_threshold_source is not None:
+            raise ValueError("正式评测设置拒答阈值时必须提供独立 --refusal-calibration 文件")
+    else:
+        if refusal_threshold is not None or refusal_threshold_source is not None:
+            raise ValueError("--refusal-calibration 不能与直接阈值参数同时使用")
+        if refusal_calibration.dataset_sha256 == suite.sha256:
+            raise ValueError("拒答阈值不能在本次 evaluation suite 自身上标定")
+        refusal_threshold = refusal_calibration.threshold
+        refusal_threshold_source = "independent_calibration"
+
     config: dict[str, Any] = {
         "strategy": catalog.version.retrieval.engine,
         "origin": suite.origin,
@@ -386,6 +561,10 @@ async def run_evaluation(
         "theta": theta,
         "alpha": alpha,
         "refusal_threshold": refusal_threshold,
+        "refusal_threshold_source": refusal_threshold_source,
+        "refusal_calibration": (
+            refusal_calibration.to_config() if refusal_calibration is not None else None
+        ),
         "kb_slug": kb_slug,
         "kb_version_id": catalog.version.version_id,
         "embedding": catalog.version.embedding.to_dict(),
@@ -407,18 +586,17 @@ async def run_evaluation(
                 consensus_rank=adaptive_consensus_rank,
             ),
         },
-        "retrieval_score_source": (
+        "requested_retrieval_score_source": (
             "rerank"
             if settings.rerank_enabled
             else (
-                "rrf"
+                "fusion"
                 if catalog.version.retrieval.engine == "hybrid"
                 else catalog.version.retrieval.engine
             )
         ),
         "token_count_mode": "llama_index_default_tokenizer",
     }
-    config_hash = _json_hash(config)
     run_id = str(uuid4())
     started_at = datetime.now(UTC)
     observations: list[dict[str, Any]] = []
@@ -439,6 +617,27 @@ async def run_evaluation(
             )
         )
     finished_at = datetime.now(UTC)
+    actual_score_source = resolve_actual_score_source(
+        observations,
+        rerank_required=settings.rerank_enabled,
+    )
+    if refusal_calibration is not None and refusal_calibration.score_source != actual_score_source:
+        raise ValueError(
+            "拒答校准与本次运行分数量纲不一致: "
+            f"calibration={refusal_calibration.score_source}, actual={actual_score_source}"
+        )
+    config["retrieval_score_source"] = actual_score_source
+    config_hash = _json_hash(config)
+    validate_refusal_threshold(
+        threshold=refusal_threshold,
+        source=refusal_threshold_source,
+        score_source=actual_score_source,
+        observed_scores=[
+            float(item["top_score"])
+            for item in observations
+            if item.get("error") is None and item.get("top_score") is not None
+        ],
+    )
     git_sha, git_dirty = _git_state(repo_root)
     report: dict[str, Any] = {
         "report_schema_version": REPORT_SCHEMA_VERSION,
@@ -891,6 +1090,16 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--theta", type=float, default=0.5)
     run.add_argument("--alpha", type=float, default=0.5)
     run.add_argument("--refusal-threshold", type=float)
+    run.add_argument(
+        "--refusal-threshold-source",
+        choices=sorted(REFUSAL_THRESHOLD_SOURCES),
+        help="拒答阈值的标定来源；设置 --refusal-threshold 时必填，禁止回填评测集上的最优阈值",
+    )
+    run.add_argument(
+        "--refusal-calibration",
+        type=Path,
+        help="独立 calibration suite 生成并经人工复核的阈值文件；正式 baseline 必须使用",
+    )
     run.add_argument("--rrf-lexical-weight", type=float)
     run.add_argument("--adaptive-top-k", action="store_true")
     run.add_argument("--adaptive-max-top-k", type=int, default=10)
@@ -924,6 +1133,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if matches else 1
 
         suite = load_kb_retrieval_suite(args.suite, allow_synthetic=args.allow_synthetic)
+        refusal_calibration = (
+            load_refusal_calibration(
+                args.refusal_calibration,
+                evaluation_dataset_sha256=suite.sha256,
+            )
+            if args.refusal_calibration is not None
+            else None
+        )
         items = select_suite_items(
             suite,
             include_test=args.include_test,
@@ -944,6 +1161,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 theta=args.theta,
                 alpha=args.alpha,
                 refusal_threshold=args.refusal_threshold,
+                refusal_threshold_source=args.refusal_threshold_source,
+                refusal_calibration=refusal_calibration,
                 output_dir=args.output_dir,
                 include_test=args.include_test,
                 test_access_note=args.test_access_note,

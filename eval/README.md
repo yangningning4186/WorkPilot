@@ -31,21 +31,24 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.regression check \
 ```
 
 `eval.regression` 的稳定退出码是 `0=通过`、`1=可比较但发生回退`、`2=拒绝判定`。
-当前 catalog 会如实把三份历史 snapshot 标为 `rebuild_required`，而不是显示为可发布 baseline。
+当前 catalog 的 Cowork dev/test、KB retrieval、Grounded Generation 四条 track 均已晋升为
+独立 v2 baseline；Run 事件回放和 full-chain cassette 也都是 `ready`。Cowork dev（39 条）
+和冻结 test（11 条）始终是两个比较分母，不能混成一份 50 条 baseline。
 
 ## Cowork 单 Agent 50 条基线
 
-`cowork-core-50.json` 是 Cowork 的端到端标注候选集：39 条 dev、11 条冻结 test，
+`cowork-core-50-v1.6.1.json` 是当前 Cowork 端到端标注候选集：39 条 dev、11 条冻结 test，
 覆盖 workspace（含只读 git 视图）、artifact、格式 Skill + Shell、Web、knowledge/RAG、工作区文档沉浸阅读
 与安全/HITL，并新增飞书连接器和持久 shell 两类回归任务。每条记录均包含
 可复现 fixture、初始 capability、期望终态、gold 工具、工具顺序/调用预算和确定性成功断言；
 knowledge 类额外强制 `EvidenceBundle` 合约，不允许 `chunk_id`、内部 score 或 ORM 泄漏；
-reading 类强制 locator 引用（`[p.N]`），并留一条负例考"文档答不了就直说答不了"——
-这一档最糟的失败不是答错，而是凭对同名论文的印象编出一个像模像样的页码。
+沉浸阅读路径强制 locator 引用（`[p.N]`）。若 prompt 已给出精确 Markdown 路径，完整
+`read_file` 加章节/行号引用也算可溯源，不能强迫它伪造页码；负例则要求在给出任何候选
+数字前先明确说明文档不可答，避免仅凭对同名论文的印象编答案。
 
-当前套件由助手起草，因此固定为 `origin=synthetic`、
-`review_status=pending_human_review`。它可以用于打通 runner 和比较工程回归，但 owner 完成
-逐条复核前不得宣称为 human 产品质量基线，也不得用 test split 调参。
+套件保留生成来源 `origin=synthetic`。行之签字批准的 v1.6.0 原文件继续冻结保留；v1.6.1
+只修复 034 的模型可见引用断言、040 的写权限和 044 的 baseline/空白确定性断言，并于
+`2026-08-25T10:42:21+08:00` 由行之重新复核批准。这不改变冻结 test 不得用于调参的约束。
 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_task_suite
@@ -60,6 +63,9 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
   --label cowork-dev-v1 --split dev --allow-synthetic --allow-model-send \
   --authorization-note '<已核验的模型端点与合成数据发送授权>'
 ```
+
+评测只记录 token 用量，不用 token 数决定任务成败：`run_budget_tokens` 固定为 `0`。
+`--budget-tokens` 仅为旧命令保留且只接受 `0`；模型调用数和墙钟上限仍可独立配置，防止失控循环。
 
 跑完整 50 条必须显式留下 test access 审计：
 
@@ -99,12 +105,16 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
 最短安全路径、断言是否真的代表任务完成、HITL/权限预期是否符合产品策略。复核完成后再提升
 版本并冻结 test split；不要直接修改已经产生正式报告的版本。
 
+正式快照会强制 suite `approved`、reviewer/带时区 reviewed_at、`git_dirty=false` 和精确 split。
+dev 报告只能生成 `eval/snapshots/v2/cowork-core-dev.json`；test 必须另跑并生成
+`eval/snapshots/v2/cowork-core-test.json`，不能把 50 条混成一个比较分母。
+
 live Cowork 跑批会自动生成权限 `0600` 的 `model-cassette.json`。在同一 suite/split/item
 顺序上可用它进行零真实模型 dispatch 的 fixture 执行回放：
 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
-  --suite eval/suites/cowork-core-50.json --label replay-cowork-dev \
+  --suite eval/suites/cowork-core-50-v1.6.1.json --label replay-cowork-dev \
   --split dev --allow-synthetic \
   --replay-cassette eval/outputs/cowork-core/<recorded>/model-cassette.json
 ```
@@ -112,6 +122,32 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
 cassette 含完整 prompt/模型响应，不得提交 Git 或上传公共 artifact。请求漂移、篡改、
 cassette miss 或未消费记录都 fail closed；当前无可验证的断网 sandbox，所以 gold 或
 cassette 实际响应含 `run_shell` 的 case 会在 graph 执行前被拒绝。
+
+## RAG、工具与外部副作用 full-chain cassette
+
+模型 cassette 只封住模型请求；`full_chain_cassette.py` 进一步在 RAG、Cowork 工具和外部写
+副作用三个 I/O 边界做严格顺序录制。每条 interaction 同时固定规范化请求摘要、前序摘要和
+自身摘要，顶层完整性再覆盖整份 cassette。重放时传入的真实 delegate 会被完全忽略，因此
+不会重新检索生产 KB、执行工具或重复发送外部写操作；请求、顺序、hash chain、未消费记录
+任一不一致都会 fail closed。外部写必须携带非空 idempotency key，录制的是返回 receipt。
+
+真实录制默认标记为 `sensitive`、权限 `0600`，只能放在忽略的 `eval/outputs/`；Catalog 只接受
+`origin=synthetic` 且 `data_classification=synthetic` 的提交文件。仓库里的三段合成链路可这样
+做零 I/O 验证：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.full_chain_cassette \
+  eval/replays/full-chain-v1.json --format json
+```
+
+## Nightly
+
+`.github/workflows/eval-nightly.yml` 每天北京时间 02:00 在带 `workpilot-eval` 标签的自托管
+runner 上运行 Cowork dev、冻结 test、KB evaluation 和 Generation 70 条，再与固定 v2
+baseline 配对比较。模型固定为 `deepseek-v4-flash`，token 熔断关闭，KB 与索引由自托管 runner
+持有；任务不会改写 baseline。原始 report、prompt、模型 cassette 只在本机保留 30 天且至少
+保留最近 7 批；上传的 artifact 仅含 Catalog doctor、full-chain 零 I/O 验证、回归指标与摘要，
+GitHub 保留期同为 30 天。
 
 ## A5 长期记忆注入
 
@@ -216,6 +252,26 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.kb_retrieval_runner run \
   --token-budget 4000 --allow-synthetic
 ```
 
+不带阈值的报告可以用于工程诊断，但不能晋升正式 retrieval baseline。仓库中的独立候选集
+`eval/suites/kb-rag-research-refusal-calibration-v1.json` 有 8 条可答、4 条不可答，其证据文档
+与 26 条 evaluation gold 无交集，并已由行之批准。正式流程先以相同 KB/index、预算和真实
+score source 跑这份 calibration suite，再冻结阈值：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.refusal_calibration \
+  --report eval/outputs/kb-retrieval/<calibration-run>/report.json \
+  --reviewer '<复核人>' --reviewed-at '<带时区 ISO-8601>' \
+  --output eval/calibrations/<new-calibration>.json
+
+PYTHONPATH=backend backend/.venv/bin/python -m eval.kb_retrieval_runner run \
+  --suite /path/to/kb-evaluation.json --kb-slug <slug> --kb-version <version> \
+  --label current-hybrid-v1 --top-k 10 --diagnostic-k 50 --token-budget 4000 \
+  --refusal-calibration eval/calibrations/<new-calibration>.json
+```
+
+runner 从逐题命中读取实际 `retrieval_score_source`，不再相信配置推断；同一跑批混用量纲、
+reranker 配置开启却 fallback、校准/evaluation suite SHA 相同，都会在写报告前拒绝。
+
 输出位于 `eval/outputs/kb-retrieval/<timestamp>-<label>/`，包含 `report.json` 和 `report.md`。
 报告记录 suite/config/index/实现指纹、逐题命中与失败归因、Recall/nDCG/α-nDCG/MRR、上下文
 精度、文档覆盖、token、延迟、可答/不可答分数分布和拒答 AUROC。它保持现有
@@ -229,8 +285,8 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.kb_retrieval_runner run \
 混入正式指标**。
 
 当前可复跑的多文档候选集是 `eval/suites/kb-rag-research-dev-v1.json`：53 篇论文上的
-22 条可答题与 4 条不可答题。它仍是 `synthetic/pending_human_review`，只允许用于工程闭环和
-候选方向判断。E2-FS 固定其余配置，只比较已保留的 `e2-dense` 与 active `v1 hybrid`：
+22 条可答题与 4 条不可答题；它保留 `origin=synthetic`，并已由行之人工批准。E2-FS 固定
+其余配置，只比较已保留的 `e2-dense` 与 active `v1 hybrid`：
 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/python -m eval.kb_retrieval_runner run \
@@ -371,30 +427,29 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.build_m1_candidate_suite --a
 `synthetic/pending_human` 或存量同 ID 内容漂移都会拒绝。被拒绝的草稿不计入正式基线，
 也不会创建 staging dataset；人工逐条重写并填写 reviewer/reviewed_at 前不得升级为 human。
 
-70 条 dev 的正式套件为 `eval/suites/m1-dev-70.json`。以下两条 runner 都会 fail-closed
-检查恰好 70 条、六类完整、无 `agent_task`、无 test dataset、gold span 有效，并将 suite SHA
-与 test-access 审计写入 manifest：
+PostgreSQL 退役后，70 条 dev 的正式生成套件迁到
+`eval/suites/m1-dev-70-v2.json`。它内嵌全部问题、答案、约束和事实组，gold 使用
+`content_hash + page_no + char range`，不再依赖本机 `eval_items` UUID。37 篇冻结 corpus
+来自历史 70 条 retrieval 报告的 Top-10 `source_uri` 并集；迁移器保留输入报告 SHA-256，
+规范化精确匹配失败时才做有下限的模糊重定位。
 
 ```bash
-PYTHONPATH=backend backend/.venv/bin/python -m eval.suite_retrieval_runner \
-  --suite eval/suites/m1-dev-70.json --label m1-dev70-finalists \
-  --chunk-strategy heading --chunk-strategy semantic \
-  --retrieval-strategy dense-lexical-rrf-rerank --top-k 10 --diagnostic-k 50 \
-  --token-budget 4000 --theta 0.5 --alpha 0.5 \
-  --rerank-candidate-text-mode title_heading_content --lexical-mode ts_rank
+# 一次性准备独立 KB。来源 v1 的 embedding/chunk/RRF 签名必须完全一致；
+# dense 节点与向量无损组合，BM25 对 37 篇并集重新计算，不修改三个来源 KB。
+PYTHONPATH=backend backend/.venv/bin/python -m eval.generation_runner prepare-kb
 
-# 会发送问题与截断证据；必须显式携带已取得的授权说明
-PYTHONPATH=backend backend/.venv/bin/python -m eval.suite_generation_runner \
-  --suite eval/suites/m1-dev-70.json --retrieval-manifest /path/to/manifest.json \
-  --label m1-dev70-heading-generation --chunk-strategy heading \
+# 正式跑批默认强制 clean Git；会发送问题与截断证据，必须携带授权说明。
+# RERANK_ENABLED=false 是明确实验配置，不是 reranker 故障后的静默 fallback。
+RERANK_ENABLED=false PYTHONPATH=backend backend/.venv/bin/python \
+  -m eval.generation_runner run --label m1-dev70-generation-v2 \
   --allow-model-send --authorization-note '<approval reference>'
 ```
 
-两条 runner 都在分 dataset 的子报告之外，再并出一份 `<batch>/<chunk_strategy>/report.json`
-的整套报告（夜间门禁判的就是它）。合并时逐项校验 dataset 顺序、item 唯一性与配置漂移；
-`dataset_fingerprint` 与 `annotation_fingerprint` 天生逐 dataset 不同，会被合成指纹并
-连同各自原值一起写进 `chunk_metadata`——**不是被忽略掉**，标注改过仍然会显形。
-生成轨合并报告的聚合值直接用 `report_metrics` 的 MetricSpec 计算，与门禁读到的是同一个定义。
+runner 直接走生产 `search_index`，再由 `ModelGateway` 生成；`evaluation_generation` 对支持
+省略输出上限的 provider 不下发 `max_tokens`，报告明确记录 `token_budget=null`。正式指标为
+`citation_wellformed_non_refusal`、`citation_support_answerable` 和
+`constraint_pass_answerable`；可答题拒答或零引用都计 0，不能靠缩分母刷分。声明启用 rerank
+但实际 score source 发生 fallback 时，该题记为基础设施错误，不进入可晋升 baseline。
 
 对 answerable 误拒做 evidence gate 分层归因时，使用同一份正式 retrieval report 和各 dataset 的
 generation report 重建证据。`round_robin` 用于复现旧实现，修复后生产口径为 `sequential`；脚本

@@ -1019,3 +1019,64 @@ async def test_sqlite_store_upgrades_memory_indexes_after_adding_validity_column
         "uq_local_cowork_memories_key",
     } <= indexes
     assert valid_from == ("2026-01-01",)
+
+
+async def test_sqlite_store_upgrades_legacy_board_retry_and_completion_fields(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state" / "cowork.db"
+    path.parent.mkdir(parents=True)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """CREATE TABLE cowork_board_tasks (
+                id TEXT PRIMARY KEY,
+                team_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                acceptance_criteria TEXT NOT NULL,
+                resource_scope TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL,
+                assignee_worker_id TEXT,
+                assignment_call_id TEXT,
+                worker_report TEXT,
+                review_comment TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+        )
+        connection.executemany(
+            """INSERT INTO cowork_board_tasks (
+                id, team_id, title, acceptance_criteria, resource_scope, status,
+                assignment_call_id, worker_report, review_comment, created_at, updated_at
+            ) VALUES (?, 'team', ?, '完成', '[]', ?, ?, ?, ?, '2026-01-01', '2026-01-01')""",
+            [
+                ("open-task", "待返工", "open", "assign-1", "部分报告", "补齐证据"),
+                ("done-task", "已完成", "done", "assign-2", "完整报告", "已通过"),
+            ],
+        )
+        connection.execute("PRAGMA user_version = 13")
+
+    await SqliteCoworkStore(path).initialize()
+
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(cowork_board_tasks)")}
+        rows = {
+            row["id"]: dict(row)
+            for row in connection.execute(
+                """SELECT id, attempt_count, completion_kind, last_rejection_comment,
+                          last_error FROM cowork_board_tasks ORDER BY id"""
+            )
+        }
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+
+    assert {
+        "attempt_count",
+        "completion_kind",
+        "last_rejection_comment",
+        "last_error",
+    } <= columns
+    assert rows["open-task"]["attempt_count"] == 1
+    assert rows["open-task"]["last_rejection_comment"] == "补齐证据"
+    assert rows["done-task"]["completion_kind"] == "complete"
+    assert version == 14

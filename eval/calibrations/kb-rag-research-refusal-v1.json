@@ -1,0 +1,26 @@
+{
+  "schema_version": "workpilot-refusal-calibration.v1",
+  "generated_at": "2026-08-24T13:02:42.750693+00:00",
+  "dataset": "kb-rag-research-refusal-calibration-v1",
+  "dataset_sha256": "d462e73b1340e8f7cd712d666f1e7108b810cbff41e1a72c5f6249c86dbef4b5",
+  "source_report_sha256": "7e5ed1f59c2cd81e23bba84e1733e32cd3c2a5aff19a839787b635caa6221bdd",
+  "source_config_sha256": "54e4709aa1f885cb43d4c01a95a63b78174961ade93da15e21188e615a2d9fc0",
+  "git_sha": "b3cd8155a9758142c703f7f1134446e6e5d09c78",
+  "score_source": "rerank",
+  "threshold": 0.95751953125,
+  "method": "macro_f1_grid_v1",
+  "answerable_count": 8,
+  "unanswerable_count": 4,
+  "suite_review": {
+    "origin": "synthetic",
+    "status": "approved",
+    "reviewer": "行之",
+    "reviewed_at": "2026-08-24T20:54:00+08:00"
+  },
+  "reviewer": "行之",
+  "reviewed_at": "2026-08-24T20:54:00+08:00",
+  "integrity": {
+    "algorithm": "sha256",
+    "value": "6da9cf3377720e47113513a3907bb71f80310e7fead15ab9b435cb16846168b6"
+  }
+}

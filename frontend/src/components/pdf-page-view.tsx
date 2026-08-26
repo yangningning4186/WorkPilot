@@ -28,6 +28,24 @@ export function PdfPageView({ doc, locator, width, onFailed }: PdfPageViewProps)
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const textLayerRef = useRef<HTMLDivElement | null>(null);
   const [ratio, setRatio] = useState<number | null>(null);
+  // WKWebView 在窗口被遮挡或最小化后可能回收 canvas 的像素缓冲，但 React 节点、
+  // pdf.js document 和组件 state 都还在，因此依赖项没有变化，下面的绘制 effect 不会
+  // 自己再跑。窗口重新获得焦点或文档恢复可见时递增修订号，复用现有 document 重绘
+  // 当前页；无需重新下载整份 PDF，也不会丢失 locator。
+  const [resumeRevision, setResumeRevision] = useState(0);
+
+  useEffect(() => {
+    const repaint = () => setResumeRevision((current) => current + 1);
+    const repaintWhenVisible = () => {
+      if (document.visibilityState === "visible") repaint();
+    };
+    window.addEventListener("focus", repaint);
+    document.addEventListener("visibilitychange", repaintWhenVisible);
+    return () => {
+      window.removeEventListener("focus", repaint);
+      document.removeEventListener("visibilitychange", repaintWhenVisible);
+    };
+  }, []);
 
   useEffect(() => {
     if (width <= 0) return;
@@ -49,6 +67,7 @@ export function PdfPageView({ doc, locator, width, onFailed }: PdfPageViewProps)
         const paintCanvas = async (): Promise<void> => {
           const canvas = canvasRef.current;
           if (canvas === null) return;
+          canvas.dataset.renderState = "rendering";
           const dpr = outputScale();
           canvas.width = Math.floor(viewport.width * dpr);
           canvas.height = Math.floor(viewport.height * dpr);
@@ -61,6 +80,7 @@ export function PdfPageView({ doc, locator, width, onFailed }: PdfPageViewProps)
           });
           renderTask = task;
           await task.promise;
+          if (!cancelled) canvas.dataset.renderState = "ready";
         };
 
         const buildTextLayer = async (): Promise<void> => {
@@ -109,11 +129,11 @@ export function PdfPageView({ doc, locator, width, onFailed }: PdfPageViewProps)
         // 已经结束了。
       }
     };
-  }, [doc, locator, width, onFailed]);
+  }, [doc, locator, width, onFailed, resumeRevision]);
 
   return (
     <>
-      <canvas className="reader-canvas" ref={canvasRef} />
+      <canvas className="reader-canvas" data-render-state="idle" ref={canvasRef} />
       <div
         className="textLayer"
         data-reader-locator={locator}

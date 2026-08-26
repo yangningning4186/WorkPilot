@@ -10,9 +10,8 @@ anti_trigger:
   - 流程只跑通过一次且用户没有要求固化
   - 需要写的是一次性脚本（直接写文件，不要包成 Skill）
 tools:
-  - write_text_file
-  - read_text_file
-  - list_skills
+  - write_file
+  - read_file
   - load_skill
 status: active
 ---
@@ -24,7 +23,7 @@ Skill 是**给未来的你看的操作说明**，不是文档。判据只有一�
 
 - 会重复吗？只发生一次的事不值一个 Skill，写完只会占目录。
 - 是流程还是事实？“客户叫林琪”是 `remember`；“交周报要先跑数再套模板再发群”才是 Skill。
-- 已经有同名的了吗？先 `list_skills`。命中就 `load_skill` 读现有正文，在它上面改，
+- 已经有同名的了吗？先查看系统提示中的完整 Skill 目录。命中就 `load_skill` 读现有正文，在它上面改，
   而不是并排再装一个近义的——两个都会进 prompt，模型选哪个全看运气。
 
 ## 2. 写 frontmatter
@@ -61,8 +60,9 @@ prompt 里只有摘要，模型看到"周报"两个字就会把月度汇总也�
 
 ## 4. 装上去
 
-把完整 Markdown 写成 `SKILL.md`，通过技能管理界面或 API 安装，目录名与 `name` 一致。
-装完调一次 `list_skills` 确认它出现在目录里、描述读起来像"什么时候用它"。
+把完整 Markdown 用 `write_file`（`purpose=workspace`）写成 `SKILL.md`，通过技能管理界面或 API
+安装，目录名与 `name` 一致。装完后的下一轮系统提示会直接显示完整 Skill 目录；确认描述读起来
+像“什么时候用它”。
 
 ## 5. 关于出厂 Skill
 

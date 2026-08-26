@@ -7,13 +7,14 @@ from app.cowork.extensions import register_skill_tools
 from app.cowork.skills.catalog import (
     BUILTIN_DISABLED_DIRNAME,
     BUILTIN_SKILLS_ROOT,
+    SkillCatalog,
     SkillCatalogError,
+    SkillDefinition,
     load_skill_catalog,
 )
 from app.cowork.skills.lifecycle import (
     install_auto_distilled_skill,
     list_managed_skills,
-    read_skill_definition_resource,
     remove_skill,
     set_skill_enabled,
 )
@@ -32,7 +33,7 @@ trigger:
   - 用户要求审阅合同
 anti_trigger:
   - 用户要求正式法律意见
-tools: [read_text_file]
+tools: [read_file]
 status: active
 ---
 
@@ -80,10 +81,37 @@ def test_register_skill_tools_adds_catalog_and_runtime_snapshot(tmp_path: Path) 
     assert "contract-review" in registry.system_instructions()
     assert registry.runtime_snapshot()["skills"]["snapshot_sha256"] == (catalog.snapshot_sha256)
     ordinary_goal_tools = {tool.name for tool in registry.tool_definitions_for("整理当前工作目录")}
-    assert {"run_shell", "list_skills", "load_skill", "load_skill_resource"} <= (
-        ordinary_goal_tools
-    )
+    assert {"run_shell", "load_skill"} <= ordinary_goal_tools
+    assert "list_skills" not in ordinary_goal_tools
+    assert "list_skills" not in registry.deferred_tool_names()
+    manifest = registry.deferred_tools_manifest()
+    assert "list_skills" not in manifest
+    assert "load_skill_resource" not in registry.names()
     assert registry.requires_approval("model_hallucinated_tool") is False
+
+
+def test_prompt_catalog_includes_every_skill_without_character_truncation(tmp_path: Path) -> None:
+    skills = tuple(
+        SkillDefinition(
+            name=f"skill-{index:02d}",
+            description=f"第 {index} 项 " + ("长描述" * 300),
+            trigger=(f"触发 {index}",),
+            anti_trigger=(f"排除 {index}",),
+            tools=("read_file",),
+            procedure="一步。",
+            source_path=tmp_path / f"skill-{index:02d}" / "SKILL.md",
+            sha256=f"{index:064x}",
+        )
+        for index in range(20)
+    )
+
+    prompt = SkillCatalog(skills=skills, snapshot_sha256="0" * 64).prompt_catalog()
+
+    assert len(prompt) > 12_000
+    assert "skill-00" in prompt
+    assert "skill-19" in prompt
+    assert "另有" not in prompt
+    assert "list_skills" not in prompt
 
 
 # --- 出厂 Skill 层 -------------------------------------------------------------
@@ -97,7 +125,7 @@ def _write_named_skill(root: Path, name: str, description: str) -> None:
 name: {name}
 description: {description}
 trigger: [随便]
-tools: [read_text_file]
+tools: [read_file]
 status: active
 ---
 
@@ -126,6 +154,10 @@ def test_builtin_skills_ship_with_the_product(tmp_path: Path) -> None:
     # 出厂正文自己必须过同一套校验，否则发出去才发现装不上。
     assert "anti_trigger" in catalog.get("skill-creator").procedure
     assert "run_shell" in catalog.get("docx").tools
+    for name in ("docx", "xlsx", "pptx"):
+        procedure = catalog.get(name).procedure
+        assert "不得创建辅助脚本、备份或产物" in procedure
+        assert "python -c" in procedure
 
 
 def test_user_skill_shadows_builtin_of_the_same_name(tmp_path: Path) -> None:
@@ -214,16 +246,12 @@ def test_list_managed_skills_keeps_the_shadowed_builtin_visible(tmp_path: Path) 
     assert by_origin[("skill-creator", "user")].public()["removable"] is True
 
 
-def test_project_skill_overrides_user_and_builtin_and_reads_its_own_resource(
-    tmp_path: Path,
-) -> None:
+def test_project_skill_overrides_user_and_builtin(tmp_path: Path) -> None:
     user_root = tmp_path / "user"
     project_root = tmp_path / "project"
     _write_named_skill(user_root, "skill-creator", "用户层")
     project_skill = project_root / ".workpilot" / "skills" / "skill-creator"
     _write_named_skill(project_skill.parent, "skill-creator", "项目层")
-    (project_skill / "guide.txt").write_text("项目资源", encoding="utf-8")
-
     catalog = load_skill_catalog(
         user_root,
         max_files=20,
@@ -235,6 +263,3 @@ def test_project_skill_overrides_user_and_builtin_and_reads_its_own_resource(
     assert selected.origin == "project"
     assert selected.description == "项目层"
     assert catalog.shadowed == ("skill-creator",)
-    assert read_skill_definition_resource(
-        selected.source_path, resource="guide.txt", max_bytes=20_000
-    ) == ("项目资源", "guide.txt")

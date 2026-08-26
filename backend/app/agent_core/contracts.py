@@ -15,7 +15,7 @@ from uuid import UUID
 WorkflowType = Literal["answer", "literature_review", "cowork"]
 RunTrigger = Literal["manual", "schedule", "catchup"]
 AnswerMode = Literal["grounded", "general"]
-TERMINAL_RUN_STATUSES = frozenset({"done", "failed", "cancelled", "budget_exceeded"})
+TERMINAL_RUN_STATUSES = frozenset({"done", "partial", "failed", "cancelled", "budget_exceeded"})
 
 
 class BudgetState(TypedDict):

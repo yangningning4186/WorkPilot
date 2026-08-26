@@ -177,6 +177,7 @@ def _retrieval_report(
         "theta": 0.5,
         "alpha": 0.5,
         "refusal_threshold": 0.35,
+        "refusal_threshold_source": "dev_calibrated",
         "embedding_model": "bge-m3:latest",
         **(config or {}),
     }
@@ -426,7 +427,7 @@ def test_one_sided_eligibility_drops_both_arms_and_is_counted(tmp_path: Path) ->
     )
 
     payload = _compare(tmp_path, baseline, candidate)
-    validity = payload["metrics"]["citation_validity_non_refusal"]
+    validity = payload["metrics"]["citation_wellformed_non_refusal"]
 
     # item-1 只在 candidate 侧作答, 两侧一并剔除, 避免拿不同样本比较
     assert validity["sample_size"] == 1

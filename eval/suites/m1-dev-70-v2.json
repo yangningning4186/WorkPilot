@@ -1,0 +1,3215 @@
+{
+  "schema_version": 2,
+  "name": "m1-dev-70-v2",
+  "description": "M1 六类人工 dev grounded-generation 套件；由已复核的 PostgreSQL 导出机械迁移到当前文件型 KB 的 content hash、页码与字符区间，70 条全部内嵌。",
+  "origin": "human",
+  "item_count": 70,
+  "review": {
+    "status": "approved",
+    "reviewer": "行之",
+    "reviewed_at": "2026-08-25T00:00:00+08:00",
+    "note": "保留原人工题目、答案、约束与事实组；迁移后的内容锚点已逐条 fail-closed 校验。"
+  },
+  "migration": {
+    "method": "normalized exact match, then bounded fuzzy re-anchor",
+    "minimum_match_score": 0.6,
+    "minimum_observed_match_score": 0.640927,
+    "repair_export_sha256": "f83fefb644084029fb915a899da2601003d420777676eb97d8978d7e67e1d517",
+    "retrieval_report_sha256": "7312138ca893ef76bda899f7fa78a06c4073a1afb6cf6235714dbb29a156a73a",
+    "source_kb_versions": {
+      "agent-engineering": "v1",
+      "agent-research": "v1",
+      "interview-prep": "v1"
+    }
+  },
+  "corpus": {
+    "kb_slug": "m1-dev-70-v2",
+    "derivation": "历史 70 条 retrieval 报告中所有 top-10 source_uri 的并集",
+    "documents": [
+      {
+        "filename": "00-项目总览_副本.md",
+        "content_hash": "1904e6fbb89d8af298456099428d5a827f556c9c178706b2712901858ce2272f",
+        "source_kb": "interview-prep"
+      },
+      {
+        "filename": "05-通用面试题库.md",
+        "content_hash": "d52598b3e2fa75d52bc4a1dc888b0e5b69892a6a012b0b025b81e9f34950de5b",
+        "source_kb": "interview-prep"
+      },
+      {
+        "filename": "06-答案库-字节四面21题_副本.md",
+        "content_hash": "8fce343e734cdd5724ee11b50aa86e68e600650ace3a5ad507551edf40485b75",
+        "source_kb": "interview-prep"
+      },
+      {
+        "filename": "07-答案库-Agent八股_副本.md",
+        "content_hash": "19d72da019db26c55f03ffa3f48a4e5e58582fafe28697afaf980491aa59ede5",
+        "source_kb": "interview-prep"
+      },
+      {
+        "filename": "08-答案库-RAG与LLM基础微调_副本.md",
+        "content_hash": "b46d2edcc53d5a18c5f51231f078160e51fad56db4d00116fb06f947594d3781",
+        "source_kb": "interview-prep"
+      },
+      {
+        "filename": "09-答案库-推理部署与系统设计_副本.md",
+        "content_hash": "837c5f7a494ef24aa4549851146ee73c6419ab27e7f73867078f27336bd52ca6",
+        "source_kb": "interview-prep"
+      },
+      {
+        "filename": "10-答案库-ML手撕代码_副本.md",
+        "content_hash": "489b25a2c5e1682f8fc8f36075cb8a2ef29335516685d1a989db04a08b7dbac0",
+        "source_kb": "interview-prep"
+      },
+      {
+        "filename": "11-近三个月新考点补遗_副本.md",
+        "content_hash": "da3a7bf4121b0047ecaafae43c63e24612cfe5a28549670bb8f4096d2201ce06",
+        "source_kb": "interview-prep"
+      },
+      {
+        "filename": "12-答案库-蚂蚁Agent一二面_副本.md",
+        "content_hash": "c3c94fc4da9c317783bb0284a708ddac617ac4684115cf0350470f1ea824b779",
+        "source_kb": "interview-prep"
+      },
+      {
+        "filename": "14-答案库-VibeCoding与Coding Agent开发经验_副本.md",
+        "content_hash": "a210be9d760e553241763f9a78b1ca83e9a33aef89a209098a362d149f164c1c",
+        "source_kb": "interview-prep"
+      },
+      {
+        "filename": "15-答案库-DGXSpark部署与vLLM原理_副本.md",
+        "content_hash": "f113961b8d2590455d5264893fa74cfc70f68839dab95ee1e065d785eb0a8b1d",
+        "source_kb": "interview-prep"
+      },
+      {
+        "filename": "17-答案库-AI应用Agent全栈JD总纲_副本.md",
+        "content_hash": "6c3c59d6070e33af5755592c4993bf1176983cd628527db7b0e9bd85c5abe40a",
+        "source_kb": "interview-prep"
+      },
+      {
+        "filename": "2210.03629v3.pdf",
+        "content_hash": "f285b0971ae4a790e402fb93966bed3adde2cf0a04977d08b2b40d6ab0cace69",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2302.04761v1.pdf",
+        "content_hash": "6d7483d94653008e40c2058a1c22441c92e3713dae278b6361e8efc447c99522",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2303.03378v1.pdf",
+        "content_hash": "535cc3c7fe1ae7428b9ac7d6a3738a0529975aadc372b2229ea0cb2ce724576a",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2303.11366v1.pdf",
+        "content_hash": "965a720f42e0318facf0de5d1b9d7a135ded227284fc615ca5b3ec1763c46066",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2305.16291v2.pdf",
+        "content_hash": "769a4e33ddeeb73870849232eece49afe882c2d146362e33917ccb432ba0efb8",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2307.16789v2.pdf",
+        "content_hash": "295299721d67b250661fb6598bee86a2e9fe766241fdc08dd7cf389e984b4d1a",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2308.00352v7.pdf",
+        "content_hash": "17582e47647fac8eaa3681feade41c8408310c4133acc5c6823565fbe880e1ac",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2308.03688v3.pdf",
+        "content_hash": "9c780e35fc0b2de6c2e21e0572f6aaaadcf7ecdd56d63cfaae2b415bc0dc83c3",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2308.08155v2.pdf",
+        "content_hash": "fcf8b1acae6b1bd6f14c92463caa9726828bf998234ba9f10c2411087897c96b",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2311.12983v1.pdf",
+        "content_hash": "5bf6f968d4f5cd20acdfca6e81e3c9f5277bb66061fad7a02e35442dff812ba0",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2512.18552v3.pdf",
+        "content_hash": "dccc8543a0e603592b952e174f638299e73fae107bfc4273106631c34701c9bf",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2512.18746v1.pdf",
+        "content_hash": "51ca8a0ca349b7ad111b5380148c6dd34fa4d16f933ac58677fc2246b1566dd5",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2601.02553v3.pdf",
+        "content_hash": "8752aa223e004ca286995bc1e8cbde8e89e67ad3aeb9ba0266f3ccab3cc11078",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2604.18292v1.pdf",
+        "content_hash": "d9d803ef67a329f0c8028a3dd2446660f4c6794c137a0a5fae55c6dd385fca63",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2605.25430v1.pdf",
+        "content_hash": "73c48c5c919e1e60e078f1c07fbcd407ac3d0deba0aa007eff62b83a8b70ac4d",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2606.07412v1.pdf",
+        "content_hash": "12fa1d830c06770d9a9e24e52226317fed810d09de311138a46514f8077ab72f",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2607.03523v1.pdf",
+        "content_hash": "2d2e2c329b6df9a297c92fcc80893100772a5d61088abfa62f673035a9563490",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2607.13285v1.pdf",
+        "content_hash": "3736b3e1dc3aa7e9b964db90a1e08f4cb2b8ef9bef95643f41e0ecde506c1336",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "2607.16621v1.pdf",
+        "content_hash": "82f7f9768a6eb2ee94749b35477998e0db0f64662dd730b1ae70531a6b9d65fd",
+        "source_kb": "agent-research"
+      },
+      {
+        "filename": "Tecent-Agent-Memory_副本.md",
+        "content_hash": "2f322ae0f3aff01dd657a8010951c577c0ee3d8e8ef983d395d4df5e806bbed7",
+        "source_kb": "agent-engineering"
+      },
+      {
+        "filename": "agent-runtime-plan.md",
+        "content_hash": "8c56e71e59af0e677034e32548eaa756a755deaff3515554812555668bd62897",
+        "source_kb": "agent-engineering"
+      },
+      {
+        "filename": "deepresearch-agent-plan.md",
+        "content_hash": "1dd6d89ea095571dfb14f78371c7f746cfd536b34cd7f106ad57dca95724a442",
+        "source_kb": "agent-engineering"
+      },
+      {
+        "filename": "penguin-eval-agent-plan.md",
+        "content_hash": "5188d9a2d9dde8daf9d921e6c6af6c98ed91f9d768d9239172bc0987a6745ac0",
+        "source_kb": "agent-engineering"
+      },
+      {
+        "filename": "workpilot-plan.md",
+        "content_hash": "dbb670eb28d8d8226fc5850be0d4b862831dac1a5f4f7b37dd70c2262fb7172b",
+        "source_kb": "agent-engineering"
+      },
+      {
+        "filename": "部署Deepseek V4 Flash Spark.md",
+        "content_hash": "cc4bebc302e3a341fea52e5183be8afc3175c0bb4ffed95b7a48077d3b0246c3",
+        "source_kb": "agent-engineering"
+      }
+    ]
+  },
+  "items": [
+    {
+      "item_id": "019ffd1d-bcf5-7882-a50f-30ccd8b8fad6",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 1,
+      "question": "部署 DeepSeek V4 Flash Spark 需要克隆哪个仓库？",
+      "gold_answer": "https://github.com/tonyd2wild/DeepSeek-v4-Flash-DSpark-1M-NVFP4-KV-2x-DGX-Spark",
+      "constraints": {
+        "must_include": [
+          "DeepSeek-v4-Flash-DSpark-1M-NVFP4-KV-2x-DGX-Spark"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "cc4bebc302e3a341fea52e5183be8afc3175c0bb4ffed95b7a48077d3b0246c3",
+              "filename": "部署Deepseek V4 Flash Spark.md",
+              "page_no": null,
+              "char_start": 608,
+              "char_end": 697,
+              "quote": "https://github\\.com/tonyd2wild/DeepSeek\\-v4\\-Flash\\-DSpark\\-1M\\-NVFP4\\-KV\\-2x\\-DGX\\-Spark",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd20-621d-7185-8508-f762a0f307c1",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 1,
+      "question": "DeepSeek V4 模型部署好后怎么看实时日志？",
+      "gold_answer": "docker compose -p deepseek-v4-flash -fdocker-compose.2node.yml logs -f vllm-dspark",
+      "constraints": {
+        "must_include": [
+          "docker compose",
+          "logs -f",
+          "vllm-dspark"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "cc4bebc302e3a341fea52e5183be8afc3175c0bb4ffed95b7a48077d3b0246c3",
+              "filename": "部署Deepseek V4 Flash Spark.md",
+              "page_no": null,
+              "char_start": 2602,
+              "char_end": 2693,
+              "quote": "docker compose \\-p deepseek\\-v4\\-flash \\-fdocker\\-compose\\.2node\\.yml logs \\-f vllm\\-dspark",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd22-0377-7324-ad37-4d01a4de89b2",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 1,
+      "question": "DeepSeek V4 怎么开启推理模式？",
+      "gold_answer": "--reasoning-parser deepseek_v4",
+      "constraints": {
+        "must_include": [
+          "--reasoning-parser",
+          "deepseek_v4"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "cc4bebc302e3a341fea52e5183be8afc3175c0bb4ffed95b7a48077d3b0246c3",
+              "filename": "部署Deepseek V4 Flash Spark.md",
+              "page_no": null,
+              "char_start": 2363,
+              "char_end": 2380,
+              "quote": "reasoning\\-parser",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "cc4bebc302e3a341fea52e5183be8afc3175c0bb4ffed95b7a48077d3b0246c3",
+              "filename": "部署Deepseek V4 Flash Spark.md",
+              "page_no": null,
+              "char_start": 2382,
+              "char_end": 2394,
+              "quote": "deepseek\\_v4",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R3",
+          "alternatives": [
+            {
+              "content_hash": "cc4bebc302e3a341fea52e5183be8afc3175c0bb4ffed95b7a48077d3b0246c3",
+              "filename": "部署Deepseek V4 Flash Spark.md",
+              "page_no": null,
+              "char_start": 2396,
+              "char_end": 2408,
+              "quote": "开启thinking模式",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd25-a595-747d-a338-0a49a078cdc5",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "table",
+      "difficulty": 1,
+      "question": "ReAct 主循环的要点有哪些？",
+      "gold_answer": "原生 tool_calls → 执行工具 → tool observation 回喂;硬预算、防重复、异常结构化",
+      "constraints": {
+        "must_include": [
+          "tool_calls",
+          "tool observation",
+          "硬预算",
+          "防重复",
+          "异常结构化"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "d52598b3e2fa75d52bc4a1dc888b0e5b69892a6a012b0b025b81e9f34950de5b",
+              "filename": "05-通用面试题库.md",
+              "page_no": null,
+              "char_start": 6257,
+              "char_end": 6348,
+              "quote": "ReAct 主循环                        | 原生 tool_calls → 执行工具 → tool observation 回喂;硬预算、防重复、异常结构化",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd27-973f-7b6e-9668-6d87c916676f",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 1,
+      "question": "LLM 基础八股有哪些？",
+      "gold_answer": "LLM 基础题主要覆盖：Self-Attention 的缩放与多头机制；temperature、top-k、top-p 等采样参数；KV Cache 的加速原理和显存估算；绝对位置编码与 RoPE 及长度外推；base/instruct 模型和 CoT；context rot；Transformer 参数与显存估算；以及 MoE 的总参数、激活参数和路由机制。",
+      "constraints": {
+        "must_include": [
+          "Self-Attention",
+          "temperature",
+          "KV Cache",
+          "RoPE",
+          "MoE"
+        ],
+        "benchmark_review": {
+          "action": "rewrite_gold_answer",
+          "version": "benchmark-v2"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "d52598b3e2fa75d52bc4a1dc888b0e5b69892a6a012b0b025b81e9f34950de5b",
+              "filename": "05-通用面试题库.md",
+              "page_no": null,
+              "char_start": 4067,
+              "char_end": 4418,
+              "quote": "Self-Attention 为什么除以 √d?多头的作用?\n- ⭐ temperature / top-k / top-p 的区别 🎯(采样参数顶层 kwargs 传 LiteLLM 的坑,你踩过——八股答完补实战)\n- ⭐ KV Cache 原理;为什么能加速;显存怎么算 🎯(接 GPU 容量故事)\n- 位置编码:绝对 vs RoPE;长度外推\n- base model vs instruct model;CoT 何时真的有用\n- 上下文腐化(context rot):长对话性能衰减的原因与对策\n- Transformer 参数量/显存估算(7B 模型推理要多少显存这类)\n- MoE 架构要点 🎯(Qwen3.6-35B-A3B 就是 MoE:35B 总参 3B 激活——你天天用,能讲一手",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd28-9cbb-74cb-ad88-535024ede234",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 1,
+      "question": "大模型推理部署需要掌握哪些八股？",
+      "gold_answer": "- ⭐ vLLM 核心:PagedAttention、Continuous Batching、APC\n- ⭐ goodput vs 理论吞吐;max-num-seqs / max-num-batched-tokens 的含义 \n- ⭐ TP/PP/DP 并行的区别;TP=4 通信开销在哪(NCCL/PCIe)🎯\n- 量化:AWQ/GPTQ/FP8 的取舍\n- ⭐ 推理延迟拆解:TTFT vs TPOT;分别怎么优化\n- PD 分离(prefill/decode 分离)是什么、为什么火\n- 投机解码(speculative decoding)原理\n- ⭐ 混部两个模型的资源竞争 🎯",
+      "constraints": {
+        "must_include": [
+          "PagedAttention",
+          "Continuous Batching",
+          "TTFT",
+          "TPOT",
+          "投机解码"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "d52598b3e2fa75d52bc4a1dc888b0e5b69892a6a012b0b025b81e9f34950de5b",
+              "filename": "05-通用面试题库.md",
+              "page_no": null,
+              "char_start": 4666,
+              "char_end": 4998,
+              "quote": "vLLM 核心:PagedAttention、Continuous Batching、APC(前缀缓存)🎯\n- ⭐ goodput vs 理论吞吐;max-num-seqs / max-num-batched-tokens 的含义 🎯(GPU 复核故事直接引)\n- ⭐ TP/PP/DP 并行的区别;TP=4 通信开销在哪(NCCL/PCIe)🎯\n- 量化:AWQ/GPTQ/FP8 的取舍\n- ⭐ 推理延迟拆解:TTFT vs TPOT;分别怎么优化\n- PD 分离(prefill/decode 分离)是什么、为什么火\n- 投机解码(speculative decoding)原理\n- ⭐ 混部两个模型的资源竞争 🎯(0.80+0.17=0.97 显存预算实例",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd2a-5430-76cf-a775-1e4c2d798112",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 1,
+      "question": "WorkPilot 规划的系统架构是什么？",
+      "gold_answer": "WorkPilot 采用分层架构：Next.js 前端通过 SSE 展示流式对话、引用、Agent 时间线和 HITL；FastAPI 负责鉴权、限流与会话；业务层分为 LangGraph Agent、RAG 知识链路和评测层。底层以 Postgres/pgvector 保存业务与向量数据，Redis 和任务队列承载异步执行，并预留对象存储与全链路观测。",
+      "constraints": {
+        "must_include": [
+          "FastAPI",
+          "RAG",
+          "评测层",
+          "Postgres"
+        ],
+        "benchmark_review": {
+          "action": "rewrite_gold_answer",
+          "version": "benchmark-v2"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "dbb670eb28d8d8226fc5850be0d4b862831dac1a5f4f7b37dd70c2262fb7172b",
+              "filename": "workpilot-plan.md",
+              "page_no": null,
+              "char_start": 1624,
+              "char_end": 2408,
+              "quote": "前端  Next.js 15 + shadcn/ui + Vercel AI SDK        │\n│  流式对话 / 引用卡片 / Agent 执行时间线 / HITL 确认   │\n└──────────────────────┬──────────────────────────────┘\n                       │ SSE\n┌──────────────────────┴──────────────────────────────┐\n│  API 网关  FastAPI（鉴权 / 限流 / 会话）              │\n├──────────────┬───────────────┬──────────────────────┤\n│  Agent 层    │   知识层 RAG  │   评测层              │\n│  LangGraph   │   解析→分块   │   数据集管理          │\n│  Plan/Exec/  │   →向量化     │   离线跑批            │\n│  Reflect     │   →混合检索   │   LLM Judge + 规则    │\n│  工具注册中心 │   →rerank     │   CI 门禁             │\n│  记忆系统    │   →溯源       │   badcase 回流        │\n├──────────────┴───────────────┴──────────────────────┤\n│  Postgres(+pgvector) │ Redis │ 任务队列 │ MinIO      │\n│  Langfuse / OpenTelemetry 全链路 trace",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd2c-4d00-7fa2-9c20-f70a4aeb9945",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 1,
+      "question": "WorkPilot 规划如何做成本与性能治理？",
+      "gold_answer": "成本与性能治理包括四部分：按任务复杂度做模型路由并测质量—成本曲线；采用结果、语义和 Prompt 三级缓存；通过流式首 token、并发检索和 embedding 批处理降低延迟；最后用看板持续监控 P50/P95、单会话成本、缓存命中率和各模型调用占比。",
+      "constraints": {
+        "must_include": [
+          "模型路由",
+          "三级缓存",
+          "embedding 批处理",
+          "P95"
+        ],
+        "benchmark_review": {
+          "action": "rewrite_gold_answer",
+          "version": "benchmark-v2"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "dbb670eb28d8d8226fc5850be0d4b862831dac1a5f4f7b37dd70c2262fb7172b",
+              "filename": "workpilot-plan.md",
+              "page_no": null,
+              "char_start": 4547,
+              "char_end": 4743,
+              "quote": "1. **模型路由**：意图分类、查询改写、结构抽取用小模型；复杂推理和生成用大模型；给出各档位的质量-成本曲线\n2. **三级缓存**：结果缓存 → 语义缓存（相似 query 向量匹配）→ Prompt Caching\n3. **性能**：流式首 token 优化、检索并发化、embedding 批处理\n4. **看板**：P50/P95 延迟、单次会话成本、缓存命中率、各模型调用占比",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd2d-64a1-7289-87bb-114469131e75",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "unanswerable",
+      "difficulty": 1,
+      "question": "deerflow的技术架构是什么？",
+      "gold_answer": "None",
+      "constraints": {
+        "must_include": [],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "019ffd2e-62af-7bc2-8a75-af1e9c77d584",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "unanswerable",
+      "difficulty": 1,
+      "question": "Deepseek v4 pro的参数量有多大",
+      "gold_answer": "None",
+      "constraints": {
+        "must_include": [],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "019ffd2f-ad7a-7091-9c31-963fcc338e98",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "unanswerable",
+      "difficulty": 1,
+      "question": "截至 2026-08-14，资料库里阿里最新的长程 Agent 是怎么设计的？",
+      "gold_answer": "None",
+      "constraints": {
+        "must_include": [],
+        "benchmark_review": {
+          "action": "fix_temporal_snapshot",
+          "version": "benchmark-v2"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": "2026-08-14 12:00:00+00:00",
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "019ffd30-aa19-7547-9155-7f70c5b99603",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "multi_hop",
+      "difficulty": 2,
+      "question": "WorkPilot 规划的四个产品场景是什么？",
+      "gold_answer": "溯源问答（RAG 主战场）、多步任务执行（Agent 主战场）、内容生成，以及主动推荐（M2 亮点，可选）。",
+      "constraints": {
+        "must_include": [
+          "溯源问答",
+          "多步任务执行",
+          "内容生成",
+          "主动推荐"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "dbb670eb28d8d8226fc5850be0d4b862831dac1a5f4f7b37dd70c2262fb7172b",
+              "filename": "workpilot-plan.md",
+              "page_no": null,
+              "char_start": 1043,
+              "char_end": 1060,
+              "quote": "场景 A｜溯源问答（RAG 主战场",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "dbb670eb28d8d8226fc5850be0d4b862831dac1a5f4f7b37dd70c2262fb7172b",
+              "filename": "workpilot-plan.md",
+              "page_no": null,
+              "char_start": 1192,
+              "char_end": 1213,
+              "quote": "场景 B｜多步任务执行（Agent 主战场",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R3",
+          "alternatives": [
+            {
+              "content_hash": "dbb670eb28d8d8226fc5850be0d4b862831dac1a5f4f7b37dd70c2262fb7172b",
+              "filename": "workpilot-plan.md",
+              "page_no": null,
+              "char_start": 1341,
+              "char_end": 1350,
+              "quote": "场景 C｜内容生成",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R4",
+          "alternatives": [
+            {
+              "content_hash": "dbb670eb28d8d8226fc5850be0d4b862831dac1a5f4f7b37dd70c2262fb7172b",
+              "filename": "workpilot-plan.md",
+              "page_no": null,
+              "char_start": 1427,
+              "char_end": 1445,
+              "quote": "场景 D｜主动推荐（M2 亮点，可选",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd33-0920-73ff-b60a-94176a590574",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "unanswerable",
+      "difficulty": 1,
+      "question": "Qwen3.8 max在各个主流benchmark上的表现怎么样",
+      "gold_answer": "None",
+      "constraints": {
+        "must_include": [],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "019ffd34-3949-7b6d-b109-1e4feef649ce",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "table",
+      "difficulty": 1,
+      "question": "WorkPilot 规划中的技术选型及理由是什么？",
+      "gold_answer": "核心选型为：LangGraph 编排可恢复状态机；Postgres + pgvector 以较低运维成本同时提供事务和向量检索；PG 全文索引承担关键词召回；bge-m3 支持中英与稀疏/稠密表示，bge-reranker-v2-m3 做交叉编码精排；FastAPI 提供异步 API 与 Pydantic 契约；Next.js负责流式交互，Langfuse 统一记录 trace、成本和评测。",
+      "constraints": {
+        "must_include": [
+          "LangGraph",
+          "pgvector",
+          "bge-m3",
+          "FastAPI"
+        ],
+        "benchmark_review": {
+          "action": "rewrite_gold_answer",
+          "version": "benchmark-v2"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "dbb670eb28d8d8226fc5850be0d4b862831dac1a5f4f7b37dd70c2262fb7172b",
+              "filename": "workpilot-plan.md",
+              "page_no": null,
+              "char_start": 2512,
+              "char_end": 3060,
+              "quote": "组件 | 选型 | 为什么不是别的 |\n|---|---|---|\n| Agent 编排 | LangGraph | 需要显式状态机 + checkpoint 续跑；AutoGen 偏对话式多智能体，可控性差；CrewAI 抽象太高、调试困难 |\n| 向量库 | Postgres + pgvector（M2 可对比 Qdrant） | 单人项目减少运维面；事务和业务表同库；到千万级再谈专用库。**要能说出 pgvector 的 HNSW 参数与召回/延迟权衡** |\n| 关键词检索 | PG 全文索引 or Elasticsearch | 中文需分词，注意 zhparser / IK 的差异 |\n| Embedding | bge-m3（中英混合 + 稀疏/稠密双模） | 对中文长文档友好，且天然支持混合检索 |\n| Rerank | bge-reranker-v2-m3 | 交叉编码器，top-50 → top-5 |\n| 后端 | FastAPI | 生态 + 异步 + Pydantic 契约 |\n| 前端 | Next.js + Vercel AI SDK | 流式渲染现成，专注做交互质量 |\n| 追踪 | Langfuse | trace / 成本 / 评测三合一，省自研",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd37-e50e-707c-aab2-679a84c03b7c",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 2,
+      "question": "MSCE 相比 Flat Memory 多了哪些关键治理能力，消融结果如何证明这些能力有效？",
+      "gold_answer": "Flat Memory 只保存并直接检索全部经验，缺少层级抽象、适用性门控和技能引入。用 Flat Memory 替换完整 MSCE 后，IR、数学推理和软件工程的 Pass@1 分别下降 15.38、16.00 和 19.23 个百分点，代码实现成本也从 2.0 增至 5.3 turns，说明仅检索历史经验不足以实现有效复用。",
+      "constraints": {
+        "must_include": [
+          "层级抽象",
+          "适用性门控",
+          "15.38",
+          "19.23",
+          "5.3"
+        ],
+        "benchmark_review": {
+          "action": "reclassify_single_hop",
+          "version": "benchmark-v2"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "82f7f9768a6eb2ee94749b35477998e0db0f64662dd730b1ae70531a6b9d65fd",
+              "filename": "2607.16621v1.pdf",
+              "page_no": 9,
+              "char_start": 1916,
+              "char_end": 2509,
+              "quote": "We ablate ﬁve components of MSCE. Flat Memory stores all experiences in a single non-hierarchical memory\n\nand retrieves them directly at test time, without hierarchical abstraction, applicability gating, or skill intro-\nduction. w/o L3 removes L3 environmental cognition abstraction. w/o Value Calibration directly injects\nretrieved skills without value-calibrated applicability ﬁltering. w/o Reﬂection Weighting removes reﬂection-\nweighted value backﬁlling and treats feedback uniformly. w/o Skill Crystallization prevents distilled task\npolicies from being converted into reusable skills.\n\n9",
+              "migration_match_score": 0.983382
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "82f7f9768a6eb2ee94749b35477998e0db0f64662dd730b1ae70531a6b9d65fd",
+              "filename": "2607.16621v1.pdf",
+              "page_no": 10,
+              "char_start": 0,
+              "char_end": 479,
+              "quote": "Table 3 shows that all components contribute to performance and eﬃciency. The largest degradation comes\nfrom replacing MSCE with Flat Memory: Pass@1 drops by 15.38, 16.00, and 19.23 points on IR, Math,\nand SE, respectively, and Code cost increases from 2.0 to 5.3 turns despite a relatively small Pass@1 drop.\nThis indicates that merely retrieving past experiences is insuﬃcient; eﬀective reuse requires hierarchical\nabstraction, applicability control, and skill-level consolidat",
+              "migration_match_score": 0.992424
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd37-e520-78f5-863b-63be1797892d",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "multi_hop",
+      "difficulty": 2,
+      "question": "Harness Handbook 如何保证手册内容可追溯到源码，这种设计在 Terminus-2 的 GPT-5.5 参考计划下给文件级定位带来了什么改善？",
+      "gold_answer": "Phase I 用语言适配器确定性提取函数、外部边界、源码位置、签名和调用边，只保留能解析到内部函数或命名边界的调用，未解析调用只记录而不猜测；Phase III 再把每个 L3 条目链接到静态识别的源码位置，并针对当前仓库验证。对 Terminus-2，在 GPT-5.5 参考计划下，文件级 Recall 从 76.1% 升至 87.5%（+11.4），Precision 从 78.3% 升至 93.3%（+15.0），F1 从 76.5% 升至 89.3%（+12.8），Wrong 从 20.0% 降至 6.7%（-13.3）。",
+      "constraints": {
+        "must_include": [
+          "Phase I",
+          "Phase III",
+          "87.5",
+          "93.3",
+          "89.3",
+          "6.7"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "3736b3e1dc3aa7e9b964db90a1e08f4cb2b8ef9bef95643f41e0ecde506c1336",
+              "filename": "2607.13285v1.pdf",
+              "page_no": 5,
+              "char_start": 1612,
+              "char_end": 2000,
+              "quote": "Phase I. Static Fact Extraction. Language-specific adapters parse the repository and extract functions,\nnamed external boundaries, source locations, signatures, and call edges. The program graph G keeps only calls\nthat resolve to an internal function or a named boundary. Unresolved calls are logged rather than assigned\nguessed targets. This phase is deterministic and makes no LLM calls",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "3736b3e1dc3aa7e9b964db90a1e08f4cb2b8ef9bef95643f41e0ecde506c1336",
+              "filename": "2607.13285v1.pdf",
+              "page_no": 5,
+              "char_start": 2960,
+              "char_end": 3438,
+              "quote": "Phase III. Hierarchical Synthesis and Packaging.\nThis phase converts the stage skeleton and source\norganization from Phase II into the L1–L3 document tree and cross-stage state-register view. Each L3 entry\nis linked to a statically identified source location and validated against the current repository. This keeps the\nhandbook traceable to the source. Finally, the pipeline renders V and packages the structured data needed for\nsource localization and future resynchronization",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R3",
+          "alternatives": [
+            {
+              "content_hash": "3736b3e1dc3aa7e9b964db90a1e08f4cb2b8ef9bef95643f41e0ecde506c1336",
+              "filename": "2607.13285v1.pdf",
+              "page_no": 9,
+              "char_start": 476,
+              "char_end": 1627,
+              "quote": "Table 1 Reference-plan localization metrics (%). Predicted implementation sites are compared against independent\nreference plans generated by Opus 4.8 and GPT-5.5 at file and symbol granularity. Metrics are macro-averaged across\nvalid requests; missing outputs and planner errors are excluded. Wrong indicates zero overlap with the reference plan\nat the reported granularity, so lower values are better.\n\nHarness\nLevel\nMetric\nBaseline Handbook\nGap\nBaseline Handbook\nGap\n\nFile\n\nCodex\n\nSymbol\n\nFile\n\nTerminus-2\n\nSymbol\n\nOpus 4.8\nGPT-5.5\n\nRecall\n55.4\n69.7\n+14.3\n49.4\n49.8\n+0.4\nPrecision\n46.1\n60.2\n+14.1\n53.0\n62.2\n+9.2\nF1\n46.6\n61.8\n+15.2\n47.3\n52.3\n+5.0\nWrong ↓\n37.0\n14.8\n-22.2\n21.4\n21.4\n0.0\n\nRecall\n47.1\n65.4\n+18.3\n46.4\n49.1\n+2.7\nPrecision\n38.0\n55.3\n+17.3\n48.4\n60.4\n+12.0\nF1\n38.3\n57.1\n+18.8\n43.8\n51.2\n+7.4\nWrong ↓\n44.4\n18.5\n-25.9\n28.6\n21.4\n-7.2\n\nRecall\n74.7\n83.9\n+9.2\n76.1\n87.5\n+11.4\nPrecision\n74.1\n86.2\n+12.1\n78.3\n93.3\n+15.0\nF1\n74.1\n84.7\n+10.6\n76.5\n89.3\n+12.8\nWrong ↓\n24.1\n13.8\n-10.3\n20.0\n6.7\n-13.3\n\nRecall\n64.7\n76.3\n+11.6\n73.0\n87.5\n+14.5\nPrecision\n65.1\n78.4\n+13.3\n73.9\n93.3\n+19.4\nF1\n64.8\n77.1\n+12.3\n73.0\n89.3\n+16.3\nWrong ↓\n24.1\n13.8\n-10.3\n20.0\n6.7\n-13.3",
+              "migration_match_score": 0.955056
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd37-e52c-7b82-a4e5-151d6563daff",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "multi_hop",
+      "difficulty": 2,
+      "question": "SimpleMem 如何从写入和检索两端提升记忆效率，LoCoMo-10 实验中相较 Mem0 的总耗时和 Average F1 如何变化？",
+      "gold_answer": "写入端先用语义结构化压缩过滤冗余并形成紧凑记忆单元，再用在线语义合成把相关单元实时整合为更高层表示；检索端通过意图感知规划动态调整检索范围，构造更精准且节省 token 的上下文。在 LoCoMo-10 上，相较 Mem0，SimpleMem 总耗时从 1934.3 秒降至 480.9 秒，减少 1453.4 秒（约 75.1%）；Average F1 从 34.20 提升到 43.24，增加 9.04。",
+      "constraints": {
+        "must_include": [
+          "语义结构化压缩",
+          "在线语义合成",
+          "意图感知",
+          "480.9",
+          "43.24"
+        ],
+        "benchmark_review": {
+          "action": "add_equivalent_evidence",
+          "version": "benchmark-v2"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "8752aa223e004ca286995bc1e8cbde8e89e67ad3aeb9ba0266f3ccab3cc11078",
+              "filename": "2601.02553v3.pdf",
+              "page_no": 2,
+              "char_start": 1963,
+              "char_end": 2725,
+              "quote": "In this section, we present SimpleMem, which operates\nthrough a three-stage pipeline (see Figure 2 for the detailed\narchitecture). Specifically, we first describe the Semantic\nStructured Compression, which utilizes implicit semantic\ngating to filter redundant interaction content and reformulate\nraw dialogue streams into compact memory units. Next, we\ndescribe Online Semantic Synthesis, an on-the-fly mecha-\nnism that instantly synthesizes related memory units into\nhigher-level abstract representations, ensuring a compact\nand noise-free memory topology. Finally, we present Intent-\nAware Retrieval Planning, which infers latent search intent\n\n2\n\nto dynamically adjust retrieval scope, constructing precise\nand token-efficient contexts for downstream reasonin",
+              "migration_match_score": 0.998435
+            },
+            {
+              "content_hash": "8752aa223e004ca286995bc1e8cbde8e89e67ad3aeb9ba0266f3ccab3cc11078",
+              "filename": "2601.02553v3.pdf",
+              "page_no": 2,
+              "char_start": 197,
+              "char_end": 1530,
+              "quote": "Performance vs. Efficiency Trade-off. Comparison of\n\nF1 against Token Cost on the LoCoMo benchmark. SimpleMem\nachieves high accuracy with minimal token consumption.\n\nestimate information gain relative to history, preserving only\ncontent with high downstream utility. Retained information\nis reformulated into compact memory units and indexed\njointly using dense semantic embeddings, sparse lexical fea-\ntures, and symbolic metadata. (2) Online Semantic Synthe-\nsis: inspired by biological consolidation and optimized for\nreal-time interaction, we introduce an intra-session process\nthat reorganizes memory on-the-fly. Related memory units\nare synthesized into higher-level abstract representations\nduring the write phase, allowing repetitive or structurally\nsimilar experiences to be denoised and compressed imme-\ndiately. (3) Intent-Aware Retrieval Planning: we employ\na planning-based retrieval strategy that infers latent search\nintent to determine retrieval scope dynamically. The system\nconstructs a precise context by querying multiple indexes\n(symbolic, semantic, lexical) and unifying results through\nID-based deduplication, balancing structural constraints and\nsemantic relevance without complex linear weighting.\n\nOur primary contribution is SimpleMem, an efficient mem-\nory framework grounded in structured semantic compre",
+              "migration_match_score": 0.745145
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "8752aa223e004ca286995bc1e8cbde8e89e67ad3aeb9ba0266f3ccab3cc11078",
+              "filename": "2601.02553v3.pdf",
+              "page_no": 7,
+              "char_start": 1466,
+              "char_end": 1907,
+              "quote": "Table 4. Comparison of construction time, retrieval time, total\n\nexperiment time, and average F1 score across different memory\nsystems (tested on LoCoMo-10 with GPT-4.1-mini; time values\nare reported as per-sample averages on LoCoMo-10).\n\nModel\nConstruction Time\nRetrieval Time\nTotal Time\nAverage F1\n\nA-mem\n5140.5s\n796.7s\n5937.2s\n32.58\nLightmem\n97.8s\n577.1s\n675.9s\n24.63\nMem0\n1350.9s\n583.4s\n1934.3s\n34.20\n\nSimpleMem\n92.6s\n388.3s\n480.9s\n43.24",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd37-e534-7379-9cfc-d8a9474101b0",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "table",
+      "difficulty": 2,
+      "question": "在 LoCoMo-10 与 GPT-4.1-mini 的效率对比中，哪个记忆系统同时做到总耗时最低和 Average F1 最高，具体数值是多少？",
+      "gold_answer": "SimpleMem；总耗时最低，为 480.9 秒，同时 Average F1 最高，为 43.24。",
+      "constraints": {
+        "must_include": [
+          "SimpleMem",
+          "480.9",
+          "43.24"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "8752aa223e004ca286995bc1e8cbde8e89e67ad3aeb9ba0266f3ccab3cc11078",
+              "filename": "2601.02553v3.pdf",
+              "page_no": 7,
+              "char_start": 1466,
+              "char_end": 1907,
+              "quote": "Table 4. Comparison of construction time, retrieval time, total\n\nexperiment time, and average F1 score across different memory\nsystems (tested on LoCoMo-10 with GPT-4.1-mini; time values\nare reported as per-sample averages on LoCoMo-10).\n\nModel\nConstruction Time\nRetrieval Time\nTotal Time\nAverage F1\n\nA-mem\n5140.5s\n796.7s\n5937.2s\n32.58\nLightmem\n97.8s\n577.1s\n675.9s\n24.63\nMem0\n1350.9s\n583.4s\n1934.3s\n34.20\n\nSimpleMem\n92.6s\n388.3s\n480.9s\n43.24",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd37-e53e-7e6e-bcad-3d993fe52e64",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "table",
+      "difficulty": 2,
+      "question": "MSCE 引入模拟人类反馈后，哪个领域的 Pass@1 提升最大，该领域的成本如何变化？",
+      "gold_answer": "Knowledge Work 的 Pass@1 提升最大，从 53.45 增至 67.24，提升 13.79 个百分点；成本从 14.97 增至 16.90，上升 1.93。",
+      "constraints": {
+        "must_include": [
+          "Knowledge Work",
+          "13.79",
+          "1.93"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "82f7f9768a6eb2ee94749b35477998e0db0f64662dd730b1ae70531a6b9d65fd",
+              "filename": "2607.16621v1.pdf",
+              "page_no": 21,
+              "char_start": 0,
+              "char_end": 538,
+              "quote": "Table 7 Eﬀect of LLM-simulated human feedback on EvoAgentBench. C0 denotes MSCE without simulated feedback,\nand C1 denotes MSCE with simulated feedback injected during training. Cost is measured in chars for Math and\nturns for other domains, so cost comparisons should be made within each domain.\n\nDomain\nPass@1 ↑\nCost ↓\n\nC0\nC1\n∆\nC0\nC1\n∆\n\nCode\n61.54 64.10\n+2.56\n1.97\n1.74\n-0.23\nSE\n53.85 61.54\n+7.69\n40.80\n37.71\n-3.09\nKW\n53.45 67.24 +13.79\n14.97\n16.90\n+1.93\nMath\n47.00 47.00\n+0.00\n1140.9 1150.0\n+9.1\nIR\n26.15 27.69\n+1.54\n8.74\n8.40\n-0.34\n\nS",
+              "migration_match_score": 0.994898
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "019ffd37-e548-7c17-9e7c-76b8d0698b19",
+      "dataset_name": "core-dev",
+      "split": "dev",
+      "category": "table",
+      "difficulty": 2,
+      "question": "使用 Harness Handbook 后，Codex 在 Opus 4.8 参考计划下的文件级和符号级 F1、Wrong 分别变化了多少？",
+      "gold_answer": "文件级 F1 从 46.6% 升至 61.8%（+15.2），Wrong 从 37.0% 降至 14.8%（-22.2）；符号级 F1 从 38.3% 升至 57.1%（+18.8），Wrong 从 44.4% 降至 18.5%（-25.9）。",
+      "constraints": {
+        "must_include": [
+          "61.8",
+          "14.8",
+          "57.1",
+          "18.5"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "3736b3e1dc3aa7e9b964db90a1e08f4cb2b8ef9bef95643f41e0ecde506c1336",
+              "filename": "2607.13285v1.pdf",
+              "page_no": 9,
+              "char_start": 476,
+              "char_end": 1627,
+              "quote": "Table 1 Reference-plan localization metrics (%). Predicted implementation sites are compared against independent\nreference plans generated by Opus 4.8 and GPT-5.5 at file and symbol granularity. Metrics are macro-averaged across\nvalid requests; missing outputs and planner errors are excluded. Wrong indicates zero overlap with the reference plan\nat the reported granularity, so lower values are better.\n\nHarness\nLevel\nMetric\nBaseline Handbook\nGap\nBaseline Handbook\nGap\n\nFile\n\nCodex\n\nSymbol\n\nFile\n\nTerminus-2\n\nSymbol\n\nOpus 4.8\nGPT-5.5\n\nRecall\n55.4\n69.7\n+14.3\n49.4\n49.8\n+0.4\nPrecision\n46.1\n60.2\n+14.1\n53.0\n62.2\n+9.2\nF1\n46.6\n61.8\n+15.2\n47.3\n52.3\n+5.0\nWrong ↓\n37.0\n14.8\n-22.2\n21.4\n21.4\n0.0\n\nRecall\n47.1\n65.4\n+18.3\n46.4\n49.1\n+2.7\nPrecision\n38.0\n55.3\n+17.3\n48.4\n60.4\n+12.0\nF1\n38.3\n57.1\n+18.8\n43.8\n51.2\n+7.4\nWrong ↓\n44.4\n18.5\n-25.9\n28.6\n21.4\n-7.2\n\nRecall\n74.7\n83.9\n+9.2\n76.1\n87.5\n+11.4\nPrecision\n74.1\n86.2\n+12.1\n78.3\n93.3\n+15.0\nF1\n74.1\n84.7\n+10.6\n76.5\n89.3\n+12.8\nWrong ↓\n24.1\n13.8\n-10.3\n20.0\n6.7\n-13.3\n\nRecall\n64.7\n76.3\n+11.6\n73.0\n87.5\n+14.5\nPrecision\n65.1\n78.4\n+13.3\n73.9\n93.3\n+19.4\nF1\n64.8\n77.1\n+12.3\n73.0\n89.3\n+16.3\nWrong ↓\n24.1\n13.8\n-10.3\n20.0\n6.7\n-13.3",
+              "migration_match_score": 0.955056
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "002c6594-cee6-5046-9410-d47ec73ece1a",
+      "dataset_name": "core-dev-handwritten-en-v1",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 2,
+      "question": "Which benchmark does the Anchored Self-Play paper introduce, and what does it deliberately hold fixed?",
+      "gold_answer": "It introduces BUGSOURCEBENCH, a benchmark for cross-source repair generalization spanning human-authored bugs, human edits of LM-generated bugs, and LM-generated bugs from weaker and stronger code models. Crucially it holds the repair task fixed and varies only the bug source.",
+      "constraints": {
+        "must_include": [
+          "BUGSOURCEBENCH",
+          "bug source"
+        ],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "s4",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": [
+          "SWE-bench"
+        ]
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "2d2e2c329b6df9a297c92fcc80893100772a5d61088abfa62f673035a9563490",
+              "filename": "2607.03523v1.pdf",
+              "page_no": 1,
+              "char_start": 3986,
+              "char_end": 4221,
+              "quote": "BUGSOURCEBENCH therefore spans human-authored bugs,\nhuman edits of LM-generated bugs, and LM-generated bugs\nfrom weaker and stronger code models. Crucially, BUG-\nSOURCEBENCH holds the repair task fixed while varying\nonly the bug source",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "24b880a2-2ef3-50b9-8369-789760dc85fd",
+      "dataset_name": "core-dev-handwritten-en-v1",
+      "split": "dev",
+      "category": "multi_hop",
+      "difficulty": 3,
+      "question": "How much does CODESKILL improve relative to each reported baseline, and what gain does Anchored Self-Play achieve versus its unanchored counterpart?",
+      "gold_answer": "CODESKILL improves average pass rate by 9.69 over the no-skill baseline and by 4.01 over the strongest prompt-based skill-extraction or memory-construction baseline, roughly 33% and 11% relative. Anchored Self-Play improves average fix rate by 24% relative, or +7.0 pp absolute, over standard self-play, with +11 pp absolute on LM-generated bugs and +3.4 pp absolute on human-originated bugs.",
+      "constraints": {
+        "must_include": [
+          "9.69",
+          "7.0 pp"
+        ],
+        "benchmark_review": {
+          "action": "rewrite_question",
+          "version": "benchmark-v2"
+        },
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "m4",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "73c48c5c919e1e60e078f1c07fbcd407ac3d0deba0aa007eff62b83a8b70ac4d",
+              "filename": "2605.25430v1.pdf",
+              "page_no": 2,
+              "char_start": 922,
+              "char_end": 1183,
+              "quote": "Across\nthese benchmarks, CODESKILL improves average\npass rate by 9.69 over the no-skill baseline and\nby 4.01 over the strongest prompt-based skill ex-\ntraction or memory-construction baseline, corre-\nsponding to relative gains of about 33% and 11%,\nrespectively",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "2d2e2c329b6df9a297c92fcc80893100772a5d61088abfa62f673035a9563490",
+              "filename": "2607.03523v1.pdf",
+              "page_no": 2,
+              "char_start": 1118,
+              "char_end": 1375,
+              "quote": "ASP achieves the best overall fix rate, improving\naverage fix rate by 24% relative / +7.0 pp absolute over\nstandard self-play, with gains on both LM-generated bugs\n(100% relative / +11 pp absolute) and human-originated\nbugs (7.1% relative / +3.4 pp absolute",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "4b392c1d-28a0-573b-9589-8719a0dfd2f8",
+      "dataset_name": "core-dev-handwritten-en-v1",
+      "split": "dev",
+      "category": "unanswerable",
+      "difficulty": 2,
+      "question": "What accuracy does CODESKILL report on the MMLU benchmark?",
+      "gold_answer": "None",
+      "constraints": {
+        "must_include": [],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "u4",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": [
+          "MMLU"
+        ]
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "4edc1f15-4961-5e37-8f27-39e3699d8548",
+      "dataset_name": "core-dev-handwritten-en-v1",
+      "split": "dev",
+      "category": "multi_hop",
+      "difficulty": 3,
+      "question": "Both the Self-play SWE-RL paper and Socratic-SWE criticise earlier synthetic-bug pipelines. What limitation does each one name?",
+      "gold_answer": "Self-play SWE-RL says efforts like SWE-smith and BugPilot hold stronger human-data assumptions, such as access to test suites and parsers, depend on teacher models for distillation, and use static bug generation pipelines that ignore the model being trained. Socratic-SWE names a related but distinct problem: existing synthetic data methods create tasks through fixed mutation or bug-injection procedures, so the resulting distribution is largely independent of the agent's own weaknesses and training progress.",
+      "constraints": {
+        "must_include": [
+          "static",
+          "fixed mutation"
+        ],
+        "benchmark_review": {
+          "action": "add_equivalent_evidence",
+          "version": "benchmark-v2"
+        },
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "m2",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "dccc8543a0e603592b952e174f638299e73fae107bfc4273106631c34701c9bf",
+              "filename": "2512.18552v3.pdf",
+              "page_no": 1,
+              "char_start": 3624,
+              "char_end": 4138,
+              "quote": "Although recent efforts such as SWE-smith (Yang et al.,\n2026a) and BugPilot (Sonwane et al., 2025) explore the\nuse of LLMs for large-scale synthetic bug generation, these\nmethods often hold stronger human-data assumptions, such\nas access to test suites and parsers, thus suffering the\nsame aforementioned scalability limitations, and depend\non teacher models for distillation. In addition, such existing\nmethods typically rely on static bug generation pipelines\nwithout any consideration of the model being trained",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "12fa1d830c06770d9a9e24e52226317fed810d09de311138a46514f8077ab72f",
+              "filename": "2606.07412v1.pdf",
+              "page_no": 1,
+              "char_start": 529,
+              "char_end": 742,
+              "quote": "Existing synthetic data methods typically create tasks through fixed mutation or bug-injection\nprocedures, making the resulting distributions largely independent of the agent’s own weaknesses\nand training progress",
+              "migration_match_score": 1.0
+            },
+            {
+              "content_hash": "12fa1d830c06770d9a9e24e52226317fed810d09de311138a46514f8077ab72f",
+              "filename": "2606.07412v1.pdf",
+              "page_no": 1,
+              "char_start": 1858,
+              "char_end": 2934,
+              "quote": "Software engineering is one of the most impactful application domains for large language models (LLMs),\nand the capability of coding agents has emerged as a critical measure of real-world intelligence.\nUnlike\nmathematical reasoning or short-form code generation, SWE tasks require agents to complete a full loop of\nbug localization, repair, and verification through long-horizon interaction with real code repositories, making\nSWE a natural setting for training capable language agents in realistic environments. Reinforcement learning\n(RL) has shown strong promise in this setting: SWE-RL [1] and SWE-Gym [2] demonstrate substantial gains\n\nby embedding agents in executable repository environments. However, RL training fundamentally depends\non large quantities of high-quality tasks, and such data remains scarce in the SWE domain. Existing synthetic\npipelines attempt to alleviate this bottleneck through AST-level mutation, LM-guided rewriting, or learned\nbug injection [3, 4], but they operate independently of the agent’s own training experience, resulting in largely\n\n1",
+              "migration_match_score": 0.957412
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "577513d1-07ac-5c98-8ba3-c080bef8c952",
+      "dataset_name": "core-dev-handwritten-en-v1",
+      "split": "dev",
+      "category": "global",
+      "difficulty": 3,
+      "question": "Anchored Self-Play and Socratic-SWE both say that verification alone is not enough to keep generated tasks useful. What does each say verification misses?",
+      "gold_answer": "Anchored Self-Play says unit tests verify functional behavior but not realism: many edits break tests, yet few resemble bugs seen in practice, so an unconstrained generator drifts toward difficult but unrealistic bugs and degrades on real-world repair. Socratic-SWE says traces are reduced to a reward signal and nothing else: GRPO collapses a trajectory to a scalar and process-level methods only assign finer credit, so the information about where the agent actually fails never flows back into building the next tasks.",
+      "constraints": {
+        "must_include": [
+          "realism",
+          "reward"
+        ],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "g5",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "2d2e2c329b6df9a297c92fcc80893100772a5d61088abfa62f673035a9563490",
+              "filename": "2607.03523v1.pdf",
+              "page_no": 1,
+              "char_start": 3009,
+              "char_end": 3319,
+              "quote": "Unit tests verify functional behavior, but they do not\nverify realism: many edits can break tests, but few resemble\nbugs encountered in practice. As training progresses, the\ngenerator can drift toward difficult but unrealistic bugs, im-\nproving repair on self-generated tasks while degrading on\nreal-world ones",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "12fa1d830c06770d9a9e24e52226317fed810d09de311138a46514f8077ab72f",
+              "filename": "2606.07412v1.pdf",
+              "page_no": 2,
+              "char_start": 1328,
+              "char_end": 1582,
+              "quote": "Yet existing methods use traces\nprimarily for reward extraction or credit assignment. GRPO [5] reduces a trajectory to a scalar reward, while\nprocess-level approaches such as GiGPO [6], iStar [7], and process reward models [8] assign finer-grained credit",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "674c315e-ea8b-5333-b993-4ea15d56cad6",
+      "dataset_name": "core-dev-handwritten-en-v1",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 2,
+      "question": "Which model is CODESKILL instantiated with, and which three benchmarks is it evaluated on?",
+      "gold_answer": "CODESKILL is instantiated with Qwen3.5-4B and evaluated on EnvBench, SWE-Bench Verified and Terminal-Bench 2.",
+      "constraints": {
+        "must_include": [
+          "Qwen3.5-4B",
+          "EnvBench"
+        ],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "s5",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": [
+          "GPT-4"
+        ]
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "73c48c5c919e1e60e078f1c07fbcd407ac3d0deba0aa007eff62b83a8b70ac4d",
+              "filename": "2605.25430v1.pdf",
+              "page_no": 2,
+              "char_start": 790,
+              "char_end": 920,
+              "quote": "We validate CODESKILL by instantiating it with\nQwen3.5-4B and evaluating it on EnvBench, SWE-\nBench Verified, and Terminal-Bench 2",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "7f03fc76-b952-5633-9b8c-b2bcddeded4c",
+      "dataset_name": "core-dev-handwritten-en-v1",
+      "split": "dev",
+      "category": "temporal",
+      "difficulty": 3,
+      "question": "How does Socratic-SWE turn a one-shot synthetic-task pipeline into an adaptive training loop?",
+      "gold_answer": "The traditional paradigm is an open-loop, single-pass pipeline: static rules synthesize a fixed task supply, and evaluation traces are only used post hoc for rewards rather than fed back into task construction, so the supply stays scarce, model-agnostic and non-adaptive. Socratic-SWE closes the loop: it distills grounded skills from solving traces to guide repository-grounded task construction, and feeds rewards into subsequent skill and task updates.",
+      "constraints": {
+        "must_include": [
+          "open-loop",
+          "closes the loop"
+        ],
+        "benchmark_review": {
+          "action": "fix_temporal_snapshot",
+          "version": "benchmark-v2"
+        },
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "t6",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": "2026-08-14 12:00:00+00:00",
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "12fa1d830c06770d9a9e24e52226317fed810d09de311138a46514f8077ab72f",
+              "filename": "2606.07412v1.pdf",
+              "page_no": 2,
+              "char_start": 311,
+              "char_end": 832,
+              "quote": "Figure 1\nComparison of SWE data synthesis paradigms. (a) Traditional: an open-loop, single-pass pipeline where\nstatic rules synthesize a fixed task supply. Evaluation traces are used only post hoc for rewards, not fed back into\ntask construction, leaving the supply scarce, model-agnostic, and non-adaptive.\n(b) Socratic-SWE: a closed-loop,\nself-evolving process that distills grounded skills from solving traces to guide repository-grounded task construction,\nwhile feeding rewards into subsequent skill and task updates",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "8e7cc6a9-bf4c-5f9e-a66f-33d284d71536",
+      "dataset_name": "core-dev-handwritten-en-v1",
+      "split": "dev",
+      "category": "temporal",
+      "difficulty": 3,
+      "question": "Self-play SWE-RL is described as an earlier open RL approach. Which limitation does Socratic-SWE argue remains after that work?",
+      "gold_answer": "Self-play SWE-RL credits SWE-RL (Wei et al., 2025) as the first open RL method to improve LLMs on software engineering tasks using rule-based rewards and open software data. Socratic-SWE argues that this line still leaves task supply as the binding constraint: existing synthetic data methods create tasks through fixed mutation or bug-injection procedures, so the distribution stays largely independent of the agent's own weaknesses and training progress.",
+      "constraints": {
+        "must_include": [
+          "SWE-RL",
+          "fixed mutation"
+        ],
+        "benchmark_review": {
+          "action": "fix_temporal_snapshot",
+          "version": "benchmark-v2"
+        },
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "t3",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": "2026-08-14 12:00:00+00:00",
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "dccc8543a0e603592b952e174f638299e73fae107bfc4273106631c34701c9bf",
+              "filename": "2512.18552v3.pdf",
+              "page_no": 1,
+              "char_start": 2381,
+              "char_end": 2531,
+              "quote": "SWE-\nRL (Wei et al., 2025) is the first open RL method to improve\nLLMs on software engineering tasks using rule-based re-\nwards and open software data",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "12fa1d830c06770d9a9e24e52226317fed810d09de311138a46514f8077ab72f",
+              "filename": "2606.07412v1.pdf",
+              "page_no": 1,
+              "char_start": 529,
+              "char_end": 742,
+              "quote": "Existing synthetic data methods typically create tasks through fixed mutation or bug-injection\nprocedures, making the resulting distributions largely independent of the agent’s own weaknesses\nand training progress",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "90e184ee-f01f-572f-b8da-6d94edbf2bc5",
+      "dataset_name": "core-dev-handwritten-en-v1",
+      "split": "dev",
+      "category": "multi_hop",
+      "difficulty": 3,
+      "question": "AutoGen and CODESKILL both make something reusable across tasks, but at different layers of the stack. What is the reusable unit in each?",
+      "gold_answer": "In AutoGen the reusable unit is the agent itself: an open-source framework where customizable, conversable agents that can run on LLMs, tools or humans converse with each other to accomplish tasks. In CODESKILL the reusable unit is distilled experience: coding-agent trajectories are turned into multi-granularity procedural skills held in a skill bank, with extraction and maintenance treated as a learnable management policy rather than fixed prompts and heuristics.",
+      "constraints": {
+        "must_include": [
+          "agent",
+          "skill bank"
+        ],
+        "benchmark_review": {
+          "action": "add_equivalent_evidence",
+          "version": "benchmark-v2"
+        },
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "m5",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "fcf8b1acae6b1bd6f14c92463caa9726828bf998234ba9f10c2411087897c96b",
+              "filename": "2308.08155v2.pdf",
+              "page_no": 1,
+              "char_start": 1381,
+              "char_end": 1550,
+              "quote": "stract\n\nAutoGen2 is an open-source framework that allows developers to build LLM ap-\nplications via multiple agents that can converse with each other to accomplish\ntasks",
+              "migration_match_score": 0.957447
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "73c48c5c919e1e60e078f1c07fbcd407ac3d0deba0aa007eff62b83a8b70ac4d",
+              "filename": "2605.25430v1.pdf",
+              "page_no": 1,
+              "char_start": 576,
+              "char_end": 715,
+              "quote": "We propose CODESKILL,\nan LLM-based framework that reformulates\nskill extraction and skill-bank maintenance as\na learnable management policy",
+              "migration_match_score": 1.0
+            },
+            {
+              "content_hash": "73c48c5c919e1e60e078f1c07fbcd407ac3d0deba0aa007eff62b83a8b70ac4d",
+              "filename": "2605.25430v1.pdf",
+              "page_no": 8,
+              "char_start": 3339,
+              "char_end": 4046,
+              "quote": "We presented CODESKILL, an LLM-based frame-\nwork that learns to extract, evolve, and main-\ntain reusable skills from coding-agent trajecto-\nries. CODESKILL formulates skill management as\na learnable policy and optimizes it with verifi-\nable downstream feedback and rubric-based skill-\nquality judgments by reinforcement learning. Ex-\nperiments on EnvBench, SWE-Bench Verified, and\nTerminal-Bench 2 show that learned skill manage-\nment improves over no-skill execution, prompt-\nbased skill management, and memory-based base-\nlines. These results highlight learned procedural-\nmemory management as a promising direction\nfor coding agents that accumulate and reuse long-\nhorizon software-engineering experience",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "9b8dd40e-78b1-5cfa-9ffa-d600471b72cd",
+      "dataset_name": "core-dev-handwritten-en-v1",
+      "split": "dev",
+      "category": "multi_hop",
+      "difficulty": 3,
+      "question": "Anchored Self-Play and Socratic-SWE both try to stop synthetic SWE data from drifting away from what the agent actually needs. What signal does each one anchor on?",
+      "gold_answer": "Anchored Self-Play anchors on a small reference set sampled from the target bug sources, using it twice: a code-embedding similarity reward steers the generator toward target-like bugs, and reference-bug mixing keeps realistic bugs in front of the fixer throughout training. Socratic-SWE anchors on the agent's own history instead: it distills grounded skills from past solving traces and uses them to construct the next round of repository-grounded tasks, feeding rewards back into later skill and task updates.",
+      "constraints": {
+        "must_include": [
+          "reference set",
+          "traces"
+        ],
+        "benchmark_review": {
+          "action": "add_equivalent_evidence",
+          "version": "benchmark-v2"
+        },
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "m1",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "2d2e2c329b6df9a297c92fcc80893100772a5d61088abfa62f673035a9563490",
+              "filename": "2607.03523v1.pdf",
+              "page_no": 2,
+              "char_start": 831,
+              "char_end": 1051,
+              "quote": "ASP uses this reference set in two complemen-\ntary ways: a code-embedding similarity reward guides the\ngenerator toward target-like bugs, and reference-bug mix-\ning exposes the fixer to realistic bugs throughout training",
+              "migration_match_score": 1.0
+            },
+            {
+              "content_hash": "2d2e2c329b6df9a297c92fcc80893100772a5d61088abfa62f673035a9563490",
+              "filename": "2607.03523v1.pdf",
+              "page_no": 4,
+              "char_start": 513,
+              "char_end": 859,
+              "quote": "BUGSOURCEBENCH lets us test whether synthetic bug–fix\ntraining improves repair across realistic bug sources, rather\nthan only on the distribution induced by a particular gener-\nator. We next describe generator–fixer self-play and then\nintroduce ANCHORED SELF-PLAY (ASP), which anchors\nself-play to a small reference set to reduce bug-source drift",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "12fa1d830c06770d9a9e24e52226317fed810d09de311138a46514f8077ab72f",
+              "filename": "2606.07412v1.pdf",
+              "page_no": 2,
+              "char_start": 679,
+              "char_end": 832,
+              "quote": "distills grounded skills from solving traces to guide repository-grounded task construction,\nwhile feeding rewards into subsequent skill and task updates",
+              "migration_match_score": 1.0
+            },
+            {
+              "content_hash": "12fa1d830c06770d9a9e24e52226317fed810d09de311138a46514f8077ab72f",
+              "filename": "2606.07412v1.pdf",
+              "page_no": 10,
+              "char_start": 1187,
+              "char_end": 2064,
+              "quote": "We presented Socratic-SWE, a practical closed-loop framework for self-evolving software engineering agents\n\nunder limited access to high-quality SWE task data. By reusing historical solving traces as training signal\nand distilling them into an Agent Skill Registry, Socratic-SWE generates targeted repair tasks that address\ncapability gaps and track the model’s frontier. Across four benchmarks, it gains +7.80 points on SWE-bench\nVerified and +4.50 points on Terminal-Bench 2.0 after three iterations, outperforming five self-play baselines\nunder identical compute budgets.\nAnalyses show that skill-guided curricula delay saturation and better\nexploit finite repository pools, while ablations confirm the roles of the skill registry, trace distillation, and\nGDPO. Future work may explore dynamic repository augmentation, cross-domain skill transfer, and online\nskill discovery",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "a0bc1571-aa71-5e2b-8c6d-0889dfad9302",
+      "dataset_name": "core-dev-handwritten-en-v1",
+      "split": "dev",
+      "category": "unanswerable",
+      "difficulty": 2,
+      "question": "Under what open-source license is the BUGSOURCEBENCH benchmark released?",
+      "gold_answer": "None",
+      "constraints": {
+        "must_include": [],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "u3",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": [
+          "Apache",
+          "MIT"
+        ]
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "b269f254-0ba4-5d44-a431-4f846c90f92d",
+      "dataset_name": "core-dev-handwritten-en-v1",
+      "split": "dev",
+      "category": "global",
+      "difficulty": 3,
+      "question": "Self-play SWE-RL and AutoGen both remove a human bottleneck, but a different one. What does each remove?",
+      "gold_answer": "Self-play SWE-RL removes the human data bottleneck: it needs only sandboxed repositories with source code and dependencies, no human-labeled issues or test commands, and trains a single LLM agent by self-play grounded in real codebases. AutoGen removes the human orchestration bottleneck: it is an open-source framework in which customizable, conversable agents, backed by LLMs, tools or humans, converse with each other to accomplish tasks, so multi-agent workflows do not have to be hand-wired.",
+      "constraints": {
+        "must_include": [
+          "sandboxed repositories",
+          "conversable"
+        ],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "g3",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "dccc8543a0e603592b952e174f638299e73fae107bfc4273106631c34701c9bf",
+              "filename": "2512.18552v3.pdf",
+              "page_no": 1,
+              "char_start": 549,
+              "char_end": 688,
+              "quote": "SSR requires only ac-\ncess to sandboxed repositories with source code\nand dependencies, no need for human-labeled is-\nsues or test commands",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "fcf8b1acae6b1bd6f14c92463caa9726828bf998234ba9f10c2411087897c96b",
+              "filename": "2308.08155v2.pdf",
+              "page_no": 1,
+              "char_start": 1381,
+              "char_end": 1550,
+              "quote": "stract\n\nAutoGen2 is an open-source framework that allows developers to build LLM ap-\nplications via multiple agents that can converse with each other to accomplish\ntasks",
+              "migration_match_score": 0.957447
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "dd1c722f-0ea6-5bf3-9d8b-e4be95bd4012",
+      "dataset_name": "core-dev-handwritten-en-v1",
+      "split": "dev",
+      "category": "global",
+      "difficulty": 3,
+      "question": "Across the self-evolving coding-agent papers in this library, what common weakness of hand-built pipelines do they converge on?",
+      "gold_answer": "They converge on the same diagnosis: hand-built pipelines are fixed in advance and therefore blind to the agent being trained. CODESKILL says existing skill construction and maintenance rely on fixed prompts and heuristic update rules. Socratic-SWE says fixed mutation or bug-injection procedures make the task distribution independent of the agent's weaknesses and progress. Self-play SWE-RL says static bug generation pipelines ignore the model being trained and so cannot produce maximally informative examples as the agent improves.",
+      "constraints": {
+        "must_include": [
+          "fixed prompts",
+          "static"
+        ],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "g1",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "73c48c5c919e1e60e078f1c07fbcd407ac3d0deba0aa007eff62b83a8b70ac4d",
+              "filename": "2605.25430v1.pdf",
+              "page_no": 1,
+              "char_start": 349,
+              "char_end": 574,
+              "quote": "existing skill construc-\ntion and maintenance methods often rely on\nfixed prompts and heuristic update rules, leav-\ning it unclear how knowledge should be se-\nlected, abstracted, and maintained to best serve\ndownstream agents",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "12fa1d830c06770d9a9e24e52226317fed810d09de311138a46514f8077ab72f",
+              "filename": "2606.07412v1.pdf",
+              "page_no": 1,
+              "char_start": 529,
+              "char_end": 742,
+              "quote": "Existing synthetic data methods typically create tasks through fixed mutation or bug-injection\nprocedures, making the resulting distributions largely independent of the agent’s own weaknesses\nand training progress",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R3",
+          "alternatives": [
+            {
+              "content_hash": "dccc8543a0e603592b952e174f638299e73fae107bfc4273106631c34701c9bf",
+              "filename": "2512.18552v3.pdf",
+              "page_no": 1,
+              "char_start": 4014,
+              "char_end": 4229,
+              "quote": "such existing\nmethods typically rely on static bug generation pipelines\nwithout any consideration of the model being trained, limit-\ning their ability to generate maximally informative examples\nas the agent improves",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "08715a81-df61-5e20-ba57-c3fb59cadbdb",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "multi_hop",
+      "difficulty": 3,
+      "question": "补遗里 Skill 的召回与注入策略，和 TencentDB Agent Memory 决定「给哪个 Agent 什么资产」的机制，各自是怎么做的？",
+      "gold_answer": "补遗给的是四层召回策略，从弱到强：显式指定、任务描述匹配、metadata 检索、harness 路由控制，核心原则是按需加载不全量灌，用分层披露（metadata → summary → full）防上下文污染。TencentDB 走的是权限路线：Chat Memory、Skill、Wiki、CodeGraph 统一登记为 Memory Asset，Memory Hub 用 Fixed Binding 加 ACL，先按 Team、User、Agent 和可见性缩小权限范围，再按当前问题召回。",
+      "constraints": {
+        "must_include": [
+          "harness",
+          "ACL"
+        ],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "m3",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "da3a7bf4121b0047ecaafae43c63e24612cfe5a28549670bb8f4096d2201ce06",
+              "filename": "11-近三个月新考点补遗_副本.md",
+              "page_no": null,
+              "char_start": 1058,
+              "char_end": 1178,
+              "quote": "召回与注入四层策略**:显式指定(最稳)→ 任务描述匹配 → metadata 检索 → harness 路由控制(生产级)。核心原则:**按需加载,不全量灌**——分层披露(metadata → summary → full)防上下文污染",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "2f322ae0f3aff01dd657a8010951c577c0ee3d8e8ef983d395d4df5e806bbed7",
+              "filename": "Tecent-Agent-Memory_副本.md",
+              "page_no": null,
+              "char_start": 7300,
+              "char_end": 7395,
+              "quote": "Memory Hub 通过 **Fixed Binding + ACL** 决定某个 Agent 能带走哪些资产：先按 Team、User、Agent 和可见性缩小权限范围，再按当前问题召回",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "1058e7c8-fe9a-5d52-82d9-da5962cdbecf",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "global",
+      "difficulty": 3,
+      "question": "库里这两份 2026 年 7 月的实战笔记，分别把什么当成必须主动治理、不能信任框架自动算对的资源？",
+      "gold_answer": "DGX Spark 那篇治理的是内存：统一内存下 vLLM 的显存记账假设失效，作者用 drop_caches、swap 兜底和 watchdog 三件套把内存当成需要主动治理的资源，而不是信任框架自己算得对。补遗治理的是上下文与 Skill 质量：按需加载不全量灌、分层披露防上下文污染，并把误召回率列为最危险的指标，因为错的 Skill 比没有 Skill 更糟。",
+      "constraints": {
+        "must_include": [
+          "watchdog",
+          "误召回率"
+        ],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "g2",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "f113961b8d2590455d5264893fa74cfc70f68839dab95ee1e065d785eb0a8b1d",
+              "filename": "15-答案库-DGXSpark部署与vLLM原理_副本.md",
+              "page_no": null,
+              "char_start": 3419,
+              "char_end": 3488,
+              "quote": "我的解法是把内存当成需要主动治理的资源:drop_caches + swap 兜底 + watchdog 三件套,而不是信任框架自己算得对",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "da3a7bf4121b0047ecaafae43c63e24612cfe5a28549670bb8f4096d2201ce06",
+              "filename": "11-近三个月新考点补遗_副本.md",
+              "page_no": null,
+              "char_start": 1183,
+              "char_end": 1273,
+              "quote": "评估指标**:任务成功率、工具调用成功率、输出稳定性、人工修正率、token 成本、Skill 命中准确率、**误召回率(最危险的指标——错的 Skill 比没有 Skill 更糟",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "25dd6eb4-b70b-5526-be3a-970e14317188",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "table",
+      "difficulty": 2,
+      "question": "补遗 §7 的近一个月动态表里，07-03 这一行记录了什么事件？给的面试点评是什么？",
+      "gold_answer": "07-03 这一行记录 Anthropic 发布 Claude Sonnet 5，Google 同日发布 Gemini Omni Flash；点评是新一代「中杯」竞速，也就是生产主力档迭代最快。",
+      "constraints": {
+        "must_include": [
+          "Sonnet 5"
+        ],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "tb2",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "da3a7bf4121b0047ecaafae43c63e24612cfe5a28549670bb8f4096d2201ce06",
+              "filename": "11-近三个月新考点补遗_副本.md",
+              "page_no": null,
+              "char_start": 4424,
+              "char_end": 4529,
+              "quote": "07-03 | Anthropic 发 **Claude Sonnet 5**;Google 同日发 Gemini Omni Flash | 新一代\"中杯\"竞速——生产主力档(我们这种实时链路用的档位)迭代最快",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "2b930285-462d-55e9-a39f-05b9f93cf7d6",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 2,
+      "question": "TencentDB Agent Memory 把记忆分成哪几层？每层分别保存什么、主要用途是什么？",
+      "gold_answer": "四层：L0 Conversation 存原始对话与完整上下文，用于核对原话、时间和来源；L1 Atom 存从对话提取的事实、偏好、约束与事件，用于精确召回可执行信息；L2 Scenario 存围绕项目或场景组织的知识块，用于快速恢复一个工作场景；L3 Core/Persona 存长期画像、稳定模式与高层认知，让 Agent 迅速进入用户和团队语境。",
+      "constraints": {
+        "must_include": [
+          "L0",
+          "L3"
+        ],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "s3",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "2f322ae0f3aff01dd657a8010951c577c0ee3d8e8ef983d395d4df5e806bbed7",
+              "filename": "Tecent-Agent-Memory_副本.md",
+              "page_no": null,
+              "char_start": 6896,
+              "char_end": 7101,
+              "quote": "L0 Conversation** | 原始对话与完整上下文 | 核对原话、时间和来源 |\n| **L1 Atom** | 从对话提取的事实、偏好、约束与事件 | 精确召回可执行信息 |\n| **L2 Scenario** | 围绕项目或场景组织的知识块 | 快速恢复一个工作场景 |\n| **L3 Core / Persona** | 长期画像、稳定模式与高层认知 | 让 Agent 迅速进入用户和团队语境",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "2fb9c356-2467-568b-b738-c58d2ecd67a1",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "global",
+      "difficulty": 3,
+      "question": "库里这两份笔记在「不要全量灌」这件事上，各自落到了哪一层？",
+      "gold_answer": "DGX Spark 那篇落在显存层：1M 上下文不是靠内存堆出来的，而是靠 MLA 把 KV 压成潜向量再叠加 4bit 量化两级压缩，量化在这里是能不能跑起来的必要条件而不是可选项。TencentDB Agent Memory 落在上下文层：知识不整库注入，文档做成可下钻的 Wiki、代码做成 CodeGraph，Agent 先用 /v3/tools/list 发现能力再用 /v3/tools/call 按需读取，平时不进上下文。",
+      "constraints": {
+        "must_include": [
+          "MLA",
+          "CodeGraph"
+        ],
+        "benchmark_review": {
+          "action": "split_cross_block_span",
+          "version": "benchmark-v2"
+        },
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "g6",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "f113961b8d2590455d5264893fa74cfc70f68839dab95ee1e065d785eb0a8b1d",
+              "filename": "15-答案库-DGXSpark部署与vLLM原理_副本.md",
+              "page_no": null,
+              "char_start": 4238,
+              "char_end": 4358,
+              "quote": "1M 上下文不是靠内存大堆出来的,是靠 **MLA 把 KV 压成潜向量 + 4bit 量化 KV** 两级压缩——不然 1M token 的 KV cache 谁也装不下。量化在这里不是'为了省显存的可选项',是'能不能跑起来'的必要条件",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "2f322ae0f3aff01dd657a8010951c577c0ee3d8e8ef983d395d4df5e806bbed7",
+              "filename": "Tecent-Agent-Memory_副本.md",
+              "page_no": null,
+              "char_start": 7472,
+              "char_end": 7592,
+              "quote": "文档被整理为可搜索、可沿链接下钻的 Wiki；代码库被索引为包含文件、符号和调用关系的 CodeGraph。Agent 先通过 `/v3/tools/list` 发现能力，再用 `/v3/tools/call` 读取相关页面、源码或影响路径",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R3",
+          "alternatives": [
+            {
+              "content_hash": "2f322ae0f3aff01dd657a8010951c577c0ee3d8e8ef983d395d4df5e806bbed7",
+              "filename": "Tecent-Agent-Memory_副本.md",
+              "page_no": null,
+              "char_start": 7595,
+              "char_end": 7634,
+              "quote": "这让文档和代码也成为记忆，但它们平时只是可用的工具，只有真正需要时才进入上下文",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "559ef21f-5626-5010-b7f6-2834c1dac450",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "unanswerable",
+      "difficulty": 2,
+      "question": "TencentDB Agent Memory 企业版的年度授权费是多少？",
+      "gold_answer": "None",
+      "constraints": {
+        "must_include": [],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "u2",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": [
+          "年度授权费"
+        ]
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "6caf8d68-0497-57d2-8c09-be81e4d12b14",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "temporal",
+      "difficulty": 3,
+      "question": "库里 AutoGen 的论文把它介绍成一个独立框架；相比之下，到 2026 年这个框架的状态发生了什么变化？",
+      "gold_answer": "AutoGen 论文把 AutoGen 描述为一个开源的多智能体对话框架，开发者用可对话、可定制的 agent 构建 LLM 应用。但到 2026-04-03，Semantic Kernel 和 AutoGen 两个都已被合并进 Microsoft Agent Framework（MAF）1.0，这是微软重整 Azure agent 生态的信号；此时再把 AutoGen 当现役独立选项就暴露信息过时。",
+      "constraints": {
+        "must_include": [
+          "MAF",
+          "2026-04-03"
+        ],
+        "benchmark_review": {
+          "action": "fix_temporal_snapshot",
+          "version": "benchmark-v2"
+        },
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "t1",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": "2026-08-14 12:00:00+00:00",
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "fcf8b1acae6b1bd6f14c92463caa9726828bf998234ba9f10c2411087897c96b",
+              "filename": "2308.08155v2.pdf",
+              "page_no": 1,
+              "char_start": 1381,
+              "char_end": 1550,
+              "quote": "stract\n\nAutoGen2 is an open-source framework that allows developers to build LLM ap-\nplications via multiple agents that can converse with each other to accomplish\ntasks",
+              "migration_match_score": 0.957447
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "da3a7bf4121b0047ecaafae43c63e24612cfe5a28549670bb8f4096d2201ce06",
+              "filename": "11-近三个月新考点补遗_副本.md",
+              "page_no": null,
+              "char_start": 2197,
+              "char_end": 2341,
+              "quote": "Semantic Kernel 和 AutoGen 被合并进 Microsoft Agent Framework(MAF)1.0**(2026-04-03)——注意是**两个都并了**,微软重整 Azure agent 生态的信号;再把 SK/AutoGen 当现役独立选项就暴露信息过时",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "8efe8cfa-b2a0-5479-8d93-d303427dac86",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "temporal",
+      "difficulty": 2,
+      "question": "补遗 §3 要求背哪些框架格局的增量才不会答出旧地图？OpenAI Agents SDK 这半年发生了什么变化？",
+      "gold_answer": "§3 记的是 2026 上半年框架格局的增量补丁，背它是为了防止答出 2025 年的旧地图。其中 OpenAI Agents SDK 半年内从 0.1 涨到 0.17.x 且保持周更，支持沙箱执行、RealtimeAgent 和 100+ LLM，已经从贴 OpenAI 生态的轻量选项长成通用选项。",
+      "constraints": {
+        "must_include": [
+          "0.17",
+          "旧地图"
+        ],
+        "benchmark_review": {
+          "action": "fix_temporal_snapshot",
+          "version": "benchmark-v2"
+        },
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "t5",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": "2026-08-14 12:00:00+00:00",
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "da3a7bf4121b0047ecaafae43c63e24612cfe5a28549670bb8f4096d2201ce06",
+              "filename": "11-近三个月新考点补遗_副本.md",
+              "page_no": null,
+              "char_start": 2168,
+              "char_end": 2190,
+              "quote": "背这几条增量,防止答出 2025 年的旧地图",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "da3a7bf4121b0047ecaafae43c63e24612cfe5a28549670bb8f4096d2201ce06",
+              "filename": "11-近三个月新考点补遗_副本.md",
+              "page_no": null,
+              "char_start": 2346,
+              "char_end": 2443,
+              "quote": "OpenAI Agents SDK 爆发**(半年 0.1→0.17.x,周更):沙箱执行、RealtimeAgent、支持 100+ LLM——已从\"贴 OpenAI 生态的轻量\"长成通用选项",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "9aede0f8-5a26-5207-a515-bf61f72825d3",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "unanswerable",
+      "difficulty": 2,
+      "question": "补遗 §10 里那位提供腾讯面经的候选人姓名是什么？",
+      "gold_answer": "None",
+      "constraints": {
+        "must_include": [],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "u5",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": [
+          "姓名"
+        ]
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "a45be51d-01a1-55e3-be04-edcb9ded3a53",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "table",
+      "difficulty": 2,
+      "question": "补遗的 Skill 五边界对比表里，Skill 与 Tool、MCP 的区别分别是怎么说的？",
+      "gold_answer": "表里写：与 Tool 的区别是 tool 执行动作、Skill 指导何时/如何用工具；与 MCP 的区别是 MCP 是工具接入协议、Skill 是任务方法论。",
+      "constraints": {
+        "must_include": [
+          "方法论"
+        ],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "tb1",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "da3a7bf4121b0047ecaafae43c63e24612cfe5a28549670bb8f4096d2201ce06",
+              "filename": "11-近三个月新考点补遗_副本.md",
+              "page_no": null,
+              "char_start": 767,
+              "char_end": 854,
+              "quote": "vs Tool    | tool 执行动作,Skill 指导**何时/如何**用工具   |\n| vs MCP     | MCP 是工具接入协议,Skill 是任务方法论",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "a794e1a7-7e0c-5365-b3f0-5612b780209e",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 2,
+      "question": "在 4 台 DGX Spark 上部署 DeepSeek-V4-Flash，单流实测吞吐是多少？并发和 prefill 分别是多少？",
+      "gold_answer": "单流 code 约 101 tok/s、prose 约 63 tok/s；4 路并发聚合约 117 tok/s，prefill 约 2254 tok/s。",
+      "constraints": {
+        "must_include": [
+          "101",
+          "2254"
+        ],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "s1",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": [
+          "A100"
+        ]
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "f113961b8d2590455d5264893fa74cfc70f68839dab95ee1e065d785eb0a8b1d",
+              "filename": "15-答案库-DGXSpark部署与vLLM原理_副本.md",
+              "page_no": null,
+              "char_start": 2019,
+              "char_end": 2088,
+              "quote": "单流 **code 101 / prose 63** tok/s,x4 并发 **117** 聚合,prefill ~2254 tok/s",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "bc09d7af-5620-5c57-8779-5f9951de385f",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "multi_hop",
+      "difficulty": 3,
+      "question": "在统一内存的 GB10 上，为什么 GLM-5.2 找不到一个可用的 gpu-memory-utilization 值？这跟常规独立显存的机器有什么不同？",
+      "gold_answer": "常规卡上显存和主机内存是两块独立地址空间，util 调高 KV 池就大、调低就留余量，逻辑成立。GB10 是统一内存，CPU 和 GPU 共用一块 128GB LPDDR5X，vLLM 的显存记账假设失效；GLM-5.2 权重就占掉 106GiB/121.7GiB，余量只有十几 GB。util 调低到 0.90 时 KV 池被挤没，直接报 No available memory for cache blocks 起不来；调高到 0.93 时 KV 有了，但 Triton/flashinfer 的 JIT 编译没有余量，一个新 prompt 形状触发 JIT 就驱动级 OOM。两边无法同时满足。",
+      "constraints": {
+        "must_include": [
+          "0.90",
+          "0.93"
+        ],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "m6",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "f113961b8d2590455d5264893fa74cfc70f68839dab95ee1e065d785eb0a8b1d",
+              "filename": "15-答案库-DGXSpark部署与vLLM原理_副本.md",
+              "page_no": null,
+              "char_start": 2363,
+              "char_end": 2554,
+              "quote": "常规 GPU 部署里,**显存(HBM)和主机内存(DRAM)是两块物理独立的地址空间**,vLLM 只在显存里算账。GB10 是**统一内存**——CPU 和 GPU 共用一块 128GB LPDDR5X,没有独立显存。好处是\"显存\"很大(128GB 单卡想都不敢想),坏处是**你在和操作系统的一切抢同一块内存**:page cache、文件缓存、别的进程、swap,全挤在一起",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "f113961b8d2590455d5264893fa74cfc70f68839dab95ee1e065d785eb0a8b1d",
+              "filename": "15-答案库-DGXSpark部署与vLLM原理_副本.md",
+              "page_no": null,
+              "char_start": 4612,
+              "char_end": 4893,
+              "quote": "但在统一内存上这套逻辑崩了**(GLM-5.2 的死结):权重就占 106GiB/121.7GiB,余量只有十几 GB。\n- **util 调低**(0.90):KV 池被挤没 → \"No available memory for cache blocks\",**根本起不来**。\n- **util 调高**(0.93):KV 有了,但**运行时的 Triton/flashinfer JIT 编译没了余量** → 一个新 prompt 形状触发 JIT → 驱动级 OOM,EngineCore 直接死。\n- **结论:没有任何一个 util 值能同时满足两边",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "d8f671c3-bb25-546b-813c-0bb5f4b304fa",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "global",
+      "difficulty": 3,
+      "question": "库里关于「Skill 和 Memory 的边界」有哪几种说法？它们是否一致？",
+      "gold_answer": "两处说法一致，只是视角不同。补遗从对比表和项目经验出发，把边界概括为记忆存蒸馏后的槽位事实、Skill 存操作流程，也就是 Memory 存事实、Skill 存手册。TencentDB Agent Memory 从资产角度落地同一条边界：它把沉淀可执行经验单独归给 Skill，而跨会话理解用户归给 Chat Memory，两者与 Wiki、CodeGraph 一起并列登记为 Memory Asset。",
+      "constraints": {
+        "must_include": [
+          "Memory 存事实",
+          "Chat Memory"
+        ],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "g4",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "da3a7bf4121b0047ecaafae43c63e24612cfe5a28549670bb8f4096d2201ce06",
+              "filename": "11-近三个月新考点补遗_副本.md",
+              "page_no": null,
+              "char_start": 1374,
+              "char_end": 1427,
+              "quote": "记忆存蒸馏后的槽位事实,Skill 存操作流程,正好对应'Memory 存事实、Skill 存手册'的边界",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "2f322ae0f3aff01dd657a8010951c577c0ee3d8e8ef983d395d4df5e806bbed7",
+              "filename": "Tecent-Agent-Memory_副本.md",
+              "page_no": null,
+              "char_start": 5370,
+              "char_end": 5431,
+              "quote": "跨会话理解用户 | △ | △ | ✅ Chat Memory |\n| 沉淀可执行经验 | — | — | ✅ Skill",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "e2825246-434a-567a-80dc-d21144b8747c",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 2,
+      "question": "NVFP4 是什么格式？相比 bf16 压缩多少，为什么比 int4 掉点更少？",
+      "gold_answer": "NVFP4 是 NVIDIA 的 4-bit 浮点格式，采用 E2M1 加分块微缩放（每个小块配一个 FP8 缩放因子），Blackwell 张量核原生支持；相比 bf16 约 4 倍压缩，相比 int4 靠浮点的动态范围加微缩放在 LLM 上掉点更少。",
+      "constraints": {
+        "must_include": [
+          "E2M1",
+          "Blackwell"
+        ],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "s2",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": [
+          "int8"
+        ]
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "f113961b8d2590455d5264893fa74cfc70f68839dab95ee1e065d785eb0a8b1d",
+              "filename": "15-答案库-DGXSpark部署与vLLM原理_副本.md",
+              "page_no": null,
+              "char_start": 3601,
+              "char_end": 3737,
+              "quote": "NVFP4 是 NVIDIA 的 **4-bit 浮点**格式(E2M1 + 分块微缩放,每个小块配一个 FP8 缩放因子),Blackwell 张量核原生支持。相比 bf16 **~4 倍压缩**;相比 int4,**浮点的动态范围 + 微缩放让它在 LLM 上掉点更少",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "f213b59a-1e4f-5412-b857-229076b2724c",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "temporal",
+      "difficulty": 2,
+      "question": "补遗 §7 的动态速览有保质期。相比更早采集的那批内容，哪些已经退为背景板？",
+      "gold_answer": "§7 本轮刷新于 2026-07-27，保质期一个月。更早的旧闻已退为背景板，包括 GPT-5.5 五月上位、Pydantic AI V2 与 LlamaIndex Workflows 1.0 双双 stable、以及 Claude Code Dynamic Workflows。",
+      "constraints": {
+        "must_include": [
+          "GPT-5.5",
+          "2026-07-27"
+        ],
+        "benchmark_review": {
+          "action": "fix_temporal_snapshot",
+          "version": "benchmark-v2"
+        },
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "t4",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": "2026-08-14 12:00:00+00:00",
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "da3a7bf4121b0047ecaafae43c63e24612cfe5a28549670bb8f4096d2201ce06",
+              "filename": "11-近三个月新考点补遗_副本.md",
+              "page_no": null,
+              "char_start": 4213,
+              "char_end": 4360,
+              "quote": "本节保质期一个月(本轮刷新于 **2026-07-27**),每次面试前重新刷。更早的旧闻(GPT-5.5 五月上位、Pydantic AI V2 / LlamaIndex Workflows 1.0 双双 stable、Claude Code Dynamic Workflows)已退为背景板",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "f32e62f0-d7fb-58cb-811d-375b72429547",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "unanswerable",
+      "difficulty": 2,
+      "question": "这套 4 台 DGX Spark 集群每月的电费是多少人民币？",
+      "gold_answer": "None",
+      "constraints": {
+        "must_include": [],
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "u1",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": [
+          "电费"
+        ]
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "f4e2937a-c8d8-514b-ab72-15986805f71c",
+      "dataset_name": "core-dev-handwritten-zh-v1",
+      "split": "dev",
+      "category": "temporal",
+      "difficulty": 2,
+      "question": "相比早期写法，2026 年的工程实践还需要手写 ReAct 的 Thought/Action prompt 模板吗？为什么？",
+      "gold_answer": "不需要。显式手写 ReAct 循环的文本模板正在成为历史，现代模型的工具调用是训练进去的原生能力，harness 只需要提供工具定义和执行结果，不必再靠 prompt 教模型先想后做。ReAct 作为心智模型仍然成立，但作为 prompt 模板已经过时。",
+      "constraints": {
+        "must_include": [
+          "原生",
+          "心智模型"
+        ],
+        "benchmark_review": {
+          "action": "fix_temporal_snapshot",
+          "version": "benchmark-v2"
+        },
+        "candidate_review": {
+          "note": "证据经人工阅读后选定；升 human 前须由作者逐条确认",
+          "author": "assistant-handwritten-v1",
+          "status": "approved",
+          "item_key": "t2",
+          "reviewer": "xingzhi <ningzhi.yang@vim-technology.com>",
+          "review_note": "逐条复核通过（问题/答案/证据/类别）",
+          "reviewed_at": "2026-08-16T01:31:52.096227+00:00",
+          "promoted_from": "synthetic"
+        },
+        "must_not_include": []
+      },
+      "temporal_ctx": "2026-08-14 12:00:00+00:00",
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "da3a7bf4121b0047ecaafae43c63e24612cfe5a28549670bb8f4096d2201ce06",
+              "filename": "11-近三个月新考点补遗_副本.md",
+              "page_no": null,
+              "char_start": 3154,
+              "char_end": 3254,
+              "quote": "显式手写 ReAct 循环(\"Thought: ... Action: ...\"文本模板)正在成为历史——现代模型的工具调用是**原生能力**(训练进去的),harness 只需提供工具定义和执行结果",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "da3a7bf4121b0047ecaafae43c63e24612cfe5a28549670bb8f4096d2201ce06",
+              "filename": "11-近三个月新考点补遗_副本.md",
+              "page_no": null,
+              "char_start": 3353,
+              "char_end": 3391,
+              "quote": "ReAct 作为**心智模型**还在,作为**prompt 模板**已经过时",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f5b-7f7c-8768-0b7c0289aa5d",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 1,
+      "question": "Which three actions did the ReAct authors expose in their Wikipedia API?",
+      "gold_answer": "search[entity] returns the first five sentences of the entity page or suggests top-5 similar entities, lookup[string] returns the next sentence containing the string like Ctrl+F, and finish[answer] ends the task with an answer.",
+      "constraints": {
+        "must_include": [
+          "search",
+          "lookup",
+          "finish"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "f285b0971ae4a790e402fb93966bed3adde2cf0a04977d08b2b40d6ab0cace69",
+              "filename": "2210.03629v3.pdf",
+              "page_no": 4,
+              "char_start": 2654,
+              "char_end": 3490,
+              "quote": "Action Space\nWe design a simple Wikipedia web API with three types of actions to support\ninteractive information retrieval: (1) search[entity], which returns the ﬁrst 5 sentences from\nthe corresponding entity wiki page if it exists, or else suggests top-5 similar entities from the\nWikipedia search engine, (2) lookup[string], which would return the next sentence in the page\ncontaining string, simulating Ctrl+F functionality on the browser. (3) finish[answer], which\nwould ﬁnish the current task with answer. We note that this action space mostly can only retrieve a\nsmall part of a passage based on exact passage name, which is signiﬁcantly weaker than state-of-the-\nart lexical or neural retrievers. The purpose is to simulate how humans would interact with Wikipedia,\nand force models to retrieve via explicit reasoning in language",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f5c-76f8-8a87-f7c41bed3662",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 1,
+      "question": "Which frozen language model is prompted in the main ReAct experiments?",
+      "gold_answer": "A frozen PaLM-540B, prompted with few-shot in-context examples that are human trajectories of actions, thoughts and environment observations.",
+      "constraints": {
+        "must_include": [
+          "PaLM-540B",
+          "few-shot"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "f285b0971ae4a790e402fb93966bed3adde2cf0a04977d08b2b40d6ab0cace69",
+              "filename": "2210.03629v3.pdf",
+              "page_no": 3,
+              "char_start": 4174,
+              "char_end": 5017,
+              "quote": "However, as the language space L is unlimited, learning in this augmented action space is difﬁcult\nand requires strong language priors. In this paper, we mainly focus on the setup where a frozen\nlarge language model, PaLM-540B (Chowdhery et al., 2022)1, is prompted with few-shot in-context\nexamples to generate both domain-speciﬁc actions and free-form language thoughts for task solving\n(Figure 1 (1d), (2b)). Each in-context example is a human trajectory of actions, thoughts, and\nenvironment observations to solve a task instance (see Appendix C). For the tasks where reasoning is\nof primary importance (Figure 1(1)), we alternate the generation of thoughts and actions so that the\ntask-solving trajectory consists of multiple thought-action-observation steps. In contrast, for decision\nmaking tasks that potentially involve a large number",
+              "migration_match_score": 0.888599
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f5d-70bf-8309-e3a308e29b31",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 2,
+      "question": "How well do people score on GAIA compared with GPT-4, and how big is the benchmark?",
+      "gold_answer": "Human respondents reach 92% while GPT-4 with plugins reaches 15%. The benchmark has 466 questions, with answers to 300 of them withheld to power a leaderboard.",
+      "constraints": {
+        "must_include": [
+          "92%",
+          "15%",
+          "466",
+          "300"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "5bf6f968d4f5cd20acdfca6e81e3c9f5277bb66061fad7a02e35442dff812ba0",
+              "filename": "2311.12983v1.pdf",
+              "page_no": 1,
+              "char_start": 196,
+              "char_end": 1300,
+              "quote": "We introduce GAIA, a benchmark for General AI Assistants that, if solved, would represent a\n\nmilestone in AI research. GAIA proposes real-world questions that require a set of fundamental\nabilities such as reasoning, multi-modality handling, web browsing, and generally tool-use proficiency.\nGAIA questions are conceptually simple for humans yet challenging for most advanced AIs: we\nshow that human respondents obtain 92% vs. 15% for GPT-4 equipped with plugins. This notable\nperformance disparity contrasts with the recent trend of LLMs outperforming humans on tasks\nrequiring professional skills in e.g. law or chemistry. GAIA’s philosophy departs from the current\ntrend in AI benchmarks suggesting to target tasks that are ever more difficult for humans. We posit\nthat the advent of Artificial General Intelligence (AGI) hinges on a system’s capability to exhibit\nsimilar robustness as the average human does on such questions. Using GAIA’s methodology, we\ndevise 466 questions and their answer. We release our questions while retaining answers to 300 of\nthem to power a leader-board hereby accessibl",
+              "migration_match_score": 0.998899
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f5e-709a-a40f-dd41a25e5a20",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 2,
+      "question": "What margin does SimpleMem claim over Mem0, and how much cheaper is it?",
+      "gold_answer": "SimpleMem outperforms Mem0 by 26.4% in F1 while reducing inference token consumption by 30x compared with full-context models.",
+      "constraints": {
+        "must_include": [
+          "26.4%",
+          "30",
+          "F1"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "8752aa223e004ca286995bc1e8cbde8e89e67ad3aeb9ba0266f3ccab3cc11078",
+              "filename": "2601.02553v3.pdf",
+              "page_no": 2,
+              "char_start": 1421,
+              "char_end": 1929,
+              "quote": "Our primary contribution is SimpleMem, an efficient mem-\nory framework grounded in structured semantic compres-\nsion, which improves information efficiency through prin-\ncipled memory organization, online synthesis, and intent-\naware planning. As shown in Figure 1, our empirical ex-\nperiments demonstrate that SimpleMem establishes a new\nstate-of-the-art with an F1 score, outperforming strong base-\nlines like Mem0 by 26.4%, while reducing inference token\nconsumption by 30× compared to full-context models",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f5f-7e46-8a1e-12556db5d9e8",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 2,
+      "question": "What Pass@1 numbers does MetaGPT report on the two code generation benchmarks?",
+      "gold_answer": "85.9% on HumanEval and 87.7% on MBPP, both state of the art; MetaGPT also reports a 100% task completion rate.",
+      "constraints": {
+        "must_include": [
+          "85.9%",
+          "87.7%",
+          "HumanEval",
+          "MBPP"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "17582e47647fac8eaa3681feade41c8408310c4133acc5c6823565fbe880e1ac",
+              "filename": "2308.00352v7.pdf",
+              "page_no": 2,
+              "char_start": 1994,
+              "char_end": 2753,
+              "quote": "To validate the design of MetaGPT, we use publicly available HumanEval (Chen et al., 2021a) and\nMBPP (Austin et al., 2021) for evaluations. Notably, in code generation benchmarks, MetaGPT\nachieves a new state-of-the-art (SoTA) with 85.9% and 87.7% in Pass@1. When compared to other\npopular frameworks for creating complex software projects, such as AutoGPT (Torantulino et al.,\n2023), LangChain (Chase, 2022), AgentVerse (Chen et al., 2023), and ChatDev (Qian et al., 2023).\nMetaGPT also stands out in handling higher levels of software complexity and offering extensive\nfunctionality. Remarkably, in our experimental evaluations, MetaGPT achieves a 100% task com-\npletion rate, demonstrating the robustness and efficiency (time and token costs) of our design",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f60-78b4-97de-cf246c8ff1c4",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 2,
+      "question": "How successful is Reflexion on AlfWorld and what does plain ReAct achieve there?",
+      "gold_answer": "Reflexion reaches a 97% success discovery rate on AlfWorld within 12 autonomous trials, against 75% for the base ReAct agent.",
+      "constraints": {
+        "must_include": [
+          "97%",
+          "75%",
+          "12"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "965a720f42e0318facf0de5d1b9d7a135ded227284fc615ca5b3ec1763c46066",
+              "filename": "2303.11366v1.pdf",
+              "page_no": 2,
+              "char_start": 3045,
+              "char_end": 4316,
+              "quote": "To test our hypothesis, we equip an LLM-based agent with a self-reﬂective LLM and a simple heuristic\nfor detecting hallucination and inefﬁcient action execution in an approach named Reﬂexion. We then\nchallenge the agent to learn from its own mistakes on the AlfWorld text-based benchmark (Shridhar\net al., 2021) and the HotPotQA question-answering benchmark (Yang et al., 2018). This results in\nimproved performance in decision-making and knowledge-intensive tasks. When combined with\nthe ReAct problem-solving technique (Yao et al., 2023), self-reﬂection guides the Reﬂexion agent\nto achieve a 97% success discovery rate on the AlfWorld benchmark in just 12 autonomous trials,\noutperforming the base ReAct agent with an accuracy of 75%. We also evaluated a Reﬂexion-based\nReAct agent on 100 questions from HotPotQA. The agent achieved a 51% success discovery rate by\niteratively reﬁning its content search and content extraction by receiving advice from its memory,\noutperforming a base ReAct agent by 17%. It is essential to emphasize that Reﬂexion is not designed\nto achieve near-perfect accuracy scores; instead, its goal is to demonstrate learning through trial and\nerror to enable discovery in tasks and environments previously considered nearly impossible to solve",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f61-7f3c-9070-642ffab616d1",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "single_hop",
+      "difficulty": 1,
+      "question": "How many REST APIs were collected for ToolBench and where did they come from?",
+      "gold_answer": "16,464 REST APIs crawled from RapidAPI, spanning 49 diverse categories such as social media, e-commerce and weather.",
+      "constraints": {
+        "must_include": [
+          "16",
+          "464",
+          "RapidAPI",
+          "49"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "295299721d67b250661fb6598bee86a2e9fe766241fdc08dd7cf389e984b4d1a",
+              "filename": "2307.16789v2.pdf",
+              "page_no": 2,
+              "char_start": 3383,
+              "char_end": 3908,
+              "quote": "API Collection: we gather 16,464 representational state transfer (REST) APIs from RapidAPI\n(link), a platform that hosts massive real-world APIs provided by developers. These APIs span 49\ndiverse categories such as social media, e-commerce, and weather. For each API, we crawl detailed\nAPI documents from RapidAPI, including the functionality descriptions, required parameters,\ncode snippets for API calls, etc. By comprehending these documents to learn to execute APIs,\nLLMs can generalize to new APIs unseen during training",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f62-7082-b0b7-3e101421f0ee",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "table",
+      "difficulty": 2,
+      "question": "On HotpotQA with PaLM-540B, what does plain ReAct prompting score and which method wins?",
+      "gold_answer": "ReAct alone gets 27.4 exact match. The best HotpotQA result is ReAct -> CoT-SC at 35.1, ahead of CoT-SC -> ReAct at 34.2.",
+      "constraints": {
+        "must_include": [
+          "27.4",
+          "35.1"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "f285b0971ae4a790e402fb93966bed3adde2cf0a04977d08b2b40d6ab0cace69",
+              "filename": "2210.03629v3.pdf",
+              "page_no": 5,
+              "char_start": 22,
+              "char_end": 413,
+              "quote": "A\nFever\n(EM)\n(Acc)\n\nStandard\n28.7\n57.1\nCoT (Wei et al., 2022)\n29.4\n56.3\nCoT-SC (Wang et al., 2022a)\n33.4\n60.4\n\n34\n\n32\n\nHotpotQA EM\n\nAct\n25.7\n58.9\nReAct\n27.4\n60.9\nCoT-SC →ReAct\n34.2\n64.6\nReAct→CoT-SC\n35.1\n62.0\n\n30\n\n28\n\n26\n\nSupervised SoTAb\n67.5\n89.5\n\nTable 1: PaLM-540B prompting results on\nHotpotQA and Fever.\n\naHotpotQA EM is 27.1, 28.9, 33.8 for Standard, CoT,\nCoT-SC in Wang et al. (2022b",
+              "migration_match_score": 0.744361
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f63-73ee-b25c-27eb5de662a3",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "table",
+      "difficulty": 2,
+      "question": "On the T-REx subset of LAMA, how does Toolformer stack up against the much larger GPT-3?",
+      "gold_answer": "Toolformer scores 53.5 on T-REx versus 39.8 for GPT-3 (175B), despite being far smaller; the disabled Toolformer variant only reaches 34.9.",
+      "constraints": {
+        "must_include": [
+          "53.5",
+          "39.8"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "6d7483d94653008e40c2058a1c22441c92e3713dae278b6361e8efc447c99522",
+              "filename": "2302.04761v1.pdf",
+              "page_no": 6,
+              "char_start": 2365,
+              "char_end": 2552,
+              "quote": "Model\nSQuAD Google-RE T-REx\n\nGPT-J\n17.8\n4.9\n31.9\nGPT-J + CC\n19.2\n5.6\n33.2\nToolformer (disabled)\n22.1\n6.3\n34.9\nToolformer\n33.8\n11.5\n53.5\n\nOPT (66B)\n21.6\n2.9\n30.1\nGPT-3 (175B)\n26.8\n7.0\n39.8",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f64-73ac-8c6a-9892abb823eb",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "table",
+      "difficulty": 3,
+      "question": "How many question answering samples survive each filtering threshold in Toolformer?",
+      "gold_answer": "51,987 examples at a threshold of 0.5, 18,526 at 1.0 and 5,135 at 2.0.",
+      "constraints": {
+        "must_include": [
+          "51",
+          "987",
+          "18",
+          "526",
+          "5",
+          "135"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "6d7483d94653008e40c2058a1c22441c92e3713dae278b6361e8efc447c99522",
+              "filename": "2302.04761v1.pdf",
+              "page_no": 5,
+              "char_start": 445,
+              "char_end": 782,
+              "quote": "023.\n\nMachine Translation\nsûreté nucléaire\nnuclear safety\n\nTable 1: Examples of inputs and outputs for all APIs used.\n\nNumber of Examples\nAPI\nτf = 0.5\nτf = 1.0\nτf = 2.0\n\nQuestion Answering\n51,987\n18,526\n5,135\nWikipedia Search\n207,241\n60,974\n13,944\nCalculator\n3,680\n994\n138\nCalendar\n61,811\n20,587\n3,007\nMachine Translation\n3,156\n1,034\n229",
+              "migration_match_score": 0.640927
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f65-75d1-b8ec-b4ca1740eeca",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "table",
+      "difficulty": 2,
+      "question": "What top-1 accuracy does the VOYAGER skill retrieval reach?",
+      "gold_answer": "80.2 plus or minus 3.0 at top-1, rising to 96.5 plus or minus 0.3 at top-5.",
+      "constraints": {
+        "must_include": [
+          "80.2",
+          "96.5"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "769a4e33ddeeb73870849232eece49afe882c2d146362e33917ccb432ba0efb8",
+              "filename": "2305.16291v2.pdf",
+              "page_no": 42,
+              "char_start": 704,
+              "char_end": 846,
+              "quote": "Table A.4: Skill retrieval accuracy.\nTop-1 Acc\nTop-2 Acc\nTop-3 Acc\nTop-4 Acc\nTop-5 Acc\n\n80.2 ± 3.0\n89.3 ± 1.8\n93.2 ± 0.7\n95.2 ± 1.8\n96.5 ± 0.3",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f66-7440-9162-abef83fde5a3",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "table",
+      "difficulty": 3,
+      "question": "In AgentBench, how do commercial and open-source models differ in completion and invalid actions?",
+      "gold_answer": "Commercial API-based models complete 61.5% of tasks with 4.6% invalid actions, while open-sourced models complete 39.1% with 13.6% invalid actions.",
+      "constraints": {
+        "must_include": [
+          "61.5%",
+          "39.1%",
+          "4.6%",
+          "13.6%"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "9c780e35fc0b2de6c2e21e0572f6aaaadcf7ecdd56d63cfaae2b415bc0dc83c3",
+              "filename": "2308.03688v3.pdf",
+              "page_no": 46,
+              "char_start": 1153,
+              "char_end": 1419,
+              "quote": "s design and training phases, especially\ninstruction following.\n\nModel Category\nCompleted\nContext Limit Exceeded\nInvalid Format\nInvalid Action\nTask Limit Exceeded\n\nCommercial API-based Models\n61.5%\n3.0%\n6.0%\n4.6%\n24.9%\nOpen-Sourced Models\n39.1%\n0.0%\n10.4%\n13.6%\n36.9",
+              "migration_match_score": 0.815534
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f67-7bfb-bf39-9c128de894fe",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "multi_hop",
+      "difficulty": 3,
+      "question": "Which model backs the original ReAct experiments, and what does layering self-reflection on top of it achieve in AlfWorld?",
+      "gold_answer": "ReAct prompts a frozen PaLM-540B with few-shot in-context examples. Adding Reflexion's self-reflection on top of ReAct reaches a 97% success discovery rate on AlfWorld in 12 autonomous trials, versus 75% for base ReAct.",
+      "constraints": {
+        "must_include": [
+          "PaLM-540B",
+          "97%",
+          "75%"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "f285b0971ae4a790e402fb93966bed3adde2cf0a04977d08b2b40d6ab0cace69",
+              "filename": "2210.03629v3.pdf",
+              "page_no": 3,
+              "char_start": 4174,
+              "char_end": 5017,
+              "quote": "However, as the language space L is unlimited, learning in this augmented action space is difﬁcult\nand requires strong language priors. In this paper, we mainly focus on the setup where a frozen\nlarge language model, PaLM-540B (Chowdhery et al., 2022)1, is prompted with few-shot in-context\nexamples to generate both domain-speciﬁc actions and free-form language thoughts for task solving\n(Figure 1 (1d), (2b)). Each in-context example is a human trajectory of actions, thoughts, and\nenvironment observations to solve a task instance (see Appendix C). For the tasks where reasoning is\nof primary importance (Figure 1(1)), we alternate the generation of thoughts and actions so that the\ntask-solving trajectory consists of multiple thought-action-observation steps. In contrast, for decision\nmaking tasks that potentially involve a large number",
+              "migration_match_score": 0.888599
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "965a720f42e0318facf0de5d1b9d7a135ded227284fc615ca5b3ec1763c46066",
+              "filename": "2303.11366v1.pdf",
+              "page_no": 2,
+              "char_start": 3045,
+              "char_end": 4316,
+              "quote": "To test our hypothesis, we equip an LLM-based agent with a self-reﬂective LLM and a simple heuristic\nfor detecting hallucination and inefﬁcient action execution in an approach named Reﬂexion. We then\nchallenge the agent to learn from its own mistakes on the AlfWorld text-based benchmark (Shridhar\net al., 2021) and the HotPotQA question-answering benchmark (Yang et al., 2018). This results in\nimproved performance in decision-making and knowledge-intensive tasks. When combined with\nthe ReAct problem-solving technique (Yao et al., 2023), self-reﬂection guides the Reﬂexion agent\nto achieve a 97% success discovery rate on the AlfWorld benchmark in just 12 autonomous trials,\noutperforming the base ReAct agent with an accuracy of 75%. We also evaluated a Reﬂexion-based\nReAct agent on 100 questions from HotPotQA. The agent achieved a 51% success discovery rate by\niteratively reﬁning its content search and content extraction by receiving advice from its memory,\noutperforming a base ReAct agent by 17%. It is essential to emphasize that Reﬂexion is not designed\nto achieve near-perfect accuracy scores; instead, its goal is to demonstrate learning through trial and\nerror to enable discovery in tasks and environments previously considered nearly impossible to solve",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f68-7476-a763-cf1acff038bf",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "multi_hop",
+      "difficulty": 3,
+      "question": "Comparing the two agent benchmarks in the library, how many questions does one hold and how many models and environments does the other cover?",
+      "gold_answer": "GAIA devises 466 questions and withholds answers to 300 of them. AgentBench evaluates 29 LLMs across 8 distinct environments.",
+      "constraints": {
+        "must_include": [
+          "466",
+          "29",
+          "8"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "5bf6f968d4f5cd20acdfca6e81e3c9f5277bb66061fad7a02e35442dff812ba0",
+              "filename": "2311.12983v1.pdf",
+              "page_no": 1,
+              "char_start": 196,
+              "char_end": 1300,
+              "quote": "We introduce GAIA, a benchmark for General AI Assistants that, if solved, would represent a\n\nmilestone in AI research. GAIA proposes real-world questions that require a set of fundamental\nabilities such as reasoning, multi-modality handling, web browsing, and generally tool-use proficiency.\nGAIA questions are conceptually simple for humans yet challenging for most advanced AIs: we\nshow that human respondents obtain 92% vs. 15% for GPT-4 equipped with plugins. This notable\nperformance disparity contrasts with the recent trend of LLMs outperforming humans on tasks\nrequiring professional skills in e.g. law or chemistry. GAIA’s philosophy departs from the current\ntrend in AI benchmarks suggesting to target tasks that are ever more difficult for humans. We posit\nthat the advent of Artificial General Intelligence (AGI) hinges on a system’s capability to exhibit\nsimilar robustness as the average human does on such questions. Using GAIA’s methodology, we\ndevise 466 questions and their answer. We release our questions while retaining answers to 300 of\nthem to power a leader-board hereby accessibl",
+              "migration_match_score": 0.998899
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "9c780e35fc0b2de6c2e21e0572f6aaaadcf7ecdd56d63cfaae2b415bc0dc83c3",
+              "filename": "2308.03688v3.pdf",
+              "page_no": 2,
+              "char_start": 1010,
+              "char_end": 1206,
+              "quote": "Figure 2: AGENTBENCH is the first systematic benchmark to evaluate LLM-as-Agent on a wide array\nof real-world challenges and 8 distinct environments. In total, 29 LLMs are examined in this edition",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f69-794f-bcb9-83e8c5140f95",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "multi_hop",
+      "difficulty": 3,
+      "question": "What false positive rates are reported for the reasoning-only and the interleaved method, and which failure mode dominates each?",
+      "gold_answer": "CoT has a 14% false positive rate against 6% for ReAct. Hallucination is CoT's dominant failure mode at 56% and 0% for ReAct, whereas ReAct's main failures are reasoning errors at 47% and non-informative search results at 23%.",
+      "constraints": {
+        "must_include": [
+          "14%",
+          "6%",
+          "56%",
+          "23%"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "f285b0971ae4a790e402fb93966bed3adde2cf0a04977d08b2b40d6ab0cace69",
+              "filename": "2210.03629v3.pdf",
+              "page_no": 6,
+              "char_start": 0,
+              "char_end": 507,
+              "quote": "Failure\n\nType\nDeﬁnition\nReAct\nCoT\n\nSuccess\nTrue positive\nCorrect reasoning trace and facts\n94%\n86%\nFalse positive\nHallucinated reasoning trace or facts\n6%\n14%\n\nReasoning error\nWrong reasoning trace (including failing to recover from repetitive steps)\n47%\n16%\nSearch result error\nSearch return empty or does not contain useful information\n23%\n-\nHallucination\nHallucinated reasoning trace or facts\n0%\n56%\nLabel ambiguity\nRight prediction but did not match the label precisely\n29%\n28%\n\nTable 2: Types of succes",
+              "migration_match_score": 0.847896
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "f285b0971ae4a790e402fb93966bed3adde2cf0a04977d08b2b40d6ab0cace69",
+              "filename": "2210.03629v3.pdf",
+              "page_no": 6,
+              "char_start": 1264,
+              "char_end": 1589,
+              "quote": "A) Hallucination is a serious problem for CoT, resulting in much higher false positive rate than\nReAct (14% vs. 6%) in success mode, and make up its major failure mode (56%). In contrast, the\nproblem solving trajectory of ReActis more grounded, fact-driven, and trustworthy, thanks to the\naccess of an external knowledge base",
+              "migration_match_score": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f6a-75a7-b78a-7dacfd83af2d",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "multi_hop",
+      "difficulty": 3,
+      "question": "How do the two tool-use papers differ in the scale of APIs they work with?",
+      "gold_answer": "ToolLLM gathers 16,464 REST APIs from RapidAPI across 49 categories, while Toolformer uses a handful of tools whose training examples are filtered per API, for instance 18,526 question answering examples at a threshold of 1.0.",
+      "constraints": {
+        "must_include": [
+          "16",
+          "464",
+          "RapidAPI",
+          "18",
+          "526"
+        ],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "295299721d67b250661fb6598bee86a2e9fe766241fdc08dd7cf389e984b4d1a",
+              "filename": "2307.16789v2.pdf",
+              "page_no": 2,
+              "char_start": 3383,
+              "char_end": 3908,
+              "quote": "API Collection: we gather 16,464 representational state transfer (REST) APIs from RapidAPI\n(link), a platform that hosts massive real-world APIs provided by developers. These APIs span 49\ndiverse categories such as social media, e-commerce, and weather. For each API, we crawl detailed\nAPI documents from RapidAPI, including the functionality descriptions, required parameters,\ncode snippets for API calls, etc. By comprehending these documents to learn to execute APIs,\nLLMs can generalize to new APIs unseen during training",
+              "migration_match_score": 1.0
+            }
+          ]
+        },
+        {
+          "fact_id": "R2",
+          "alternatives": [
+            {
+              "content_hash": "6d7483d94653008e40c2058a1c22441c92e3713dae278b6361e8efc447c99522",
+              "filename": "2302.04761v1.pdf",
+              "page_no": 5,
+              "char_start": 445,
+              "char_end": 782,
+              "quote": "023.\n\nMachine Translation\nsûreté nucléaire\nnuclear safety\n\nTable 1: Examples of inputs and outputs for all APIs used.\n\nNumber of Examples\nAPI\nτf = 0.5\nτf = 1.0\nτf = 2.0\n\nQuestion Answering\n51,987\n18,526\n5,135\nWikipedia Search\n207,241\n60,974\n13,944\nCalculator\n3,680\n994\n138\nCalendar\n61,811\n20,587\n3,007\nMachine Translation\n3,156\n1,034\n229",
+              "migration_match_score": 0.640927
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "01a00047-2f6b-7ba4-babd-52f467e91649",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "unanswerable",
+      "difficulty": 2,
+      "question": "What is the monthly subscription price of the ReAct API for commercial users?",
+      "gold_answer": "None",
+      "constraints": {
+        "must_include": [],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "01a00047-2f6c-786a-8d82-8ca53dd23db6",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "unanswerable",
+      "difficulty": 3,
+      "question": "Which Kubernetes version is required to run the AgentBench operating system environment?",
+      "gold_answer": "None",
+      "constraints": {
+        "must_include": [],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "01a00047-2f6d-7f5f-9607-80205596c89a",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "unanswerable",
+      "difficulty": 3,
+      "question": "How many kilograms of CO2 were emitted while training Toolformer?",
+      "gold_answer": "None",
+      "constraints": {
+        "must_include": [],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "01a00047-2f6e-7932-9700-5021660b5463",
+      "dataset_name": "english-dev",
+      "split": "dev",
+      "category": "unanswerable",
+      "difficulty": 3,
+      "question": "How many engineers does DeepWisdom employ on the MetaGPT team?",
+      "gold_answer": "None",
+      "constraints": {
+        "must_include": [],
+        "must_not_include": []
+      },
+      "temporal_ctx": null,
+      "gold_evidence_groups": []
+    }
+  ]
+}

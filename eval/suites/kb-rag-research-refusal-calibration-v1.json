@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "name": "kb-rag-research-refusal-calibration-v1",
+  "description": "独立拒答阈值校准候选集；证据文档不与 kb-rag-research-dev-v1 的 evaluation gold 重叠。8 条可答题与 4 条高语义相似不可答题，仅用于固定 score source 下的拒答阈值标定。",
+  "origin": "synthetic",
+  "review": {
+    "status": "approved",
+    "reviewer": "行之",
+    "reviewed_at": "2026-08-24T20:54:00+08:00"
+  },
+  "items": [
+    {
+      "item_id": "rag-cal-001",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "Blended RAG 的研究在哪两个信息检索数据集上报告了新的检索 benchmark？",
+      "answerable": true,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "08f9596ffb7067ac5d04c85d45bc7ee82e8dd4396cc6a10b69186e7cec7ac7c6",
+              "page_no": 1,
+              "char_start": 890,
+              "char_end": 1030,
+              "quote": "Our study achieves better\nretrieval results and sets new benchmarks for IR (Information\nRetrieval) datasets like NQ and TREC-COVID datasets."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "rag-cal-002",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "Telco-RAG 重点面向哪类电信标准文档？",
+      "answerable": true,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "9d2d46c7c1b30a81e64c5913e4d6ec2aec18cd3773bdf9276e64b5f8198d2749",
+              "page_no": 1,
+              "char_start": 511,
+              "char_end": 710,
+              "quote": "The paper introduces Telco-\nRAG,1 an open-source RAG framework designed to handle\nthe specific needs of telecommunications standards, particularly\n3rd Generation Partnership Project (3GPP) documents."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "rag-cal-003",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "Video Enriched RAG 用什么文本机制把视频信息接入聊天助手？",
+      "answerable": true,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "3cc6a0b9edd229d6ddd818bd0969b3ec4e8f4e6b1ad26004b728367fe0747f91",
+              "page_no": 1,
+              "char_start": 346,
+              "char_end": 532,
+              "quote": "we propose the use of \"aligned visual captions\" as a\nmechanism for integrating information contained within videos\ninto retrieval augmented generation (RAG) based chat assistant\nsystems."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "rag-cal-004",
+      "split": "dev",
+      "category": "exact_identifier",
+      "question": "Lion 优化器实验中，哪个模型取得最高 NDCG@10 和 MAP，数值分别是多少？",
+      "answerable": true,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "b1fc91670521c101959d2ad691675bc1057834b75a5fa88b7a1be74631767872",
+              "page_no": 1,
+              "char_start": 1534,
+              "char_end": 1732,
+              "quote": "ModernBERT trained with\nLion achieved the highest NDCG@10 (0.7225) and MAP (0.5121)\non TREC DL 2019, while MiniLM trained with Lion tied with\nModernBERT with Lion on MRR@10 (0.5988) on MS MARCO\ndev."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "rag-cal-005",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "MusT-RAG 要把通用 LLM 适配到什么任务？",
+      "answerable": true,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "d61bf5ab6372bf4b537351750d9382e168f44c5c74e459f2fd296738267d0394",
+              "page_no": 1,
+              "char_start": 424,
+              "char_end": 598,
+              "quote": "we propose MusT-RAG, a\ncomprehensive framework based on Retrieval Augmented\nGeneration (RAG) to adapt general-purpose LLMs for\ntext-only music question answering (MQA) tasks."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "rag-cal-006",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "RankArena 支持哪些评测模式？",
+      "answerable": true,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "98e3a2d4a97f6cd6d432d90f2d58986ff3284dcdeec71b96727eedb58da84ae2",
+              "page_no": 1,
+              "char_start": 780,
+              "char_end": 997,
+              "quote": "RankArena supports multiple\nevaluation modes: direct reranking visualisation, blind pairwise\ncomparisons with human or LLM voting, supervised manual docu-\nment annotation, and end-to-end RAG answer quality assessment."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "rag-cal-007",
+      "split": "dev",
+      "category": "semantic_single_hop",
+      "question": "DPR 训练时加入多个正例 passage 带来了什么效果和资源收益？",
+      "answerable": true,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "a5b04f9ac1f5fb8b9234442b612cfcbe7b7af2bf670f5e6e1d6a71110ab3dcac",
+              "page_no": 1,
+              "char_start": 629,
+              "char_end": 851,
+              "quote": "Experimental results show that\nequipping each question with multiple positive\npassages consistently improves retrieval accu-\nracy, even when using a significantly smaller\nbatch size, which enables training on a single\nGPU."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "rag-cal-008",
+      "split": "dev",
+      "category": "exact_identifier",
+      "question": "Guardian Crawler 的 risk-based reranking 在 900 文档合成语料上取得了怎样的 P@10 和 NDCG@10，并如何对比 BM25？",
+      "answerable": true,
+      "gold_evidence_groups": [
+        {
+          "fact_id": "R1",
+          "alternatives": [
+            {
+              "content_hash": "4daf5217abed11635c4fd4fdd5afdb20b6d0dbb92fe056840c76380e1cb78d7a",
+              "page_no": 1,
+              "char_start": 973,
+              "char_end": 1187,
+              "quote": "Experiments on\na synthetic 900-document corpus and 10 queries produced the highest descriptive retrieval scores\nunder risk-based reranking, with P@10 = 1.00 and NDCG@10 = 0.94, compared with 0.94 and\n0.81 for BM25."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "item_id": "rag-cal-009",
+      "split": "dev",
+      "category": "unanswerable",
+      "question": "Blended RAG 上线后的月度 AWS 账单是多少美元？",
+      "answerable": false,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "rag-cal-010",
+      "split": "dev",
+      "category": "unanswerable",
+      "question": "Telco-RAG 在运营商生产环境中把网络故障时长降低了百分之多少？",
+      "answerable": false,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "rag-cal-011",
+      "split": "dev",
+      "category": "unanswerable",
+      "question": "MusT-RAG 在 2028 年格莱美官方投票预测中的准确率是多少？",
+      "answerable": false,
+      "gold_evidence_groups": []
+    },
+    {
+      "item_id": "rag-cal-012",
+      "split": "dev",
+      "category": "unanswerable",
+      "question": "Guardian Crawler 部署到真实失踪人员网站后，经人工验证的答案忠实率是多少？",
+      "answerable": false,
+      "gold_evidence_groups": []
+    }
+  ]
+}

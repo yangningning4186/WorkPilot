@@ -126,7 +126,7 @@ def render_capabilities_block(granted: Sequence[str], available: Sequence[str]) 
         # 停在一次多余的授权请求上的。这条边界只有我们知道, 不说它就只能靠猜。
         "能力按执行边界划分：run_shell 需要 host.execute，run_sandbox 需要 sandbox.execute，"
         "命令自身造成的读写不再单独要 filesystem.* ；"
-        "filesystem.* 管的是 read_text_file / write_text_file 这类文件工具。",
+        "filesystem.* 管的是 read_file / write_file 这类文件工具。",
         "</capabilities>",
     ]
     return "\n".join(lines)

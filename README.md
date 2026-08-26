@@ -13,9 +13,34 @@ WorkPilot 是一个运行在本机的 AI 工作助手，把有依据的文档阅
 | 阅读 | “这篇论文第三节在论证什么？” | 回答可携带页码定位，阅读器跳转并高亮对应原文 |
 | 知识库 | “我读过的资料里，哪些方法使用了负样本？” | FAISS + BM25 混合检索，可选本机 cross-encoder 精排，引用到文件与页码 |
 | Agent 任务 | “整理这些资料并生成一份综述” | 模型维护任务清单，支持计划审批、过程可见、中断和恢复 |
+| Agent Team | “让架构、测试和安全 Worker 并行审查项目” | Lead 维护共享 Board；独立任务并发执行；返工保留反馈与上一版报告；未完全收口时明确标记“部分完成” |
 | 本地办公 | “修改 Word 结论并更新 Excel 汇总公式” | 在用户选择的工作空间内操作，提供备份、冲突检测、原子替换和 Artifact 预览 |
 | 长期记忆 | “以后先给结论，再补依据” | global / workspace / conversation 三级作用域，修改保留版本历史 |
 | 自动化 | “每天早上检查任务并发送摘要” | 支持单次与 cron 计划、重叠保护、离线补跑和人工处理 Inbox |
+
+## 产品演示
+
+| Cowork 首页 | 日常办公与产物预览 |
+|---|---|
+| ![WorkPilot Cowork 首页](docs/assets/demo/首页.png) | ![日常办公预览](docs/assets/demo/日常办公预览.png) |
+
+| 论文阅读 | Agentic RAG |
+|---|---|
+| ![论文阅读与引用联动](docs/assets/demo/阅读论文.png) | ![Agentic RAG](docs/assets/demo/Agentic%20RAG.png) |
+
+| 知识库 | 三级记忆管理 |
+|---|---|
+| ![知识库](docs/assets/demo/知识库.png) | ![记忆管理页](docs/assets/demo/记忆管理页.png) |
+
+| Skill 自动蒸馏与晋升 | MCP 连接器 |
+|---|---|
+| ![Skill 自动蒸馏与晋升](docs/assets/demo/skill自动蒸馏与晋升.png) | ![MCP 连接器](docs/assets/demo/MCP连接器.png) |
+
+| 自动化任务 | 模型与密钥 |
+|---|---|
+| ![自动化任务](docs/assets/demo/自动化任务.png) | ![模型与密钥](docs/assets/demo/模型与密钥.png) |
+
+替换演示图时保留相同文件名即可；新增图片放入 `docs/assets/demo/`，再通过相对路径 `![说明](docs/assets/demo/文件名.png)` 引用。
 
 ## 安全与可信边界
 
@@ -33,7 +58,7 @@ WorkPilot 是一个运行在本机的 AI 工作助手，把有依据的文档阅
 | 桌面 | Tauri 2 · 随机 localhost sidecar · 每次启动注入 token · 单实例运行 |
 | 前端 | Next.js 16 App Router · React 19 · TypeScript · SSE · 原生 CSS |
 | 后端 | Python 3.12 · FastAPI · Pydantic · 嵌入式 worker |
-| Agent | 确定性工具循环 · checkpoint · 三维预算 · 计划审批 · 调用租约 |
+| Agent | 确定性工具循环 · checkpoint · 三维预算 · 计划审批 · 调用租约 · Lead/Worker Agent Team · 共享 Board |
 | 阅读 | PDF/文本 locator · block 级 bbox · 引文校验 · 阅读器联动 · 持久批注 |
 | 知识库 | MinerU / PyMuPDF · LlamaIndex · FAISS/BM25 · 多版本索引 · 可选精排 |
 | 办公编辑 | 会话级工作空间 · 格式 Skill · 受控持久 Shell · Artifact 预览与语义 diff |

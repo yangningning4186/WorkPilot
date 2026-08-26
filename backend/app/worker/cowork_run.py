@@ -23,7 +23,7 @@ from app.core.queue import get_run_queue
 from app.core.run_bus import RunBus
 from app.cowork.automation_tools import register_scheduler_tools
 from app.cowork.browser_tools import PlaywrightBrowserManager, register_browser_tools
-from app.cowork.connector_tools import register_connector_tools
+from app.cowork.connector_tools import connected_connector_kinds, register_connector_tools
 from app.cowork.conversation_titles import (
     fallback_conversation_title,
     generate_conversation_title,
@@ -44,6 +44,7 @@ from app.cowork.shell_tasks import CoworkShellTaskManager
 from app.cowork.skills.candidate_store import schedule_skill_distillation
 from app.cowork.skills.distillation import successful_tool_names
 from app.cowork.subagent import register_readonly_subagent
+from app.cowork.teams import register_team_tools, team_run_summary
 from app.cowork.tools import CoworkToolRegistry, build_default_cowork_registry
 from app.cowork_store.factory import local_cowork_stores
 from app.knowledge_contracts import RagService
@@ -310,10 +311,14 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                     )
                     ctx["browser_manager"] = browser_manager
                 register_browser_tools(registry, browser_manager)
-                register_connector_tools(registry)
+                register_connector_tools(
+                    registry,
+                    enabled_kinds=connected_connector_kinds(settings),
+                )
                 register_scheduler_tools(registry)
                 register_memory_tools(registry)
                 register_readonly_subagent(registry)
+                register_team_tools(registry)
                 register_rag_tools(registry, rag)
             else:
                 registry = configured_registry
@@ -383,9 +388,16 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
             if terminal_status == "budget_exceeded"
             else "failed"
         )
+        team_summary = await team_run_summary(lead_conversation_id=run.conversation_id)
+        if (
+            run_status == "done"
+            and team_summary is not None
+            and team_summary["completion_status"] == "partial"
+        ):
+            run_status = "partial"
         message_status = (
             "completed"
-            if run_status == "done"
+            if run_status in {"done", "partial"}
             else "cancelled"
             if run_status == "cancelled"
             else "failed"
@@ -398,20 +410,25 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                 content=final_text,
                 citations=state["final_citations"],
             )
-            events: list[tuple[str, dict[str, Any]]] = [
-                *(("citation", item) for item in state["final_citations"]),
-                # 终态正文是一份原子快照：不先 reset 再发整段 delta，避免消费者
-                # 在两条事件之间闪成空白，也避免重连时把整段当成新增量动画。
-                ("message.snapshot", {"text": final_text}),
-                (
-                    "message.done",
-                    {"message_id": str(message_id), "status": message_status},
-                ),
-                (
-                    "run.done",
-                    {"workflow_type": "cowork", "status": run_status},
-                ),
-            ]
+            events: list[tuple[str, dict[str, Any]]] = []
+            if team_summary is not None:
+                events.append(("team.summary", team_summary))
+            events.extend(
+                [
+                    *(("citation", item) for item in state["final_citations"]),
+                    # 终态正文是一份原子快照：不先 reset 再发整段 delta，避免消费者
+                    # 在两条事件之间闪成空白，也避免重连时把整段当成新增量动画。
+                    ("message.snapshot", {"text": final_text}),
+                    (
+                        "message.done",
+                        {"message_id": str(message_id), "status": message_status},
+                    ),
+                    (
+                        "run.done",
+                        {"workflow_type": "cowork", "status": run_status},
+                    ),
+                ]
+            )
             finished_run, _ = await finish_run_with_events(
                 session,
                 run_id=run_id,
