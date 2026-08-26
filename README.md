@@ -53,6 +53,8 @@ WorkPilot 是一个运行在本机的 AI 工作助手，把有依据的文档阅
 
 ## 技术架构
 
+![WorkPilot 系统架构图](docs/assets/architecture/workpilot-architecture.png)
+
 | 层 | 技术与实现 |
 |---|---|
 | 桌面 | Tauri 2 · 随机 localhost sidecar · 每次启动注入 token · 单实例运行 |
