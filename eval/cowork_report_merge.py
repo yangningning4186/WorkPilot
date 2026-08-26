@@ -101,9 +101,7 @@ def merge_infrastructure_retries(
                     f"{item_id}: 原状态 {old_status!r} 不是运行级异常，禁止挑选替换"
                 )
             if new_status not in {"done", "waiting_human"} or new_observation.get("error"):
-                raise CoworkRetryMergeError(
-                    f"{item_id}: 重试仍未正常终止 status={new_status!r}"
-                )
+                raise CoworkRetryMergeError(f"{item_id}: 重试仍未正常终止 status={new_status!r}")
             replacements[item_id] = replacement
             audit.append(
                 {
@@ -162,7 +160,9 @@ def main() -> None:
         label=args.label,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    args.output.write_text(
+        json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     print(args.output)
 
 

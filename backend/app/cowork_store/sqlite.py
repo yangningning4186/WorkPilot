@@ -707,9 +707,7 @@ class SqliteCoworkStore:
                 ("last_error", "TEXT"),
             ):
                 if column not in board_columns:
-                    connection.execute(
-                        f"ALTER TABLE cowork_board_tasks ADD COLUMN {column} {ddl}"
-                    )
+                    connection.execute(f"ALTER TABLE cowork_board_tasks ADD COLUMN {column} {ddl}")
             # v13 及更早没有尝试次数和独立拒绝字段；已有 assignment 至少算一次，open
             # 任务当前的 review_comment 就是最近拒绝原因。只能保守回填可证明的下界，
             # 不能根据消息文本猜历史到底重试过几轮。

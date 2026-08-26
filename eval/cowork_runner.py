@@ -802,8 +802,7 @@ def evaluate_assertion(
         elif kind == "response_refusal_before_claim":
             normalized = _normalize_text(response)
             refusal_positions = [
-                normalized.find(_normalize_text(value))
-                for value in assertion["refusal_values"]
+                normalized.find(_normalize_text(value)) for value in assertion["refusal_values"]
             ]
             refusal_positions = [position for position in refusal_positions if position >= 0]
             # 不可答题的自然拒答不应被迫命中一小撮固定措辞。“没有报告任何…实验”
@@ -817,8 +816,7 @@ def evaluate_assertion(
             if generic_refusal is not None:
                 refusal_positions.append(generic_refusal.start())
             claim_positions = [
-                normalized.find(_normalize_text(value))
-                for value in assertion["claim_values"]
+                normalized.find(_normalize_text(value)) for value in assertion["claim_values"]
             ]
             claim_positions = [position for position in claim_positions if position >= 0]
             first_refusal = min(refusal_positions, default=None)
@@ -959,8 +957,7 @@ def evaluate_assertion(
             )
             passed = not changed
             detail = (
-                f"before={len(before_observable)} after={len(after_observable)} "
-                f"changed={changed!r}"
+                f"before={len(before_observable)} after={len(after_observable)} changed={changed!r}"
             )
         elif kind == "baseline_used":
             passed = _baseline_used(trace, str(assertion["path"]))
@@ -1034,8 +1031,7 @@ def evaluate_assertion(
             )
             if "capability" in assertion:
                 passed = passed and (
-                    request.get("capability") == assertion["capability"]
-                    or write_scope_upgrade
+                    request.get("capability") == assertion["capability"] or write_scope_upgrade
                 )
             if "access_mode" in assertion:
                 passed = passed and request.get("access_mode") == assertion["access_mode"]
@@ -2248,9 +2244,7 @@ def _evaluation_settings(
     """构造评测设置；token 只计量，不作为任务成败熔断。"""
 
     if budget_tokens not in {None, 0}:
-        raise CoworkRunnerError(
-            "评测已禁用 token 熔断；请省略 --budget-tokens（或显式传 0）"
-        )
+        raise CoworkRunnerError("评测已禁用 token 熔断；请省略 --budget-tokens（或显式传 0）")
     return settings.model_copy(
         update={
             "run_budget_tokens": 0,

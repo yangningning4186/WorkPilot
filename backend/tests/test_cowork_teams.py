@@ -572,6 +572,5 @@ async def test_run_finishes_partial_when_team_board_still_has_open_tasks(
     assert summary.payload["completion_status"] == "partial"
     assert summary.payload["tasks"][0]["status"] == "open"
     assert any(
-        event.type == "run.done" and event.payload["status"] == "partial"
-        for event in events
+        event.type == "run.done" and event.payload["status"] == "partial" for event in events
     )

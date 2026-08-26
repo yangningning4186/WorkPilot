@@ -24,13 +24,13 @@ from statistics import fmean
 from typing import Any
 from uuid import UUID, uuid4, uuid5
 
+from llama_index.core.utils import get_tokenizer
+
 from app.core.config import Settings
 from app.knowledge_contracts import KnowledgeUnavailableError
 from app.rag.kb.index import KbHit, load_index, search_index
 from app.rag.kb.manifest import KbDocument, KbIndexVersion, KbManifest
 from app.rag.kb.service import LocalKbService
-from llama_index.core.utils import get_tokenizer
-
 from eval.kb_retrieval_suite import (
     KbRetrievalItem,
     KbRetrievalSuite,
@@ -621,10 +621,7 @@ async def run_evaluation(
         observations,
         rerank_required=settings.rerank_enabled,
     )
-    if (
-        refusal_calibration is not None
-        and refusal_calibration.score_source != actual_score_source
-    ):
+    if refusal_calibration is not None and refusal_calibration.score_source != actual_score_source:
         raise ValueError(
             "拒答校准与本次运行分数量纲不一致: "
             f"calibration={refusal_calibration.score_source}, actual={actual_score_source}"

@@ -283,9 +283,7 @@ async def test_mixed_batch_keeps_the_call_that_still_makes_progress(
     provider = NativeToolProvider(
         [
             *(
-                _tool_completion(
-                    ToolCall(id=f"a-{index}", name="read_file", arguments=repeated)
-                )
+                _tool_completion(ToolCall(id=f"a-{index}", name="read_file", arguments=repeated))
                 for index in range(DEFAULT_REPEAT_LIMIT)
             ),
             # 第四次读 a.md 会被拦，同一批里的 b.md 必须照常读到。

@@ -61,9 +61,7 @@ def _experiment_config(report: dict[str, Any]) -> dict[str, Any]:
 def _contract(report: dict[str, Any]) -> dict[str, Any]:
     suite = report.get("suite") if isinstance(report.get("suite"), dict) else {}
     reproducibility = (
-        report.get("reproducibility")
-        if isinstance(report.get("reproducibility"), dict)
-        else {}
+        report.get("reproducibility") if isinstance(report.get("reproducibility"), dict) else {}
     )
     kb = report.get("kb") if isinstance(report.get("kb"), dict) else {}
     return {
@@ -176,7 +174,9 @@ def main() -> None:
         label=args.label,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    args.output.write_text(
+        json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     print(args.output)
 
 

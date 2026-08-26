@@ -665,9 +665,7 @@ def test_reading_case_uses_application_reading_mode_and_fixture_path(tmp_path: P
     work_mode, reading_path = _fixture_work_mode(item, materialized)
 
     assert work_mode == "reading"
-    assert reading_path == str(
-        (materialized.workspace / "papers/rag-survey.md").resolve()
-    )
+    assert reading_path == str((materialized.workspace / "papers/rag-survey.md").resolve())
 
 
 @pytest.mark.integration

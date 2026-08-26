@@ -107,9 +107,7 @@ def _retrieved_tokens(item: dict[str, Any], config: dict[str, Any]) -> RatioPoin
     return RatioPoint(float(tokens), 1.0)
 
 
-_REFUSAL_THRESHOLD_SOURCES = frozenset(
-    {"dev_calibrated", "independent_calibration", "manual"}
-)
+_REFUSAL_THRESHOLD_SOURCES = frozenset({"dev_calibrated", "independent_calibration", "manual"})
 
 
 def _refusal_correct_by_score(item: dict[str, Any], config: dict[str, Any]) -> RatioPoint:

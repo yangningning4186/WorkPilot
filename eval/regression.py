@@ -517,9 +517,7 @@ def _normalize_legacy(payload: dict[str, Any], path: Path, kind: str) -> Normali
     suite_value = payload.get("suite")
     suite: dict[str, Any] = dict(suite_value) if isinstance(suite_value, dict) else {}
     reproducibility_value = payload.get("reproducibility")
-    reproducibility = (
-        dict(reproducibility_value) if isinstance(reproducibility_value, dict) else {}
-    )
+    reproducibility = dict(reproducibility_value) if isinstance(reproducibility_value, dict) else {}
     calibration_value = config.get("refusal_calibration")
     calibration = dict(calibration_value) if isinstance(calibration_value, dict) else {}
     fingerprint = _optional_string(
@@ -707,9 +705,7 @@ def _validate_snapshot_provenance(report: NormalizedReport, policy: RegressionPo
     if report.git_dirty is not False:
         raise RegressionRefused("Git dirty 或状态缺失的报告不能晋升 baseline")
     if report.review_status != "approved" or not report.reviewer or not report.reviewed_at:
-        raise RegressionRefused(
-            "题库未 approved 或缺少 reviewer/reviewed_at，不能晋升 baseline"
-        )
+        raise RegressionRefused("题库未 approved 或缺少 reviewer/reviewed_at，不能晋升 baseline")
     try:
         reviewed_at = datetime.fromisoformat(report.reviewed_at.replace("Z", "+00:00"))
     except ValueError as error:

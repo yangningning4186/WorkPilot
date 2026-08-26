@@ -21,9 +21,7 @@ from app.core.config import Settings
 from app.rag.kb.service import LocalKbService
 from eval.kb_retrieval_runner import IndexCatalog, load_catalog
 
-DEFAULT_REPAIR = Path(
-    "eval/outputs/dev-benchmark-repair/20260817T174136Z-f83fefb64408.json"
-)
+DEFAULT_REPAIR = Path("eval/outputs/dev-benchmark-repair/20260817T174136Z-f83fefb64408.json")
 DEFAULT_RETRIEVAL = Path(
     "eval/outputs/dev-suite-retrieval/"
     "20260817T025642.034728Z-nightly-baseline-20260817/heading/report.json"
@@ -122,7 +120,8 @@ def migrate(
                 "difficulty": int(raw["difficulty"]),
                 "question": str(raw["question"]),
                 "gold_answer": str(raw["gold_answer"]),
-                "constraints": raw.get("constraints") or {
+                "constraints": raw.get("constraints")
+                or {
                     "must_include": [],
                     "must_not_include": [],
                 },
@@ -152,9 +151,7 @@ def migrate(
             "minimum_observed_match_score": min(scores),
             "repair_export_sha256": _sha256(repair_path),
             "retrieval_report_sha256": _sha256(retrieval_path),
-            "source_kb_versions": {
-                slug: catalogs[slug].version.version_id for slug in SOURCE_KBS
-            },
+            "source_kb_versions": {slug: catalogs[slug].version.version_id for slug in SOURCE_KBS},
         },
         "corpus": {
             "kb_slug": "m1-dev-70-v2",
@@ -228,7 +225,10 @@ def _indexed_texts(
             if previous_meta != meta:
                 raise ValueError(f"同名文件在多个 KB 中内容不一致: {filename}")
     return (
-        {name: tuple(sorted(pages, key=lambda page: page.page_no or 0)) for name, pages in by_filename.items()},
+        {
+            name: tuple(sorted(pages, key=lambda page: page.page_no or 0))
+            for name, pages in by_filename.items()
+        },
         source_meta,
     )
 
@@ -247,9 +247,7 @@ def _migrate_span(
         current, offsets = _normalize_with_map(page.text)
         start = 0
         while normalized and (found := current.find(normalized, start)) >= 0:
-            exact.append(
-                (page, offsets[found], offsets[found + len(normalized) - 1] + 1)
-            )
+            exact.append((page, offsets[found], offsets[found + len(normalized) - 1] + 1))
             start = found + 1
     if exact:
         old_start = int(raw["char_start"])
@@ -260,8 +258,7 @@ def _migrate_span(
         (score, start, end), page = max(candidates, key=lambda item: item[0][0])
         if score < MIN_FUZZY_MATCH:
             raise ValueError(
-                f"{filename} gold 无法可靠迁移: score={score:.3f}, "
-                f"quote={historical[:100]!r}"
+                f"{filename} gold 无法可靠迁移: score={score:.3f}, quote={historical[:100]!r}"
             )
     start, end = _trim_range(page.text, start, end)
     quote = page.text[start:end]

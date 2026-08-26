@@ -504,8 +504,7 @@ class _TeamWorkerRuntime:
             if updated["calls_used"] >= self.limits.tool_calls:
                 updated["status"] = "answered"
                 updated["report"] = (
-                    f"Worker 已达到 {self.limits.tool_calls} 次工具调用上限；"
-                    "验收前请检查已有证据。"
+                    f"Worker 已达到 {self.limits.tool_calls} 次工具调用上限；验收前请检查已有证据。"
                 )
                 break
             updated["calls_used"] += 1

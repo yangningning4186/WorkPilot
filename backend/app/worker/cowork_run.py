@@ -413,20 +413,22 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
             events: list[tuple[str, dict[str, Any]]] = []
             if team_summary is not None:
                 events.append(("team.summary", team_summary))
-            events.extend([
-                *(("citation", item) for item in state["final_citations"]),
-                # 终态正文是一份原子快照：不先 reset 再发整段 delta，避免消费者
-                # 在两条事件之间闪成空白，也避免重连时把整段当成新增量动画。
-                ("message.snapshot", {"text": final_text}),
-                (
-                    "message.done",
-                    {"message_id": str(message_id), "status": message_status},
-                ),
-                (
-                    "run.done",
-                    {"workflow_type": "cowork", "status": run_status},
-                ),
-            ])
+            events.extend(
+                [
+                    *(("citation", item) for item in state["final_citations"]),
+                    # 终态正文是一份原子快照：不先 reset 再发整段 delta，避免消费者
+                    # 在两条事件之间闪成空白，也避免重连时把整段当成新增量动画。
+                    ("message.snapshot", {"text": final_text}),
+                    (
+                        "message.done",
+                        {"message_id": str(message_id), "status": message_status},
+                    ),
+                    (
+                        "run.done",
+                        {"workflow_type": "cowork", "status": run_status},
+                    ),
+                ]
+            )
             finished_run, _ = await finish_run_with_events(
                 session,
                 run_id=run_id,

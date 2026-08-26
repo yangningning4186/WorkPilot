@@ -124,9 +124,7 @@ async def prepare_frozen_kb(
                     f"知识库 {suite.kb_slug!r} 已存在但 corpus 漂移；"
                     "评测器不会删除或原地覆盖，请人工核对后换新 slug"
                 )
-            if existing.active is None or not existing.active.covers(
-                existing.document_hashes
-            ):
+            if existing.active is None or not existing.active.covers(existing.document_hashes):
                 raise ValueError(f"知识库 {suite.kb_slug!r} 没有覆盖完整 corpus 的 active index")
             return
 
@@ -172,7 +170,10 @@ async def prepare_frozen_kb(
             raise ValueError(f"来源 KB {slug!r} 没有覆盖完整文档集的 active index")
         source_versions.append((slug, version))
     signatures = {version.embedding for _slug, version in source_versions}
-    retrievals = {json.dumps(version.retrieval.to_dict(), sort_keys=True) for _slug, version in source_versions}
+    retrievals = {
+        json.dumps(version.retrieval.to_dict(), sort_keys=True)
+        for _slug, version in source_versions
+    }
     if len(signatures) != 1 or len(retrievals) != 1:
         raise ValueError("来源 KB 的 embedding 或 retrieval 配置不一致，不能组合索引")
     signature = next(iter(signatures))
@@ -382,9 +383,7 @@ async def run_generation(
         },
         "authorization": {
             "approved": True,
-            "note_fingerprint": hashlib.sha256(
-                authorization_note.strip().encode()
-            ).hexdigest(),
+            "note_fingerprint": hashlib.sha256(authorization_note.strip().encode()).hexdigest(),
             "data_scope": f"{len(selected_items)} dev questions and truncated local-KB evidence",
         },
         "config": config,
@@ -494,7 +493,9 @@ async def _evaluate_item(
         available = {item.citation_id: item for item in selected}
         invalid_labels = [label for label in citation_labels if label not in available]
         malformed = [
-            label for label in _CITATION_LIKE.findall(answer) if not re.fullmatch(r"S[1-9]\d*", label)
+            label
+            for label in _CITATION_LIKE.findall(answer)
+            if not re.fullmatch(r"S[1-9]\d*", label)
         ]
         citations = [available[label] for label in citation_labels if label in available]
         validity_issues: list[str] = []
@@ -585,9 +586,7 @@ def _select_evidence(
         # gold 区间与引用对象都必须指向完整节点，不能把 quote 截短后还沿用原 char_end。
         if len(node.text) > remaining and selected:
             continue
-        selected.append(
-            SelectedEvidence(citation_id=f"S{len(selected) + 1}", hit=hit, node=node)
-        )
+        selected.append(SelectedEvidence(citation_id=f"S{len(selected) + 1}", hit=hit, node=node))
         used += len(node.text)
     return selected
 
@@ -673,7 +672,9 @@ def _validate_corpus(suite: GenerationSuite, catalog: IndexCatalog) -> None:
                 if not candidates:
                     raise ValueError(f"{item.item_id}: gold 对应页面不在 index 中")
                 if not any(
-                    max(0, min(node.char_end, span.char_end) - max(node.char_start, span.char_start))
+                    max(
+                        0, min(node.char_end, span.char_end) - max(node.char_start, span.char_start)
+                    )
                     > 0
                     for node in candidates
                 ):
@@ -775,15 +776,11 @@ def _file_sha256(path: Path) -> str:
 
 
 def _repo_root() -> Path:
-    return Path(
-        subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
-    )
+    return Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
 
 
 def _git_state(repo_root: Path) -> tuple[str, bool]:
-    sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=repo_root, text=True
-    ).strip()
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root, text=True).strip()
     status = subprocess.check_output(
         ["git", "status", "--porcelain", "--untracked-files=all"],
         cwd=repo_root,
@@ -860,10 +857,7 @@ async def _main() -> None:
     if args.command == "prepare-kb":
         await prepare_frozen_kb(suite=suite, service=service, settings=settings)
         manifest = service.get(suite.kb_slug)
-        print(
-            f"{manifest.slug}: {len(manifest.documents)} docs, "
-            f"active={manifest.active_version}"
-        )
+        print(f"{manifest.slug}: {len(manifest.documents)} docs, active={manifest.active_version}")
         return
     result = await run_generation(
         suite_path=args.suite,

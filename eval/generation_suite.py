@@ -34,9 +34,7 @@ class GenerationGoldSpan:
             raise ValueError("gold content_hash 必须是 64 位小写 SHA-256")
         if not self.filename.strip():
             raise ValueError("gold filename 不能为空")
-        if self.page_no is not None and (
-            isinstance(self.page_no, bool) or self.page_no < 1
-        ):
+        if self.page_no is not None and (isinstance(self.page_no, bool) or self.page_no < 1):
             raise ValueError("gold page_no 必须为正整数或 null")
         if self.char_start < 0 or self.char_end <= self.char_start:
             raise ValueError("gold 字符区间无效")

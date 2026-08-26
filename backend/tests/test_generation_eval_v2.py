@@ -21,12 +21,15 @@ def test_frozen_generation_suite_is_self_contained_and_approved() -> None:
     assert len(suite.corpus) == 37
     assert sum(item.answerable for item in suite.items) == 57
     assert sum(not item.answerable for item in suite.items) == 13
-    assert min(
-        span.migration_match_score
-        for item in suite.items
-        for group in item.evidence_groups
-        for span in group.alternatives
-    ) >= 0.60
+    assert (
+        min(
+            span.migration_match_score
+            for item in suite.items
+            for group in item.evidence_groups
+            for span in group.alternatives
+        )
+        >= 0.60
+    )
 
 
 def test_loader_rejects_unapproved_human_suite(tmp_path: Path) -> None:
