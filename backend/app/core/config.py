@@ -135,6 +135,10 @@ class Settings(BaseSettings):
     cowork_skill_candidates_path: Path = Path("~/.workpilot/skills-candidates")
     # 长期记忆：注入块整体有上限，单条超过 preview 就截断并让模型按需 memory_read，
     # 避免一条几千字的记忆吃掉整个上下文预算。
+    # save 是所有新增/改写的部署硬开关；extraction 只控制后台自动抽取流水线。两者分开，
+    # 避免管理员只是停自动学习时连用户显式保存也一起关掉。
+    memory_save_enabled: bool = True
+    memory_recall_enabled: bool = True
     cowork_memory_max_items: int = Field(default=200, ge=1, le=500)
     cowork_memory_block_max_chars: int = Field(default=4_000, ge=0, le=40_000)
     cowork_memory_preview_chars: int = Field(default=240, ge=40, le=4_000)
@@ -143,7 +147,8 @@ class Settings(BaseSettings):
     # 自动蒸馏先积累独立成功运行证据，再安装 learned-* Skill。高风险工具不会进入
     # 自动晋升候选；阈值不是模型自己决定，而是服务端确定性门禁。
     skill_distillation_enabled: bool = True
-    skill_auto_promotion_enabled: bool = True
+    # Skill 会改变未来会话遵循的指令，默认只产出候选并等待用户在管理界面晋升。
+    skill_auto_promotion_enabled: bool = False
     skill_promotion_min_evidence: int = Field(default=3, ge=2, le=20)
     skill_promotion_min_confidence: float = Field(default=0.82, ge=0.0, le=1.0)
     skill_distillation_max_tokens: int = Field(default=900, ge=128, le=4_096)
@@ -167,6 +172,11 @@ class Settings(BaseSettings):
     cowork_shell_timeout_s: float = Field(default=120.0, gt=0, le=3_600)
     cowork_shell_terminate_grace_s: float = Field(default=2.0, ge=0, le=30)
     cowork_shell_max_output_bytes: int = Field(default=64 * 1024, ge=1_024, le=4 * 1024 * 1024)
+    # 模型只拿尾部短视图；完整输出写入授权工作区供后续 search/grep。仍设磁盘硬上限，
+    # 防止无限刷 stdout 的命令在超时前耗尽磁盘。
+    cowork_shell_full_output_max_bytes: int = Field(
+        default=64 * 1024 * 1024, ge=1_024, le=256 * 1024 * 1024
+    )
     # sandbox.execute 使用真实 Docker/Podman 隔离：无网络、只读 rootfs、drop capabilities。
     # auto 只探测已安装后端；镜像不存在会直接失败，绝不回退到 host.execute。
     cowork_sandbox_runtime: Literal["auto", "disabled", "docker", "podman"] = "auto"
@@ -235,6 +245,10 @@ class Settings(BaseSettings):
     # Provider 侧 Prompt Cache 只复用 KV 前缀，不复用模型输出。evaluation 仍强制关闭
     # 显式写入，确保跑批延迟与 token 台账不被历史缓存污染。
     provider_prompt_cache_enabled: bool = True
+    # 同一 endpoint 上先吸收瞬时 429/5xx，再允许路由 fallback。配额耗尽的 429 不重试。
+    llm_provider_max_retries: int = Field(default=2, ge=0, le=10)
+    llm_provider_retry_base_delay_s: float = Field(default=0.5, ge=0, le=60)
+    llm_provider_retry_max_delay_s: float = Field(default=8.0, ge=0, le=300)
     # 非官方 OpenAI-compatible 服务对 prompt_cache_key 的兼容性不统一。默认不发送，
     # 经端点能力验证后再打开；provider=openai 不受此开关影响。
     openai_compatible_prompt_cache_key_enabled: bool = False
@@ -309,15 +323,12 @@ class Settings(BaseSettings):
     conversation_summary_max_chars: int = Field(default=2400, ge=200, le=10000)
     conversation_summary_input_max_chars: int = Field(default=100_000, ge=1000, le=500_000)
     conversation_summary_max_tokens: int = Field(default=600, ge=64, le=2048)
-    # owner 长期记忆。demo 路径无视开关也不抽取/召回；两项仍可独立紧急关闭。
+    # owner 长期记忆。demo 路径无视开关也不抽取；召回开关和实际 Cowork 注入配置
+    # 放在上面的 cowork memory 段，避免两套 top_k/context/pinned 参数互相冒充生效。
     memory_extraction_enabled: bool = True
-    memory_recall_enabled: bool = True
     memory_job_lease_s: int = Field(default=120, ge=10, le=1800)
     memory_job_retry_delay_s: int = Field(default=30, ge=0, le=3600)
     memory_job_max_attempts: int = Field(default=3, ge=1, le=10)
-    memory_recall_top_k: int = Field(default=5, ge=1, le=20)
-    memory_pinned_limit: int = Field(default=3, ge=0, le=20)
-    memory_context_max_chars: int = Field(default=2000, ge=200, le=10000)
     # 真实子问题的逐查询排名近似 gold coverage oracle；默认关闭，P1-K 验证后再决定上线。
     # 只在 query_decomposition 确实返回 >=2 个子问题时介入，简单题逐位回退原 RRF。
     coverage_selection_enabled: bool = False
@@ -362,6 +373,8 @@ class Settings(BaseSettings):
             raise ValueError("desktop 模式要求至少 32 字符的随机 launch token")
         if self.cowork_provider_timeout_retry_base_s > self.cowork_provider_timeout_retry_max_s:
             raise ValueError("Cowork Provider 超时重试的基础退避不能大于最大退避")
+        if self.llm_provider_retry_base_delay_s > self.llm_provider_retry_max_delay_s:
+            raise ValueError("Provider 响应重试的基础退避不能大于最大退避")
         return self
 
 

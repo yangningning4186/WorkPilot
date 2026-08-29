@@ -16,6 +16,7 @@ PostgreSQL 那版短，而不是长。
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, date, datetime
@@ -33,6 +34,8 @@ from workpilot_telemetry.budget import (
     IdempotencyConflictError,
     InvalidReservationTransitionError,
 )
+from workpilot_telemetry.records import validate_audit_record
+from workpilot_telemetry.spans import AgentSpanRecord, validate_span_attributes
 
 T = TypeVar("T")
 
@@ -48,6 +51,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     run_id TEXT,
     eval_run_id TEXT,
     task_type TEXT NOT NULL,
+    cause TEXT NOT NULL DEFAULT 'primary',
     tier TEXT NOT NULL,
     model TEXT NOT NULL,
     provider TEXT NOT NULL,
@@ -64,11 +68,33 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     cache_type TEXT,
     was_fallback INTEGER NOT NULL DEFAULT 0,
     batch_id TEXT,
+    span_id TEXT,
+    parent_span_id TEXT,
+    stop_reason TEXT,
     created_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS llm_calls_created_at_idx ON llm_calls(created_at);
 CREATE INDEX IF NOT EXISTS llm_calls_task_type_idx ON llm_calls(task_type, created_at);
+
+CREATE TABLE IF NOT EXISTS agent_spans (
+    span_id TEXT PRIMARY KEY,
+    trace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    parent_span_id TEXT,
+    name TEXT NOT NULL CHECK (
+        name IN ('agent.run', 'agent.turn', 'agent.tool', 'agent.compaction')
+    ),
+    status TEXT NOT NULL CHECK (status IN ('ok', 'error', 'cancelled')),
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    attributes TEXT NOT NULL,
+    error_type TEXT
+);
+
+CREATE INDEX IF NOT EXISTS agent_spans_run_idx ON agent_spans(run_id, started_at);
+CREATE INDEX IF NOT EXISTS agent_spans_parent_idx ON agent_spans(parent_span_id);
 
 CREATE TABLE IF NOT EXISTS daily_cost_budgets (
     budget_date TEXT PRIMARY KEY,
@@ -132,6 +158,63 @@ class SqliteTelemetryStore:
         connection = self._connect()
         try:
             connection.executescript(_SCHEMA)
+            existing = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(llm_calls)").fetchall()
+            }
+            for column in ("span_id", "parent_span_id", "stop_reason"):
+                if column not in existing:
+                    connection.execute(f"ALTER TABLE llm_calls ADD COLUMN {column} TEXT")
+            if "cause" not in existing:
+                connection.execute(
+                    "ALTER TABLE llm_calls ADD COLUMN cause TEXT NOT NULL DEFAULT 'primary'"
+                )
+                connection.execute(
+                    """UPDATE llm_calls SET cause = CASE
+                           WHEN task_type = 'cowork_compaction' THEN 'compaction'
+                           WHEN task_type IN (
+                               'conversation_title','memory_op','skill_distillation',
+                               'cowork_semantic_approval'
+                           ) THEN 'hook'
+                           ELSE 'primary' END"""
+                )
+            span_schema = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_spans'"
+            ).fetchone()
+            if span_schema is not None and "agent.compaction" not in str(span_schema["sql"]):
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    connection.execute("DROP INDEX IF EXISTS agent_spans_run_idx")
+                    connection.execute("DROP INDEX IF EXISTS agent_spans_parent_idx")
+                    connection.execute("ALTER TABLE agent_spans RENAME TO agent_spans_legacy")
+                    connection.execute(
+                        """CREATE TABLE agent_spans (
+                               span_id TEXT PRIMARY KEY, trace_id TEXT NOT NULL,
+                               run_id TEXT NOT NULL, parent_span_id TEXT,
+                               name TEXT NOT NULL CHECK (name IN (
+                                   'agent.run','agent.turn','agent.tool','agent.compaction'
+                               )),
+                               status TEXT NOT NULL CHECK (status IN ('ok','error','cancelled')),
+                               started_at TEXT NOT NULL, ended_at TEXT NOT NULL,
+                               duration_ms INTEGER NOT NULL, attributes TEXT NOT NULL,
+                               error_type TEXT
+                           )"""
+                    )
+                    connection.execute(
+                        """INSERT INTO agent_spans
+                           SELECT * FROM agent_spans_legacy"""
+                    )
+                    connection.execute("DROP TABLE agent_spans_legacy")
+                    connection.execute(
+                        "CREATE INDEX agent_spans_run_idx ON agent_spans(run_id, started_at)"
+                    )
+                    connection.execute(
+                        "CREATE INDEX agent_spans_parent_idx ON agent_spans(parent_span_id)"
+                    )
+                    connection.commit()
+                except BaseException:
+                    connection.rollback()
+                    raise
         finally:
             connection.close()
 
@@ -176,6 +259,7 @@ class SqliteTelemetryStore:
     # -- AuditSink ---------------------------------------------------------
 
     async def record(self, call: AuditRecord) -> None:
+        validate_audit_record(call)
         payload = vars(call)
         cost = payload.get("cost_usd")
         row = {
@@ -186,6 +270,7 @@ class SqliteTelemetryStore:
                 None if payload.get("eval_run_id") is None else str(payload["eval_run_id"])
             ),
             "task_type": payload["task_type"],
+            "cause": payload["cause"],
             "tier": payload["tier"],
             "model": payload["model"],
             "provider": payload["provider"],
@@ -200,23 +285,61 @@ class SqliteTelemetryStore:
             "cache_type": payload.get("cache_type"),
             "was_fallback": int(bool(payload.get("was_fallback", False))),
             "batch_id": None if payload.get("batch_id") is None else str(payload["batch_id"]),
+            "span_id": payload.get("span_id"),
+            "parent_span_id": payload.get("parent_span_id"),
+            "stop_reason": payload.get("stop_reason"),
             "created_at": _now(),
         }
         await self._write(
             lambda connection: connection.execute(
                 """
                 INSERT INTO llm_calls (
-                    id, trace_id, run_id, eval_run_id, task_type, tier, model, provider,
+                    id, trace_id, run_id, eval_run_id, task_type, cause, tier, model, provider,
                     prompt_tokens, output_tokens, latency_ms, success, cost_micro_usd,
                     prompt_cache_read_tokens, prompt_cache_write_tokens,
-                    cached, cache_type, was_fallback, batch_id, created_at
+                    cached, cache_type, was_fallback, batch_id, span_id, parent_span_id,
+                    stop_reason, created_at
                 ) VALUES (
-                    :id, :trace_id, :run_id, :eval_run_id, :task_type, :tier, :model, :provider,
+                    :id, :trace_id, :run_id, :eval_run_id, :task_type, :cause, :tier, :model, :provider,
                     :prompt_tokens, :output_tokens, :latency_ms, :success, :cost_micro_usd,
                     :prompt_cache_read_tokens, :prompt_cache_write_tokens,
-                    :cached, :cache_type, :was_fallback, :batch_id, :created_at
+                    :cached, :cache_type, :was_fallback, :batch_id, :span_id, :parent_span_id,
+                    :stop_reason, :created_at
                 )
                 """,
+                row,
+            )
+        )
+
+    async def record_span(self, span: AgentSpanRecord) -> None:
+        validate_span_attributes(span.name, span.attributes)
+        row = {
+            "span_id": span.span_id,
+            "trace_id": span.trace_id,
+            "run_id": str(span.run_id),
+            "parent_span_id": span.parent_span_id,
+            "name": span.name,
+            "status": span.status,
+            "started_at": span.started_at,
+            "ended_at": span.ended_at,
+            "duration_ms": span.duration_ms,
+            "attributes": json.dumps(
+                span.attributes,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ),
+            "error_type": span.error_type,
+        }
+        await self._write(
+            lambda connection: connection.execute(
+                """INSERT INTO agent_spans (
+                       span_id, trace_id, run_id, parent_span_id, name, status,
+                       started_at, ended_at, duration_ms, attributes, error_type
+                   ) VALUES (
+                       :span_id, :trace_id, :run_id, :parent_span_id, :name, :status,
+                       :started_at, :ended_at, :duration_ms, :attributes, :error_type
+                   )""",
                 row,
             )
         )

@@ -11,6 +11,10 @@ class SkillEnableRequest(BaseModel):
     enabled: bool
 
 
+class SkillSessionMuteRequest(BaseModel):
+    muted: bool
+
+
 class SkillZipImportRequest(BaseModel):
     archive_base64: str = Field(min_length=1, max_length=16_000_000)
     enabled: bool = True

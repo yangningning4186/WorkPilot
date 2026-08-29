@@ -12,19 +12,35 @@ from uuid import uuid4
 
 import httpx
 
-from workpilot_ai.errors import ProviderNotDispatchedError, ProviderResponseError
+from workpilot_ai.errors import (
+    ProviderNotDispatchedError,
+    ProviderResponseError,
+    ProviderRetryableError,
+)
 from workpilot_ai.providers.openai_compatible import (
     _dispatch_guard,
     _raise_with_body,
 )
 from workpilot_ai.types import (
     CompletionResult,
+    CompletionStopReason,
     EmbeddingResult,
     Message,
     ToolCall,
     ToolDefinition,
     Usage,
 )
+
+
+def _gemini_stop_reason(raw: object, *, has_tool_calls: bool) -> CompletionStopReason:
+    normalized = str(raw or "").casefold()
+    if normalized in {"max_tokens", "max_output_tokens", "length"}:
+        return "length"
+    if has_tool_calls:
+        return "tool_use"
+    if normalized in {"", "stop", "finish_reason_unspecified"}:
+        return "stop"
+    return "error"
 
 
 class GeminiProvider:
@@ -114,9 +130,13 @@ class GeminiProvider:
             _raise_with_body(response, response.text)
         body: dict[str, Any] = response.json()
         try:
-            parts = body["candidates"][0]["content"]["parts"]
+            candidate = body["candidates"][0]
+            parts = candidate["content"]["parts"]
         except (KeyError, IndexError, TypeError) as error:
             raise ProviderResponseError("Gemini 响应缺少 candidates[0].content.parts") from error
+        finish_reason = candidate.get("finishReason")
+        if not isinstance(finish_reason, str) or not finish_reason.strip():
+            raise ProviderRetryableError("Gemini response ended without candidates[0].finishReason")
         text_parts: list[str] = []
         calls: list[ToolCall] = []
         for part in parts:
@@ -138,7 +158,8 @@ class GeminiProvider:
                         ),
                     )
                 )
-        if not text_parts and not calls:
+        normalized_stop_reason = _gemini_stop_reason(finish_reason, has_tool_calls=bool(calls))
+        if not text_parts and not calls and normalized_stop_reason != "length":
             raise ProviderResponseError("Gemini 返回了空响应")
         usage = body.get("usageMetadata") or {}
         return CompletionResult(
@@ -151,6 +172,7 @@ class GeminiProvider:
                 prompt_cache_read_tokens=int(usage.get("cachedContentTokenCount", 0)),
             ),
             tool_calls=tuple(calls),
+            stop_reason=normalized_stop_reason,
         )
 
     async def stream(

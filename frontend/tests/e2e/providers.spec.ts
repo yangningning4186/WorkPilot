@@ -44,4 +44,15 @@ test.describe("模型服务配置", () => {
       "/providers",
     );
   });
+
+  test("新会话默认绑定首选用户模型，无需每次手动选择", async ({ page }) => {
+    await page.goto("/cowork?new=1");
+    await loginAsAdmin(page);
+
+    await page.getByLabel("你想让 Cowork 完成什么？").fill("直接运行默认模型");
+    await expect(page.getByText("Agent 已就绪", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "开始执行任务" })).toBeEnabled();
+    await page.locator(".workdesk-run-settings > summary").click();
+    await expect(page.getByLabel("模型服务")).toHaveValue("mock-provider");
+  });
 });

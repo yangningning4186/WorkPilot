@@ -25,9 +25,17 @@ from app.cowork.memory import (
     MemoryScopeError,
     default_workspace_path,
     forget_memory,
+    get_memory,
     list_memories,
     remember,
     update_memory,
+)
+from app.cowork.memory_policy import (
+    EffectiveMemoryPolicy,
+    MemoryPolicyDeniedError,
+    get_effective_memory_policy,
+    memory_policy_message,
+    require_memory_save_enabled,
 )
 from app.cowork.office_preview import OfficePreviewError, render_office_preview
 from app.cowork.permissions import (
@@ -89,6 +97,7 @@ from app.schemas.cowork import (
     MemoryListResponse,
     MemoryPatch,
     MemoryResponse,
+    MemoryUndo,
     ReadingAnnotationCreate,
     ReadingAnnotationCreated,
     ReadingAnnotationResponse,
@@ -324,7 +333,7 @@ async def get_workspace_trust(
     roots = await list_session_roots(session, conversation_id=conversation_id)
     items: list[WorkspaceTrustEntry] = []
     for root in roots:
-        trusted = await is_workspace_trusted(session, canonical_path=root.canonical_path)
+        trusted = False
         declared: list[str] = []
         rejected: list[str] = []
         config_error: str | None = None
@@ -333,6 +342,11 @@ async def get_workspace_trust(
         except WorkspaceTrustError as error:
             config_error = str(error)
         else:
+            trusted = await is_workspace_trusted(
+                session,
+                canonical_path=root.canonical_path,
+                policy_sha256=allowlist.policy_sha256,
+            )
             declared = list(allowlist.entries)
             rejected = [f"{entry}：{reason}" for entry, reason in allowlist.rejected]
         items.append(
@@ -363,15 +377,32 @@ async def put_workspace_trust(
     roots = await list_session_roots(session, conversation_id=conversation_id)
     if all(root.canonical_path != request.canonical_path for root in roots):
         raise HTTPException(status_code=404, detail="该目录不在本会话的已授权目录里")
-    await set_workspace_trust(
-        session, canonical_path=request.canonical_path, trusted=request.trusted
-    )
+    try:
+        await set_workspace_trust(
+            session, canonical_path=request.canonical_path, trusted=request.trusted
+        )
+    except WorkspaceTrustError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     await session.commit()
     return await get_workspace_trust(conversation_id, session)
 
 
 def _memory_response(record: object) -> MemoryResponse:
     return MemoryResponse.model_validate(record, from_attributes=True)
+
+
+async def _require_memory_save(
+    settings: Settings, *, conversation_id: UUID | None
+) -> EffectiveMemoryPolicy:
+    policy = await get_effective_memory_policy(settings, conversation_id=conversation_id)
+    try:
+        require_memory_save_enabled(policy)
+    except MemoryPolicyDeniedError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": error.reason, "message": memory_policy_message(error.reason)},
+        ) from error
+    return policy
 
 
 @router.get("/sessions/{conversation_id}/memories", response_model=MemoryListResponse)
@@ -383,8 +414,9 @@ async def get_memories(
 ) -> MemoryListResponse:
     """列出当前会话可见的记忆。
 
-    可见范围和注入给模型的完全一致：global + 本会话授权目录的 workspace + 本会话。
-    面板里看到的就是模型看到的，不然用户没法判断"它为什么会这么以为"。
+    作用域与模型注入相同：global + 本会话授权目录的 workspace + 本会话。但 owner、会话
+    或 deployment 关闭 recall 时，模型不会收到这些内容；管理列表仍然可见，方便审计和
+    隐私清理。策略开关不能把已经存在的数据藏到用户也无法删除。
     """
 
     try:
@@ -407,14 +439,19 @@ async def get_memories(
     status_code=status.HTTP_201_CREATED,
 )
 async def post_memory(
-    conversation_id: UUID, request: MemoryCreate, session: DbSession
+    conversation_id: UUID,
+    request: MemoryCreate,
+    session: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> MemoryResponse:
+    await _require_memory_save(settings, conversation_id=conversation_id)
     try:
         workspace_path = (
             await default_workspace_path(session, conversation_id=conversation_id)
             if request.scope == "workspace"
             else None
         )
+        policy = await _require_memory_save(settings, conversation_id=conversation_id)
         record, _ = await remember(
             session,
             conversation_id=conversation_id,
@@ -423,9 +460,16 @@ async def post_memory(
             key=request.key,
             workspace_path=workspace_path,
             source="user",
+            settings=settings,
+            effective_policy=policy,
         )
     except ConversationNotFoundError as error:
         raise _not_found(error) from error
+    except MemoryPolicyDeniedError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": error.reason, "message": memory_policy_message(error.reason)},
+        ) from error
     except MemoryScopeError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     await session.commit()
@@ -433,22 +477,97 @@ async def post_memory(
 
 
 @router.patch("/memories/{memory_id}", response_model=MemoryResponse)
-async def patch_memory(memory_id: UUID, request: MemoryPatch, session: DbSession) -> MemoryResponse:
+async def patch_memory(
+    memory_id: UUID,
+    request: MemoryPatch,
+    session: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> MemoryResponse:
     """改写或恢复一条记忆——客户端的「撤销」也走这里。"""
 
+    existing = await get_memory(session, memory_id=memory_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="记忆不存在")
+    await _require_memory_save(
+        settings,
+        conversation_id=(existing.conversation_id if existing.scope == "conversation" else None),
+    )
     try:
+        policy = await _require_memory_save(
+            settings,
+            conversation_id=(
+                existing.conversation_id if existing.scope == "conversation" else None
+            ),
+        )
         record, _ = await update_memory(
             session,
             memory_id=memory_id,
             content=request.content,
             restore=request.restore,
+            conversation_id=(
+                existing.conversation_id if existing.scope == "conversation" else None
+            ),
+            settings=settings,
+            effective_policy=policy,
         )
     except MemoryNotFoundError as error:
         raise HTTPException(status_code=404, detail="记忆不存在") from error
+    except MemoryPolicyDeniedError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": error.reason, "message": memory_policy_message(error.reason)},
+        ) from error
     except MemoryScopeError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     await session.commit()
     return _memory_response(record)
+
+
+@router.post("/memories/{memory_id}/undo-update", response_model=MemoryResponse)
+async def undo_memory_update(
+    memory_id: UUID,
+    request: MemoryUndo,
+    session: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> MemoryResponse:
+    """按版本引用撤销模型改写，不把旧正文复制到 append-only run event 或浏览器状态。"""
+
+    current = await get_memory(session, memory_id=memory_id)
+    previous = await get_memory(session, memory_id=request.previous_memory_id)
+    if current is None or previous is None:
+        raise HTTPException(status_code=404, detail="记忆版本不存在")
+    same_binding = (
+        current.scope == previous.scope
+        and current.conversation_id == previous.conversation_id
+        and current.workspace_path == previous.workspace_path
+        and current.key == previous.key
+    )
+    if (
+        not current.active
+        or previous.superseded_by != current.id
+        or previous.invalid_at is None
+        or not same_binding
+    ):
+        raise HTTPException(status_code=409, detail="记忆版本已变化，无法撤销这次改写")
+    conversation_id = current.conversation_id if current.scope == "conversation" else None
+    policy = await _require_memory_save(settings, conversation_id=conversation_id)
+    try:
+        restored, _ = await update_memory(
+            session,
+            memory_id=current.id,
+            content=previous.content,
+            actor="manual",
+            conversation_id=conversation_id,
+            settings=settings,
+            effective_policy=policy,
+        )
+    except (MemoryNotFoundError, MemoryScopeError) as error:
+        raise HTTPException(
+            status_code=409,
+            detail="记忆版本已变化，无法撤销这次改写",
+        ) from error
+    await session.commit()
+    return _memory_response(restored)
 
 
 @router.delete("/memories/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)

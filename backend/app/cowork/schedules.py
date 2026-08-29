@@ -14,7 +14,6 @@ from app.core.config import Settings
 from app.core.db import DbSession as AsyncSession
 from app.cowork.extensions import register_skill_tools
 from app.cowork.permissions import list_session_roots
-from app.cowork.personas import load_persona_catalog
 from app.cowork.runtime import initialize_cowork_state
 from app.cowork.tools import build_default_cowork_registry
 from app.cowork_contracts import (
@@ -265,17 +264,18 @@ async def _create_schedule_run(
     )
     registry = build_default_cowork_registry()
     roots = await list_session_roots(session, conversation_id=schedule.conversation_id)
+    muted_skill_names = await cowork_store().list_conversation_skill_mutes(
+        conversation_id=schedule.conversation_id
+    )
     register_skill_tools(
         registry,
         settings,
         project_roots=tuple(Path(item.canonical_path) for item in roots),
+        muted_skill_names=muted_skill_names,
     )
     conversation = await get_conversation(session, conversation_id=schedule.conversation_id)
     if conversation is None:  # pragma: no cover - schedule 外键语义
         raise LookupError("自动化会话不存在")
-    persona = load_persona_catalog(
-        settings, project_roots=tuple(Path(item.canonical_path) for item in roots)
-    ).get(conversation.persona_name)
     try:
         # 计划行锁、run/checkpoint 创建和 next_run_at 推进必须由外层同一事务提交。
         # 若这里提前 commit，会在计划仍显示到期时释放锁，形成重复派发窗口。
@@ -284,7 +284,7 @@ async def _create_schedule_run(
             run_id=run.id,
             registry=registry,
             settings=settings,
-            persona=persona,
+            muted_skill_names=muted_skill_names,
         )
     except ValueError as error:
         message = f"自动化未能启动：{error}"

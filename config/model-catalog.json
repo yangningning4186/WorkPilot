@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "generated_at": "2026-08-29T00:00:00Z",
+  "models": [
+    {
+      "provider": "openai_compatible",
+      "model": "qwen3.5-4b",
+      "context_window_tokens": 32768,
+      "max_output_tokens": 8192,
+      "thinking_levels": ["off", "on"],
+      "input_usd_per_mtok": "0",
+      "output_usd_per_mtok": "0",
+      "source": "deployment-catalog"
+    },
+    {
+      "provider": "openai_compatible",
+      "model": "qwen3.6-35b-a3b",
+      "context_window_tokens": 102400,
+      "max_output_tokens": 32768,
+      "thinking_levels": ["off", "on"],
+      "input_usd_per_mtok": "0",
+      "output_usd_per_mtok": "0",
+      "source": "deployment-catalog"
+    },
+    {
+      "provider": "openai_compatible",
+      "model": "deepseek-v4-flash",
+      "context_window_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "thinking_levels": ["on"],
+      "input_usd_per_mtok": "0",
+      "output_usd_per_mtok": "0",
+      "source": "deployment-catalog"
+    }
+  ]
+}

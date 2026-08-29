@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
 from app.core.config import Settings
@@ -19,7 +20,6 @@ from app.core.queue import RunQueue
 from app.core.run_bus import RunBus
 from app.cowork.extensions import register_skill_tools
 from app.cowork.permissions import ensure_default_session_root, list_session_roots
-from app.cowork.personas import load_persona_catalog
 from app.cowork.runtime import initialize_cowork_state
 from app.cowork.tools import build_default_cowork_registry
 from app.cowork_store.routing import cowork_store
@@ -49,6 +49,10 @@ async def start_cowork_run(
     settings: Settings,
     queue: RunQueue,
     bus: RunBus,
+    source_wake_id: UUID | None = None,
+    semantic_review_user_text_source: Literal[
+        "local_owner", "external_inbound", "unknown"
+    ] = "external_inbound",
 ) -> UUID:
     await ensure_default_session_root(
         session,
@@ -65,7 +69,13 @@ async def start_cowork_run(
         workflow_type="cowork",
         run_trigger="manual",
         initializing=True,
+        source_wake_id=source_wake_id,
     )
+    if run.status != "initializing":
+        if run.status == "queued":
+            await queue.enqueue_cowork_run(run.id)
+        await bus.publish(run.id)
+        return run.id
     await append_message(
         session,
         conversation_id=conversation_id,
@@ -77,17 +87,18 @@ async def start_cowork_run(
     )
     registry = build_default_cowork_registry()
     roots = await list_session_roots(session, conversation_id=conversation_id)
+    muted_skill_names = await cowork_store().list_conversation_skill_mutes(
+        conversation_id=conversation_id
+    )
     register_skill_tools(
         registry,
         settings,
         project_roots=tuple(Path(item.canonical_path) for item in roots),
+        muted_skill_names=muted_skill_names,
     )
     conversation = await get_conversation(session, conversation_id=conversation_id)
     if conversation is None:  # pragma: no cover - run 已创建
         raise LookupError("Cowork 会话不存在")
-    persona = load_persona_catalog(
-        settings, project_roots=tuple(Path(item.canonical_path) for item in roots)
-    ).get(conversation.persona_name)
     try:
         await initialize_cowork_state(
             session,
@@ -95,7 +106,11 @@ async def start_cowork_run(
             registry=registry,
             bus=bus,
             settings=settings,
-            persona=persona,
+            muted_skill_names=muted_skill_names,
+            # Connector senders may be authorized to steer a conversation, but their
+            # message is untrusted input and can never authorize auto approval. Durable
+            # local next_run messages explicitly override this with local_owner.
+            semantic_review_user_text_source=semantic_review_user_text_source,
         )
     except Exception as error:
         await finish_run_with_events(

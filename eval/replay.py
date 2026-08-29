@@ -20,7 +20,9 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal, NoReturn, get_args
+
+from app.run_events import RunEventType
 
 BUNDLE_SCHEMA = "workpilot.run-replay-bundle"
 BUNDLE_SCHEMA_VERSION = 1
@@ -40,49 +42,8 @@ RunPhase = Literal[
     "error",
 ]
 
-# 与 frontend/src/lib/run-protocol.ts 的 RunEventType 对齐。暂时不改变界面的事件也要列出，
-# 否则协议新增与拼写错误在离线回归里无法区分。
-KNOWN_EVENT_TYPES = frozenset(
-    {
-        "message.start",
-        "message.delta",
-        "message.snapshot",
-        "message.reset",
-        "message.reasoning",
-        "citation",
-        "citation.validation_failed",
-        "message.done",
-        "plan",
-        "step.update",
-        "tool.start",
-        "tool.result",
-        "tool.error",
-        "context.compacted",
-        "todo.update",
-        "memory.saved",
-        "conversation.title",
-        "reading.goto",
-        "reading.annotated",
-        "subagent.progress",
-        "team.created",
-        "team.worker.started",
-        "board.task.created",
-        "board.task.review",
-        "board.task.failed",
-        "board.task.reviewed",
-        "board.task.resolved",
-        "team.summary",
-        "steering.queued",
-        "steering.applied",
-        "interrupt",
-        "approval.waived",
-        "run.sleeping",
-        "interaction.resolved",
-        "artifact",
-        "run.done",
-        "error",
-    }
-)
+# 后端共享 Literal 是唯一名称源；测试仍逐字对比前端 union，防止跨语言漂移。
+KNOWN_EVENT_TYPES: frozenset[str] = frozenset(get_args(RunEventType))
 TERMINAL_EVENT_TYPES = frozenset({"message.done", "run.done", "error"})
 FINISHED_PHASES = frozenset({"done", "partial", "refused", "error"})
 TOOL_FINISH_EVENT_TYPES = frozenset({"tool.result", "tool.error"})

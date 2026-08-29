@@ -92,6 +92,8 @@ async def execute_sandbox_command(
     timeout_s: float,
     terminate_grace_s: float,
     max_output_bytes: int,
+    full_output_path: Path | None = None,
+    full_output_max_bytes: int = 64 * 1024 * 1024,
 ) -> ShellExecutionResult:
     argv = build_sandbox_argv(command=command, cwd=cwd, limits=limits)
     return await execute_shell_command(
@@ -101,6 +103,8 @@ async def execute_sandbox_command(
         timeout_s=timeout_s,
         terminate_grace_s=terminate_grace_s,
         max_output_bytes=max_output_bytes,
+        full_output_path=full_output_path,
+        full_output_max_bytes=full_output_max_bytes,
     )
 
 

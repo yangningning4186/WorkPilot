@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -13,6 +14,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.agent_core.budget import CompletionClient
+from app.agent_core.idempotency import InvocationOutcomeUnknownError
 from app.agent_core.tools import ToolRegistry, ToolRegistryError
 from app.core.config import Settings
 from app.core.db import DbSession as AsyncSession
@@ -37,6 +39,7 @@ from app.cowork.permissions import (
     PATH_CAPABILITIES,
     ActiveCapability,
     Capability,
+    CapabilityDeniedError,
     authorize_capability,
     authorize_path,
     authorize_scoped_capability,
@@ -44,6 +47,12 @@ from app.cowork.permissions import (
 )
 from app.cowork.plans import PLAN_TOOL_NAME, ProposePlanArgs
 from app.cowork.sandbox import CoworkSandboxError, SandboxLimits, execute_sandbox_command
+from app.cowork.self_protection import (
+    protected_control_path_reason,
+    protected_shell_command_reason,
+    protected_workspace_path_reason,
+)
+from app.cowork.semantic_approvals import verify_semantic_approval_evidence
 from app.cowork.shell import assess_shell_command, execute_shell_command
 from app.cowork.shell_sessions import CoworkPersistentShellManager, ShellSessionError
 from app.cowork.shell_tasks import CoworkShellTaskManager, ShellTaskError, ShellTaskSnapshot
@@ -55,12 +64,14 @@ from app.cowork.workspace_artifacts import (
     snapshot_workspace_artifacts,
 )
 from app.cowork_policy import SCOPED_CAPABILITIES, normalize_network_origin
+from app.run_events import RunEventType
 from app.runstore.invocations import (
     acquire_invocation,
     complete_invocation,
     fail_invocation,
+    mark_invocation_outcome_unknown,
 )
-from workpilot_ai.types import ToolDefinition
+from workpilot_ai.types import MessageAttachment, ToolDefinition, Usage
 
 ToolRisk = Literal["read", "write", "external"]
 # "store" = 副作用落在 WorkPilot 自己的本机 store 里（例如持久化批注），既不是用户
@@ -69,11 +80,31 @@ ToolRisk = Literal["read", "write", "external"]
 # 对幂等租约来说三者一视同仁——判据是 `!= "none"`。
 ToolEffect = Literal["none", "filesystem", "store", "external"]
 ToolExecution = Literal["local", "interaction"]
+ToolResultEncoding = Literal["default", "shell_tail"]
+ToolExecutionMode = Literal["auto", "sequential"]
 LOAD_TOOLS_TOOL_NAME = "load_tools"
 
 
 class CoworkToolError(ToolRegistryError):
     pass
+
+
+class CoworkToolOutcomeUnknownError(CoworkToolError):
+    """The side effect may have happened and this invocation must become non-replayable."""
+
+    def __init__(self) -> None:
+        # Keep this constant and argument-free.  The originating transport error may contain
+        # credentials or untrusted remote content and must not reach the invocation ledger.
+        super().__init__(
+            "外部动作结果未知；为避免重复副作用，已阻止自动重试，请先在目标系统核实状态"
+        )
+
+
+class CoworkToolCancelledOutcomeUnknownError(asyncio.CancelledError):
+    """Propagate cancellation after terminalizing a possibly applied external action."""
+
+    def __init__(self) -> None:
+        super().__init__("外部动作取消时结果未知，已阻止自动重试")
 
 
 def _trusted_artifact_mime_type(path: Path, requested: str | None) -> str:
@@ -318,7 +349,7 @@ class LoadToolsArgs(_StrictArgs):
 #
 # 只给"一次调用要跑很久"的工具用。绝大多数工具几十毫秒就返回，tool.start / tool.result
 # 这一对已经把它讲完了；再多发一条只是噪音。
-ToolProgressEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
+ToolProgressEmitter = Callable[[RunEventType, dict[str, Any]], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -333,6 +364,9 @@ class CoworkToolContext:
     tool_call_id: str
     approved_call_ids: frozenset[str] = frozenset()
     approval_evidence: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    # Checkpoint-only HMAC key for semantic-review evidence. It is not part of any
+    # model-visible schema or tool output.
+    semantic_approval_signing_key: str = ""
     authorization_annotations: list[dict[str, Any]] = field(default_factory=list)
     cancel_event: asyncio.Event | None = None
     # 后台任务表由 worker 持有；缺席时后台模式直接拒绝，而不是退化成同步执行——
@@ -356,27 +390,60 @@ class CoworkToolContext:
 
 @dataclass(frozen=True)
 class CoworkToolResult:
-    output: dict[str, Any]
-    # 证据走独立通道：模型仍拿到适合阅读的 output，运行时则把完整结构登记进 checkpoint
+    # Provider-facing payload. Every producer must choose this explicitly; there is no legacy
+    # output field that can accidentally mix UI/runtime metadata back into the model context.
+    content: dict[str, Any] | str
+    # Structured runtime/UI projection. Empty is a valid deliberate choice for tools whose
+    # entire result is model-visible and whose UI is already driven by narrow run events.
+    details: dict[str, Any] = field(default_factory=dict)
+    # Binary/model-native output stays out of the JSON body.  Runtime projects these into a
+    # provider-visible attachment directive after the required tool result message.
+    attachments: tuple[MessageAttachment, ...] = ()
+    # 证据走独立通道：模型仍拿到适合阅读的 content，运行时则把完整结构登记进 checkpoint
     # 里的 evidence ledger。这样 read_material 不必把整页正文在 JSON metadata 里复制一遍。
     evidence: tuple[dict[str, Any], ...] = ()
     effect_ref: str | None = None
     idempotency_key: str | None = None
     reused: bool = False
     authorization_receipt: dict[str, Any] | None = None
+    # Nested agents/teams can attribute their model usage to this parent tool call.  The shared
+    # BudgetedGateway remains the hard budget authority; this is observability metadata.
+    usage: Usage = field(default_factory=Usage)
+    # A batch terminates early only when every finalized result explicitly opts in.
+    terminate: bool = False
+
+    @property
+    def model_content(self) -> dict[str, Any] | str:
+        return self.content
+
+    @property
+    def output(self) -> dict[str, Any]:
+        """Compatibility view for runtime projections while they consume dictionary results."""
+
+        return self.content if isinstance(self.content, dict) else {"content": self.content}
 
     def stored(self) -> dict[str, Any]:
         return {
-            "output": self.output,
+            "content": self.content,
+            "details": self.details,
+            "attachments": [vars(item) for item in self.attachments],
             "evidence": list(self.evidence),
             "effect_ref": self.effect_ref,
             "authorization_receipt": self.authorization_receipt,
+            "usage": {
+                "input_tokens": self.usage.input_tokens,
+                "output_tokens": self.usage.output_tokens,
+                "prompt_cache_read_tokens": self.usage.prompt_cache_read_tokens,
+                "prompt_cache_write_tokens": self.usage.prompt_cache_write_tokens,
+            },
+            "terminate": self.terminate,
         }
 
 
 ToolHandler = Callable[[CoworkToolContext, BaseModel], Awaitable[CoworkToolResult]]
 CapabilityResolver = Callable[[BaseModel], Capability | None]
 ResourceTargetResolver = Callable[[BaseModel], str]
+ResultErrorProbe = Callable[[CoworkToolResult], str | None]
 
 
 def _grant_decision(
@@ -436,6 +503,18 @@ def _enforce_worker_path_scope(
     raise CoworkToolError("目标路径不在当前 Board task 分配给 Worker 的资源范围内")
 
 
+def _protected_control_paths(settings: Settings) -> tuple[Path, ...]:
+    return (
+        settings.cowork_data_path,
+        settings.cowork_skills_path,
+        settings.cowork_skill_candidates_path,
+        settings.cowork_mcp_config_path,
+        settings.cowork_mcp_config_path.parent,
+        settings.secret_store_key_path,
+        settings.secret_store_key_path.parent,
+    )
+
+
 @dataclass(frozen=True)
 class CoworkToolSpec:
     name: str
@@ -466,6 +545,10 @@ class CoworkToolSpec:
     # 时匹配的就是这些字段。正文（body、文件内容）刻意不在其中：把它算进去等于每次调用
     # 都是新目标，规则永远匹配不上。空元组表示这只工具只能整只授权或逐次审批。
     approval_target_fields: tuple[str, ...] = ()
+    # True only when those target fields completely describe the side effect for semantic
+    # review. Connector/message bodies are deliberately false: a matching destination must
+    # not authorize an opaque payload.
+    semantic_review_target_complete: bool = False
     search_aliases: tuple[str, ...] = ()
     # 延迟工具仍完整注册并保留全部执行/权限契约，只是不在初始模型请求里携带 schema。
     # 模型从稳定 manifest 发现它，再通过 load_tools 显式装载。
@@ -477,6 +560,15 @@ class CoworkToolSpec:
     replacement: str | None = None
     # 高级 fallback 可以按准确名称 load_tools，但不进入常规 extended_tools 目录。
     catalog_visible: bool = True
+    # Structured results can encode an action-level failure without raising (for example a
+    # shell process with a non-zero exit code).  The registry owns that interpretation.
+    result_error_probe: ResultErrorProbe | None = None
+    result_encoding: ToolResultEncoding = "default"
+    # schema 校验前的窄兼容层；只能规范形状，权限与审批始终使用规范化后的参数。
+    prepare_arguments: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    prompt_snippet: str = ""
+    prompt_guidelines: tuple[str, ...] = ()
+    execution_mode: ToolExecutionMode = "auto"
 
     def resolved_input_schema(self) -> dict[str, Any]:
         if self.input_schema is not None:
@@ -495,6 +587,7 @@ class CoworkToolSpec:
             "execution": self.execution,
             "approval_required": self.approval_required,
             "approval_can_be_waived": self.approval_can_be_waived,
+            "semantic_review_target_complete": self.semantic_review_target_complete,
             "exclusive": self.exclusive,
             "extra_capabilities": list(self.extra_capabilities),
             "search_aliases": list(self.search_aliases),
@@ -503,6 +596,9 @@ class CoworkToolSpec:
             "model_visible": self.model_visible,
             "replacement": self.replacement,
             "catalog_visible": self.catalog_visible,
+            "prompt_snippet": self.prompt_snippet,
+            "prompt_guidelines": list(self.prompt_guidelines),
+            "execution_mode": self.execution_mode,
         }
 
 
@@ -542,6 +638,100 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
         """注册默认不下发 schema 的扩展工具。"""
 
         self.register(replace(spec, deferred=True, catalog_group=group))
+
+    def result_error(self, name: str, result: CoworkToolResult) -> str | None:
+        probe = self.get(name).result_error_probe
+        return None if probe is None else probe(result)
+
+    def result_encoding(self, name: str) -> ToolResultEncoding:
+        return self.get(name).result_encoding
+
+    def human_only_approval_reason(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+    ) -> str | None:
+        """动态识别不能被 auto/常驻规则/Worker 静默放行的文件目标。"""
+
+        try:
+            spec = self.get(name)
+        except ToolRegistryError:
+            return None
+        if spec.path_argument is None:
+            return None
+        raw_path = arguments.get(spec.path_argument)
+        if not isinstance(raw_path, str):
+            return None
+        capability = spec.capability
+        if spec.capability_resolver is not None:
+            try:
+                parsed = spec.args_model.model_validate(arguments)
+                capability = spec.capability_resolver(parsed)
+            except ValueError:
+                return None
+        if capability != "filesystem.write":
+            return None
+        return protected_workspace_path_reason(raw_path)
+
+    def requires_approval_for(self, name: str, arguments: Mapping[str, Any]) -> bool:
+        return (
+            self.requires_approval(name)
+            or self.human_only_approval_reason(name, arguments) is not None
+        )
+
+    async def preflight_human_only_approval_reason(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+        *,
+        session: AsyncSession,
+        conversation_id: UUID,
+        settings: Settings,
+    ) -> str | None:
+        """在 runtime 暂停审批前，按执行时相同的授权路径解析保护目标。
+
+        只看模型提交的字符串无法识别相对路径或经符号链接落到自定义控制目录的目标。
+        这里做一次只读 preflight；真正执行时仍会重新授权并再次校验，避免审批后的目录或
+        grant 变化绕过边界。
+        """
+
+        raw_reason = self.human_only_approval_reason(name, arguments)
+        try:
+            spec = self.get(name)
+        except ToolRegistryError:
+            return raw_reason
+        if spec.path_argument is None or spec.capability != "filesystem.write":
+            return raw_reason
+        try:
+            parsed = spec.args_model.model_validate(self.parse_arguments(name, dict(arguments)))
+        except (ToolRegistryError, ValueError):
+            return raw_reason
+        raw_path = getattr(parsed, spec.path_argument, None)
+        if not isinstance(raw_path, str):
+            return raw_reason
+        requested_path = Path(raw_path)
+        if not requested_path.is_absolute():
+            roots = await list_session_roots(session, conversation_id=conversation_id)
+            if not roots:
+                return raw_reason
+            requested_path = Path(roots[0].canonical_path) / requested_path
+        try:
+            authorization = await authorize_path(
+                session,
+                conversation_id=conversation_id,
+                target_path=requested_path,
+                capability="filesystem.write",
+            )
+        except CapabilityDeniedError:
+            return raw_reason
+        return (
+            protected_workspace_path_reason(authorization.target_path)
+            or protected_control_path_reason(
+                authorization.target_path,
+                _protected_control_paths(settings),
+            )
+            or raw_reason
+        )
 
     def deferred_tool_names(self) -> frozenset[str]:
         return frozenset(
@@ -780,6 +970,8 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
             raise CoworkToolError(f"交互工具 {name} 必须由 Cowork runtime 处理")
         context.authorization_annotations.clear()
         parsed = spec.args_model.model_validate(self.parse_arguments(name, arguments))
+        submitted_arguments = parsed.model_dump(mode="json")
+        human_only_reason = self.human_only_approval_reason(name, submitted_arguments)
         capability = (
             spec.capability_resolver(parsed)
             if spec.capability_resolver is not None
@@ -821,6 +1013,25 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
                 target_path=authorization.target_path,
                 capability=capability,
             )
+            canonical_protection = protected_workspace_path_reason(authorization.target_path)
+            control_protection = protected_control_path_reason(
+                authorization.target_path,
+                _protected_control_paths(context.settings),
+            )
+            if canonical_protection is not None:
+                human_only_reason = canonical_protection
+            elif control_protection is not None:
+                human_only_reason = control_protection
+            if human_only_reason is not None:
+                context.authorization_annotations.append(
+                    {
+                        "mechanism": "protected_workspace_path",
+                        "capability": capability,
+                        "target_path": str(authorization.target_path),
+                        "human_only": True,
+                        "reason": human_only_reason,
+                    }
+                )
             authorization_decisions.append(_path_decision(authorization, capability=capability))
             parsed = spec.args_model.model_validate(
                 {
@@ -884,15 +1095,32 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
         # ADR-0009：审批能力必须在统一副作用入口硬校验，不能只依赖 decide()
         # 或某个具体 handler。这样新增 Agent、重放或其他调用方都不能绕过闸门。
         approval_evidence = context.approval_evidence.get(context.tool_call_id)
-        if spec.approval_required:
+        approval_required = spec.approval_required or human_only_reason is not None
+        approval_arguments = (
+            submitted_arguments if human_only_reason is not None else canonical_arguments
+        )
+        if approval_required:
             if context.tool_call_id not in context.approved_call_ids:
                 raise CoworkToolError(f"工具 {name} 尚未获得本次调用的用户批准")
             if approval_evidence is None:
                 raise CoworkToolError(f"工具 {name} 缺少可验证的审批证据")
             if approval_evidence.get("tool") != name:
                 raise CoworkToolError(f"工具 {name} 的审批证据与工具名不一致")
-            if approval_evidence.get("arguments_sha256") != arguments_sha256(canonical_arguments):
+            if approval_evidence.get("arguments_sha256") != arguments_sha256(approval_arguments):
                 raise CoworkToolError(f"工具 {name} 的参数在批准后发生变化，已拒绝执行")
+            if not verify_semantic_approval_evidence(
+                approval_evidence,
+                signing_key=context.semantic_approval_signing_key,
+                run_id=context.run_id,
+                tool_call_id=context.tool_call_id,
+                tool=name,
+                arguments_sha256=arguments_sha256(approval_arguments),
+            ):
+                raise CoworkToolError(f"工具 {name} 的自动审批证据签名无效，已拒绝执行")
+            if (
+                not spec.approval_can_be_waived or human_only_reason is not None
+            ) and approval_evidence.get("source") != "user":
+                raise ValueError(f"工具 {name} 需要不可豁免的人工批准")
 
         approval = (
             {"required": True, **dict(approval_evidence)}
@@ -923,23 +1151,56 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
                 authorization_receipt=make_receipt(),
             )
 
-        lease = await acquire_invocation(
-            context.session,
-            run_id=context.run_id,
-            plan_step_id=context.plan_step_id,
-            tool_name=spec.name,
-            args=canonical_arguments,
-            worker_id=context.worker_id,
-            lease_s=context.settings.run_lease_s,
-        )
+        try:
+            lease = await acquire_invocation(
+                context.session,
+                run_id=context.run_id,
+                plan_step_id=context.plan_step_id,
+                tool_name=spec.name,
+                args=canonical_arguments,
+                worker_id=context.worker_id,
+                lease_s=context.settings.run_lease_s,
+            )
+        except InvocationOutcomeUnknownError:
+            # Do not expose store details or let callers mistake the terminal state for an
+            # ordinary lease conflict.  The same public error is used for the first uncertain
+            # attempt and every blocked replay.
+            raise CoworkToolOutcomeUnknownError() from None
         # 副作用发生前，in_flight 必须对其他 worker 可见。
         await context.session.commit()
         if not lease.acquired:
             stored = lease.result or {}
-            output = stored.get("output")
+            stored_content = stored.get("content")
+            legacy_output = stored.get("output")
+            details = stored.get("details")
             stored_evidence = stored.get("evidence")
+            stored_attachments = stored.get("attachments")
             return CoworkToolResult(
-                output=output if isinstance(output, dict) else stored,
+                content=(
+                    stored_content
+                    if isinstance(stored_content, (dict, str))
+                    else legacy_output
+                    if isinstance(legacy_output, dict)
+                    else stored
+                ),
+                details=dict(details) if isinstance(details, Mapping) else {},
+                attachments=(
+                    tuple(
+                        MessageAttachment(
+                            kind=item["kind"],
+                            filename=str(item["filename"]),
+                            media_type=str(item["media_type"]),
+                            path=str(item["path"]),
+                            size_bytes=int(item["size_bytes"]),
+                            sha256=str(item["sha256"]),
+                            extracted_text=str(item.get("extracted_text", "")),
+                        )
+                        for item in stored_attachments
+                        if isinstance(item, Mapping)
+                    )
+                    if isinstance(stored_attachments, list)
+                    else ()
+                ),
                 evidence=(
                     tuple(dict(item) for item in stored_evidence if isinstance(item, Mapping))
                     if isinstance(stored_evidence, list)
@@ -950,11 +1211,13 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
                 reused=True,
                 authorization_receipt=make_receipt(),
             )
+        handler_completed = False
         try:
             result = replace(
                 await spec.handler(context, parsed),
                 authorization_receipt=make_receipt(),
             )
+            handler_completed = True
             if result.effect_ref is None:
                 raise CoworkToolError(f"副作用工具 {name} 没有返回 effect_ref")
             await complete_invocation(
@@ -965,18 +1228,55 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
                 effect_ref=result.effect_ref,
             )
             await context.session.commit()
+        except CoworkToolOutcomeUnknownError:
+            await context.session.rollback()
+            await mark_invocation_outcome_unknown(
+                context.session,
+                key=lease.idempotency_key,
+                worker_id=context.worker_id,
+            )
+            await context.session.commit()
+            raise
+        except asyncio.CancelledError:
+            await context.session.rollback()
+            await mark_invocation_outcome_unknown(
+                context.session,
+                key=lease.idempotency_key,
+                worker_id=context.worker_id,
+            )
+            await context.session.commit()
+            # Cancellation can land after a local filesystem/process effect but before its
+            # handler returns.  Treat every cancelled effectful handler conservatively; the
+            # original cancellation semantics are preserved while the identity becomes
+            # permanently non-replayable.
+            raise CoworkToolCancelledOutcomeUnknownError() from None
         except Exception as error:
             await context.session.rollback()
+            if handler_completed:
+                # 副作用 handler 已经返回，说明动作可能已经成功；此后若仅 ledger 结算
+                # 失败，绝不能把它标成普通 failed 让同 identity 自动重放。
+                await mark_invocation_outcome_unknown(
+                    context.session,
+                    key=lease.idempotency_key,
+                    worker_id=context.worker_id,
+                )
+                await context.session.commit()
+                raise CoworkToolOutcomeUnknownError() from None
             await fail_invocation(
                 context.session,
                 key=lease.idempotency_key,
                 worker_id=context.worker_id,
-                error=str(error),
+                # Exception messages can contain command output, URLs, headers, or remote
+                # payloads.  The caller still receives the live exception; the durable replay
+                # ledger only needs a bounded diagnostic class.
+                error=type(error).__name__,
             )
             await context.session.commit()
             raise
         return CoworkToolResult(
-            output=result.output,
+            content=result.content,
+            details=result.details,
+            attachments=result.attachments,
             evidence=result.evidence,
             effect_ref=result.effect_ref,
             idempotency_key=lease.idempotency_key,
@@ -994,7 +1294,7 @@ async def _list_files(context: CoworkToolContext, raw: BaseModel) -> CoworkToolR
         max_scan_entries=context.settings.workspace_max_scan_entries,
     )
     return CoworkToolResult(
-        output={
+        content={
             "files": [
                 {
                     "path": str(item.path),
@@ -1049,7 +1349,7 @@ async def _read_text_file(context: CoworkToolContext, raw: BaseModel) -> CoworkT
             f"要继续读就再调一次并传 start_line={result.end_line + 1}。"
             "在读完之前不要用 write_file 整份覆盖这个文件。"
         )
-    return CoworkToolResult(output=output)
+    return CoworkToolResult(content=output)
 
 
 def _path_looks_like_pdf(path: Path) -> bool:
@@ -1086,7 +1386,7 @@ async def _write_text_file(context: CoworkToolContext, raw: BaseModel) -> Cowork
         settings=context.settings,
     )
     return CoworkToolResult(
-        output={
+        content={
             "file": {
                 "name": result.path.name,
                 "path": str(result.path),
@@ -1111,7 +1411,7 @@ async def _replace_in_file(context: CoworkToolContext, raw: BaseModel) -> Cowork
         settings=context.settings,
     )
     return CoworkToolResult(
-        output={
+        content={
             "file": {
                 "name": result.path.name,
                 "path": str(result.path),
@@ -1137,7 +1437,7 @@ async def _search_files(context: CoworkToolContext, raw: BaseModel) -> CoworkToo
         max_file_bytes=context.settings.cowork_file_read_max_bytes,
     )
     return CoworkToolResult(
-        output={
+        content={
             "matches": [
                 {
                     "path": str(match.path),
@@ -1157,7 +1457,7 @@ async def _search_files(context: CoworkToolContext, raw: BaseModel) -> CoworkToo
 async def _git_status(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
     args = GitStatusArgs.model_validate(raw.model_dump())
     return CoworkToolResult(
-        output=await git_status(
+        content=await git_status(
             Path(args.path), max_bytes=context.settings.cowork_git_output_max_bytes
         )
     )
@@ -1166,7 +1466,7 @@ async def _git_status(context: CoworkToolContext, raw: BaseModel) -> CoworkToolR
 async def _git_diff(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
     args = GitDiffArgs.model_validate(raw.model_dump())
     return CoworkToolResult(
-        output=await git_diff(
+        content=await git_diff(
             Path(args.path),
             staged=args.staged,
             stat_only=args.stat_only,
@@ -1178,7 +1478,7 @@ async def _git_diff(context: CoworkToolContext, raw: BaseModel) -> CoworkToolRes
 async def _git_log(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
     args = GitLogArgs.model_validate(raw.model_dump())
     return CoworkToolResult(
-        output=await git_log(
+        content=await git_log(
             Path(args.path),
             max_count=args.max_count,
             max_bytes=context.settings.cowork_git_output_max_bytes,
@@ -1190,7 +1490,7 @@ async def _read_pdf(context: CoworkToolContext, raw: BaseModel) -> CoworkToolRes
     args = ReadPdfArgs.model_validate(raw.model_dump())
     result = await read_pdf_file(Path(args.path), settings=context.settings)
     return CoworkToolResult(
-        output={
+        content={
             "path": str(result.path),
             "title": result.title,
             "parser": result.parser,
@@ -1226,7 +1526,7 @@ async def _fetch_url(context: CoworkToolContext, raw: BaseModel) -> CoworkToolRe
         authorize_target=authorize_target,
     )
     return CoworkToolResult(
-        output={
+        content={
             "url": result.url,
             "final_url": result.final_url,
             "title": result.title,
@@ -1274,7 +1574,7 @@ async def _web_search(context: CoworkToolContext, raw: BaseModel) -> CoworkToolR
         for index, item in enumerate(results, start=1)
     )
     return CoworkToolResult(
-        output={
+        content={
             "query": args.query,
             "summary": summary,
             "citations": citations,
@@ -1336,7 +1636,7 @@ async def _create_artifact(context: CoworkToolContext, raw: BaseModel) -> Cowork
         },
     )
     return CoworkToolResult(
-        output={
+        content={
             "artifact_id": str(artifact.id),
             "kind": artifact.kind,
             "title": artifact.title,
@@ -1384,7 +1684,7 @@ async def _todo_write(_: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
     args = TodoWriteArgs.model_validate(raw.model_dump())
     todos = todo_items(args)
     # handler 不写 state：runtime 从 output["todos"] 取回并落进 checkpoint。
-    return CoworkToolResult(output={"todos": todos, **todo_summary(todos)})
+    return CoworkToolResult(content={"todos": todos, **todo_summary(todos)})
 
 
 async def _finish_shell_result(
@@ -1400,6 +1700,49 @@ async def _finish_shell_result(
     """登记命令产生的工作区文件；登记失败不能导致命令被危险地重放。"""
 
     registered: list[dict[str, Any]] = []
+    full_output_value = output.get("full_output_path")
+    if isinstance(full_output_value, str) and full_output_value:
+        try:
+            full_output_path, sha256, size_bytes = await asyncio.to_thread(
+                _shell_output_fingerprint,
+                Path(full_output_value),
+                root_path,
+            )
+            artifact = await register_artifact(
+                context.session,
+                conversation_id=context.conversation_id,
+                run_id=context.run_id,
+                session_root_id=root_id,
+                kind="file",
+                title=f"Shell 完整输出 · {full_output_path.name}",
+                uri=str(full_output_path),
+                mime_type="text/plain",
+                meta={
+                    "sha256": sha256,
+                    "size_bytes": size_bytes,
+                    "discovered_after": "run_shell_full_output",
+                    "truncated": bool(output.get("full_output_truncated")),
+                },
+            )
+            registered.append(
+                {
+                    "artifact_id": str(artifact.id),
+                    "kind": artifact.kind,
+                    "title": artifact.title,
+                    "mime_type": artifact.mime_type,
+                    "file": {
+                        "name": full_output_path.name,
+                        "path": str(full_output_path),
+                        "sha256": sha256,
+                        "size_bytes": size_bytes,
+                    },
+                }
+            )
+            output["full_output_artifact_id"] = str(artifact.id)
+        except Exception as error:
+            # The command has completed and the bounded tail is still usable. Artifact indexing
+            # is an auxiliary projection and must never make an effectful command replayable.
+            scan_warnings.append(f"Shell 完整输出登记失败：{error}")
     truncated = before.truncated if before is not None else False
     if before is not None:
         try:
@@ -1456,7 +1799,34 @@ async def _finish_shell_result(
         "truncated": truncated,
         "warnings": scan_warnings,
     }
-    return CoworkToolResult(output=output, effect_ref=effect_ref)
+    return CoworkToolResult(content=output, effect_ref=effect_ref)
+
+
+def _shell_output_fingerprint(path: Path, root_path: Path) -> tuple[Path, str, int]:
+    path = path.resolve(strict=True)
+    path.relative_to(root_path.resolve(strict=True))
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return path, digest.hexdigest(), path.stat().st_size
+
+
+def _shell_result_error(result: CoworkToolResult) -> str | None:
+    exit_code = result.output.get("exit_code")
+    if not isinstance(exit_code, int) or exit_code == 0:
+        return None
+    return f"Shell 命令退出码 {exit_code}；Cowork 将根据命令输出修正后重试"
+
+
+def _shell_full_output_path(context: CoworkToolContext, root_path: Path) -> Path:
+    call_key = hashlib.sha256(context.tool_call_id.encode()).hexdigest()[:20]
+    candidate = root_path / ".workpilot-output" / "shell" / str(context.run_id) / f"{call_key}.txt"
+    resolved_root = root_path.resolve()
+    resolved = candidate.resolve(strict=False)
+    if resolved != resolved_root and not resolved.is_relative_to(resolved_root):
+        raise CoworkToolError("shell 完整输出路径逃逸了授权工作区")
+    return resolved
 
 
 async def _run_shell(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
@@ -1479,7 +1849,12 @@ async def _run_shell(context: CoworkToolContext, raw: BaseModel) -> CoworkToolRe
     if not authorization.target_path.is_dir():
         raise CoworkToolError("shell cwd 必须是已授权的现有目录")
     decision = assess_shell_command(args.command, context.settings.cowork_shell_allowlist)
-    if decision.approval_required:
+    human_only_reason = decision.prefix_ineligible_reason or protected_shell_command_reason(
+        argv=decision.command.argv,
+        cwd=authorization.target_path,
+        extra_protected_paths=_protected_control_paths(context.settings),
+    )
+    if decision.approval_required or human_only_reason is not None:
         evidence = context.approval_evidence.get(context.tool_call_id)
         if context.tool_call_id not in context.approved_call_ids or evidence is None:
             raise CoworkToolError("shell 命令缺少可验证的本次审批证据，已拒绝执行")
@@ -1487,6 +1862,25 @@ async def _run_shell(context: CoworkToolContext, raw: BaseModel) -> CoworkToolRe
             "arguments_sha256"
         ) != arguments_sha256(args.model_dump(mode="json")):
             raise CoworkToolError("shell 命令参数在批准后发生变化，已拒绝执行")
+        if not verify_semantic_approval_evidence(
+            evidence,
+            signing_key=context.semantic_approval_signing_key,
+            run_id=context.run_id,
+            tool_call_id=context.tool_call_id,
+            tool="run_shell",
+            arguments_sha256=arguments_sha256(args.model_dump(mode="json")),
+        ):
+            raise CoworkToolError("shell 命令的自动审批证据签名无效，已拒绝执行")
+        if human_only_reason is not None and evidence.get("source") != "user":
+            raise CoworkToolError(f"shell 命令需要不可豁免的人工批准：{human_only_reason}")
+    if human_only_reason is not None:
+        context.authorization_annotations.append(
+            {
+                "mechanism": "protected_shell_command",
+                "human_only": True,
+                "reason": human_only_reason,
+            }
+        )
     before: WorkspaceArtifactSnapshot | None = None
     scan_warnings: list[str] = []
     if not args.run_in_background:
@@ -1558,7 +1952,7 @@ async def _run_shell(context: CoworkToolContext, raw: BaseModel) -> CoworkToolRe
         except ShellTaskError as error:
             raise CoworkToolError(str(error)) from error
         return CoworkToolResult(
-            output={
+            content={
                 **_shell_task_json(started),
                 "hint": (
                     "用 shell_task_output 轮询输出，用 shell_task_kill 结束它。"
@@ -1574,6 +1968,8 @@ async def _run_shell(context: CoworkToolContext, raw: BaseModel) -> CoworkToolRe
         timeout_s=context.settings.cowork_shell_timeout_s,
         terminate_grace_s=context.settings.cowork_shell_terminate_grace_s,
         max_output_bytes=context.settings.cowork_shell_max_output_bytes,
+        full_output_path=_shell_full_output_path(context, authorization.root_path),
+        full_output_max_bytes=context.settings.cowork_shell_full_output_max_bytes,
     )
     return await _finish_shell_result(
         context,
@@ -1587,6 +1983,14 @@ async def _run_shell(context: CoworkToolContext, raw: BaseModel) -> CoworkToolRe
             "stderr": result.stderr,
             "output_truncated": result.output_truncated,
             "execution_mode": result.execution_mode,
+            "full_output_path": result.full_output_path,
+            "full_output_truncated": result.full_output_truncated,
+            "full_output_size_bytes": result.full_output_size_bytes,
+            "full_output_hint": (
+                "短视图只保留输出尾部；可用 search_files 或 run_shell grep full_output_path。"
+                if result.full_output_path is not None
+                else None
+            ),
             "allowlisted": decision.allowlisted,
             "matched_prefix": (
                 list(decision.matched_prefix) if decision.matched_prefix is not None else None
@@ -1642,6 +2046,8 @@ async def _run_sandbox(context: CoworkToolContext, raw: BaseModel) -> CoworkTool
             timeout_s=context.settings.cowork_shell_timeout_s,
             terminate_grace_s=context.settings.cowork_shell_terminate_grace_s,
             max_output_bytes=context.settings.cowork_shell_max_output_bytes,
+            full_output_path=_shell_full_output_path(context, authorization.root_path),
+            full_output_max_bytes=context.settings.cowork_shell_full_output_max_bytes,
         )
     except CoworkSandboxError as error:
         raise CoworkToolError(str(error)) from error
@@ -1659,6 +2065,9 @@ async def _run_sandbox(context: CoworkToolContext, raw: BaseModel) -> CoworkTool
             "execution_mode": "container",
             "network": "none",
             "image": context.settings.cowork_sandbox_image,
+            "full_output_path": result.full_output_path,
+            "full_output_truncated": result.full_output_truncated,
+            "full_output_size_bytes": result.full_output_size_bytes,
         },
         effect_ref=f"sandbox:{result.command_sha256}",
         scan_warnings=scan_warnings,
@@ -1721,7 +2130,7 @@ async def _shell_task_output(context: CoworkToolContext, raw: BaseModel) -> Cowo
         )
     except ShellTaskError as error:
         raise CoworkToolError(str(error)) from error
-    return CoworkToolResult(output=_shell_task_json(snapshot))
+    return CoworkToolResult(content=_shell_task_json(snapshot))
 
 
 async def _wake_on(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
@@ -1744,7 +2153,7 @@ async def _wake_on(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResu
         if snapshot.running
         else "任务已经结束，上面是它自上次读取以来的全部输出。"
     )
-    return CoworkToolResult(output=output)
+    return CoworkToolResult(content=output)
 
 
 async def _shell_task_kill(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
@@ -1756,7 +2165,7 @@ async def _shell_task_kill(context: CoworkToolContext, raw: BaseModel) -> Cowork
     except ShellTaskError as error:
         raise CoworkToolError(str(error)) from error
     return CoworkToolResult(
-        output=_shell_task_json(snapshot), effect_ref=f"shell_task:{snapshot.task_id}:killed"
+        content=_shell_task_json(snapshot), effect_ref=f"shell_task:{snapshot.task_id}:killed"
     )
 
 
@@ -1779,7 +2188,7 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
                 "already_loaded 中的工具已经可直接调用，不要再次加载。"
             )
         return CoworkToolResult(
-            output={
+            content={
                 **result,
                 "notice": notice,
             }
@@ -1838,6 +2247,9 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             effect="external",
             parallel_safe=False,
             handler=_run_shell,
+            exclusive=True,
+            result_error_probe=_shell_result_error,
+            result_encoding="shell_tail",
         )
     )
     registry.register_deferred(
@@ -1855,6 +2267,7 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             effect="filesystem",
             parallel_safe=False,
             handler=_run_sandbox,
+            result_encoding="shell_tail",
         ),
         group="隔离执行",
     )

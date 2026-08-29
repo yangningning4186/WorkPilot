@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from datetime import datetime
@@ -89,14 +90,21 @@ KNOWN_CAPABILITIES = frozenset(ACTIVE_CAPABILITIES)
 KNOWN_TOOLS = frozenset(
     name for name in _REGISTRY.names() if _REGISTRY.get(name).model_visible
 ) | frozenset(_ADAPTER_TOOL_CAPABILITIES)
+
+
+def _registered_tool_capabilities(name: str) -> frozenset[str]:
+    spec = _REGISTRY.get(name)
+    capabilities: set[str] = set(spec.extra_capabilities)
+    if spec.capability is not None:
+        capabilities.add(spec.capability)
+    return frozenset(capabilities)
+
+
 # 工具执行前会校验的 capability 全集, 用来判断题目给的授权够不够跑通它自己的 gold。
 TOOL_CAPABILITIES: dict[str, frozenset[str]] = {
     **_ADAPTER_TOOL_CAPABILITIES,
     **{
-        name: frozenset(
-            ({_REGISTRY.get(name).capability} - {None})
-            | set(_REGISTRY.get(name).extra_capabilities)
-        )
+        name: _registered_tool_capabilities(name)
         for name in KNOWN_TOOLS
         if name in _REGISTRY.names()
     },
@@ -283,6 +291,90 @@ def _coverage_contract(
     return items, expected_splits, expected_categories, id_prefix.strip()
 
 
+def deterministic_contract(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    """校验同 suite 携带的零模型 Team contract，并返回稳定摘要。"""
+
+    raw = payload.get("deterministic_contract")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise CoworkSuiteError("deterministic_contract 必须是对象")
+    if raw.get("schema_version") != "agent-team-contract.v1":
+        raise CoworkSuiteError("deterministic_contract schema_version 不匹配")
+    if raw.get("mode") != "pytest_no_model_io":
+        raise CoworkSuiteError("deterministic_contract 必须使用 pytest_no_model_io")
+    case_count = raw.get("case_count")
+    categories = raw.get("categories")
+    cases = raw.get("cases")
+    if not isinstance(case_count, int) or case_count < 1:
+        raise CoworkSuiteError("deterministic_contract.case_count 必须是正整数")
+    if not isinstance(categories, dict) or not categories:
+        raise CoworkSuiteError("deterministic_contract.categories 必须是非空对象")
+    if any(
+        not isinstance(key, str)
+        or not key
+        or not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < 1
+        for key, value in categories.items()
+    ):
+        raise CoworkSuiteError("deterministic_contract.categories 配额非法")
+    if not isinstance(cases, list) or len(cases) != case_count:
+        raise CoworkSuiteError("deterministic_contract case 数量漂移")
+    if sum(categories.values()) != case_count:
+        raise CoworkSuiteError("deterministic_contract category 配额之和必须等于 case_count")
+
+    root = Path(__file__).resolve().parents[1]
+    ids: list[str] = []
+    targets: list[str] = []
+    actual_categories: Counter[str] = Counter()
+    for case in cases:
+        if not isinstance(case, dict):
+            raise CoworkSuiteError("deterministic contract case 必须是对象")
+        case_id = case.get("id")
+        category = case.get("category")
+        target = case.get("test")
+        invariants = case.get("invariants")
+        if not isinstance(case_id, str) or not case_id.startswith("agent-teams-contract-"):
+            raise CoworkSuiteError(f"deterministic contract case id 非法: {case_id!r}")
+        if category not in categories:
+            raise CoworkSuiteError(f"{case_id}: deterministic contract category 非法")
+        if not isinstance(target, str) or not re.fullmatch(
+            r"backend/tests/[a-zA-Z0-9_./-]+\.py::test_[a-zA-Z0-9_]+",
+            target,
+        ):
+            raise CoworkSuiteError(f"{case_id}: pytest target 非法")
+        relative_file, test_name = target.split("::", 1)
+        resolved = (root / relative_file).resolve()
+        if not resolved.is_relative_to(root) or not resolved.is_file():
+            raise CoworkSuiteError(f"{case_id}: pytest target 文件不存在或逃出仓库")
+        source = resolved.read_text(encoding="utf-8")
+        if re.search(rf"(?:async\s+)?def\s+{re.escape(test_name)}\s*\(", source) is None:
+            raise CoworkSuiteError(f"{case_id}: pytest target 函数不存在")
+        if (
+            not isinstance(invariants, list)
+            or not invariants
+            or any(not isinstance(value, str) or not value.strip() for value in invariants)
+        ):
+            raise CoworkSuiteError(f"{case_id}: invariants 必须是非空字符串数组")
+        ids.append(case_id)
+        targets.append(target)
+        actual_categories[str(category)] += 1
+    if len(set(ids)) != len(ids) or len(set(targets)) != len(targets):
+        raise CoworkSuiteError("deterministic contract id/test target 不能重复")
+    if dict(actual_categories) != categories:
+        raise CoworkSuiteError(
+            f"deterministic contract category 配额漂移: {dict(actual_categories)}"
+        )
+    return {
+        "schema_version": raw["schema_version"],
+        "mode": raw["mode"],
+        "case_count": case_count,
+        "categories": dict(sorted(categories.items())),
+        "targets": targets,
+    }
+
+
 def validate_suite(payload: dict[str, Any]) -> None:
     if payload.get("schema_version") != SCHEMA_VERSION:
         raise CoworkSuiteError("schema_version 不匹配")
@@ -290,6 +382,7 @@ def validate_suite(payload: dict[str, Any]) -> None:
         raise CoworkSuiteError("origin 必须保留题目生成来源 synthetic")
     review = suite_review(payload)
     expected_items, expected_splits, expected_categories, id_prefix = _coverage_contract(payload)
+    deterministic_contract(payload)
 
     fixtures = payload.get("fixtures")
     if not isinstance(fixtures, dict) or not fixtures:
@@ -376,7 +469,7 @@ def summarize_suite(payload: dict[str, Any]) -> dict[str, Any]:
     validate_suite(payload)
     items = payload["items"]
     review = suite_review(payload)
-    return {
+    summary = {
         "name": payload["name"],
         "version": payload["version"],
         "items": len(items),
@@ -391,6 +484,12 @@ def summarize_suite(payload: dict[str, Any]) -> dict[str, Any]:
         "reviewer": review["reviewer"],
         "reviewed_at": review["reviewed_at"],
     }
+    contract = deterministic_contract(payload)
+    if contract is not None:
+        summary["contract_cases"] = contract["case_count"]
+        summary["contract_categories"] = contract["categories"]
+        summary["contract_mode"] = contract["mode"]
+    return summary
 
 
 def main() -> None:

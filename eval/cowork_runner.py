@@ -16,20 +16,21 @@ import os
 import re
 import subprocess
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable, Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pymupdf
 from docx import Document
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook, load_workbook  # type: ignore[import-untyped]
 from pptx import Presentation
 from pydantic import BaseModel
 
+from app.agent_core.contracts import HumanInterrupt
 from app.core.config import Settings
 from app.core.db import DbSession as AsyncSession
 from app.core.db import SessionFactory, close_database, session_factory
@@ -64,6 +65,7 @@ from app.cowork.tools import (
     CoworkToolResult,
     CoworkToolSpec,
     FetchUrlArgs,
+    ToolHandler,
     WebSearchArgs,
     build_default_cowork_registry,
 )
@@ -91,14 +93,32 @@ from eval.model_cassette import (
     ReplayingModelGateway,
     cassette_sha256,
 )
-from workpilot_ai.gateway import ModelGateway
+from eval.resource_limits import (
+    EvaluationBudget,
+    EvaluationLimitExceeded,
+    EvaluationLimits,
+    TokenReservation,
+)
+from workpilot_ai.gateway import ModelGateway, PromptBudget, request_character_count
+from workpilot_ai.pricing import estimate_tokens
+from workpilot_ai.types import (
+    CompletionChunk,
+    CompletionResult,
+    EmbeddingResult,
+    Message,
+    ToolDefinition,
+)
 
 REPORT_SCHEMA_VERSION = "cowork-eval-report.v1"
 OBSERVATION_SCHEMA_VERSION = "cowork-observation.v1"
+DEFAULT_MAX_TOTAL_TOKENS = 2_000_000
+DEFAULT_MAX_MODEL_CALLS = 400
+DEFAULT_MAX_WALL_SECONDS = 5_000.0
 # 直接用产品那一份。手抄的上一版少了 knowledge.read 和 browser.control, 于是
 # 题目声明了能力、runner 却从不发放, 九条任务在授权边界上原地失败了一整轮。
 _PATH_CAPABILITIES = PATH_CAPABILITIES
 _GLOBAL_CAPABILITIES = GLOBAL_CAPABILITIES
+SkillMode = Literal["enabled", "disabled"]
 
 _COWORK_IMPLEMENTATION_FILES = (
     "backend/app/agent_core/loop.py",
@@ -121,6 +141,240 @@ _COWORK_SCORER_FILES = (
 
 class CoworkRunnerError(RuntimeError):
     pass
+
+
+class _EvaluationMeteredGateway:
+    """Suite-wide pre-dispatch fuse around every Cowork model operation."""
+
+    def __init__(self, delegate: ModelGatewayLike, budget: EvaluationBudget) -> None:
+        self._delegate = delegate
+        self._budget = budget
+        self.limit_error: EvaluationLimitExceeded | None = None
+        self.chat_provider = delegate.chat_provider
+        self.chat_model = delegate.chat_model
+        self.embedding_provider = delegate.embedding_provider
+        self.embedding_model = delegate.embedding_model
+        self.embedding_dimensions = delegate.embedding_dimensions
+
+    def prompt_budget(self, task_type: str, *, max_tokens: int) -> PromptBudget:
+        return self._delegate.prompt_budget(task_type, max_tokens=max_tokens)
+
+    async def _reserve(self, projected_tokens: int) -> TokenReservation:
+        try:
+            return await self._budget.reserve_model_call(projected_tokens=projected_tokens)
+        except EvaluationLimitExceeded as error:
+            self.limit_error = error
+            raise
+
+    async def _settle(
+        self,
+        reservation: TokenReservation,
+        result: CompletionResult | EmbeddingResult | None,
+    ) -> None:
+        actual_tokens: int | None = None
+        if result is not None:
+            measured = result.usage.input_tokens + result.usage.output_tokens
+            actual_tokens = measured if measured > 0 else None
+        try:
+            await self._budget.settle_model_call(reservation, actual_tokens=actual_tokens)
+        except EvaluationLimitExceeded as error:
+            self.limit_error = error
+            raise
+
+    def _completion_projection(
+        self,
+        messages: list[Message],
+        *,
+        task_type: str,
+        max_tokens: int,
+        tools: list[ToolDefinition] | None = None,
+    ) -> int:
+        request_projection = (
+            int(estimate_tokens(request_character_count(messages, tools), chars_per_token=1.0))
+            + max_tokens
+        )
+        # Cowork decision providers may intentionally omit the wire
+        # max_tokens field.  The model's context window is still a hard upper
+        # bound for input+output, so reserve it to keep the suite token fuse a
+        # true pre-dispatch ceiling.
+        context_ceiling = self._delegate.prompt_budget(
+            task_type, max_tokens=max_tokens
+        ).context_window_tokens
+        return max(request_projection, int(context_ceiling))
+
+    async def complete(
+        self,
+        messages: list[Message],
+        *,
+        task_type: str = "generate",
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> CompletionResult:
+        reservation = await self._reserve(
+            self._completion_projection(
+                messages,
+                task_type=task_type,
+                max_tokens=max_tokens,
+            )
+        )
+        try:
+            result = await self._delegate.complete(
+                messages,
+                task_type=task_type,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except asyncio.CancelledError:
+            await asyncio.shield(self._settle(reservation, None))
+            raise
+        except Exception:
+            await self._settle(reservation, None)
+            raise
+        await self._settle(reservation, result)
+        return result
+
+    async def complete_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool = True,
+        task_type: str = "generate",
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> CompletionResult:
+        reservation = await self._reserve(
+            self._completion_projection(
+                messages,
+                task_type=task_type,
+                max_tokens=max_tokens,
+                tools=tools,
+            )
+        )
+        try:
+            result = await self._delegate.complete_with_tools(
+                messages,
+                tools=tools,
+                parallel_tool_calls=parallel_tool_calls,
+                task_type=task_type,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except asyncio.CancelledError:
+            await asyncio.shield(self._settle(reservation, None))
+            raise
+        except Exception:
+            await self._settle(reservation, None)
+            raise
+        await self._settle(reservation, result)
+        return result
+
+    async def stream_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool = True,
+        task_type: str = "generate",
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> AsyncIterator[CompletionChunk]:
+        reservation = await self._reserve(
+            self._completion_projection(
+                messages,
+                task_type=task_type,
+                max_tokens=max_tokens,
+                tools=tools,
+            )
+        )
+        settled = False
+        try:
+            async for chunk in self._delegate.stream_with_tools(
+                messages,
+                tools=tools,
+                parallel_tool_calls=parallel_tool_calls,
+                task_type=task_type,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            ):
+                if chunk.result is not None:
+                    if settled:
+                        raise RuntimeError("model stream returned more than one terminal chunk")
+                    await self._settle(reservation, chunk.result)
+                    settled = True
+                yield chunk
+        except asyncio.CancelledError:
+            if not settled:
+                await asyncio.shield(self._settle(reservation, None))
+            raise
+        except GeneratorExit:
+            if not settled:
+                await asyncio.shield(self._settle(reservation, None))
+            raise
+        except EvaluationLimitExceeded:
+            raise
+        except Exception:
+            if not settled:
+                await self._settle(reservation, None)
+            raise
+        if not settled:
+            await self._settle(reservation, None)
+            raise RuntimeError("model stream ended without terminal usage")
+
+    async def stream(
+        self,
+        messages: list[Message],
+        *,
+        task_type: str = "generate",
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> AsyncIterator[str]:
+        reservation = await self._reserve(
+            self._completion_projection(
+                messages,
+                task_type=task_type,
+                max_tokens=max_tokens,
+            )
+        )
+        settled = False
+        try:
+            async for chunk in self._delegate.stream(
+                messages,
+                task_type=task_type,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            ):
+                yield chunk
+            await self._settle(reservation, None)
+            settled = True
+        except asyncio.CancelledError:
+            if not settled:
+                await asyncio.shield(self._settle(reservation, None))
+            raise
+        except GeneratorExit:
+            if not settled:
+                await asyncio.shield(self._settle(reservation, None))
+            raise
+        except EvaluationLimitExceeded:
+            raise
+        except Exception:
+            if not settled:
+                await self._settle(reservation, None)
+            raise
+
+    async def embed(self, texts: list[str], *, task_type: str = "embedding") -> EmbeddingResult:
+        projected = estimate_tokens(sum(len(text) for text in texts), chars_per_token=1.0)
+        reservation = await self._reserve(max(1, projected))
+        try:
+            result = await self._delegate.embed(texts, task_type=task_type)
+        except asyncio.CancelledError:
+            await asyncio.shield(self._settle(reservation, None))
+            raise
+        except Exception:
+            await self._settle(reservation, None)
+            raise
+        await self._settle(reservation, result)
+        return result
 
 
 @dataclass(frozen=True)
@@ -160,6 +414,25 @@ def _file_set_fingerprint(repo_root: Path, relative_paths: Iterable[str]) -> str
         if not path.is_file():
             raise CoworkRunnerError(f"实现指纹文件不存在: {relative}")
         digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _directory_fingerprint(root: Path) -> str:
+    resolved = root.expanduser().resolve()
+    if not resolved.is_dir() or resolved.is_symlink():
+        raise CoworkRunnerError(f"Skill fixture root 不存在、不是目录或是符号链接: {root}")
+    digest = hashlib.sha256()
+    files = [path for path in sorted(resolved.rglob("*")) if path.is_file()]
+    if not files:
+        raise CoworkRunnerError(f"Skill fixture root 不能为空: {root}")
+    for path in files:
+        if path.is_symlink():
+            raise CoworkRunnerError(f"Skill fixture 不接受符号链接: {path}")
+        relative = path.relative_to(resolved)
+        digest.update(str(relative).encode("utf-8"))
         digest.update(b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
@@ -387,14 +660,18 @@ class FixtureRagService:
 
 
 def build_fixture_registry(
-    materialized: MaterializedCase, *, settings: Settings
+    materialized: MaterializedCase,
+    *,
+    settings: Settings,
+    skills_mode: SkillMode = "enabled",
 ) -> CoworkToolRegistry:
     registry = build_default_cowork_registry()
-    register_skill_tools(
-        registry,
-        settings,
-        project_roots=((materialized.workspace,) if materialized.workspace is not None else ()),
-    )
+    if skills_mode == "enabled":
+        register_skill_tools(
+            registry,
+            settings,
+            project_roots=((materialized.workspace,) if materialized.workspace is not None else ()),
+        )
     # 连接器写操作在 handler 执行前就会进入生产审批闸门，因此不接触真实凭据也能稳定
     # 评测「选对飞书专用工具 + 审批前零外部副作用」这两件事。
     register_connector_tools(registry)
@@ -414,7 +691,7 @@ def build_fixture_registry(
         if status >= 400:
             raise CoworkToolError(f"http_{status}: fixture 页面返回 HTTP {status}")
         return CoworkToolResult(
-            output={
+            content={
                 "url": args.url,
                 "final_url": args.url,
                 "title": page.get("title") or args.url,
@@ -436,7 +713,7 @@ def build_fixture_registry(
                 matches = list(results)
                 break
         return CoworkToolResult(
-            output={
+            content={
                 "query": args.query,
                 "results": [
                     {**result, "snippet": result.get("snippet", "fixture result")}
@@ -460,7 +737,7 @@ def build_fixture_registry(
         session_id = f"fixture-browser-{len(browser_sessions) + 1:04d}"
         browser_sessions[session_id] = args.url
         return CoworkToolResult(
-            output={"session_id": session_id, "url": args.url, "title": args.url},
+            content={"session_id": session_id, "url": args.url, "title": args.url},
             effect_ref=f"fixture-browser:{args.url}",
         )
 
@@ -471,7 +748,7 @@ def build_fixture_registry(
             raise CoworkToolError("fixture_browser_session_not_found")
         page = fixtures["web_pages"][url]
         return CoworkToolResult(
-            output={
+            content={
                 "session_id": args.session_id,
                 "url": url,
                 "text": str(page.get("browser_body", page.get("body", ""))),
@@ -514,7 +791,8 @@ def build_fixture_registry(
     if fixtures["knowledge_documents"]:
         register_rag_tools(registry, FixtureRagService(fixtures["knowledge_documents"]))
 
-    if materialized.workspace is not None:
+    workspace = materialized.workspace
+    if workspace is not None:
         faults_by_tool: dict[str, list[dict[str, Any]]] = {}
         for fault in fixtures["faults"]:
             tool_name = str(fault.get("after_tool") or "")
@@ -529,9 +807,9 @@ def build_fixture_registry(
                 context: CoworkToolContext,
                 raw: BaseModel,
                 *,
-                handler=original_handler,
-                configured=tuple(tool_faults),
-                occurrence=counter,
+                handler: ToolHandler | None = original_handler,
+                configured: tuple[dict[str, Any], ...] = tuple(tool_faults),
+                occurrence: dict[str, int] = counter,
             ) -> CoworkToolResult:
                 assert handler is not None
                 result = await handler(context, raw)
@@ -539,7 +817,7 @@ def build_fixture_registry(
                 for fault in configured:
                     if occurrence["value"] != int(fault.get("occurrence", 1)):
                         continue
-                    target = _safe_path(materialized.workspace, str(fault["path"]))
+                    target = _safe_path(workspace, str(fault["path"]))
                     document = Document(str(target))
                     for paragraph in document.paragraphs:
                         paragraph._element.getparent().remove(paragraph._element)
@@ -571,7 +849,8 @@ def extract_tool_trace(state: CoworkState) -> list[dict[str, Any]]:
             payload = {"ok": False, "error": "non_json_tool_result"}
         results[call_id] = payload if isinstance(payload, dict) else {"value": payload}
 
-    interrupt = state.get("interrupt") or {}
+    raw_interrupt: HumanInterrupt | None = state.get("interrupt")
+    interrupt: Mapping[str, Any] = {} if raw_interrupt is None else raw_interrupt
     trace: list[dict[str, Any]] = []
     for message in state["messages"]:
         if message.get("role") != "assistant":
@@ -629,10 +908,10 @@ def _workspace_path(workspace: Path | None, relative: str) -> Path | None:
 def _native_text(path: Path) -> tuple[str, dict[str, Any]]:
     suffix = path.suffix.casefold()
     if suffix == ".docx":
-        document = Document(str(path))
-        values = [paragraph.text for paragraph in document.paragraphs]
+        docx_document = Document(str(path))
+        values = [paragraph.text for paragraph in docx_document.paragraphs]
         values.extend(
-            cell.text for table in document.tables for row in table.rows for cell in row.cells
+            cell.text for table in docx_document.tables for row in table.rows for cell in row.cells
         )
         return "\n".join(values), {"format": "docx"}
     if suffix == ".xlsx":
@@ -661,14 +940,14 @@ def _native_text(path: Path) -> tuple[str, dict[str, Any]]:
             "slide_count": len(presentation.slides),
         }
     if suffix == ".pdf":
-        document: Any = pymupdf.open(path)  # type: ignore[no-untyped-call]
+        pdf_document: Any = pymupdf.open(path)  # type: ignore[no-untyped-call]
         try:
-            return "\n".join(page.get_text() for page in document), {
+            return "\n".join(page.get_text() for page in pdf_document), {
                 "format": "pdf",
-                "page_count": len(document),
+                "page_count": len(pdf_document),
             }
         finally:
-            document.close()
+            pdf_document.close()
     raise ValueError(f"不是受支持的 native 文件: {path}")
 
 
@@ -1339,12 +1618,13 @@ def _assert_item_is_solvable(item: dict[str, Any], registry: CoworkToolRegistry)
     unknown = sorted(set(item["gold"]["required_tools"]) - names)
     if unknown:
         raise CoworkRunnerError(f"{item['id']}: fixture registry 里没有 {unknown}")
-    actual = {
-        name: frozenset(
-            ({registry.get(name).capability} - {None}) | set(registry.get(name).extra_capabilities)
-        )
-        for name in names
-    }
+    actual: dict[str, frozenset[str]] = {}
+    for name in names:
+        spec = registry.get(name)
+        capabilities: set[str] = set(spec.extra_capabilities)
+        if spec.capability is not None:
+            capabilities.add(spec.capability)
+        actual[name] = frozenset(capabilities)
     gaps = missing_capabilities_for(
         item["gold"]["required_tools"],
         item["granted_capabilities"],
@@ -1359,7 +1639,7 @@ def _assert_item_is_solvable(item: dict[str, Any], registry: CoworkToolRegistry)
 
 def _fixture_work_mode(
     item: dict[str, Any], materialized: MaterializedCase
-) -> tuple[str, str | None]:
+) -> tuple[Literal["office", "reading"], str | None]:
     """把 benchmark case 装配成与应用入口一致的 WorkMode。
 
     阅读类题在应用里由论文阅读入口发起；若 runner 默认为 office，阅读 playbook 和首轮
@@ -1393,12 +1673,17 @@ async def run_case(
     gateway: ModelGatewayLike,
     settings: Settings,
     db_sessions: SessionFactory,
+    skills_mode: SkillMode = "enabled",
 ) -> dict[str, Any]:
     case_root.mkdir(parents=True, exist_ok=False)
     materialized = materialize_case(suite, item, case_root=case_root)
     work_mode, reading_path = _fixture_work_mode(item, materialized)
     bus = InMemoryRunBus()
-    registry = build_fixture_registry(materialized, settings=settings)
+    registry = build_fixture_registry(
+        materialized,
+        settings=settings,
+        skills_mode=skills_mode,
+    )
     _assert_item_is_solvable(item, registry)
     async with db_sessions() as session:
         conversation_id = await ensure_conversation(
@@ -1615,6 +1900,7 @@ def build_report(
         "config_hash": manifest.get("config_hash"),
         "reproducibility": reproducibility,
         "model_io": manifest.get("model_io") or {},
+        "resource_limits": manifest.get("resource_limits") or {},
         "suite": suite["name"],
         "suite_version": suite["version"],
         "generated_at": datetime.now(UTC).isoformat(),
@@ -1655,10 +1941,23 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         f"- Step efficiency mean: {metrics['step_efficiency']['mean']:.2f}",
         f"- P95 latency: {metrics['latency_ms']['p95'] / 1000:.2f}s",
         f"- Total / P95 tokens: {metrics['tokens']['total']} / {metrics['tokens']['p95']}",
-        "",
-        "| Category | N | Task success | Tool selection | Step efficiency | P95 latency | P95 tokens |",
-        "|---|---:|---:|---:|---:|---:|---:|",
     ]
+    resource_limits = report.get("resource_limits")
+    if isinstance(resource_limits, dict) and resource_limits.get("usage"):
+        lines.append(
+            "- Resource fuses: "
+            f"{resource_limits['usage']['total_tokens']}/"
+            f"{resource_limits['limits']['max_total_tokens']} tokens, "
+            f"{resource_limits['usage']['model_calls']}/"
+            f"{resource_limits['limits']['max_model_calls']} model calls"
+        )
+    lines.extend(
+        [
+            "",
+            "| Category | N | Task success | Tool selection | Step efficiency | P95 latency | P95 tokens |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
     for category, values in report["by_category"].items():
         lines.append(
             f"| {category} | {values['items']} | {values['task_success_rate']:.1%} | "
@@ -1773,8 +2072,19 @@ async def run_suite(
     gateway: ModelGateway | None = None,
     replay_cassette: Path | None = None,
     db_sessions: SessionFactory = session_factory,
+    max_total_tokens: int = DEFAULT_MAX_TOTAL_TOKENS,
+    max_model_calls: int = DEFAULT_MAX_MODEL_CALLS,
+    max_wall_seconds: float = DEFAULT_MAX_WALL_SECONDS,
+    skills_mode: SkillMode = "enabled",
+    skills_root: Path | None = None,
 ) -> tuple[Path, Path, Path]:
     suite = load_suite(suite_path)
+    limits = EvaluationLimits(
+        max_total_tokens=max_total_tokens,
+        max_model_calls=max_model_calls,
+        max_wall_seconds=max_wall_seconds,
+    )
+    evaluation_budget = EvaluationBudget(limits)
     if replay_cassette is not None and gateway is not None:
         raise CoworkRunnerError("replay 模式不能注入真实 ModelGateway")
     replay_shell_items = [
@@ -1796,15 +2106,21 @@ async def run_suite(
     # 会话与授权记录，混进日常使用的库里既污染成本口径也让 run 列表没法看。
     # 落在包目录里还有一个额外好处——report.json 和产生它的那份 SQLite 是同一份快照。
     store_root = package / "store"
-    effective_settings = settings.model_copy(
-        update={
-            "cowork_data_path": store_root,
-            "memory_extraction_enabled": False,
-            "skill_distillation_enabled": False,
-            "cowork_shell_allowlist": [],
-            "run_heartbeat_s": 60.0,
-            "model_timeout_s": settings.cowork_model_timeout_s,
-        }
+    settings_update: dict[str, Any] = {
+        "cowork_data_path": store_root,
+        "memory_extraction_enabled": False,
+        "skill_distillation_enabled": False,
+        "cowork_shell_allowlist": [],
+        "run_heartbeat_s": 60.0,
+        "model_timeout_s": settings.cowork_model_timeout_s,
+    }
+    if skills_root is not None:
+        settings_update["cowork_skills_path"] = skills_root.expanduser().resolve()
+    effective_settings = settings.model_copy(update=settings_update)
+    skills_root_sha256 = (
+        _directory_fingerprint(effective_settings.cowork_skills_path)
+        if skills_root is not None
+        else None
     )
     suite_sha = _sha256_bytes(suite_path.read_bytes())
     item_ids = [str(item["id"]) for item in items]
@@ -1825,7 +2141,7 @@ async def run_suite(
                 "模型 cassette 包含 run_shell 调用；当前环境没有无网络 sandbox，"
                 f"拒绝执行: {list(recorded_shell_cases)}"
             )
-        model_gateway: ModelGatewayLike = replayer
+        cassette_gateway_impl: ModelGatewayLike = replayer
         model_io = {
             "schema": MODEL_CASSETTE_SCHEMA,
             "mode": "cassette_replay",
@@ -1846,13 +2162,15 @@ async def run_suite(
                 "effect_policy": "fixture adapters; filesystem limited to case workspace",
             },
         )
-        model_gateway = recorder
+        cassette_gateway_impl = recorder
         model_io = {
             "schema": MODEL_CASSETTE_SCHEMA,
             "mode": "record",
             "path": cassette_output.name,
             "latency_source": "live_wall_clock",
         }
+    metered_gateway = _EvaluationMeteredGateway(cassette_gateway_impl, evaluation_budget)
+    model_gateway: ModelGatewayLike = metered_gateway
     repo_root = Path(__file__).resolve().parents[1]
     git_sha, git_dirty = _git_state(repo_root)
     review = suite_review(suite)
@@ -1891,9 +2209,12 @@ async def run_suite(
             "calls": effective_settings.run_budget_calls,
             "wall_ms": effective_settings.run_budget_wall_ms,
         },
+        "evaluation_limits": limits.to_dict(),
         "runtime": {
             "memory_extraction_enabled": False,
             "skill_distillation_enabled": False,
+            "skills_mode": skills_mode,
+            "skills_root_sha256": skills_root_sha256,
             "fallback_enabled": False,
         },
         "fixture_policy": fixture_policy,
@@ -1931,6 +2252,17 @@ async def run_suite(
             "note": test_access_note,
         },
         "budgets": config["budgets"],
+        "resource_limits": {
+            "limits": limits.to_dict(),
+            "usage": {
+                "model_calls": 0,
+                "total_tokens": 0,
+                "wall_seconds": 0.0,
+                "status": "running",
+            },
+            "cost_usd": None,
+            "cost_limit": "not_enforced_without_reliable_pricing",
+        },
         "fixture_policy": fixture_policy,
         "config": config,
         "config_hash": _json_hash(config),
@@ -1946,13 +2278,55 @@ async def run_suite(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     records: list[dict[str, Any]] = []
+    used_tokens = 0
+    used_calls = 0
     # 全局 store 单例：已经初始化过就先关掉，否则 `initialize_...` 会直接返回旧的那份，
     # 于是 cowork_data_path 指到哪里都没用，运行记录照样落进上一个根目录。
     await close_local_cowork_stores()
     await initialize_local_cowork_stores(effective_settings)
     cassette_complete = False
+    terminal_error: BaseException | None = None
     try:
         for index, item in enumerate(items, start=1):
+            elapsed = evaluation_budget.elapsed_seconds()
+            remaining_wall = evaluation_budget.remaining_wall_seconds()
+            if remaining_wall <= 0:
+                raise EvaluationLimitExceeded(
+                    "wall_seconds", used=round(elapsed, 3), limit=limits.max_wall_seconds
+                )
+            remaining_tokens = limits.max_total_tokens - used_tokens
+            remaining_calls = limits.max_model_calls - used_calls
+            if remaining_tokens <= 0:
+                raise EvaluationLimitExceeded(
+                    "total_tokens", used=used_tokens, limit=limits.max_total_tokens
+                )
+            if remaining_calls <= 0:
+                raise EvaluationLimitExceeded(
+                    "model_calls", used=used_calls, limit=limits.max_model_calls
+                )
+            per_run_tokens = effective_settings.run_budget_tokens
+            per_run_calls = effective_settings.run_budget_calls
+            per_run_wall_ms = effective_settings.run_budget_wall_ms
+            case_settings = effective_settings.model_copy(
+                update={
+                    "run_budget_tokens": min(
+                        remaining_tokens,
+                        per_run_tokens if per_run_tokens > 0 else remaining_tokens,
+                    ),
+                    "run_budget_calls": min(
+                        remaining_calls,
+                        per_run_calls if per_run_calls > 0 else remaining_calls,
+                    ),
+                    "run_budget_wall_ms": min(
+                        max(1, int(remaining_wall * 1000)),
+                        (
+                            per_run_wall_ms
+                            if per_run_wall_ms > 0
+                            else max(1, int(remaining_wall * 1000))
+                        ),
+                    ),
+                }
+            )
             print(f"[{index}/{len(items)}] {item['id']} {item['category']}", flush=True)
             case_root = workspace_root / str(item["id"])
             fixtures = _merge_fixtures(suite, item)
@@ -1964,25 +2338,64 @@ async def run_suite(
             cassette_gateway.begin_case(
                 str(item["id"]), case_root=case_root, workspace=workspace_hint
             )
+            budget_before = await evaluation_budget.snapshot()
             try:
                 try:
-                    record = await run_case(
-                        suite,
-                        item,
-                        case_root=case_root,
-                        gateway=model_gateway,
-                        settings=effective_settings,
-                        db_sessions=db_sessions,
-                    )
+                    try:
+                        record = await asyncio.wait_for(
+                            run_case(
+                                suite,
+                                item,
+                                case_root=case_root,
+                                gateway=model_gateway,
+                                settings=case_settings,
+                                db_sessions=db_sessions,
+                                skills_mode=skills_mode,
+                            ),
+                            timeout=remaining_wall,
+                        )
+                    except TimeoutError as error:
+                        raise EvaluationLimitExceeded(
+                            "wall_seconds",
+                            used=round(evaluation_budget.elapsed_seconds(), 3),
+                            limit=limits.max_wall_seconds,
+                        ) from error
                 except ModelCassetteError:
                     # 严格 replay 失配不是一个普通模型坏样本。把它吞成 runner_error 会让
                     # 剩余 case 继续跑，最终报告看起来只是成功率下降，而不是回放本身无效。
                     raise
+                except EvaluationLimitExceeded:
+                    raise
                 except Exception as error:
+                    # Every model operation is already settled by the suite-wide
+                    # pre-dispatch meter, including cancellation and ambiguous
+                    # provider failure.  Preserve the failed observation without
+                    # pretending the call was free.
                     record = _runner_error_record(item, error)
             finally:
                 cassette_gateway.end_case()
+            if metered_gateway.limit_error is not None:
+                raise metered_gateway.limit_error
+            budget_after = await evaluation_budget.snapshot()
+            item_tokens = int(budget_after["total_tokens"]) - int(budget_before["total_tokens"])
+            item_calls = int(budget_after["model_calls"]) - int(budget_before["model_calls"])
+            record["observation"]["used_tokens"] = item_tokens
+            record["observation"]["used_calls"] = item_calls
             records.append(record)
+            used_tokens = int(budget_after["total_tokens"])
+            used_calls = int(budget_after["model_calls"])
+            if used_tokens > limits.max_total_tokens:
+                raise EvaluationLimitExceeded(
+                    "total_tokens", used=used_tokens, limit=limits.max_total_tokens
+                )
+            if used_calls > limits.max_model_calls:
+                raise EvaluationLimitExceeded(
+                    "model_calls", used=used_calls, limit=limits.max_model_calls
+                )
+            if record["observation"]["status"] == "budget_exceeded":
+                raise EvaluationLimitExceeded(
+                    "per_run_budget", used=used_calls, limit=limits.max_model_calls
+                )
             print(
                 f"  status={record['observation']['status']} "
                 f"success={record['score']['task_success']} "
@@ -1998,17 +2411,70 @@ async def run_suite(
         if replayer is not None:
             replayer.assert_complete()
         cassette_complete = True
+    except (Exception, asyncio.CancelledError) as error:
+        terminal_error = error
+        raise
     finally:
         if recorder is not None:
             recorder.finalize(complete=cassette_complete)
         if owns_gateway and raw_gateway is not None:
             await raw_gateway.aclose()
         await close_local_cowork_stores()
+        if terminal_error is not None:
+            if recorder is not None:
+                model_io["sha256"] = cassette_sha256(cassette_output)
+                model_io["recorded_model_interactions"] = recorder.interaction_count
+            failure: dict[str, Any] = {
+                "type": type(terminal_error).__name__,
+                "recorded_item_count": len(records),
+                "completed_item_count": sum(
+                    record.get("observation", {}).get("status") in {"done", "waiting_human"}
+                    for record in records
+                ),
+                "expected_item_count": len(items),
+            }
+            if isinstance(terminal_error, EvaluationLimitExceeded):
+                failure.update(
+                    {
+                        "code": "resource_limit_exceeded",
+                        "dimension": terminal_error.dimension,
+                        "used": terminal_error.used,
+                        "limit": terminal_error.limit,
+                    }
+                )
+            else:
+                failure["code"] = "runner_failed"
+            failed_usage = await evaluation_budget.snapshot()
+            if isinstance(terminal_error, EvaluationLimitExceeded):
+                failed_usage["status"] = "limit_exceeded"
+            elif failed_usage["reserved_tokens"]:
+                failed_usage["status"] = "unsettled_after_failure"
+            else:
+                failed_usage["status"] = "failed"
+            manifest["model_io"] = model_io
+            manifest["resource_limits"]["usage"] = failed_usage
+            manifest["terminal_status"] = "failed"
+            manifest["failure"] = failure
+            failed_at = datetime.now(UTC)
+            manifest["finished_at"] = failed_at.isoformat()
+            manifest["duration_ms"] = round(
+                (failed_at - started_at).total_seconds() * 1000,
+                3,
+            )
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
 
     if recorder is not None:
         model_io["sha256"] = cassette_sha256(cassette_output)
         model_io["recorded_model_interactions"] = recorder.interaction_count
     manifest["model_io"] = model_io
+    final_budget_usage = await evaluation_budget.snapshot()
+    if final_budget_usage["reserved_tokens"] != 0:
+        raise CoworkRunnerError("cowork evaluation ended with unsettled token reservations")
+    manifest["resource_limits"]["usage"] = final_budget_usage
+    manifest["terminal_status"] = "completed"
     manifest["config_hash"] = _json_hash(config)
 
     finished_at = datetime.now(UTC)
@@ -2229,6 +2695,11 @@ async def _async_main(args: argparse.Namespace) -> tuple[Path, Path, Path]:
             test_access_note=args.test_access_note.strip() or None,
             settings=settings,
             replay_cassette=args.replay_cassette,
+            max_total_tokens=args.max_total_tokens,
+            max_model_calls=args.max_model_calls,
+            max_wall_seconds=args.max_wall_seconds,
+            skills_mode=args.skills_mode,
+            skills_root=args.skills_root,
         )
     finally:
         await close_database()
@@ -2241,10 +2712,14 @@ def _evaluation_settings(
     budget_calls: int | None,
     budget_wall_ms: int | None,
 ) -> Settings:
-    """构造评测设置；token 只计量，不作为任务成败熔断。"""
+    """构造逐 Run 预算；整批仍由独立的总量熔断约束。"""
 
     if budget_tokens not in {None, 0}:
-        raise CoworkRunnerError("评测已禁用 token 熔断；请省略 --budget-tokens（或显式传 0）")
+        raise CoworkRunnerError("逐 Run 已禁用 token 熔断；使用 --max-total-tokens 设置整批硬上限")
+    if budget_calls is not None and budget_calls < 0:
+        raise CoworkRunnerError("--budget-calls 不能为负数")
+    if budget_wall_ms is not None and budget_wall_ms < 0:
+        raise CoworkRunnerError("--budget-wall-ms 不能为负数")
     return settings.model_copy(
         update={
             "run_budget_tokens": 0,
@@ -2288,10 +2763,24 @@ def main() -> None:
     parser.add_argument(
         "--budget-tokens",
         type=int,
-        help="兼容旧命令，仅允许 0；评测 token 只计量、不熔断",
+        help="兼容旧命令且仅允许 0；使用 --max-total-tokens 设置整批硬上限",
     )
     parser.add_argument("--budget-calls", type=int)
     parser.add_argument("--budget-wall-ms", type=int)
+    parser.add_argument("--max-total-tokens", type=int, default=DEFAULT_MAX_TOTAL_TOKENS)
+    parser.add_argument("--max-model-calls", type=int, default=DEFAULT_MAX_MODEL_CALLS)
+    parser.add_argument("--max-wall-seconds", type=float, default=DEFAULT_MAX_WALL_SECONDS)
+    parser.add_argument(
+        "--skills-mode",
+        choices=("enabled", "disabled"),
+        default="enabled",
+        help="成对 Skill 评测开关；disabled 不注册 Skill 工具或目录提示",
+    )
+    parser.add_argument(
+        "--skills-root",
+        type=Path,
+        help="隔离的 user Skill fixture 根目录；报告只记录内容 SHA256",
+    )
     args = parser.parse_args()
     paths = asyncio.run(_async_main(args))
     print(

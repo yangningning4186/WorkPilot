@@ -17,6 +17,25 @@ class ProviderResponseError(ProviderError):
     """Provider 已响应，但响应状态或结构不符合统一契约。"""
 
 
+class ProviderRetryableError(ProviderResponseError):
+    """同一 endpoint 可在退避后重试的瞬时响应错误。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retry_after_s: float | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.retry_after_s = retry_after_s
+        super().__init__(message)
+
+
+class ProviderRateLimitError(ProviderRetryableError):
+    """暂时性限流；配额耗尽不会被 adapter 归到这个类型。"""
+
+
 class ProviderContextOverflowError(ProviderResponseError):
     """Provider 已接收请求，并明确拒绝超出上下文窗口的输入。"""
 
@@ -29,8 +48,8 @@ class ProviderRouteTimeoutError(ProviderTimeoutError):
     """主 endpoint 与整条 fallback 链均以 ProviderTimeoutError 结束。"""
 
 
-class ProviderTransportError(ProviderResponseError):
-    """请求可能已经发送，随后发生非超时网络错误。"""
+class ProviderTransportError(ProviderRetryableError):
+    """请求可能已经发送，随后发生可在同 endpoint 退避重试的网络错误。"""
 
 
 class ModelContextOverflowError(ValueError):

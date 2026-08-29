@@ -25,6 +25,7 @@ import {
   fetchConversationMessages,
   fetchConversationContextUsage,
   fetchConversations,
+  navigateConversationLane,
   fetchCoworkArtifacts,
   fetchKnowledgeBases,
   fetchPersonas,
@@ -39,6 +40,7 @@ import {
   fetchWorkspaceTrust,
   forgetCoworkMemory,
   patchCoworkMemory,
+  undoCoworkMemoryUpdate,
   fetchProviders,
   revokeCoworkRoot,
   respondToCoworkInteraction,
@@ -362,8 +364,8 @@ export default function CoworkPage() {
   // POST run」顺序提交它；已有会话仍然即时持久化选择。
   const [knowledgeBaseDraft, setKnowledgeBaseDraft] = useState<string | null>(null);
   const [knowledgeBaseDraftDirty, setKnowledgeBaseDraftDirty] = useState(false);
-  // 新任务还没有 conversation_id，模型选择先留在浏览器 draft；首次发送时与新会话绑定，
-  // 不允许未选择时回落到部署级默认模型。
+  // 新任务还没有 conversation_id，用户手动切换的模型先留在浏览器 draft；未切换时使用
+  // Provider API 排在首位的用户默认项（主模型 qwen35b），首次发送再与新会话持久化绑定。
   const [providerDraft, setProviderDraft] = useState<string | null>(null);
   const [knowledgeBaseLoadedFor, setKnowledgeBaseLoadedFor] = useState<string | null>(null);
   const conversationIdRef = useRef<string | null>(null);
@@ -532,8 +534,8 @@ export default function CoworkPage() {
         await forgetCoworkMemory(write.memory.id);
       } else if (write.action === "forgotten") {
         await patchCoworkMemory(write.memory.id, { restore: true });
-      } else if (write.previous_content !== null) {
-        await patchCoworkMemory(write.memory.id, { content: write.previous_content });
+      } else if (write.previous_memory_id !== null) {
+        await undoCoworkMemoryUpdate(write.memory.id, write.previous_memory_id);
       }
       setUndoneMemories((current) => [...current, write.memory.id]);
       await refreshMemories();
@@ -872,6 +874,38 @@ export default function CoworkPage() {
     }
   }, [archivedConversations, conversationId, conversations, openConversation, running]);
 
+  const retryFromMessage = useCallback(async (message: ConversationMessage) => {
+    if (conversationId === null || running || message.role !== "user") return;
+    if (message.attachments.length > 0) {
+      setNotice("这条消息包含附件。请新建分支后重新上传附件，避免使用失效的附件引用。");
+      return;
+    }
+    setBusy(true);
+    setNotice(null);
+    try {
+      await navigateConversationLane(conversationId, `message:${message.id}`, "before");
+      const [messageResponse, contextResponse, conversationResponse] = await Promise.all([
+        fetchConversationMessages(conversationId),
+        fetchConversationContextUsage(conversationId).catch(() => null),
+        fetchConversations(false),
+      ]);
+      setMessages(messageResponse.items);
+      setContextUsage(contextResponse);
+      setConversations(conversationResponse.items);
+      setGoal(message.content);
+      setNotice("已在当前会话中回到这条消息之前；旧路线已保留为可审查分支。");
+      window.requestAnimationFrame(() => composerInput.current?.focus());
+    } catch (reason) {
+      setNotice(
+        reason instanceof ApiError && reason.status === 409
+          ? "该会话仍有任务在执行，请停止任务或等待完成后再重试。"
+          : readableError(reason),
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [conversationId, running]);
+
   const execute = useCallback(async () => {
     if (goal.trim() === "") return;
     if (conversationId !== null && knowledgeBaseLoadedFor !== conversationId) {
@@ -884,8 +918,8 @@ export default function CoworkPage() {
       (item) => item.id === conversationId,
     );
     const requestedProviderId = conversationId === null
-      ? providerDraft
-      : currentConversation?.provider_profile_id ?? null;
+      ? providerDraft ?? providers[0]?.id ?? null
+      : currentConversation?.provider_profile_id ?? providers[0]?.id ?? null;
     const selectedProvider = providers.find((item) => item.id === requestedProviderId);
     if (selectedProvider === undefined) {
       setNotice(
@@ -910,6 +944,15 @@ export default function CoworkPage() {
           approval_mode: "interactive",
           persona_name: "general",
         });
+      } else if (currentConversation?.provider_profile_id === null) {
+        const updated = await updateConversationRuntime(targetConversationId, {
+          provider_profile_id: selectedProvider.id,
+          model_override: selectedProvider.default_model,
+          unattended: currentConversation.unattended,
+          approval_mode: currentConversation.approval_mode,
+          persona_name: currentConversation.persona_name,
+        });
+        setConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
       }
       const runConversationId = targetConversationId;
       // 这次 PUT 不是多余请求：它既提交空白页 draft，也作为 run 前的顺序屏障，保证快速
@@ -1210,8 +1253,8 @@ export default function CoworkPage() {
   const conversationArchived = activeConversation?.archived_at !== null
     && activeConversation?.archived_at !== undefined;
   const selectedProviderId = conversationId === null
-    ? providerDraft
-    : activeConversation?.provider_profile_id ?? null;
+    ? providerDraft ?? providers[0]?.id ?? null
+    : activeConversation?.provider_profile_id ?? providers[0]?.id ?? null;
   const providerReady = providers.some((item) => item.id === selectedProviderId);
 
   const toggleApprovalMode = useCallback(async () => {
@@ -1713,6 +1756,17 @@ export default function CoworkPage() {
                         </>
                       ) : <p>{message.content}</p>}
                       {message.attachments.length > 0 && <div className="workdesk-message-attachments">{message.attachments.map((item) => <span key={item.id}><WorkdeskIcon name="file" /><b>{item.filename}</b><small>{item.kind === "image" ? "图片" : item.kind === "pdf" ? "PDF" : "文本"}</small></span>)}</div>}
+                      {message.role === "user" && (
+                        <button
+                          className="workdesk-message-retry"
+                          disabled={busy || running || conversationArchived || message.attachments.length > 0}
+                          onClick={() => void retryFromMessage(message)}
+                          title={message.attachments.length > 0 ? "包含附件的消息需要重新上传附件" : "保留旧路线，在当前会话中回到这条消息之前"}
+                          type="button"
+                        >
+                          从这里重试
+                        </button>
+                      )}
                     </div>
                   </article>
                 ))}
@@ -1761,7 +1815,10 @@ export default function CoworkPage() {
                                         ? "已更新记忆"
                                         : "已记住"}
                                   </strong>
-                                  <span>{write.memory.content}</span>
+                                  <span>
+                                    {memories.find((item) => item.id === write.memory.id)?.content
+                                      ?? "正文仅保存在长期记忆中，未复制到运行事件。"}
+                                  </span>
                                 </p>
                                 <button disabled={busy} onClick={() => void undoMemoryWrite(write)} type="button">撤销</button>
                               </article>

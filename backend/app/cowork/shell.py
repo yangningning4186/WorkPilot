@@ -10,9 +10,59 @@ import signal
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import BinaryIO, Literal
 
-SHELL_OPERATOR_TOKENS = ("\n", "\r", ";", "|", "&", ">", "<", "`", "$(")
+from app.cowork.self_protection import shell_argument_indirection_reason
+
+SHELL_OPERATOR_TOKENS = ("\n", "\r", ";", "|", "&", ">", "<", "`", "$")
+
+# 前缀规则只能为当前 argv 背书，不能为参数里藏着的第二个程序或源码背书。
+_ARG_EXECUTORS = frozenset(
+    {
+        "xargs",
+        "env",
+        "nohup",
+        "nice",
+        "stdbuf",
+        "timeout",
+        "watch",
+        "sudo",
+        "doas",
+        "ssh",
+        "docker",
+        "podman",
+        "kubectl",
+        "npx",
+        "pnpx",
+        "bunx",
+        "uvx",
+    }
+)
+_INTERPRETERS = frozenset(
+    {
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "ksh",
+        "fish",
+        "powershell",
+        "pwsh",
+        "cmd",
+        "python",
+        "python3",
+        "node",
+        "deno",
+        "bun",
+        "ruby",
+        "perl",
+        "php",
+    }
+)
+_INLINE_CODE_FLAGS = frozenset(
+    {"-c", "-e", "--eval", "--command", "-command", "-encodedcommand", "/c", "/k"}
+)
+_DANGEROUS_FLAGS = frozenset({"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprintf"})
 
 
 class CoworkShellError(RuntimeError):
@@ -39,6 +89,7 @@ class ShellDecision:
     command: ShellCommand
     allowlisted: bool
     matched_prefix: tuple[str, ...] | None
+    prefix_ineligible_reason: str | None = None
 
     @property
     def approval_required(self) -> bool:
@@ -53,6 +104,29 @@ class ShellExecutionResult:
     stderr: str
     output_truncated: bool
     execution_mode: Literal["argv", "shell"]
+    full_output_path: str | None = None
+    full_output_truncated: bool = False
+    full_output_size_bytes: int = 0
+
+
+@dataclass
+class _OutputCapture:
+    handle: BinaryIO
+    max_bytes: int
+    lock: asyncio.Lock
+    written: int = 0
+    truncated: bool = False
+
+    async def append(self, channel: str, chunk: bytes) -> None:
+        marker = f"\n--- {channel} ---\n".encode()
+        async with self.lock:
+            payload = marker + chunk
+            room = self.max_bytes - self.written
+            if room > 0:
+                written = self.handle.write(payload[:room])
+                self.written += written
+            if len(payload) > room:
+                self.truncated = True
 
 
 def parse_shell_command(command: str) -> ShellCommand:
@@ -81,6 +155,9 @@ def compile_allowlist(entries: list[str]) -> tuple[tuple[str, ...], ...]:
         parsed = parse_shell_command(entry)
         if parsed.has_operators:
             raise CoworkShellError("shell allowlist 条目不能包含操作符")
+        ineligible = prefix_ineligibility_reason(parsed.argv)
+        if ineligible is not None:
+            raise CoworkShellError(f"shell allowlist 条目不能自动放行：{ineligible}")
         prefixes.append(parsed.argv)
     return tuple(prefixes)
 
@@ -88,8 +165,21 @@ def compile_allowlist(entries: list[str]) -> tuple[tuple[str, ...], ...]:
 def assess_shell_command(command: str, allowlist: list[str]) -> ShellDecision:
     parsed = parse_shell_command(command)
     prefixes = compile_allowlist(allowlist)
+    ineligible = prefix_ineligibility_reason(parsed.argv)
     if parsed.has_operators:
-        return ShellDecision(command=parsed, allowlisted=False, matched_prefix=None)
+        return ShellDecision(
+            command=parsed,
+            allowlisted=False,
+            matched_prefix=None,
+            prefix_ineligible_reason="包含 shell 操作符或不透明展开",
+        )
+    if ineligible is not None:
+        return ShellDecision(
+            command=parsed,
+            allowlisted=False,
+            matched_prefix=None,
+            prefix_ineligible_reason=ineligible,
+        )
     matched = next(
         (
             prefix
@@ -98,7 +188,58 @@ def assess_shell_command(command: str, allowlist: list[str]) -> ShellDecision:
         ),
         None,
     )
-    return ShellDecision(command=parsed, allowlisted=matched is not None, matched_prefix=matched)
+    return ShellDecision(
+        command=parsed,
+        allowlisted=matched is not None,
+        matched_prefix=matched,
+    )
+
+
+def prefix_ineligibility_reason(argv: tuple[str, ...] | list[str]) -> str | None:
+    """说明为什么一条 argv 不能被 prefix allowlist 自动授权。"""
+
+    if not argv:
+        return "命令没有可校验的 argv"
+    program = Path(argv[0]).name.casefold()
+    if program.endswith(".exe"):
+        program = program[:-4]
+    if program in _ARG_EXECUTORS:
+        return f"{program} 会执行参数中指定的另一个程序"
+    lowered = tuple(argument.casefold() for argument in argv[1:])
+    if _is_interpreter(program) and any(_is_inline_code_flag(argument) for argument in lowered):
+        return f"{program} 携带内联代码参数"
+    dangerous = next((argument for argument in lowered if argument in _DANGEROUS_FLAGS), None)
+    if dangerous is not None:
+        return f"参数 {dangerous} 会执行程序或删除文件"
+    if program in {"npm", "pnpm", "yarn"} and lowered[:1] in {
+        ("exec",),
+        ("x",),
+        ("dlx",),
+    }:
+        return f"{program} {lowered[0]} 会执行参数中指定的程序"
+    return shell_argument_indirection_reason(argv)
+
+
+def _is_interpreter(program: str) -> bool:
+    if program in _INTERPRETERS:
+        return True
+    if not program.startswith("python"):
+        return False
+    suffix = program.removeprefix("python")
+    return bool(suffix) and all(part.isdigit() for part in suffix.split("."))
+
+
+def _is_inline_code_flag(argument: str) -> bool:
+    if argument in _INLINE_CODE_FLAGS:
+        return True
+    return (
+        (argument.startswith("-c") or argument.startswith("-e"))
+        and len(argument) > 2
+        and not argument.startswith("--")
+    ) or any(
+        argument.startswith(f"{flag}=")
+        for flag in ("--eval", "--command", "-command", "-encodedcommand")
+    )
 
 
 async def execute_shell_command(
@@ -109,8 +250,10 @@ async def execute_shell_command(
     timeout_s: float,
     terminate_grace_s: float,
     max_output_bytes: int,
+    full_output_path: Path | None = None,
+    full_output_max_bytes: int = 64 * 1024 * 1024,
 ) -> ShellExecutionResult:
-    if timeout_s <= 0 or terminate_grace_s < 0 or max_output_bytes < 1:
+    if timeout_s <= 0 or terminate_grace_s < 0 or max_output_bytes < 1 or full_output_max_bytes < 1:
         raise ValueError("shell 执行限制必须为正数")
     environment = _minimal_environment()
     if command.has_operators:
@@ -139,8 +282,20 @@ async def execute_shell_command(
         execution_mode = "argv"
 
     assert process.stdout is not None and process.stderr is not None
-    stdout_task = asyncio.create_task(_read_limited(process.stdout, max_output_bytes))
-    stderr_task = asyncio.create_task(_read_limited(process.stderr, max_output_bytes))
+    capture: _OutputCapture | None = None
+    if full_output_path is not None:
+        full_output_path.parent.mkdir(parents=True, exist_ok=True)
+        capture = _OutputCapture(
+            handle=full_output_path.open("wb"),
+            max_bytes=full_output_max_bytes,
+            lock=asyncio.Lock(),
+        )
+    stdout_task = asyncio.create_task(
+        _read_limited(process.stdout, max_output_bytes, capture=capture, channel="stdout")
+    )
+    stderr_task = asyncio.create_task(
+        _read_limited(process.stderr, max_output_bytes, capture=capture, channel="stderr")
+    )
     process_task = asyncio.create_task(process.wait())
     cancel_task = asyncio.create_task(cancel_event.wait()) if cancel_event is not None else None
     waiters: set[asyncio.Task[int] | asyncio.Task[bool]] = {process_task}
@@ -183,6 +338,10 @@ async def execute_shell_command(
         await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
         stdout_bytes, stdout_truncated = b"", True
         stderr_bytes, stderr_truncated = b"", True
+    finally:
+        if capture is not None:
+            capture.handle.flush()
+            capture.handle.close()
     if not process_task.done():
         # asyncio 的 subprocess wait transport 在 returncode 已产生后仍可能等待继承的
         # stdout/stderr 管道 EOF；reader 已超时就不能再在这里无界等待。
@@ -192,27 +351,46 @@ async def execute_shell_command(
         raise pending_error
     if reader_timed_out:
         raise CoworkShellError("shell 主进程退出后输出管道未关闭，已停止读取")
+    output_truncated = stdout_truncated or stderr_truncated
+    retained_output_path: str | None = None
+    if full_output_path is not None:
+        if output_truncated:
+            retained_output_path = str(full_output_path)
+        else:
+            # This file was created by this invocation solely as a fallback.  Short output is
+            # already complete in the result and should not clutter the user's workspace.
+            await asyncio.to_thread(full_output_path.unlink, missing_ok=True)
     return ShellExecutionResult(
         command_sha256=hashlib.sha256(command.raw.encode("utf-8")).hexdigest(),
         exit_code=exit_code,
         stdout=stdout_bytes.decode("utf-8", errors="replace"),
         stderr=stderr_bytes.decode("utf-8", errors="replace"),
-        output_truncated=stdout_truncated or stderr_truncated,
+        output_truncated=output_truncated,
         execution_mode=execution_mode,
+        full_output_path=retained_output_path,
+        full_output_truncated=False if capture is None else capture.truncated,
+        full_output_size_bytes=0 if capture is None else capture.written,
     )
 
 
-async def _read_limited(stream: asyncio.StreamReader, max_bytes: int) -> tuple[bytes, bool]:
+async def _read_limited(
+    stream: asyncio.StreamReader,
+    max_bytes: int,
+    *,
+    capture: _OutputCapture | None = None,
+    channel: str = "output",
+) -> tuple[bytes, bool]:
     retained = bytearray()
     truncated = False
     while True:
         chunk = await stream.read(8192)
         if not chunk:
             return bytes(retained), truncated
-        remaining = max_bytes - len(retained)
-        if remaining > 0:
-            retained.extend(chunk[:remaining])
-        if len(chunk) > remaining:
+        if capture is not None:
+            await capture.append(channel, chunk)
+        retained.extend(chunk)
+        if len(retained) > max_bytes:
+            del retained[: len(retained) - max_bytes]
             truncated = True
 
 
@@ -226,6 +404,14 @@ async def _terminate_process_group(process: asyncio.subprocess.Process, grace_s:
             process.terminate()
     except ProcessLookupError:
         return
+    except PermissionError:
+        # A POSIX sandbox may allow signalling the direct child but reject killpg even though
+        # WorkPilot created the group.  Fall back to the owned child; pipe transports are closed
+        # separately by the caller, so a detached grandchild cannot keep this request hanging.
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            return
     try:
         await asyncio.wait_for(process.wait(), timeout=grace_s)
         return
@@ -238,6 +424,11 @@ async def _terminate_process_group(process: asyncio.subprocess.Process, grace_s:
             process.kill()
     except ProcessLookupError:
         return
+    except PermissionError:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            return
     await process.wait()
 
 

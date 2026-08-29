@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import UUID
 
+from uuid6 import uuid7
+
+from app.agent_core.compaction import collect_history_details, deterministic_history_summary
+from app.agent_core.session_entries import SessionEntry
 from app.core.db import DbSession as AsyncSession
 from app.cowork_contracts import ApprovalMode
 from app.cowork_contracts import ConversationBusyError as ConversationBusyError
+from app.cowork_store.base import SessionLaneNavigation
 from app.cowork_store.routing import cowork_store
 
 
@@ -263,6 +268,7 @@ async def list_conversation_messages(
     session: AsyncSession,
     *,
     conversation_id: UUID,
+    lane: str = "main",
     limit: int = 100,
 ) -> list[ConversationMessageRecord] | None:
     if not 1 <= limit <= 500:
@@ -273,7 +279,26 @@ async def list_conversation_messages(
     from app.cowork_store.factory import local_cowork_stores
 
     messages = await local_cowork_stores().conversations.read(conversation_id)
-    visible = [value for value in messages if value.role in {"user", "assistant"}][-limit:]
+    entries = await store.list_session_entries(
+        conversation_id=conversation_id,
+        lane=lane,
+        limit=10_000,
+    )
+    message_ids = [
+        str(entry.payload["record_id"])
+        for entry in entries
+        if entry.kind == "message" and isinstance(entry.payload.get("record_id"), str)
+    ]
+    if entries:
+        by_id = {str(item.record_id): item for item in messages}
+        visible = [
+            by_id[record_id]
+            for record_id in message_ids
+            if record_id in by_id and by_id[record_id].role in {"user", "assistant"}
+        ][-limit:]
+    else:
+        # Databases created before session_entries were introduced have no lane projection.
+        visible = [value for value in messages if value.role in {"user", "assistant"}][-limit:]
     runs = {
         run.id: run
         for run in await store.get_runs(
@@ -298,3 +323,203 @@ async def list_conversation_messages(
             )
         )
     return output
+
+
+async def navigate_conversation_lane(
+    session: AsyncSession,
+    *,
+    conversation_id: UUID,
+    target_entry_id: str,
+    position: Literal["before", "after"] = "after",
+    summarize: bool = True,
+    lane: str = "main",
+) -> SessionLaneNavigation:
+    """Move a conversation lane and retain the branch being left under a stable name."""
+
+    del session
+    store = cowork_store()
+    if not await store.conversation_exists(conversation_id):
+        raise LookupError("会话不存在")
+    current_path = await store.list_session_entries(
+        conversation_id=conversation_id,
+        lane=lane,
+        limit=10_000,
+    )
+    all_entries = await store.list_session_entries(
+        conversation_id=conversation_id,
+        lane=None,
+        limit=10_000,
+    )
+    by_id = {entry.id: entry for entry in all_entries}
+    target = by_id.get(target_entry_id)
+    if target is None:
+        raise LookupError("目标 session entry 不存在")
+    resolved_target_id = target.parent_id if position == "before" else target.id
+    expected_head = current_path[-1].id if current_path else None
+
+    target_ancestry: set[str] = set()
+    cursor: str | None = resolved_target_id
+    while cursor is not None:
+        if cursor in target_ancestry or cursor not in by_id:
+            raise ValueError("session entry parent 链损坏")
+        target_ancestry.add(cursor)
+        cursor = by_id[cursor].parent_id
+    abandoned_entries = [entry for entry in current_path if entry.id not in target_ancestry]
+    payload: dict[str, Any] | None = None
+    if summarize and expected_head != resolved_target_id and expected_head is not None:
+        from app.cowork_store.factory import local_cowork_stores
+
+        records = await local_cowork_stores().conversations.read(conversation_id)
+        messages = {str(item.record_id): item for item in records}
+        abandoned_history: list[dict[str, Any]] = []
+        abandoned_message_ids: list[str] = []
+        for entry in abandoned_entries:
+            if entry.kind != "message":
+                continue
+            record_id = entry.payload.get("record_id")
+            item = messages.get(str(record_id))
+            if item is not None and item.role in {"user", "assistant"}:
+                abandoned_message_ids.append(str(item.record_id))
+                abandoned_history.append({"role": item.role, "content": item.content})
+        inherited_details: dict[str, list[str]] = {
+            "read_files": [],
+            "modified_files": [],
+            "artifacts": [],
+        }
+        for entry in abandoned_entries:
+            if entry.kind != "compaction" or not isinstance(entry.payload.get("details"), dict):
+                continue
+            raw_details = cast("dict[str, Any]", entry.payload["details"])
+            for key in inherited_details:
+                raw_values = raw_details.get(key)
+                if not isinstance(raw_values, list):
+                    continue
+                for value in raw_values:
+                    normalized = str(value).strip()
+                    if normalized and normalized not in inherited_details[key]:
+                        inherited_details[key].append(normalized)
+        details = collect_history_details(abandoned_history, current=inherited_details)
+        payload = {
+            "reason": "lane_navigation",
+            "from_entry_id": expected_head,
+            "to_entry_id": resolved_target_id,
+            "requested_entry_id": target_entry_id,
+            "position": position,
+            "abandoned_entry_count": len(abandoned_entries),
+            "abandoned_message_ids": abandoned_message_ids,
+            "summary": deterministic_history_summary(
+                abandoned_history,
+                max_chars=6_000,
+            ),
+            "details": details,
+        }
+
+    return await store.navigate_session_lane(
+        conversation_id=conversation_id,
+        lane=lane,
+        target_entry_id=resolved_target_id,
+        expected_head_entry_id=expected_head,
+        abandoned_lane=f"branch-{uuid7()!s}",
+        branch_summary_payload=payload,
+    )
+
+
+async def list_conversation_entries(
+    session: AsyncSession,
+    *,
+    conversation_id: UUID,
+    lane: str | None = "main",
+    limit: int = 1000,
+) -> list[SessionEntry] | None:
+    del session
+    store = cowork_store()
+    if not await store.conversation_exists(conversation_id):
+        return None
+    return await store.list_session_entries(
+        conversation_id=conversation_id,
+        lane=lane,
+        limit=limit,
+    )
+
+
+async def fork_conversation(
+    session: AsyncSession,
+    *,
+    conversation_id: UUID,
+    message_id: UUID,
+    position: Literal["before", "after"] = "after",
+    title: str | None = None,
+) -> UUID:
+    """从任意可见消息处分叉；源会话与被舍弃分支保持不变。"""
+
+    source = await get_conversation(session, conversation_id=conversation_id)
+    if source is None:
+        raise LookupError("会话不存在")
+    if source.active_run_id is not None:
+        raise ConversationBusyError("会话仍有任务在运行，不能从不稳定的消息尾部分叉")
+    from app.cowork_store.factory import local_cowork_stores
+    from app.runstore.runs import append_message
+
+    messages = await local_cowork_stores().conversations.read(conversation_id)
+    target_index = next(
+        (index for index, item in enumerate(messages) if item.record_id == message_id),
+        None,
+    )
+    if target_index is None:
+        raise LookupError("分叉消息不存在")
+    boundary = target_index + (1 if position == "after" else 0)
+    retained = messages[:boundary]
+    abandoned = messages[boundary:]
+    normalized_title = (
+        title.strip()
+        if title is not None and title.strip()
+        else f"{source.title or '新会话'} · 分支"
+    )[:120]
+    store = cowork_store()
+    fork_id = await store.create_conversation(title=normalized_title)
+    try:
+        await store.update_conversation_runtime(
+            conversation_id=fork_id,
+            provider_profile_id=source.provider_profile_id,
+            model_override=source.model_override,
+            unattended=source.unattended,
+            approval_mode=cast("ApprovalMode", source.approval_mode),
+            persona_name=source.persona_name,
+        )
+        for message in retained:
+            await append_message(
+                session,
+                conversation_id=fork_id,
+                role=message.role,
+                content=message.content,
+                status="completed",
+                run_id=None,
+                citations=message.citations,
+            )
+        await store.append_session_entry(
+            conversation_id=fork_id,
+            kind="branch_summary",
+            payload={
+                "source_conversation_id": str(conversation_id),
+                "source_message_id": str(message_id),
+                "position": position,
+                "retained_messages": len(retained),
+                "abandoned_messages": len(abandoned),
+                "omitted_retained_attachments": sum(len(item.attachments) for item in retained),
+                "abandoned_message_ids": [str(item.record_id) for item in abandoned],
+                "summary": deterministic_history_summary(
+                    [
+                        {"role": item.role, "content": item.content}
+                        for item in abandoned
+                        if item.role in {"user", "assistant"}
+                    ],
+                    max_chars=6_000,
+                ),
+                "details": collect_history_details([]),
+            },
+        )
+    except Exception:
+        await store.delete_conversation(conversation_id=fork_id)
+        await local_cowork_stores().conversations.delete(fork_id)
+        raise
+    return fork_id

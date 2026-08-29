@@ -53,6 +53,9 @@ async def local_cowork_store(
     # 刻意不放在用例的 tmp_path 里：扫目录的用例会把这个库当成待扫描的文件。
     state_path = tmp_path_factory.mktemp("cowork-state")
     monkeypatch.setenv("COWORK_DATA_PATH", str(state_path))
+    # Approval evidence keys are derived from SecretStore and must be isolated just like the
+    # Cowork DB.  Never let a test create or reuse the desktop user's real master key.
+    monkeypatch.setenv("SECRET_STORE_KEY_PATH", str(state_path / "secrets" / "master.key"))
     # 测试 Provider 的默认上下文只有 32K；生产 registry 改为全量 schema 后，保留 8K
     # 输出会让固定前缀刚好越界。测试只验证运行时协议，2K 输出足够且不裁剪 schema。
     monkeypatch.setenv("COWORK_DECISION_MAX_TOKENS", "2048")

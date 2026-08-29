@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid6 import uuid7
 
+from app.agent_core.session_records import reduce_model_step_attempts
 from app.api.dependencies import (
     get_run_bus,
     get_run_queue_dependency,
@@ -25,8 +26,10 @@ from app.core.db import DbSession as AsyncSession
 from app.core.db import SessionFactory, get_db_session, session_factory
 from app.core.run_bus import InMemoryRunBus
 from app.cowork.authorization import arguments_sha256
+from app.cowork.automation_tools import register_scheduler_tools
 from app.cowork.browser_tools import register_browser_tools
 from app.cowork.context_usage import get_cowork_context_usage
+from app.cowork.interactions import enqueue_queued_message, enqueue_steering
 from app.cowork.memory import load_visible_memories, remember
 from app.cowork.memory_tools import register_memory_tools
 from app.cowork.permissions import (
@@ -36,13 +39,21 @@ from app.cowork.permissions import (
     list_session_roots,
 )
 from app.cowork.runtime import (
+    CoworkCheckpointCorruptionError,
+    CoworkHookBus,
+    ModelAttemptHookContext,
+    _completion_record_payload,
     _encode_tool_result,
     _external_action_sha256,
     _independent_board_assignment_batch,
     initialize_cowork_state,
     load_cowork_checkpoint,
 )
-from app.cowork.schedules import claim_due_sleeping_runs
+from app.cowork.schedules import claim_due_sleeping_runs, list_schedules
+from app.cowork.semantic_approvals import (
+    SEMANTIC_REVIEW_DENIAL_MESSAGE,
+    build_trusted_approval_evidence,
+)
 from app.cowork.tools import (
     CoworkToolContext,
     CoworkToolError,
@@ -53,9 +64,10 @@ from app.cowork.tools import (
     _trusted_artifact_mime_type,
     build_default_cowork_registry,
 )
+from app.cowork_store.routing import cowork_store
 from app.main import create_app
 from app.rag.kb import local_kb_service
-from app.runstore.conversations import update_conversation_runtime
+from app.runstore.conversations import get_conversation, update_conversation_runtime
 from app.runstore.runs import (
     append_message,
     create_run,
@@ -66,14 +78,24 @@ from app.runstore.runs import (
     request_cancel,
 )
 from app.worker.cowork_run import _cowork_error_detail, _cowork_failure_message, cowork_run
+from app.worker.maintenance import next_run_dispatch_tick
 from tests.conftest import iso_ago
 from tests.fakes import DeterministicProvider
 from workpilot_ai.gateway import ModelGateway
 from workpilot_ai.providers.openai_compatible import (
+    OpenAICompatibleProvider,
     ProviderContextOverflowError,
     ProviderTimeoutError,
 )
-from workpilot_ai.types import CompletionResult, Message, ToolCall, ToolDefinition, Usage
+from workpilot_ai.routing import Tier
+from workpilot_ai.types import (
+    CompletionChunk,
+    CompletionResult,
+    Message,
+    ToolCall,
+    ToolDefinition,
+    Usage,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -281,7 +303,7 @@ async def test_empty_conversation_context_usage_accounts_for_lazy_tool_manifest(
 def test_cowork_tool_result_structurally_truncates_content_and_keeps_baseline() -> None:
     baseline = "a" * 64
     result = CoworkToolResult(
-        output={
+        content={
             "file_id": "opaque-file-id",
             "content": "正文" * 10_000,
             "baseline_sha256": baseline,
@@ -298,9 +320,37 @@ def test_cowork_tool_result_structurally_truncates_content_and_keeps_baseline() 
     assert len(payload["result"]["content"]) < 20_000
 
 
+def test_cowork_tool_result_truncation_keeps_whole_lines_and_line_cap() -> None:
+    content = "".join(f"line-{index:04d}\n" for index in range(2_500))
+
+    payload = json.loads(
+        _encode_tool_result(CoworkToolResult(content={"content": content}), 50_000)
+    )
+
+    truncated = payload["result"]["content"]
+    assert payload["result"]["content_truncated"] is True
+    assert payload["result"]["content_original_lines"] == 2_500
+    assert len(truncated.splitlines()) == 2_000
+    assert truncated.endswith("\n")
+    assert truncated.splitlines()[-1] == "line-1999"
+
+
+def test_cowork_tool_result_byte_limit_never_returns_a_partial_line() -> None:
+    content = "".join(f"第{index:04d}行-完整内容\n" for index in range(300))
+
+    encoded = _encode_tool_result(CoworkToolResult(content={"content": content}), 1_000)
+    payload = json.loads(encoded)
+    truncated = payload["result"]["content"]
+
+    assert len(encoded) <= 1_000
+    assert len(encoded.encode("utf-8")) <= 1_000
+    assert truncated.endswith("\n")
+    assert all(line.endswith("-完整内容") for line in truncated.splitlines())
+
+
 def test_failed_structured_result_keeps_output_but_marks_protocol_error() -> None:
     encoded = _encode_tool_result(
-        CoworkToolResult(output={"exit_code": 1, "stdout": "", "stderr": "bad"}),
+        CoworkToolResult(content={"exit_code": 1, "stdout": "", "stderr": "bad"}),
         1_000,
         result_error="Shell 命令退出码 1",
     )
@@ -310,6 +360,30 @@ def test_failed_structured_result_keeps_output_but_marks_protocol_error() -> Non
     assert payload["error"] == "Shell 命令退出码 1"
     assert payload["result"]["exit_code"] == 1
     assert payload["result"]["stderr"] == "bad"
+
+
+def test_tool_result_separates_model_content_from_runtime_details() -> None:
+    result = CoworkToolResult(
+        content={"summary": "读取 3 行"},
+        details={
+            "row_count": 3,
+            "panel": "table",
+            "internal_cursor": "cursor-secret",
+        },
+    )
+
+    payload = json.loads(_encode_tool_result(result, 1_000))
+
+    assert payload["result"] == {"summary": "读取 3 行"}
+    assert "cursor-secret" not in json.dumps(payload, ensure_ascii=False)
+    stored = result.stored()
+    assert "output" not in stored
+    assert stored["content"] == {"summary": "读取 3 行"}
+    assert stored["details"] == {
+        "row_count": 3,
+        "panel": "table",
+        "internal_cursor": "cursor-secret",
+    }
 
 
 async def test_shell_rejects_read_only_cwd(
@@ -450,6 +524,7 @@ async def test_shell_requires_executor_approval_and_reuses_completed_invocation(
         worker_id="shell-guard-worker",
         plan_step_id=UUID(int=42),
         tool_call_id="shell-guard-call",
+        semantic_approval_signing_key="3" * 64,
         cancel_event=None,
     )
 
@@ -466,11 +541,15 @@ async def test_shell_requires_executor_approval_and_reuses_completed_invocation(
         **base_context,
         approved_call_ids=frozenset({"shell-guard-call"}),
         approval_evidence={
-            "shell-guard-call": {
-                "source": "user",
-                "tool": "run_shell",
-                "arguments_sha256": arguments_sha256(canonical_arguments),
-            }
+            "shell-guard-call": build_trusted_approval_evidence(
+                signing_key="3" * 64,
+                source="user",
+                run_id=run.id,
+                tool_call_id="shell-guard-call",
+                tool="run_shell",
+                arguments_sha256=arguments_sha256(canonical_arguments),
+                details={"inbox_id": str(UUID(int=43)), "standing_rule_id": None},
+            )
         },
     )
     with pytest.raises(CoworkToolError, match="参数在批准后发生变化"):
@@ -489,6 +568,75 @@ async def test_shell_requires_executor_approval_and_reuses_completed_invocation(
     assert first.authorization_receipt["approval"]["source"] == "user"
     assert first.authorization_receipt["decisions"][0]["grant_id"] is not None
     assert output.read_text(encoding="utf-8") == "run\n"
+
+
+async def test_shell_long_output_keeps_tail_and_registers_full_output_artifact(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Shell full output artifact")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    await grant_capability(
+        db_session,
+        conversation_id=conversation_id,
+        capability="host.execute",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="运行长输出命令",
+        budget_tokens=10_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    registry = build_default_cowork_registry()
+    payload_parts = ["x" * 20] * 150
+    payload = "".join(payload_parts)
+    command = "/usr/bin/printf %s " + " ".join(map(shlex.quote, payload_parts))
+    result = await registry.execute(
+        "run_shell",
+        {
+            "command": command,
+            "cwd": str(tmp_path),
+            "reason": "验证长输出保留策略",
+        },
+        context=CoworkToolContext(
+            session=db_session,
+            gateway=ModelGateway(DeterministicProvider(), embedding_dimensions=1024),
+            settings=get_settings().model_copy(
+                update={
+                    "cowork_shell_allowlist": ["/usr/bin/printf"],
+                    "cowork_shell_max_output_bytes": 1_024,
+                    "cowork_shell_full_output_max_bytes": 10_000,
+                }
+            ),
+            conversation_id=conversation_id,
+            run_id=run.id,
+            worker_id="shell-full-output-worker",
+            plan_step_id=UUID(int=44),
+            tool_call_id="shell-full-output-call",
+        ),
+    )
+
+    assert result.output["output_truncated"] is True
+    assert result.output["stdout"] == payload[-1_024:]
+    full_output_path = Path(result.output["full_output_path"])
+    assert await asyncio.to_thread(full_output_path.is_file)
+    full_output_text = await asyncio.to_thread(full_output_path.read_text, encoding="utf-8")
+    assert payload in full_output_text
+    assert result.output["full_output_artifact_id"]
+    full_artifact = next(
+        item
+        for item in result.output["artifacts"]
+        if item["artifact_id"] == result.output["full_output_artifact_id"]
+    )
+    assert full_artifact["file"]["path"] == str(full_output_path)
 
 
 class RecordingCoworkQueue:
@@ -533,6 +681,23 @@ class NativeToolProvider(DeterministicProvider):
         self.tool_histories: list[list[Message]] = []
         self.last_tools: list[ToolDefinition] = []
         self.parallel_flags: list[bool] = []
+        self.regular_calls = 0
+        self.regular_histories: list[list[Message]] = []
+
+    async def complete(
+        self,
+        messages: list[Message],
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> CompletionResult:
+        self.regular_calls += 1
+        self.regular_histories.append(messages)
+        return await super().complete(
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
 
     async def complete_with_tools(
         self,
@@ -549,6 +714,320 @@ class NativeToolProvider(DeterministicProvider):
         self.last_tools = tools
         self.parallel_flags.append(parallel_tool_calls)
         return self.tool_completions.pop(0)
+
+
+class CitationEscalationGateway(ModelGateway):
+    """Small routed gateway double that exposes which tier produced each candidate."""
+
+    def __init__(
+        self,
+        *,
+        main: list[CompletionResult],
+        heavy: list[CompletionResult],
+    ) -> None:
+        super().__init__(DeterministicProvider(), embedding_dimensions=1024)
+        self.completions = {"main": list(main), "heavy": list(heavy)}
+        self.tier_calls: list[Tier] = []
+        self.histories: list[list[Message]] = []
+
+    def escalation_plan(self, task_type: str) -> tuple[Tier | None, Tier | None]:
+        assert task_type == "cowork_decision"
+        return ("main", "heavy")
+
+    async def complete_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool,
+        task_type: str = "generate",
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+        tier_override: Tier | None = None,
+    ) -> CompletionResult:
+        del tools, parallel_tool_calls, task_type, max_tokens, temperature
+        tier: Tier = tier_override or "main"
+        self.tier_calls.append(tier)
+        self.histories.append(messages)
+        return self.completions[tier].pop(0)
+
+    async def stream_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition],
+        parallel_tool_calls: bool = True,
+        task_type: str = "generate",
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+        tier_override: Tier | None = None,
+    ) -> AsyncIterator[CompletionChunk]:
+        result = await self.complete_with_tools(
+            messages,
+            tools=tools,
+            parallel_tool_calls=parallel_tool_calls,
+            task_type=task_type,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tier_override=tier_override,
+        )
+        yield CompletionChunk(result=result)
+
+
+async def test_truncated_text_is_retried_and_never_delivered(
+    db_engine: AsyncEngine,
+    db_session: AsyncSession,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Truncated model text")
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="给我一份完整答复",
+        budget_tokens=50_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    registry = build_default_cowork_registry()
+    bus = InMemoryRunBus()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    provider = NativeToolProvider(
+        [
+            CompletionResult(
+                text="这是绝不能交付的半截答复",
+                model="fake-chat",
+                provider="deterministic_test",
+                usage=Usage(input_tokens=3, output_tokens=2),
+                stop_reason="length",
+            ),
+            _final_completion("这是重新生成的完整答复。"),
+        ]
+    )
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    refreshed = await get_run(db_session, run.id)
+    assert refreshed is not None and refreshed.status == "done"
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
+    assert checkpoint is not None
+    assert checkpoint.state["final_message"] == "这是重新生成的完整答复。"
+    assert provider.tool_calls == 2
+    assert any(
+        message.role == "user"
+        and "model_output_truncated" in message.content
+        and "重新发送一份完整决策" in message.content
+        for message in provider.tool_histories[1]
+    )
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    assert any(
+        event.type == "error" and event.payload.get("code") == "model_output_truncated"
+        for event in events
+    )
+
+
+async def test_truncated_tool_batch_is_denied_without_executing_any_call(
+    db_engine: AsyncEngine,
+    db_session: AsyncSession,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Truncated tool batch")
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="维护任务清单",
+        budget_tokens=50_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    registry = build_default_cowork_registry()
+    bus = InMemoryRunBus()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    truncated = _tool_completion(
+        ToolCall(
+            id="truncated-todo",
+            name="todo_write",
+            arguments=json.dumps(
+                {"todos": [{"content": "不应执行", "status": "in_progress"}]},
+                ensure_ascii=False,
+            ),
+        )
+    )
+    truncated = CompletionResult(
+        text=truncated.text,
+        model=truncated.model,
+        provider=truncated.provider,
+        usage=truncated.usage,
+        tool_calls=truncated.tool_calls,
+        stop_reason="length",
+    )
+    provider = NativeToolProvider([truncated, _final_completion("已安全重试。")])
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
+    assert checkpoint is not None
+    assert checkpoint.state["todos"] == []
+    assert checkpoint.state["model_truncation_retries"] == 0
+    denial = next(
+        message
+        for message in checkpoint.state["messages"]
+        if message.get("role") == "tool" and message.get("tool_call_id") == "truncated-todo"
+    )
+    assert "本批调用均未执行" in denial["content"]
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    assert not any(
+        event.type == "tool.start" and event.payload.get("tool") == "todo_write" for event in events
+    )
+
+
+async def test_failed_citation_repair_escalates_main_candidate_to_heavy(
+    db_engine: AsyncEngine,
+    db_session: AsyncSession,
+    store_sql,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Citation escalation")
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="根据知识库解释这个结论",
+        budget_tokens=50_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    registry = build_default_cowork_registry()
+    bus = InMemoryRunBus()
+    await initialize_cowork_state(
+        db_session,
+        run_id=run.id,
+        registry=registry,
+        bus=bus,
+        kb_slug="test-kb",
+    )
+    state = latest_checkpoint_state(store_sql, run.id)
+    state["evidence_ledger"] = [
+        {
+            "ledger_id": "ledger-k1",
+            "citation_id": "K1",
+            "kind": "knowledge",
+            "block_id": "block-k1",
+            "version_id": "version-k1",
+            "document_id": "document-k1",
+            "title": "测试资料",
+            "source_uri": "file:///test.md",
+            "quote": "这是经过读取的原文证据。",
+            "quote_sha256": "a" * 64,
+            "char_start": 0,
+            "char_end": 12,
+            "heading_path": ["结论"],
+            "locations": [],
+            "material_id": None,
+            "locator": None,
+            "verified": True,
+            "tool_call_id": "seed-evidence",
+        }
+    ]
+    store_sql(
+        "UPDATE agent_checkpoints SET state = ? WHERE run_id = ?",
+        (json.dumps(state, ensure_ascii=False), str(run.id)),
+    )
+    gateway = CitationEscalationGateway(
+        main=[
+            _final_completion("第一份草稿没有提供任何可回查的知识引用。"),
+            _final_completion("修复后的主档草稿仍然漏掉了知识引用。"),
+        ],
+        heavy=[_final_completion("重档重新生成了可交付的结论。[K1]")],
+    )
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": gateway,
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
+    assert checkpoint is not None
+    assert checkpoint.state["status"] == "done"
+    assert checkpoint.state["final_message"].endswith("[K1]")
+    assert gateway.tier_calls == ["main", "main", "heavy"]
+    assert checkpoint.state["citation_repair_attempts"] == 1
+    assert checkpoint.state["runtime_snapshot"]["model_identities"] == [
+        "deterministic_test/fake-chat"
+    ]
+
+
+class SemanticReviewOutcomeProvider(NativeToolProvider):
+    def __init__(
+        self,
+        tool_completions: list[CompletionResult],
+        review_outcomes: list[str | Exception],
+    ) -> None:
+        super().__init__(tool_completions)
+        self.review_outcomes = list(review_outcomes)
+
+    async def complete(
+        self,
+        messages: list[Message],
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> CompletionResult:
+        del max_tokens, temperature
+        self.regular_calls += 1
+        self.regular_histories.append(messages)
+        outcome = self.review_outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return CompletionResult(
+            text=outcome,
+            model="semantic-review-test",
+            provider="deterministic_test",
+            usage=Usage(input_tokens=3, output_tokens=2),
+        )
 
 
 async def test_title_generation_cannot_block_cowork_terminal(
@@ -601,9 +1080,10 @@ async def test_title_generation_cannot_block_cowork_terminal(
     finished = await get_run(db_session, run.id)
     assert finished is not None and finished.status == "done"
     events = await list_events(db_session, run_id=run.id, limit=200)
-    assert [event.type for event in events][-3:] == [
+    assert [event.type for event in events][-4:] == [
         "message.snapshot",
         "message.done",
+        "agent.end",
         "run.done",
     ]
     terminal_progress = [
@@ -612,6 +1092,145 @@ async def test_title_generation_cannot_block_cowork_terminal(
         if event.type == "step.update" and event.payload.get("status") == "done"
     ]
     assert terminal_progress[-1].payload.get("summary") == ""
+
+
+async def test_durable_follow_up_continues_the_same_run_after_a_final_answer(
+    db_session: AsyncSession,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Durable follow-up")
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="先回答第一问",
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    registry = build_default_cowork_registry()
+    bus = InMemoryRunBus()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    queued = await enqueue_queued_message(
+        db_session,
+        run_id=run.id,
+        conversation_id=conversation_id,
+        content="这是同一轮的追问",
+        source="local_owner",
+        delivery="follow_up",
+    )
+    provider = NativeToolProvider([_final_completion("第一问答案"), _final_completion("追问答案")])
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    finished = await get_run(db_session, run.id)
+    assert finished is not None and finished.status == "done"
+    assert provider.tool_calls == 2
+    second_history = provider.tool_histories[1]
+    assert any(
+        message.role == "assistant" and message.content == "第一问答案"
+        for message in second_history
+    )
+    assert any(
+        message.role == "user" and message.content == "这是同一轮的追问"
+        for message in second_history
+    )
+    rows = await cowork_store().export_rows(
+        table="cowork_steering_messages",
+        columns=("id", "delivery", "status"),
+    )
+    persisted = next(row for row in rows if row["id"] == str(queued.id))
+    assert persisted == {
+        "id": str(queued.id),
+        "delivery": "follow_up",
+        "status": "consumed",
+    }
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    assert any(event.type == "queue.message.applied" for event in events)
+    action_records = [
+        record
+        for record in await cowork_store().list_session_records(run_id=run.id)
+        if record.kind == "harness_action"
+    ]
+    assert [
+        record.payload["action"] for record in action_records if record.phase == "completed"
+    ] == [
+        "prepare",
+        "dispatch",
+        "materialize",
+        "prepare",
+        "dispatch",
+        "materialize",
+    ]
+    assert all(record.phase != "failed" for record in action_records)
+
+
+async def test_durable_next_run_dispatch_is_idempotent_and_preserves_provenance(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Durable next run")
+    terminal = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="已完成的上一轮",
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    assert await cowork_store().finish_run(run_id=terminal.id, status="done")
+    queued = await enqueue_queued_message(
+        db_session,
+        run_id=terminal.id,
+        conversation_id=conversation_id,
+        content="从终态启动下一轮",
+        source="local_owner",
+        delivery="follow_up",
+    )
+    assert queued.delivery == "next_run" and queued.status == "ready"
+    queue = RecordingCoworkQueue()
+    bus = InMemoryRunBus()
+    context = {
+        "settings": get_settings().model_copy(
+            update={"cowork_default_workspace_path": tmp_path / "workspace"}
+        ),
+        "session_factory": session_factory,
+        "run_queue": queue,
+        "bus": bus,
+    }
+
+    assert await next_run_dispatch_tick(context) == 1
+    assert await next_run_dispatch_tick(context) == 0
+    assert len(queue.run_ids) == 1
+    successor = await cowork_store().get_run(queue.run_ids[0])
+    assert successor is not None
+    assert successor.goal == queued.content
+    rows = await cowork_store().export_rows(
+        table="agent_runs",
+        columns=("id", "source_wake_id"),
+    )
+    successor_row = next(row for row in rows if row["id"] == str(successor.id))
+    assert successor_row["source_wake_id"] == str(queued.id)
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=successor.id)
+    assert checkpoint is not None
+    assert checkpoint.state["semantic_review_user_text_source"] == "local_owner"
+    assert checkpoint.state["messages"][-1]["source"] == "local_owner"
 
 
 class TimeoutThenResumeProvider(NativeToolProvider):
@@ -839,6 +1458,10 @@ class _FakeBrowserPage:
     async def title(self) -> str:
         return "测试页面"
 
+    async def screenshot(self, *, path: str, full_page: bool) -> None:
+        assert isinstance(full_page, bool)
+        await asyncio.to_thread(Path(path).write_bytes, b"\x89PNG\r\n\x1a\nworkpilot-test-image")
+
 
 class _FakeBrowserSession:
     def __init__(self, control: _FakeBrowserControl) -> None:
@@ -862,6 +1485,102 @@ class _FakeBrowserManager:
         assert session_id == self.session_id
         assert isinstance(conversation_id, UUID)
         return self.session
+
+
+async def test_browser_screenshot_reaches_next_model_turn_as_image_attachment(
+    db_engine: AsyncEngine,
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Browser screenshot attachment")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    await grant_capability(
+        db_session,
+        conversation_id=conversation_id,
+        capability="browser.read",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="截图并检查页面",
+        budget_tokens=50_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    session_id = "test-browser-screenshot"
+    screenshot_path = tmp_path / "page.png"
+    registry = build_default_cowork_registry()
+    register_browser_tools(
+        registry,
+        _FakeBrowserManager(session_id, _FakeBrowserSession(_FakeBrowserControl())),  # type: ignore[arg-type]
+    )
+    bus = InMemoryRunBus()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    provider = NativeToolProvider(
+        [
+            _tool_completion(
+                ToolCall(
+                    id="load-browser-screenshot",
+                    name="load_tools",
+                    arguments=json.dumps({"names": ["browser_screenshot"]}),
+                )
+            ),
+            _tool_completion(
+                ToolCall(
+                    id="browser-screenshot",
+                    name="browser_screenshot",
+                    arguments=json.dumps(
+                        {
+                            "session_id": session_id,
+                            "path": str(screenshot_path),
+                            "full_page": True,
+                        }
+                    ),
+                )
+            ),
+            _final_completion("已检查截图。"),
+        ]
+    )
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    attachment_messages = [message for message in provider.tool_histories[2] if message.attachments]
+    assert len(attachment_messages) == 1
+    attachment = attachment_messages[0].attachments[0]
+    assert attachment.kind == "image"
+    assert attachment.path == str(screenshot_path.resolve())
+    assert attachment.media_type == "image/png"
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
+    assert checkpoint is not None
+    directive = next(
+        message
+        for message in checkpoint.state["messages"]
+        if message.get("role") == "runtime_directive"
+        and message.get("source") == "tool_result_attachment"
+    )
+    assert directive["attachments"][0]["sha256"] == attachment.sha256
 
 
 async def test_auto_mode_browser_destructive_clicks_without_inbox_round_trip(
@@ -905,7 +1624,13 @@ async def test_auto_mode_browser_destructive_clicks_without_inbox_round_trip(
         _FakeBrowserManager(session_id, _FakeBrowserSession(control)),  # type: ignore[arg-type]
     )
     bus = InMemoryRunBus()
-    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    await initialize_cowork_state(
+        db_session,
+        run_id=run.id,
+        registry=registry,
+        bus=bus,
+        semantic_review_user_text_source="local_owner",
+    )
     provider = NativeToolProvider(
         [
             _tool_completion(
@@ -923,7 +1648,8 @@ async def test_auto_mode_browser_destructive_clicks_without_inbox_round_trip(
                 )
             ),
             _final_completion("点击完成。"),
-        ]
+        ],
+        regular_completions=['{"decision":"allow"}'],
     )
 
     await cowork_run(
@@ -946,6 +1672,18 @@ async def test_auto_mode_browser_destructive_clicks_without_inbox_round_trip(
     assert "fetch_url" in loaded_tail and "web_search" in loaded_tail
     events = await list_events(db_session, run_id=run.id, limit=200)
     assert "interrupt" not in {event.type for event in events}
+    semantic_review = next(event for event in events if event.type == "approval.semantic_review")
+    assert semantic_review.payload["decision"] == "allow"
+    assert provider.regular_calls == 1
+    review_envelope = json.loads(provider.regular_histories[0][-1].content)
+    assert set(review_envelope) == {
+        "schema",
+        "frozen_session_facts",
+        "user_authored_text",
+        "user_text_truncated",
+        "canonical_action",
+    }
+    assert review_envelope["canonical_action"]["target"] is not None
 
     follow_up = await create_run(
         db_session,
@@ -1267,7 +2005,7 @@ async def test_cowork_runner_executes_parallel_safe_read_batch_concurrently(
         try:
             await asyncio.wait_for(both_started.wait(), timeout=1)
             await asyncio.sleep(0.02)
-            return CoworkToolResult(output={"active": active})
+            return CoworkToolResult(content={"active": active})
         finally:
             active -= 1
 
@@ -1353,7 +2091,10 @@ async def test_cowork_runner_executes_parallel_safe_read_batch_concurrently(
         "read-a-call",
         "read-b-call",
     ]
-    assert canonical[3] == {"role": "assistant", "content": "两个来源均已读取。"}
+    assert canonical[3]["role"] == "assistant"
+    assert canonical[3]["content"] == "两个来源均已读取。"
+    assert canonical[3]["stop_reason"] == "stop"
+    assert canonical[3]["created_at"]
 
 
 async def test_cowork_runner_executes_independent_board_assignments_concurrently(
@@ -1381,7 +2122,7 @@ async def test_cowork_runner_executes_independent_board_assignments_concurrently
             both_started.set()
         try:
             await asyncio.wait_for(both_started.wait(), timeout=1)
-            return CoworkToolResult(output={"task_id": args.task_id, "worker": args.worker})
+            return CoworkToolResult(content={"task_id": args.task_id, "worker": args.worker})
         finally:
             active -= 1
 
@@ -1480,7 +2221,7 @@ async def test_cowork_runner_has_no_tool_step_count_limit(
     async def numbered_read(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         del context
         args = NumberedReadArgs.model_validate(raw.model_dump())
-        return CoworkToolResult(output={"index": args.index})
+        return CoworkToolResult(content={"index": args.index})
 
     registry = CoworkToolRegistry()
     registry.register(
@@ -1665,7 +2406,7 @@ async def test_cowork_memory_snapshot_holds_for_a_run_and_refreshes_on_the_next_
         requested_path=str(tmp_path),
         access_mode="read_write",
     )
-    await remember(
+    original, _ = await remember(
         db_session,
         conversation_id=conversation_id,
         scope="global",
@@ -1750,10 +2491,11 @@ async def test_cowork_memory_snapshot_holds_for_a_run_and_refreshes_on_the_next_
     events = await list_events(db_session, run_id=run.id, limit=200)
     saved = [event for event in events if event.type == "memory.saved"]
     assert len(saved) == 1
-    # 覆盖同 key 记忆算 updated，并带上旧文本供客户端撤销。
+    # 覆盖同 key 记忆算 updated；事件只带版本引用，长期记忆正文不复制进事件账本。
     assert saved[0].payload["action"] == "updated"
-    assert saved[0].payload["previous_content"] == "用户偏好 PDF 报告"
-    assert saved[0].payload["memory"]["content"] == "用户偏好 Markdown 报告"
+    assert saved[0].payload["previous_memory_id"] == str(original.id)
+    assert "previous_content" not in saved[0].payload
+    assert "content" not in saved[0].payload["memory"]
 
     visible = await load_visible_memories(db_session, conversation_id=conversation_id)
     assert [item.content for item in visible] == ["用户偏好 Markdown 报告"]
@@ -1885,14 +2627,37 @@ async def test_cowork_recovers_provider_context_overflow_without_mutating_canoni
     assert [item["role"] for item in canonical] == ["user", "assistant", "tool", "assistant"]
     assert canonical[1]["tool_calls"][0]["id"] == "list-before-overflow"
     assert canonical[2]["tool_call_id"] == "list-before-overflow"
-    assert latest_state["compaction"]["summary_upto"] == 3
+    assert latest_state["compaction"]["summary_upto"] == 0
+    assert latest_state["compaction"]["turn_prefix_upto"] == 3
     recovery_history = provider.tool_histories[-1]
-    assert any("cowork_history_summary" in item.content for item in recovery_history)
+    assert any("turn_prefix_summary" in item.content for item in recovery_history)
     assert not any(item.role == "tool" for item in recovery_history)
     events = await list_events(db_session, run_id=run.id, limit=200)
     compacted = [event for event in events if event.type == "context.compacted"]
     assert len(compacted) == 1
     assert compacted[0].payload["reason"] == "provider_overflow"
+    session_kinds = [
+        row["kind"]
+        for row in store_sql(
+            "SELECT kind FROM session_entries WHERE conversation_id = ? ORDER BY seq",
+            (str(conversation_id),),
+        )
+    ]
+    assert "model_change" in session_kinds
+    assert "compaction" in session_kinds
+    compaction_entry = store_sql(
+        "SELECT payload FROM session_entries WHERE conversation_id = ? "
+        "AND kind = 'compaction' ORDER BY seq DESC LIMIT 1",
+        (str(conversation_id),),
+    )[0]
+    compaction_payload = json.loads(compaction_entry["payload"])
+    assert compaction_payload["turn_prefix_summary"]
+    assert "已经调用 list_files" in compaction_payload["turn_prefix_summary"]
+    assert "details" in compaction_payload
+    attempts = reduce_model_step_attempts(await cowork_store().list_session_records(run_id=run.id))
+    assert any(
+        attempt.step == "compaction" and attempt.phase == "completed" for attempt in attempts
+    )
 
 
 async def test_cowork_context_overflow_progress_guard_stops_recovery_loop(
@@ -2005,6 +2770,9 @@ def test_default_registry_exposes_risk_and_capability_contract() -> None:
     assert catalog["ask_user"]["execution"] == "interaction"
     assert catalog["request_directory"]["execution"] == "interaction"
     assert catalog["request_capability"]["execution"] == "interaction"
+    assert registry.is_exclusive("run_shell") is True
+    assert registry.is_exclusive("sleep") is True
+    assert registry.is_exclusive("ask_user") is True
 
 
 @pytest.mark.parametrize(
@@ -2134,6 +2902,56 @@ async def test_cowork_steering_and_ask_user_pause_resume_with_canonical_tool_his
     assert expected_tool_fragment in tool_result.content
     if interaction_body["approved"] is False:
         assert '"status":"rejected"' in tool_result.content
+
+
+async def test_queued_message_api_exposes_effective_delivery_and_cancel(
+    db_session: AsyncSession,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Queued message API")
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="等待后续消息",
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    bus = InMemoryRunBus()
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    app = create_app()
+    app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_run_bus] = lambda: bus
+    app.dependency_overrides[require_owner_identity] = lambda: None
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        queued_response = await client.post(
+            f"/api/v1/runs/{run.id}/queued-messages",
+            json={"message": "本轮结束后继续", "delivery": "follow_up"},
+        )
+        assert queued_response.status_code == 202
+        queued = queued_response.json()
+        assert queued["requested_delivery"] == queued["delivery"] == "follow_up"
+        assert queued["status"] == "pending"
+        cancelled = await client.delete(
+            f"/api/v1/runs/{run.id}/queued-messages/{queued['message_id']}"
+        )
+        assert cancelled.status_code == 204
+
+    assert await cowork_store().finish_run(run_id=run.id, status="done")
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        successor_response = await client.post(
+            f"/api/v1/runs/{run.id}/queued-messages",
+            json={"message": "终态之后另起一轮", "delivery": "follow_up"},
+        )
+    assert successor_response.status_code == 202
+    successor = successor_response.json()
+    assert successor["requested_delivery"] == "follow_up"
+    assert successor["delivery"] == "next_run"
+    assert successor["status"] == "ready"
 
 
 @pytest.mark.parametrize("tool_name", ["request_directory", "request_capability"])
@@ -2564,6 +3382,838 @@ async def test_cowork_shell_requires_once_approval_then_executes_exact_pending_c
     assert '"execution_mode":"argv"' in tool_result.content
 
 
+@pytest.mark.parametrize(
+    "review_outcome, disposition",
+    [
+        ("not-json", "invalid_response"),
+        (RuntimeError("provider diagnostic must not escape"), "provider_error"),
+    ],
+)
+async def test_auto_semantic_review_failure_falls_back_to_manual_approval(
+    db_session: AsyncSession,
+    tmp_path: Path,
+    review_outcome: str | Exception,
+    disposition: str,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Semantic review fallback")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    await grant_capability(
+        db_session,
+        conversation_id=conversation_id,
+        capability="shell.execute",
+    )
+    await update_conversation_runtime(
+        db_session,
+        conversation_id=conversation_id,
+        provider_profile_id=None,
+        model_override=None,
+        unattended=False,
+        approval_mode="auto",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="运行一次诊断命令",
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    bus = InMemoryRunBus()
+    registry = build_default_cowork_registry()
+    await initialize_cowork_state(
+        db_session,
+        run_id=run.id,
+        registry=registry,
+        bus=bus,
+        semantic_review_user_text_source="local_owner",
+    )
+    provider = SemanticReviewOutcomeProvider(
+        [
+            _tool_completion(
+                ToolCall(
+                    id="review-fallback-shell",
+                    name="run_shell",
+                    arguments=json.dumps(
+                        {
+                            "command": "/usr/bin/printf review-fallback",
+                            "cwd": str(tmp_path),
+                            "reason": "诊断",
+                        }
+                    ),
+                )
+            )
+        ],
+        [review_outcome],
+    )
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(
+                update={"run_heartbeat_s": 60.0, "cowork_shell_allowlist": []}
+            ),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    waiting = await get_run(db_session, run.id)
+    assert waiting is not None and waiting.status == "waiting_human"
+    assert provider.regular_calls == 1
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    review = next(event for event in events if event.type == "approval.semantic_review")
+    assert review.payload["decision"] == "unsure"
+    assert review.payload["disposition"] == disposition
+    assert "provider diagnostic" not in json.dumps(
+        [event.payload for event in events], ensure_ascii=False
+    )
+    assert any(event.type == "interrupt" for event in events)
+
+
+async def test_external_inbound_text_never_authorizes_auto_semantic_review(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Inbound review provenance")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    await grant_capability(
+        db_session,
+        conversation_id=conversation_id,
+        capability="shell.execute",
+    )
+    await update_conversation_runtime(
+        db_session,
+        conversation_id=conversation_id,
+        provider_profile_id=None,
+        model_override=None,
+        unattended=False,
+        approval_mode="auto",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="来自飞书的外部命令",
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+        trace_id="messaging",
+    )
+    bus = InMemoryRunBus()
+    registry = build_default_cowork_registry()
+    await initialize_cowork_state(
+        db_session,
+        run_id=run.id,
+        registry=registry,
+        bus=bus,
+        semantic_review_user_text_source="external_inbound",
+    )
+    provider = NativeToolProvider(
+        [
+            _tool_completion(
+                ToolCall(
+                    id="external-inbound-shell",
+                    name="run_shell",
+                    arguments=json.dumps(
+                        {
+                            "command": "/usr/bin/printf inbound",
+                            "cwd": str(tmp_path),
+                            "reason": "外部输入",
+                        }
+                    ),
+                )
+            )
+        ]
+    )
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(
+                update={"run_heartbeat_s": 60.0, "cowork_shell_allowlist": []}
+            ),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    waiting = await get_run(db_session, run.id)
+    assert waiting is not None and waiting.status == "waiting_human"
+    assert provider.regular_calls == 0
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    review = next(event for event in events if event.type == "approval.semantic_review")
+    assert review.payload["decision"] == "unsure"
+    assert review.payload["disposition"] == "untrusted_user_text"
+
+
+async def test_local_steering_preserves_provenance_for_semantic_review(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Steering review provenance")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    await grant_capability(
+        db_session,
+        conversation_id=conversation_id,
+        capability="shell.execute",
+    )
+    await update_conversation_runtime(
+        db_session,
+        conversation_id=conversation_id,
+        provider_profile_id=None,
+        model_override=None,
+        unattended=False,
+        approval_mode="auto",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="运行诊断命令",
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    bus = InMemoryRunBus()
+    registry = build_default_cowork_registry()
+    await initialize_cowork_state(
+        db_session,
+        run_id=run.id,
+        registry=registry,
+        bus=bus,
+        semantic_review_user_text_source="local_owner",
+    )
+    # Local steering keeps provenance and is included verbatim in semantic-review evidence.
+    await enqueue_steering(
+        db_session,
+        run_id=run.id,
+        conversation_id=conversation_id,
+        content="不要执行，取消刚才的命令",
+        source="local_owner",
+    )
+    await db_session.commit()
+    provider = NativeToolProvider(
+        [
+            _tool_completion(
+                ToolCall(
+                    id="post-steering-shell",
+                    name="run_shell",
+                    arguments=json.dumps(
+                        {
+                            "command": "/usr/bin/printf stale-goal",
+                            "cwd": str(tmp_path),
+                            "reason": "旧目标",
+                        }
+                    ),
+                )
+            ),
+            _final_completion("已取消执行。"),
+        ],
+        regular_completions=['{"decision":"deny"}'],
+    )
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(
+                update={"run_heartbeat_s": 60.0, "cowork_shell_allowlist": []}
+            ),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    waiting = await get_run(db_session, run.id)
+    assert waiting is not None and waiting.status == "done"
+    assert provider.regular_calls == 1
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    review = next(event for event in events if event.type == "approval.semantic_review")
+    assert review.payload["disposition"] == "reviewed"
+    assert review.payload["decision"] == "deny"
+
+
+async def test_truncated_owner_goal_never_reaches_semantic_reviewer(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Truncated review intent")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    await grant_capability(
+        db_session,
+        conversation_id=conversation_id,
+        capability="shell.execute",
+    )
+    await update_conversation_runtime(
+        db_session,
+        conversation_id=conversation_id,
+        provider_profile_id=None,
+        model_override=None,
+        unattended=False,
+        approval_mode="auto",
+    )
+    # Direct/legacy callers can bypass the HTTP schema's 4k bound.  A revocation in the
+    # omitted tail must not be hidden from the reviewer and then auto-allowed.
+    goal = "执行诊断 " + ("x" * 4_000) + " 不要执行，取消"
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal=goal,
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    bus = InMemoryRunBus()
+    registry = build_default_cowork_registry()
+    await initialize_cowork_state(
+        db_session,
+        run_id=run.id,
+        registry=registry,
+        bus=bus,
+        semantic_review_user_text_source="local_owner",
+    )
+    provider = NativeToolProvider(
+        [
+            _tool_completion(
+                ToolCall(
+                    id="truncated-goal-shell",
+                    name="run_shell",
+                    arguments=json.dumps(
+                        {
+                            "command": "/usr/bin/printf truncated-goal",
+                            "cwd": str(tmp_path),
+                            "reason": "诊断",
+                        }
+                    ),
+                )
+            )
+        ],
+        regular_completions=['{"decision":"allow"}'],
+    )
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(
+                update={"run_heartbeat_s": 60.0, "cowork_shell_allowlist": []}
+            ),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    waiting = await get_run(db_session, run.id)
+    assert waiting is not None and waiting.status == "waiting_human"
+    assert provider.regular_calls == 0
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    review = next(event for event in events if event.type == "approval.semantic_review")
+    assert review.payload["disposition"] == "truncated_user_text"
+
+
+async def test_opaque_external_body_never_reaches_or_passes_semantic_reviewer(
+    db_session: AsyncSession,
+) -> None:
+    class OpaqueExternalArgs(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        target: str
+        body: str
+
+    async def handler(
+        context: CoworkToolContext, raw: BaseModel
+    ) -> CoworkToolResult:  # pragma: no cover - approval must pause before execution
+        del context, raw
+        return CoworkToolResult(content={"ok": True})
+
+    conversation_id = await ensure_conversation(db_session, title="Opaque action review")
+    await update_conversation_runtime(
+        db_session,
+        conversation_id=conversation_id,
+        provider_profile_id=None,
+        model_override=None,
+        unattended=False,
+        approval_mode="auto",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="向 acct-1 发送通知",
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    registry = build_default_cowork_registry()
+    registry.register(
+        CoworkToolSpec(
+            name="opaque_external_send",
+            description="发送带正文的外部通知",
+            args_model=OpaqueExternalArgs,
+            capability=None,
+            risk="external",
+            effect="external",
+            parallel_safe=False,
+            handler=handler,
+            approval_required=True,
+            approval_target_fields=("target",),
+        )
+    )
+    bus = InMemoryRunBus()
+    await initialize_cowork_state(
+        db_session,
+        run_id=run.id,
+        registry=registry,
+        bus=bus,
+        semantic_review_user_text_source="local_owner",
+    )
+    provider = NativeToolProvider(
+        [
+            _tool_completion(
+                ToolCall(
+                    id="opaque-send",
+                    name="opaque_external_send",
+                    arguments=json.dumps({"target": "acct-1", "body": "hidden sensitive body"}),
+                )
+            )
+        ],
+        regular_completions=['{"decision":"allow"}'],
+    )
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    waiting = await get_run(db_session, run.id)
+    assert waiting is not None and waiting.status == "waiting_human"
+    assert provider.regular_calls == 0
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    review = next(event for event in events if event.type == "approval.semantic_review")
+    assert review.payload["disposition"] == "opaque_or_truncated_action"
+    assert "hidden sensitive body" not in json.dumps(review.payload, ensure_ascii=False)
+
+
+async def test_consecutive_semantic_denies_trip_auto_to_manual_with_generic_agent_error(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Semantic deny breaker")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    await grant_capability(
+        db_session,
+        conversation_id=conversation_id,
+        capability="shell.execute",
+    )
+    await update_conversation_runtime(
+        db_session,
+        conversation_id=conversation_id,
+        provider_profile_id=None,
+        model_override=None,
+        unattended=False,
+        approval_mode="auto",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="运行诊断命令",
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    bus = InMemoryRunBus()
+    registry = build_default_cowork_registry()
+    await initialize_cowork_state(
+        db_session,
+        run_id=run.id,
+        registry=registry,
+        bus=bus,
+        semantic_review_user_text_source="local_owner",
+    )
+    provider = SemanticReviewOutcomeProvider(
+        [
+            _tool_completion(
+                ToolCall(
+                    id=f"denied-shell-{index}",
+                    name="run_shell",
+                    arguments=json.dumps(
+                        {
+                            "command": f"/usr/bin/printf deny-{index}",
+                            "cwd": str(tmp_path),
+                            "reason": "诊断",
+                        }
+                    ),
+                )
+            )
+            for index in range(1, 4)
+        ],
+        ['{"decision":"deny"}', '{"decision":"deny"}'],
+    )
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(
+                update={"run_heartbeat_s": 60.0, "cowork_shell_allowlist": []}
+            ),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    waiting = await get_run(db_session, run.id)
+    assert waiting is not None and waiting.status == "waiting_human"
+    assert provider.regular_calls == 2
+    conversation = await get_conversation(db_session, conversation_id=conversation_id)
+    assert conversation is not None and conversation.approval_mode == "interactive"
+    events = await list_events(db_session, run_id=run.id, limit=300)
+    reviews = [event for event in events if event.type == "approval.semantic_review"]
+    assert [event.payload["decision"] for event in reviews] == ["deny", "deny"]
+    assert reviews[0].payload["breaker_tripped"] is False
+    assert reviews[1].payload["breaker_tripped"] is True
+    agent_tool_results = [
+        message.content
+        for history in provider.tool_histories
+        for message in history
+        if message.role == "tool" and message.tool_call_id in {"denied-shell-1", "denied-shell-2"}
+    ]
+    assert agent_tool_results
+    assert all(SEMANTIC_REVIEW_DENIAL_MESSAGE in content for content in agent_tool_results)
+    assert all("deny" not in content.casefold() for content in agent_tool_results)
+
+
+async def test_unpersisted_semantic_breaker_cannot_fail_open_on_next_run(
+    db_session: AsyncSession,
+    store_sql,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Unpersisted review breaker")
+    await update_conversation_runtime(
+        db_session,
+        conversation_id=conversation_id,
+        provider_profile_id=None,
+        model_override=None,
+        unattended=False,
+        approval_mode="auto",
+    )
+    first = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="first",
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=first.goal,
+        run_id=first.id,
+    )
+    registry = build_default_cowork_registry()
+    await initialize_cowork_state(
+        db_session,
+        run_id=first.id,
+        registry=registry,
+        semantic_review_user_text_source="local_owner",
+    )
+    state = latest_checkpoint_state(store_sql, first.id)
+    state["semantic_review_consecutive_denies"] = 2
+    state["semantic_review_breaker_tripped"] = True
+    state["semantic_review_breaker_persisted"] = False
+    state["status"] = "done"
+    store_sql(
+        "UPDATE agent_checkpoints SET state = ? WHERE run_id = ?",
+        (json.dumps(state, ensure_ascii=False), str(first.id)),
+    )
+    store_sql("UPDATE agent_runs SET status = 'done' WHERE id = ?", (str(first.id),))
+
+    second = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="second",
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=second.goal,
+        run_id=second.id,
+    )
+    next_state = await initialize_cowork_state(
+        db_session,
+        run_id=second.id,
+        registry=build_default_cowork_registry(),
+        semantic_review_user_text_source="local_owner",
+    )
+
+    assert next_state["semantic_review_breaker_tripped"] is True
+    assert next_state["semantic_review_breaker_persisted"] is False
+    assert next_state["semantic_review_consecutive_denies"] == 2
+
+
+async def test_auto_mode_cannot_waive_a_protected_workspace_write(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Protected write floor")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    await update_conversation_runtime(
+        db_session,
+        conversation_id=conversation_id,
+        provider_profile_id=None,
+        model_override=None,
+        unattended=False,
+        approval_mode="auto",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="更新 workspace policy",
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    await db_session.commit()
+
+    bus = InMemoryRunBus()
+    registry = build_default_cowork_registry()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    provider = NativeToolProvider(
+        [
+            _tool_completion(
+                ToolCall(
+                    id="protected-config-write",
+                    name="write_file",
+                    arguments=json.dumps(
+                        {
+                            "path": ".workpilot/config.toml",
+                            "content": '[shell]\nallow = ["python"]\n',
+                            "create_parents": True,
+                            "purpose": "workspace",
+                        }
+                    ),
+                )
+            )
+        ]
+    )
+    context = {
+        "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+        "session_factory": session_factory,
+        "bus": bus,
+        "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+        "cowork_registry": registry,
+    }
+
+    await cowork_run(context, str(run.id))
+
+    waiting = await get_run(db_session, run.id)
+    assert waiting is not None and waiting.status == "waiting_human"
+    assert not (tmp_path / ".workpilot/config.toml").exists()
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    interrupt = next(event for event in events if event.type == "interrupt")
+    assert interrupt.payload["kind"] == "external_approval"
+    assert interrupt.payload["payload"]["tool"] == "write_file"
+    assert interrupt.payload["payload"]["human_only"] is True
+    assert interrupt.payload["payload"]["standing_action_target"] is None
+    assert provider.regular_calls == 0
+
+
+async def test_auto_mode_cannot_waive_schedule_persistent_authority(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Schedule authority floor")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    await grant_capability(
+        db_session,
+        conversation_id=conversation_id,
+        capability="external.write",
+    )
+    await update_conversation_runtime(
+        db_session,
+        conversation_id=conversation_id,
+        provider_profile_id=None,
+        model_override=None,
+        unattended=False,
+        approval_mode="auto",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="创建明天的自动化",
+        budget_tokens=50_000,
+        budget_calls=20,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    await db_session.commit()
+
+    bus = InMemoryRunBus()
+    registry = build_default_cowork_registry()
+    register_scheduler_tools(registry)
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    provider = NativeToolProvider(
+        [
+            _tool_completion(
+                ToolCall(
+                    id="load-schedule-tool",
+                    name="load_tools",
+                    arguments=json.dumps({"names": ["create_schedule"]}),
+                )
+            ),
+            _tool_completion(
+                ToolCall(
+                    id="create-schedule-human-only",
+                    name="create_schedule",
+                    arguments=json.dumps(
+                        {
+                            "title": "明日摘要",
+                            "goal": "整理项目摘要",
+                            "schedule_kind": "once",
+                            "run_at": "2026-09-01T09:00:00+08:00",
+                            "timezone": "Asia/Shanghai",
+                            "standing_approvals": [],
+                        }
+                    ),
+                )
+            ),
+        ]
+    )
+    context = {
+        "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+        "session_factory": session_factory,
+        "bus": bus,
+        "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+        "cowork_registry": registry,
+    }
+
+    await cowork_run(context, str(run.id))
+
+    waiting = await get_run(db_session, run.id)
+    assert waiting is not None and waiting.status == "waiting_human"
+    assert await list_schedules(db_session) == []
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    interrupt = next(event for event in events if event.type == "interrupt")
+    assert interrupt.payload["payload"]["tool"] == "create_schedule"
+    assert interrupt.payload["payload"]["human_only"] is True
+    assert provider.regular_calls == 0
+
+
 async def test_cowork_cancel_terminates_running_allowlisted_shell_process(
     db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
 ) -> None:
@@ -2598,7 +4248,9 @@ async def test_cowork_cancel_terminates_running_allowlisted_shell_process(
     bus = InMemoryRunBus()
     registry = build_default_cowork_registry()
     await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
-    command = f"{shlex.quote(sys.executable)} -c " + shlex.quote("__import__('time').sleep(30)")
+    sleep_script = tmp_path / "sleep-for-cancel-test.py"
+    sleep_script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(sleep_script))}"
     provider = NativeToolProvider(
         [
             _tool_completion(
@@ -2699,9 +4351,250 @@ async def test_cowork_run_api_initializes_checkpoint_and_enqueues(
     assert response.json()["workflow_type"] == "cowork"
     assert response.json()["conversation_title"] == "整理目录中的预算表"
     assert queue.run_ids == [run_id]
-    state = latest_checkpoint_state(store_sql, run_id)
-    assert state["schema_version"] == "cowork.v2"
-    assert state["workspace_files"] == [str(selected_file.resolve())]
+    checkpoint_state = latest_checkpoint_state(store_sql, run_id)
+    config_rows = store_sql(
+        "SELECT config FROM cowork_run_configs WHERE run_id = ?", (str(run_id),)
+    )
+    run_config = json.loads(config_rows[0]["config"])
+    assert checkpoint_state["schema_version"] == "cowork.v3"
+    assert "workspace_files" not in checkpoint_state
+    assert run_config["workspace_files"] == [str(selected_file.resolve())]
+    restored = await load_cowork_checkpoint(db_session, run_id=run_id)
+    assert restored is not None
+    assert restored.state["workspace_files"] == [str(selected_file.resolve())]
+
+
+async def test_current_checkpoint_with_missing_field_is_rejected_not_repaired(
+    db_session: AsyncSession,
+    store_sql,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Strict checkpoint restore")
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="验证恢复边界",
+        budget_tokens=10_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await initialize_cowork_state(
+        db_session,
+        run_id=run.id,
+        registry=build_default_cowork_registry(),
+    )
+    state = latest_checkpoint_state(store_sql, run.id)
+    assert state["schema_version"] == "cowork.v3"
+    state.pop("model_truncation_retries")
+    store_sql(
+        "UPDATE agent_checkpoints SET state = ? WHERE run_id = ?",
+        (json.dumps(state, ensure_ascii=False), str(run.id)),
+    )
+
+    with pytest.raises(CoworkCheckpointCorruptionError) as caught:
+        await load_cowork_checkpoint(db_session, run_id=run.id)
+
+    assert caught.value.code == "missing_fields"
+    assert "model_truncation_retries" in str(caught.value)
+
+
+async def test_resume_rejects_missing_model_identity_before_model_call(
+    db_engine: AsyncEngine,
+    db_session: AsyncSession,
+    store_sql,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Missing model identity")
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="继续之前的模型会话",
+        budget_tokens=10_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    registry = build_default_cowork_registry()
+    bus = InMemoryRunBus()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    state = latest_checkpoint_state(store_sql, run.id)
+    state["runtime_snapshot"]["model_identities"] = ["removed-provider/removed-model"]
+    store_sql(
+        "UPDATE agent_checkpoints SET state = ? WHERE run_id = ?",
+        (json.dumps(state, ensure_ascii=False), str(run.id)),
+    )
+    provider = NativeToolProvider([_final_completion("不应被调用")])
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    refreshed = await get_run(db_session, run.id)
+    assert refreshed is not None and refreshed.status == "failed"
+    assert provider.tool_calls == 0
+    events = await list_events(db_session, run_id=run.id, limit=200)
+    failure = next(event for event in events if event.type == "error")
+    assert "removed-provider/removed-model" in failure.payload["user_message"]
+
+
+async def test_session_facts_are_inherited_after_git_remote_and_roots_change(
+    db_session: AsyncSession,
+    tmp_path: Path,
+    store_sql,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Frozen session facts")
+    repository = tmp_path / "repository"
+    git_dir = repository / ".git"
+    git_dir.mkdir(parents=True)
+    config = git_dir / "config"
+    config.write_text(
+        '[remote "origin"]\nurl = https://token@initial.example/team/private.git\n',
+        encoding="utf-8",
+    )
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(repository),
+        access_mode="read_only",
+    )
+    first = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="首次运行",
+        budget_tokens=10_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    first_state = await initialize_cowork_state(
+        db_session,
+        run_id=first.id,
+        registry=build_default_cowork_registry(),
+    )
+    assert first_state["session_facts"]["workspace_roots"][0]["git_remote_hostnames"] == [
+        "initial.example"
+    ]
+    store_sql("UPDATE agent_runs SET status = 'done' WHERE id = ?", (str(first.id),))
+
+    config.write_text(
+        '[remote "origin"]\nurl = https://new-token@mutated.example/other/repo.git\n',
+        encoding="utf-8",
+    )
+    added = tmp_path / "added-later"
+    added.mkdir()
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(added),
+        access_mode="read_write",
+    )
+    second = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="后续运行",
+        budget_tokens=10_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    second_state = await initialize_cowork_state(
+        db_session,
+        run_id=second.id,
+        registry=build_default_cowork_registry(),
+    )
+
+    assert second_state["session_facts"] == first_state["session_facts"]
+    serialized = json.dumps(second_state["session_facts"], ensure_ascii=False)
+    assert "mutated.example" not in serialized
+    assert str(added) not in serialized
+
+
+async def test_old_checkpoint_without_session_facts_recovers_as_unavailable(
+    db_session: AsyncSession,
+    tmp_path: Path,
+    store_sql,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Legacy session facts")
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="恢复旧 checkpoint",
+        budget_tokens=10_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await initialize_cowork_state(
+        db_session,
+        run_id=run.id,
+        registry=build_default_cowork_registry(),
+    )
+    state = latest_checkpoint_state(store_sql, run.id)
+    config_rows = store_sql(
+        "SELECT config FROM cowork_run_configs WHERE run_id = ?", (str(run.id),)
+    )
+    state = {**json.loads(config_rows[0]["config"]), **state}
+    state["schema_version"] = "cowork.v2"
+    state.pop("session_facts")
+    # 模拟 v22 以前的整份 checkpoint：当时没有独立 RunConfig 行。
+    store_sql("DELETE FROM cowork_run_configs WHERE run_id = ?", (str(run.id),))
+    store_sql(
+        "UPDATE agent_checkpoints SET state = ? WHERE run_id = ?",
+        (json.dumps(state, ensure_ascii=False), str(run.id)),
+    )
+
+    restored = await load_cowork_checkpoint(db_session, run_id=run.id)
+
+    assert restored is not None
+    assert restored.state["session_facts"]["capture_status"] == "legacy_unavailable"
+    assert restored.state["session_facts"]["workspace_roots"] == []
+
+    store_sql("UPDATE agent_runs SET status = 'done' WHERE id = ?", (str(run.id),))
+    repository = tmp_path / "must-not-backfill"
+    git_dir = repository / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "config").write_text(
+        '[remote "origin"]\nurl = https://secret@current.example/private.git\n',
+        encoding="utf-8",
+    )
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(repository),
+        access_mode="read_write",
+    )
+    later_run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="不要反向补采旧事实",
+        budget_tokens=10_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+
+    later_state = await initialize_cowork_state(
+        db_session,
+        run_id=later_run.id,
+        registry=build_default_cowork_registry(),
+    )
+
+    assert later_state["session_facts"]["capture_status"] == "legacy_unavailable"
+    assert later_state["session_facts"]["workspace_roots"] == []
+    assert "current.example" not in json.dumps(later_state["session_facts"])
 
 
 async def test_cowork_run_api_rejects_ungranted_workspace_file_before_run_creation(
@@ -2829,3 +4722,319 @@ async def test_expired_cowork_run_is_recovered_to_cowork_queue_class(
     assert reaped.failed == []
     # answer / literature_review 退役后只剩这一个恢复类目。
     assert reaped.recovered_cowork == [(run.id, 1)]
+
+
+async def test_expired_run_with_open_model_attempt_is_not_replayed(
+    db_session: AsyncSession, tmp_path: Path, store_sql
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Unknown model outcome")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="do not replay",
+        budget_tokens=10_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await initialize_cowork_state(
+        db_session,
+        run_id=run.id,
+        registry=build_default_cowork_registry(),
+    )
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
+    assert checkpoint is not None
+    await cowork_store().append_session_record(
+        run_id=run.id,
+        kind="step_attempt",
+        operation_id="lost-model-call",
+        phase="started",
+        payload={
+            "source_checkpoint_id": checkpoint.checkpoint_id,
+            "result_checkpoint_id": "preallocated-result",
+            "iteration": 0,
+            "attempt_no": 1,
+        },
+    )
+    store_sql(
+        """UPDATE agent_runs
+           SET status = 'executing', worker_id = 'lost-worker', lease_until = ?
+           WHERE id = ?""",
+        (iso_ago(1), str(run.id)),
+    )
+
+    reaped = await reap_expired_runs(db_session)
+    failed = await get_run(db_session, run.id)
+
+    assert reaped.recovered_cowork == []
+    assert reaped.failed == [run.id]
+    assert failed is not None and failed.status == "failed"
+    assert "outcome unknown" in (failed.error or "")
+
+
+async def test_completed_model_attempt_is_recovered_without_provider_replay(
+    db_session: AsyncSession, tmp_path: Path
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Durable model result")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="recover paid result",
+        budget_tokens=10_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    registry = build_default_cowork_registry()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry)
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
+    assert checkpoint is not None
+    identity = {
+        "source_checkpoint_id": checkpoint.checkpoint_id,
+        "result_checkpoint_id": "durable-model-result-checkpoint",
+        "iteration": 0,
+        "attempt_no": 1,
+    }
+    store = cowork_store()
+    await store.append_session_record(
+        run_id=run.id,
+        kind="step_attempt",
+        operation_id="durable-model-call",
+        phase="started",
+        payload=identity,
+    )
+    await store.append_session_record(
+        run_id=run.id,
+        kind="step_attempt",
+        operation_id="durable-model-call",
+        phase="completed",
+        payload={
+            **identity,
+            "result": {
+                "stop_reason": "complete",
+                "error": None,
+                "completion": _completion_record_payload(_final_completion("已从持久记录恢复。")),
+            },
+        },
+    )
+    provider = NativeToolProvider([])
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+            "session_factory": session_factory,
+            "bus": InMemoryRunBus(),
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    finished = await get_run(db_session, run.id)
+    assert finished is not None and finished.status == "done"
+    assert provider.tool_calls == 0
+    saved = await store.load_latest_checkpoint(run_id=run.id)
+    assert saved is not None and saved.checkpoint_id == "durable-model-result-checkpoint"
+
+
+class _SimulatedProcessCrash(BaseException):
+    pass
+
+
+def _crash_model_attempt_at(stage: str):
+    def configure(bus: CoworkHookBus) -> None:
+        async def crash(context: ModelAttemptHookContext) -> None:
+            if context.stage == stage:
+                raise _SimulatedProcessCrash(stage)
+
+        bus.model_attempt.register(f"crash-{stage}", crash)
+
+    return configure
+
+
+async def _initialized_crash_point_run(
+    db_session: AsyncSession,
+    tmp_path: Path,
+    *,
+    title: str,
+):
+    conversation_id = await ensure_conversation(db_session, title=title)
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="return one durable answer",
+        budget_tokens=100_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    registry = build_default_cowork_registry()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry)
+    return run, registry
+
+
+@pytest.mark.parametrize(
+    ("stage", "calls_before_recovery", "recoverable", "expected_phases"),
+    [
+        ("before_started", 0, True, []),
+        ("after_started", 0, False, ["started"]),
+        ("after_invocation", 1, False, ["started"]),
+        ("after_terminal", 1, True, ["started", "completed"]),
+    ],
+)
+async def test_model_attempt_crash_points_never_replay_an_ambiguous_paid_call(
+    db_session: AsyncSession,
+    tmp_path: Path,
+    store_sql,
+    stage: str,
+    calls_before_recovery: int,
+    recoverable: bool,
+    expected_phases: list[str],
+) -> None:
+    run, registry = await _initialized_crash_point_run(
+        db_session,
+        tmp_path,
+        title=f"Crash point {stage}",
+    )
+    provider = NativeToolProvider([_final_completion("durable answer")])
+    context = {
+        "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+        "session_factory": session_factory,
+        "bus": InMemoryRunBus(),
+        "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+        "cowork_registry": registry,
+        "cowork_hook_configurators": [_crash_model_attempt_at(stage)],
+    }
+
+    with pytest.raises(_SimulatedProcessCrash, match=stage):
+        await cowork_run(context, str(run.id))
+
+    assert provider.tool_calls == calls_before_recovery
+    records = await cowork_store().list_session_records(run_id=run.id)
+    assert [record.phase for record in records if record.kind == "step_attempt"] == expected_phases
+
+    store_sql(
+        "UPDATE agent_runs SET lease_until = ? WHERE id = ?",
+        (iso_ago(1), str(run.id)),
+    )
+    reaped = await reap_expired_runs(db_session)
+
+    if not recoverable:
+        failed = await get_run(db_session, run.id)
+        assert reaped.recovered_cowork == []
+        assert reaped.failed == [run.id]
+        assert failed is not None and failed.status == "failed"
+        assert "outcome unknown" in (failed.error or "")
+        assert provider.tool_calls == calls_before_recovery
+        return
+
+    assert reaped.failed == []
+    assert reaped.recovered_cowork == [(run.id, 1)]
+    context["cowork_hook_configurators"] = []
+    await cowork_run(context, str(run.id))
+
+    finished = await get_run(db_session, run.id)
+    assert finished is not None and finished.status == "done"
+    # before_started dispatches once during recovery; after_terminal reuses the durable result.
+    assert provider.tool_calls == 1
+
+
+async def test_partial_sse_never_becomes_a_success_checkpoint(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    run, registry = await _initialized_crash_point_run(
+        db_session,
+        tmp_path,
+        title="Partial SSE transport failure",
+    )
+    requests = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"model":"served-chat","choices":'
+                '[{"index":0,"delta":{"content":"partial answer was cut"},'
+                '"finish_reason":"stop"}],"usage":'
+                '{"prompt_tokens":5,"completion_tokens":4}}\n\n'
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="chat",
+        embedding_model="embed",
+        client=client,
+    )
+    try:
+        await cowork_run(
+            {
+                "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+                "session_factory": session_factory,
+                "bus": InMemoryRunBus(),
+                "cowork_gateway": ModelGateway(
+                    provider,
+                    embedding_dimensions=1024,
+                    provider_max_retries=0,
+                ),
+                "cowork_registry": registry,
+            },
+            str(run.id),
+        )
+    finally:
+        await client.aclose()
+
+    finished = await get_run(db_session, run.id)
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
+    records = await cowork_store().list_session_records(run_id=run.id)
+    assert requests == 1
+    assert finished is not None and finished.status == "failed"
+    assert checkpoint is not None and checkpoint.state["status"] == "failed"
+    assert not any(
+        message.get("role") == "assistant" and "partial answer" in message.get("content", "")
+        for message in checkpoint.state["messages"]
+    )
+    assert [record.phase for record in records if record.kind == "step_attempt"] == [
+        "started",
+        "failed",
+    ]

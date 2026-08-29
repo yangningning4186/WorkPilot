@@ -1,20 +1,29 @@
 """定时维护: 回收失联 run, 落账过期费用预留。"""
 
 import asyncio
-from typing import Any
+from typing import Any, Literal
+from uuid import UUID, uuid5
 
 import structlog
 
 from app.core.queue import get_run_queue
 from app.core.run_bus import RunBus
+from app.cowork.interactions import enqueue_steering
 from app.cowork.memory import list_dispatchable_memory_jobs
+from app.cowork.messaging.launcher import active_run_id, start_cowork_run
+from app.cowork.provider_profiles import build_conversation_gateway
 from app.cowork.schedules import (
     claim_due_sleeping_runs,
     dispatch_due_schedules,
     list_dispatchable_scheduled_runs,
 )
 from app.cowork.skills.candidate_store import list_dispatchable_skill_jobs
-from app.runstore.runs import reap_expired_runs
+from app.cowork.team_wake import dispatch_team_wakes_once
+from app.cowork.teams import run_team_worker_wake
+from app.cowork.tools import CoworkToolContext, CoworkToolRegistry, build_default_cowork_registry
+from app.cowork_contracts import TeamWakeDeliveryRecord
+from app.cowork_store.routing import cowork_store
+from app.runstore.runs import append_events, reap_expired_runs
 from app.telemetry import default_telemetry_store
 
 logger = structlog.get_logger(__name__)
@@ -61,6 +70,164 @@ async def cost_sweeper_tick(ctx: dict[str, Any]) -> int:
     if swept:
         logger.warning("按上限结算过期费用预留", count=swept)
     return swept
+
+
+async def next_run_dispatch_tick(ctx: dict[str, Any]) -> int:
+    """Launch durable next_run messages; source id makes crash retries idempotent."""
+
+    settings = ctx["settings"]
+    session_factory = ctx["session_factory"]
+    queue = ctx.get("run_queue") or await get_run_queue()
+    bus: RunBus = ctx["bus"]
+    messages = await cowork_store().list_ready_next_run_messages(limit=20)
+    dispatched = 0
+    for item in messages:
+        try:
+            provenance: Literal["local_owner", "external_inbound", "unknown"] = "unknown"
+            if item.source == "local_owner":
+                provenance = "local_owner"
+            elif item.source == "external_inbound":
+                provenance = "external_inbound"
+            async with session_factory() as session:
+                launched_run_id = await start_cowork_run(
+                    session,
+                    conversation_id=item.conversation_id,
+                    goal=item.content,
+                    settings=settings,
+                    queue=queue,
+                    bus=bus,
+                    source_wake_id=item.id,
+                    semantic_review_user_text_source=provenance,
+                )
+                consumed = await cowork_store().consume_ready_next_run_message(
+                    message_id=item.id,
+                    launched_run_id=launched_run_id,
+                )
+                if consumed:
+                    await append_events(
+                        session,
+                        run_id=launched_run_id,
+                        events=[
+                            (
+                                "queue.message.applied",
+                                {
+                                    "message_ids": [str(item.id)],
+                                    "count": 1,
+                                    "delivery": "next_run",
+                                },
+                            )
+                        ],
+                    )
+                await session.commit()
+            if consumed:
+                dispatched += 1
+        except Exception:
+            logger.exception(
+                "durable next_run 消息派发失败，等待下次 tick 补偿",
+                message_id=str(item.id),
+            )
+    return dispatched
+
+
+async def team_wake_dispatch_tick(ctx: dict[str, Any]) -> int:
+    """消费 durable Team feed；Worker 直接恢复，Lead 忙则 steer、闲则起新 run。"""
+
+    settings = ctx["settings"]
+    session_factory = ctx["session_factory"]
+    queue = ctx.get("run_queue") or await get_run_queue()
+    bus: RunBus = ctx["bus"]
+
+    async def sink(delivery: TeamWakeDeliveryRecord) -> str:
+        if delivery.target_kind == "worker":
+            raw_run_id = delivery.payload.get("source_run_id")
+            raw_conversation_id = delivery.payload.get("lead_conversation_id")
+            task_payload = delivery.payload.get("task")
+            if (
+                not isinstance(raw_run_id, str)
+                or not isinstance(raw_conversation_id, str)
+                or not isinstance(task_payload, dict)
+            ):
+                raise ValueError("Worker wake 缺少 source run identity")
+            run_id = UUID(raw_run_id)
+            conversation_id = UUID(raw_conversation_id)
+            raw_gateway = ctx.get("cowork_gateway")
+            owns_gateway = raw_gateway is None
+            gateway = raw_gateway
+            try:
+                async with session_factory() as session:
+                    if gateway is None:
+                        gateway = await build_conversation_gateway(
+                            session,
+                            conversation_id=conversation_id,
+                            settings=settings,
+                            session_factory=session_factory,
+                            run_id=run_id,
+                        )
+                    configured_registry = ctx.get("cowork_registry")
+                    registry = (
+                        configured_registry
+                        if isinstance(configured_registry, CoworkToolRegistry)
+                        else build_default_cowork_registry()
+                    )
+                    context = CoworkToolContext(
+                        session=session,
+                        gateway=gateway,
+                        settings=settings,
+                        conversation_id=conversation_id,
+                        run_id=run_id,
+                        worker_id=f"team-wake:{delivery.id}",
+                        plan_step_id=uuid5(run_id, f"team-wake:{delivery.id}"),
+                        tool_call_id=str(task_payload.get("assignment_call_id") or delivery.id),
+                    )
+                    task = await run_team_worker_wake(
+                        registry=registry,
+                        context=context,
+                        delivery=delivery,
+                    )
+                return f"worker-task:{task.id}:{task.status}"
+            finally:
+                if owns_gateway and gateway is not None:
+                    await gateway.aclose()
+
+        conversation_id = UUID(str(delivery.target_id))
+        lead_task = delivery.payload.get("task")
+        task_id = lead_task.get("id") if isinstance(lead_task, dict) else "unknown"
+        goal = (
+            f"[team-wake:{delivery.id}] Agent Team task {task_id} emitted "
+            f"{delivery.event_type}. Inspect the Board and continue Lead coordination."
+        )
+        async with session_factory() as session:
+            active = await active_run_id(session, conversation_id=conversation_id)
+            if active is not None:
+                steering = await enqueue_steering(
+                    session,
+                    run_id=active,
+                    conversation_id=conversation_id,
+                    content=goal,
+                    source="runtime",
+                    source_wake_id=delivery.id,
+                )
+                await session.commit()
+                await bus.publish(active)
+                return f"steering:{steering.id}"
+            run_id = await start_cowork_run(
+                session,
+                conversation_id=conversation_id,
+                goal=goal,
+                settings=settings,
+                queue=queue,
+                bus=bus,
+                source_wake_id=delivery.id,
+            )
+            await session.commit()
+            return f"run:{run_id}"
+
+    return await dispatch_team_wakes_once(
+        sink=sink,
+        claim_owner=f"embedded-team-wake:{id(ctx)}",
+        limit=20,
+        lease_seconds=300,
+    )
 
 
 async def memory_dispatch_tick(ctx: dict[str, Any]) -> int:

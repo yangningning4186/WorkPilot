@@ -5,6 +5,7 @@ from typing import Any, cast
 
 import pytest
 
+from app.api.conversations import put_conversation_runtime
 from app.core.config import Settings
 from app.core.db import DbSession as AsyncSession
 from app.cowork.capabilities import (
@@ -14,14 +15,25 @@ from app.cowork.capabilities import (
     WorkCapabilityRegistry,
     build_work_capability_registry,
 )
-from app.cowork.personas import approval_mode_for_persona_change, load_persona_catalog
-from app.cowork.runtime import CoworkState, _scoped_allowed_tools
+from app.cowork.permissions import create_session_root, revoke_session_root
+from app.cowork.personas import (
+    PERSONA_RESELECTION_REQUIRED,
+    approval_mode_for_persona_change,
+    load_persona_catalog,
+)
+from app.cowork.runtime import (
+    CoworkState,
+    _scoped_allowed_tools,
+    initialize_cowork_state,
+    load_cowork_checkpoint,
+)
 from app.cowork.tools import build_default_cowork_registry
 from app.runstore.conversations import (
     get_conversation,
     update_conversation_runtime,
 )
-from app.runstore.runs import ensure_conversation
+from app.runstore.runs import create_run, ensure_conversation, finish_run
+from app.schemas.conversations import ConversationRuntimeUpdate
 
 
 async def test_reading_capability_owns_prompt_tools_and_pre_loop() -> None:
@@ -149,3 +161,330 @@ async def test_selected_persona_persists_on_conversation(db_session: AsyncSessio
 
     assert selected is not None
     assert selected.persona_name == "meeting-secretary"
+
+
+def _write_project_persona(
+    project: Path,
+    *,
+    name: str = "bounded-reviewer",
+    system_block: str = "只根据项目证据审阅。",
+) -> Path:
+    path = project / ".workpilot" / "personas" / f"{name}.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f'''name = "{name}"
+label = "受限审阅员"
+description = "只允许读取和搜索已授权项目"
+tool_patterns = ["read_*", "search_*"]
+default_approval_mode = "interactive"
+recommended_connectors = ["feishu"]
+recommended_work_mode = "reading"
+system_block = "{system_block}"
+''',
+        encoding="utf-8",
+    )
+    return path
+
+
+async def _select_persona(
+    session: AsyncSession,
+    *,
+    conversation_id: Any,
+    persona_name: str,
+) -> None:
+    await update_conversation_runtime(
+        session,
+        conversation_id=conversation_id,
+        provider_profile_id=None,
+        model_override=None,
+        unattended=False,
+        approval_mode="interactive",
+        persona_name=persona_name,
+    )
+
+
+async def _new_run(session: AsyncSession, *, conversation_id: Any, goal: str) -> Any:
+    return await create_run(
+        session,
+        conversation_id=conversation_id,
+        goal=goal,
+        budget_tokens=10_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+
+
+async def test_first_run_persists_canonical_persona_snapshot(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    settings = Settings(cowork_data_path=tmp_path / "data")
+    project = tmp_path / "repo"
+    _write_project_persona(project)
+    conversation_id = await ensure_conversation(db_session, title="Persona snapshot")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(project),
+        access_mode="read_only",
+    )
+    await _select_persona(
+        db_session,
+        conversation_id=conversation_id,
+        persona_name="bounded-reviewer",
+    )
+    run = await _new_run(db_session, conversation_id=conversation_id, goal="审阅项目")
+
+    state = await initialize_cowork_state(
+        db_session,
+        run_id=run.id,
+        registry=build_default_cowork_registry(),
+        settings=settings,
+    )
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
+
+    assert checkpoint is not None
+    assert checkpoint.state["persona_snapshot"] == state["persona_snapshot"]
+    snapshot = state["persona_snapshot"]
+    assert snapshot is not None
+    assert snapshot["schema_version"] == "workpilot.persona-snapshot.v1"
+    assert snapshot["name"] == "bounded-reviewer"
+    assert snapshot["origin"] == "project"
+    assert snapshot["source_identity"].endswith(":.workpilot/personas/bounded-reviewer.toml")
+    assert len(snapshot["sha256"]) == 64
+    assert snapshot["tool_patterns"] == ["read_*", "search_*"]
+    assert snapshot["capability_summary"]["recommended_connectors"] == [
+        {
+            "kind": "feishu",
+            "capabilities": [
+                "openapi",
+                "calendar",
+                "base",
+                "docs",
+                "drive",
+                "tasks",
+                "approval",
+            ],
+        }
+    ]
+
+
+@pytest.mark.parametrize("drift", ["content", "missing", "authorization"])
+async def test_same_name_persona_drift_or_lost_authorization_requires_reselection(
+    db_session: AsyncSession,
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    settings = Settings(cowork_data_path=tmp_path / "data")
+    project = tmp_path / "repo"
+    persona_path = _write_project_persona(project)
+    conversation_id = await ensure_conversation(db_session, title=f"Persona {drift}")
+    root = await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(project),
+        access_mode="read_only",
+    )
+    await _select_persona(
+        db_session,
+        conversation_id=conversation_id,
+        persona_name="bounded-reviewer",
+    )
+    first = await _new_run(db_session, conversation_id=conversation_id, goal="第一次审阅")
+    await initialize_cowork_state(
+        db_session,
+        run_id=first.id,
+        registry=build_default_cowork_registry(),
+        settings=settings,
+    )
+    assert await finish_run(db_session, run_id=first.id, status="done")
+
+    if drift == "content":
+        _write_project_persona(project, system_block="已被修改的 Persona 指令。")
+    elif drift == "missing":
+        persona_path.unlink()
+    else:
+        assert await revoke_session_root(
+            db_session,
+            conversation_id=conversation_id,
+            root_id=root.id,
+        )
+    second = await _new_run(db_session, conversation_id=conversation_id, goal="再次审阅")
+
+    with pytest.raises(ValueError, match=f"^{PERSONA_RESELECTION_REQUIRED}$"):
+        await initialize_cowork_state(
+            db_session,
+            run_id=second.id,
+            registry=build_default_cowork_registry(),
+            settings=settings,
+        )
+    assert await load_cowork_checkpoint(db_session, run_id=second.id) is None
+
+
+async def test_explicit_persona_change_captures_a_new_snapshot(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    settings = Settings(cowork_data_path=tmp_path / "data")
+    project = tmp_path / "repo"
+    _write_project_persona(project)
+    conversation_id = await ensure_conversation(db_session, title="Persona explicit change")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(project),
+        access_mode="read_only",
+    )
+    await _select_persona(
+        db_session,
+        conversation_id=conversation_id,
+        persona_name="bounded-reviewer",
+    )
+    first = await _new_run(db_session, conversation_id=conversation_id, goal="项目审阅")
+    first_state = await initialize_cowork_state(
+        db_session,
+        run_id=first.id,
+        registry=build_default_cowork_registry(),
+        settings=settings,
+    )
+    assert await finish_run(db_session, run_id=first.id, status="done")
+
+    await _select_persona(db_session, conversation_id=conversation_id, persona_name="general")
+    second = await _new_run(db_session, conversation_id=conversation_id, goal="切换为通用执行")
+    second_state = await initialize_cowork_state(
+        db_session,
+        run_id=second.id,
+        registry=build_default_cowork_registry(),
+        settings=settings,
+    )
+
+    assert first_state["persona_snapshot"] is not None
+    assert second_state["persona_snapshot"] is not None
+    assert first_state["persona_snapshot"]["name"] == "bounded-reviewer"
+    assert second_state["persona_snapshot"]["name"] == "general"
+    assert first_state["persona_snapshot"]["sha256"] != second_state["persona_snapshot"]["sha256"]
+
+
+async def test_same_name_explicit_reselection_accepts_the_current_definition(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    settings = Settings(cowork_data_path=tmp_path / "data")
+    project = tmp_path / "repo"
+    _write_project_persona(project)
+    conversation_id = await ensure_conversation(db_session, title="Persona same-name reselect")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(project),
+        access_mode="read_only",
+    )
+    await _select_persona(
+        db_session,
+        conversation_id=conversation_id,
+        persona_name="bounded-reviewer",
+    )
+    first = await _new_run(db_session, conversation_id=conversation_id, goal="第一次审阅")
+    first_state = await initialize_cowork_state(
+        db_session,
+        run_id=first.id,
+        registry=build_default_cowork_registry(),
+        settings=settings,
+    )
+    assert await finish_run(db_session, run_id=first.id, status="done")
+
+    _write_project_persona(project, system_block="用户重新确认后的新版 Persona。")
+    rejected = await _new_run(db_session, conversation_id=conversation_id, goal="发现漂移")
+    with pytest.raises(ValueError, match=f"^{PERSONA_RESELECTION_REQUIRED}$"):
+        await initialize_cowork_state(
+            db_session,
+            run_id=rejected.id,
+            registry=build_default_cowork_registry(),
+            settings=settings,
+        )
+    assert await finish_run(
+        db_session,
+        run_id=rejected.id,
+        status="failed",
+        error=PERSONA_RESELECTION_REQUIRED,
+    )
+
+    # PUT 同一个 Persona 且不夹带 provider/model/权限档变化，是明确的重新选择动作。
+    await put_conversation_runtime(
+        conversation_id=conversation_id,
+        request=ConversationRuntimeUpdate(
+            provider_profile_id=None,
+            model_override=None,
+            unattended=False,
+            approval_mode="interactive",
+            persona_name="bounded-reviewer",
+        ),
+        session=db_session,
+        settings=settings,
+        _=None,
+    )
+    accepted = await _new_run(db_session, conversation_id=conversation_id, goal="重新审阅")
+    accepted_state = await initialize_cowork_state(
+        db_session,
+        run_id=accepted.id,
+        registry=build_default_cowork_registry(),
+        settings=settings,
+    )
+
+    assert first_state["persona_snapshot"] is not None
+    assert accepted_state["persona_snapshot"] is not None
+    assert accepted_state["persona_snapshot"]["sha256"] != first_state["persona_snapshot"]["sha256"]
+
+
+async def test_provider_only_runtime_update_does_not_authorize_persona_drift(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    settings = Settings(cowork_data_path=tmp_path / "data")
+    project = tmp_path / "repo"
+    _write_project_persona(project)
+    conversation_id = await ensure_conversation(db_session, title="Persona provider isolation")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(project),
+        access_mode="read_only",
+    )
+    await _select_persona(
+        db_session,
+        conversation_id=conversation_id,
+        persona_name="bounded-reviewer",
+    )
+    first = await _new_run(db_session, conversation_id=conversation_id, goal="第一次审阅")
+    await initialize_cowork_state(
+        db_session,
+        run_id=first.id,
+        registry=build_default_cowork_registry(),
+        settings=settings,
+    )
+    assert await finish_run(db_session, run_id=first.id, status="done")
+    _write_project_persona(project, system_block="未经重新选择的漂移内容。")
+
+    await put_conversation_runtime(
+        conversation_id=conversation_id,
+        request=ConversationRuntimeUpdate(
+            provider_profile_id=None,
+            model_override="provider-only-model-change",
+            unattended=False,
+            approval_mode="interactive",
+            persona_name="bounded-reviewer",
+        ),
+        session=db_session,
+        settings=settings,
+        _=None,
+    )
+    second = await _new_run(db_session, conversation_id=conversation_id, goal="再次审阅")
+
+    with pytest.raises(ValueError, match=f"^{PERSONA_RESELECTION_REQUIRED}$"):
+        await initialize_cowork_state(
+            db_session,
+            run_id=second.id,
+            registry=build_default_cowork_registry(),
+            settings=settings,
+        )

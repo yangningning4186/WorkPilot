@@ -1,0 +1,290 @@
+{
+  "schema_version": "workpilot-deterministic-contract.v1",
+  "id": "control-plane-contract",
+  "version": "1.1",
+  "mode": "pytest_no_model_io",
+  "description": "权限、密钥、MCP、Memory、Skill、Semantic Approval、Team、消息回放与 Persona 的零模型控制面回归契约。",
+  "case_count": 30,
+  "categories": {
+    "permissions": 5,
+    "mcp": 4,
+    "memory": 7,
+    "skill": 4,
+    "semantic_approval": 3,
+    "team": 5,
+    "messaging": 1,
+    "persona": 1
+  },
+  "cases": [
+    {
+      "id": "control-plane-contract-permissions-protected-path",
+      "category": "permissions",
+      "test": "backend/tests/test_cowork_tools_general.py::test_protected_workspace_and_control_paths_require_non_waivable_human_approval",
+      "invariants": [
+        "控制面和可获得后续执行权的工作区路径不能被 auto、常驻规则或 Worker 静默修改",
+        "路径在授权和规范化之后再次判定，符号链接不能绕过保护"
+      ]
+    },
+    {
+      "id": "control-plane-contract-permissions-shell-prefix",
+      "category": "permissions",
+      "test": "backend/tests/test_cowork_workspace_trust.py::test_workspace_prefixes_reject_nested_executors_and_inline_code",
+      "invariants": [
+        "workspace trust 只接受精确 argv 前缀",
+        "嵌套解释器、内联代码和 shell 操作符不能成为静默执行入口"
+      ]
+    },
+    {
+      "id": "control-plane-contract-permissions-shell-attached-path",
+      "category": "permissions",
+      "test": "backend/tests/test_cowork_shell.py::test_shell_protection_catches_attached_and_separated_protected_paths",
+      "invariants": [
+        "写入、配置和目录参数的 attached/separated 两种形态必须落到同一保护判定",
+        "受保护控制路径不能借短选项拼接绕过非豁免人工批准"
+      ]
+    },
+    {
+      "id": "control-plane-contract-permissions-shell-indirection",
+      "category": "permissions",
+      "test": "backend/tests/test_cowork_shell.py::test_shell_argument_indirection_is_never_silently_prefix_authorized",
+      "invariants": [
+        "参数文件、响应文件和不透明路径间接引用不得由 trusted prefix 静默授权",
+        "无法证明只读的路径承载选项必须 fail closed"
+      ]
+    },
+    {
+      "id": "control-plane-contract-permissions-secret-symlink",
+      "category": "permissions",
+      "test": "backend/tests/test_secret_store_permissions.py::test_secret_store_rejects_a_master_key_symlink_before_reading_it",
+      "invariants": [
+        "主密钥不得经符号链接读取",
+        "权限或对象身份不确定时 SecretStore fail closed"
+      ]
+    },
+    {
+      "id": "control-plane-contract-mcp-oauth-origin",
+      "category": "mcp",
+      "test": "backend/tests/test_mcp_integration.py::test_mcp_oauth_token_is_forwarded_only_to_descriptor_bound_origin",
+      "invariants": [
+        "Connector OAuth bearer 只能发送到 descriptor 精确绑定的 HTTPS/HTTP origin",
+        "未声明 allowlist 时默认拒绝且拒绝发生在 token 解密之前"
+      ]
+    },
+    {
+      "id": "control-plane-contract-mcp-local-schema",
+      "category": "mcp",
+      "test": "backend/tests/test_mcp_integration.py::test_mcp_pinned_input_schema_rejects_locally_without_argument_reflection",
+      "invariants": [
+        "远端 MCP 参数必须先按已 pin 的本地 schema 校验，再允许 dispatch",
+        "schema 拒绝不得回显用户参数或远端不可信正文"
+      ]
+    },
+    {
+      "id": "control-plane-contract-mcp-global-outcome-unknown",
+      "category": "mcp",
+      "test": "backend/tests/test_mcp_integration.py::test_mcp_unknown_write_outcome_is_persisted_and_same_invocation_never_replays",
+      "invariants": [
+        "可能已经 dispatch 的 MCP 写在断连或超时后进入 terminal outcome_unknown",
+        "同一 invocation identity 在外层执行账本也不得重放"
+      ]
+    },
+    {
+      "id": "control-plane-contract-mcp-no-effect-replay",
+      "category": "mcp",
+      "test": "backend/tests/test_mcp_integration.py::test_mcp_connection_drop_reconnects_but_never_replays_the_failed_call",
+      "invariants": [
+        "连接失败可以重连但不得自动重放可能已产生副作用的调用",
+        "失败响应和诊断不得回显远端不可信内容或凭据"
+      ]
+    },
+    {
+      "id": "control-plane-contract-memory-direct-tool-gate",
+      "category": "memory",
+      "test": "backend/tests/test_cowork_memory.py::test_model_memory_tools_never_persist_credentials_or_unproven_sensitive_facts",
+      "invariants": [
+        "模型直接调用 remember/memory_update 也不能绕过凭据和敏感事实确定性门禁",
+        "被拒写时既有记忆内容与可见集合保持不变"
+      ]
+    },
+    {
+      "id": "control-plane-contract-memory-sensitive-consent",
+      "category": "memory",
+      "test": "backend/tests/test_memory_extraction.py::test_deterministic_gate_skips_sensitive_model_candidates_without_consent",
+      "invariants": [
+        "健康、财务、关系、宗教和政治类事实没有当前消息同段明确同意时不得自动保存",
+        "模型候选不能覆盖确定性敏感信息门禁"
+      ]
+    },
+    {
+      "id": "control-plane-contract-memory-policy-cas",
+      "category": "memory",
+      "test": "backend/tests/test_memory_policy.py::test_policy_updates_use_revision_cas",
+      "invariants": [
+        "owner 与 conversation policy 更新由单调 revision/CAS 防止丢失更新",
+        "旧 revision 不能覆盖较新的关闭决策"
+      ]
+    },
+    {
+      "id": "control-plane-contract-memory-policy-close-race",
+      "category": "memory",
+      "test": "backend/tests/test_memory_policy.py::test_conversation_policy_close_race_blocks_every_model_mutation",
+      "invariants": [
+        "conversation save-off 与 ADD/UPDATE/DELETE/NOOP 在 store transaction 内原子竞争",
+        "任何关闭策略获胜后所有模型 mutation 都 fail closed"
+      ]
+    },
+    {
+      "id": "control-plane-contract-memory-forget-human-approval",
+      "category": "memory",
+      "test": "backend/tests/test_memory_policy.py::test_model_save_and_recall_refuse_honestly_while_forget_still_works",
+      "invariants": [
+        "模型 memory_forget 必须携带绑定 exact run/call/action 的人类批准 receipt",
+        "save/recall 关闭不能授权模型静默删除，但 owner 批准的清理仍可执行"
+      ]
+    },
+    {
+      "id": "control-plane-contract-memory-keyed-revision",
+      "category": "memory",
+      "test": "backend/tests/test_cowork_memory.py::test_keyed_manual_update_keeps_key_but_versions_the_identity",
+      "invariants": [
+        "keyed update 生成 successor revision 且继承稳定 key，不原地覆盖历史",
+        "任一时刻同 key 只有一个 active revision"
+      ]
+    },
+    {
+      "id": "control-plane-contract-memory-terminal-source-erasure",
+      "category": "memory",
+      "test": "backend/tests/test_memory_job_audit.py::test_retry_error_is_bounded_and_terminal_failure_clears_source_content",
+      "invariants": [
+        "memory extraction terminal job 必须清除原始 source content",
+        "重试错误只能持久化有界、脱敏的诊断"
+      ]
+    },
+    {
+      "id": "control-plane-contract-skill-global-deny",
+      "category": "skill",
+      "test": "backend/tests/test_cowork_skills.py::test_disabling_a_fork_denies_the_name_instead_of_reviving_builtin",
+      "invariants": [
+        "禁用 Skill 是 name-level deny，不得因删除或屏蔽高优先级版本而回退到同名 builtin",
+        "project、user、builtin 三层在 deny 后都不可见"
+      ]
+    },
+    {
+      "id": "control-plane-contract-skill-effective-catalog",
+      "category": "skill",
+      "test": "backend/tests/test_cowork_skills.py::test_conversation_mute_filters_the_same_catalog_used_by_runtime",
+      "invariants": [
+        "会话 mute 必须作用于 prompt、list、load 与 resource 共用的 effective catalog",
+        "会话 unmute 不能覆盖全局 name deny"
+      ]
+    },
+    {
+      "id": "control-plane-contract-skill-source-privacy",
+      "category": "skill",
+      "test": "backend/tests/test_skill_candidate_store.py::test_job_rejects_sensitive_source_without_persisting_raw_text",
+      "invariants": [
+        "含凭据、个人敏感信息或 PII 的 run source 不得进入 distillation queue",
+        "拒绝路径不得把原始 goal/final message 落盘"
+      ]
+    },
+    {
+      "id": "control-plane-contract-skill-signed-provenance",
+      "category": "skill",
+      "test": "backend/tests/test_skill_distillation.py::test_auto_distilled_update_requires_signed_receipt_not_body_markers",
+      "invariants": [
+        "自动更新只信任外部签名 provenance receipt，不信任 SKILL.md 内可伪造字符串",
+        "手工 Skill 不得被自动蒸馏覆盖"
+      ]
+    },
+    {
+      "id": "control-plane-contract-semantic-receipt-source",
+      "category": "semantic_approval",
+      "test": "backend/tests/test_cowork_semantic_approvals.py::test_approval_evidence_rejects_unknown_sources_and_binds_trusted_sources",
+      "invariants": [
+        "批准 evidence 只接受 user/workspace_trust/standing_rule/semantic_reviewer 精确来源",
+        "每类 receipt 字段由 HMAC 绑定 exact run/call/tool/arguments"
+      ]
+    },
+    {
+      "id": "control-plane-contract-semantic-opaque-envelope",
+      "category": "semantic_approval",
+      "test": "backend/tests/test_cowork_semantic_approvals.py::test_semantic_reviewer_envelope_excludes_action_body_and_history",
+      "invariants": [
+        "semantic reviewer 只接收最小结构化 envelope，不接收 action body 或对话历史",
+        "不可信外部内容不能成为批准提示词注入通道"
+      ]
+    },
+    {
+      "id": "control-plane-contract-semantic-breaker-persistence",
+      "category": "semantic_approval",
+      "test": "backend/tests/test_cowork_runner.py::test_unpersisted_semantic_breaker_cannot_fail_open_on_next_run",
+      "invariants": [
+        "semantic deny breaker 必须先持久化再影响后续自动审批",
+        "breaker 状态无法可靠保存时下一 Run 回退人工，不得 fail open"
+      ]
+    },
+    {
+      "id": "control-plane-contract-team-lifecycle",
+      "category": "team",
+      "test": "backend/tests/test_cowork_team_events.py::test_team_lifecycle_stops_mutations_and_archive_fail_closes_active_work",
+      "invariants": [
+        "pause/revoke/archive 状态阻止不允许的 Team mutation 与新工作",
+        "存在 active work 时 archive fail closed"
+      ]
+    },
+    {
+      "id": "control-plane-contract-team-cumulative-budget",
+      "category": "team",
+      "test": "backend/tests/test_cowork_team_events.py::test_team_budget_reserve_charge_settle_and_exhaustion_are_atomic",
+      "invariants": [
+        "Team 模型、工具与墙钟预算按累计账本原子 reserve/settle",
+        "并发与重启不能重置或穿透预算"
+      ]
+    },
+    {
+      "id": "control-plane-contract-team-tool-outcome-unknown",
+      "category": "team",
+      "test": "backend/tests/test_cowork_team_events.py::test_worker_tool_attempt_ledger_retries_reads_and_fail_closes_writes",
+      "invariants": [
+        "Worker 读操作可按策略重试，写操作 outcome_unknown 不得重放",
+        "tool attempt ledger 在进程重启后仍保持 terminal identity"
+      ]
+    },
+    {
+      "id": "control-plane-contract-team-wake-outbox",
+      "category": "team",
+      "test": "backend/tests/test_cowork_team_events.py::test_team_wake_outbox_is_allowlisted_recoverable_and_ack_advances_cursor",
+      "invariants": [
+        "Team wake 使用可恢复 outbox/cursor 且 payload 字段受 allowlist 约束",
+        "只有成功 ack 才推进 cursor，投递重试按 source identity 幂等"
+      ]
+    },
+    {
+      "id": "control-plane-contract-team-delete-privacy",
+      "category": "team",
+      "test": "backend/tests/test_cowork_team_events.py::test_explicit_conversation_delete_purges_team_audit_payloads",
+      "invariants": [
+        "显式删除 conversation 会清除 Team audit 中的用户 payload",
+        "删除保护不得留下可由 wake/replay 重新暴露的孤儿记录"
+      ]
+    },
+    {
+      "id": "control-plane-contract-messaging-event-replay",
+      "category": "messaging",
+      "test": "backend/tests/test_cowork_messaging.py::test_feishu_callback_deduplicates_signed_event_ids_before_side_effects",
+      "invariants": [
+        "同一已签名 Feishu event_id 在 durable receipt 中原子 claim，只允许一次副作用",
+        "重试与进程重启后的重复回调返回成功但不得重复启动、steer 或批准"
+      ]
+    },
+    {
+      "id": "control-plane-contract-persona-drift",
+      "category": "persona",
+      "test": "backend/tests/test_cowork_capabilities_and_personas.py::test_same_name_persona_drift_or_lost_authorization_requires_reselection",
+      "invariants": [
+        "Persona 按 source identity、内容哈希和结构化能力快照固化",
+        "同名内容漂移、删除或工作区撤权后必须显式重选，普通 Provider 更新不能重基线"
+      ]
+    }
+  ]
+}

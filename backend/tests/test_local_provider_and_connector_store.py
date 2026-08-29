@@ -37,6 +37,7 @@ from app.cowork.provider_profiles import (
     ProviderSelectionRequiredError,
     build_conversation_gateway,
     create_provider_profile,
+    default_provider_profile,
     delete_provider_profile,
     get_provider_profile,
     list_provider_profiles,
@@ -148,6 +149,104 @@ def test_a_corrupt_entry_does_not_take_the_whole_list_down(settings: Settings) -
 
     # 这个文件用户会亲手编辑，一条写坏了不该让他连改回去的入口都打不开。
     assert [item.id for item in list_provider_profiles(settings)] == [good.id]
+
+
+def test_default_provider_prefers_the_configured_qwen_35b_profile(settings: Settings) -> None:
+    fallback = _profile(settings, name="A DeepSeek")
+    qwen = create_provider_profile(
+        settings,
+        name="Z Qwen 35B",
+        provider="qwen",
+        base_url="http://127.0.0.1:8102/v1",
+        default_model="qwen3.6-35b-a3b",
+        api_key="EMPTY",
+        context_window_tokens=102_400,
+        enabled=True,
+        metadata={},
+        secret_store=_secret_store(settings),
+    )
+
+    selected = default_provider_profile(
+        settings.model_copy(update={"tier_main_model": "qwen3.6-35b-a3b"})
+    )
+
+    assert selected is not None
+    assert selected.id == qwen.id
+    assert selected.id != fallback.id
+
+
+async def test_unbound_conversation_is_persistently_bound_before_gateway_build(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = settings.model_copy(update={"tier_main_model": "qwen3.6-35b-a3b"})
+    qwen = create_provider_profile(
+        configured,
+        name="Qwen 35B",
+        provider="qwen",
+        base_url="http://127.0.0.1:8102/v1",
+        default_model="qwen3.6-35b-a3b",
+        api_key="EMPTY",
+        context_window_tokens=102_400,
+        enabled=True,
+        metadata={},
+        secret_store=_secret_store(configured),
+    )
+    metadata: dict[str, object] = {
+        "provider_profile_id": None,
+        "model_override": None,
+        "unattended": True,
+        "approval_mode": "auto",
+        "persona_name": "general",
+    }
+    updates: list[dict[str, object]] = []
+
+    class LocalStore:
+        async def list_conversation_metadata(self, **_: object) -> list[dict[str, object]]:
+            return [metadata]
+
+        async def update_conversation_runtime(self, **kwargs: object) -> bool:
+            updates.append(kwargs)
+            metadata.update(
+                provider_profile_id=str(kwargs["provider_profile_id"]),
+                model_override=kwargs["model_override"],
+            )
+            return True
+
+    captured: dict[str, object] = {}
+
+    def fake_build_custom_model_gateway(*_: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("app.cowork_store.routing.cowork_store", lambda: LocalStore())
+    monkeypatch.setattr(
+        "app.cowork.provider_profiles.build_custom_model_gateway",
+        fake_build_custom_model_gateway,
+    )
+    conversation_id = uuid4()
+
+    await build_conversation_gateway(
+        AsyncMock(),
+        conversation_id=conversation_id,
+        settings=configured,
+        session_factory=AsyncMock(),
+        run_id=uuid4(),
+    )
+
+    assert updates == [
+        {
+            "conversation_id": conversation_id,
+            "provider_profile_id": qwen.id,
+            "model_override": "qwen3.6-35b-a3b",
+            "unattended": True,
+            "approval_mode": "auto",
+            "persona_name": "general",
+        }
+    ]
+    chat_provider = captured["chat_provider"]
+    assert hasattr(chat_provider, "chat_model")
+    assert chat_provider.chat_model == "qwen3.6-35b-a3b"
 
 
 async def test_selected_profile_gateway_keeps_the_local_run_id(

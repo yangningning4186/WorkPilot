@@ -125,10 +125,10 @@ class _CaseContext:
         ]
         for source, target in sorted(
             ((source, target) for source, target in replacements if source),
-            key=lambda item: len(cast("str", item[0])),
+            key=lambda item: len(item[0]),
             reverse=True,
         ):
-            normalized = normalized.replace(cast("str", source), target)
+            normalized = normalized.replace(source, target)
 
         # 日期和分钟是 run 起始快照，不应让同一个 synthetic scenario 次日失配；
         # 环境块的其余文字和 OS 仍参与指纹，prompt 或执行平台漂移不会被掩盖。

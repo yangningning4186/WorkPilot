@@ -15,9 +15,12 @@ from re import findall
 import pytest
 import yaml
 
+from app.core.config import Settings
+from app.llm_bootstrap import gateway_pricing_from_settings
 from tests.fakes import DeterministicProvider
 from workpilot_ai.errors import ProviderRouteTimeoutError, ProviderTimeoutError
 from workpilot_ai.gateway import ModelContextOverflowError, ModelGateway, TierProviderPool
+from workpilot_ai.model_catalog import ModelCatalog, ModelMetadata
 from workpilot_ai.pricing import GatewayPricing, ModelPricing
 from workpilot_ai.routing import (
     EndpointSpec,
@@ -38,15 +41,15 @@ REPO_ROUTING = Path(__file__).resolve().parents[2] / "config" / "routing.yaml"
 
 ENV = {
     "TIER_LIGHT_BASE_URL": "http://light.test/v1",
-    "TIER_LIGHT_MODEL": "light-model",
+    "TIER_LIGHT_MODEL": "qwen3.5-4b",
     "TIER_LIGHT_ENABLE_THINKING": "",
     "TIER_LIGHT_CONTEXT_WINDOW_TOKENS": "32768",
     "TIER_MAIN_BASE_URL": "http://main.test/v1",
-    "TIER_MAIN_MODEL": "main-model",
+    "TIER_MAIN_MODEL": "qwen3.6-35b-a3b",
     "TIER_MAIN_ENABLE_THINKING": "",
     "TIER_MAIN_CONTEXT_WINDOW_TOKENS": "102400",
     "TIER_HEAVY_BASE_URL": "http://heavy.test/v1",
-    "TIER_HEAVY_MODEL": "heavy-model",
+    "TIER_HEAVY_MODEL": "deepseek-v4-flash",
     "TIER_HEAVY_ENABLE_THINKING": "",
     "TIER_HEAVY_CONTEXT_WINDOW_TOKENS": "1048576",
     "TIER_EXTERNAL_BASE_URL": "http://external.test/v1",
@@ -174,6 +177,7 @@ def test_repo_routing_table_loads_and_covers_the_documented_task_types() -> None
     table = load_routing_table(REPO_ROUTING, ENV)
 
     assert table.tier_for("cowork_decision") == "main"
+    assert table.tier_for("cowork_semantic_approval") == "main"
     assert table.tier_for("evaluation_generation") == "main"
     assert table.tier_for("edit_rewrite") == "light"
     assert table.tier_for("cowork_compaction") == "main"
@@ -232,6 +236,70 @@ def test_context_window_must_be_a_positive_deployment_limit() -> None:
 
     with pytest.raises(RoutingConfigError, match="不能小于 1024"):
         parse_routing_table(document, ENV)
+
+
+def test_catalog_can_supply_context_thinking_and_prices() -> None:
+    document = _minimal()
+    tiers = document["tiers"]
+    assert isinstance(tiers, dict)
+    main = tiers["main"]
+    assert isinstance(main, dict)
+    primary = main["primary"]
+    assert isinstance(primary, dict)
+    primary["context_window_tokens"] = "auto"
+    catalog = ModelCatalog(
+        models=(
+            ModelMetadata(
+                provider="openai_compatible",
+                model="qwen3.6-35b-a3b",
+                context_window_tokens=196_608,
+                max_output_tokens=16_384,
+                thinking_levels=("low", "high"),
+                input_usd_per_mtok=Decimal("1.25"),
+                output_usd_per_mtok=Decimal("5"),
+                source="test-catalog",
+            ),
+        )
+    )
+
+    table = parse_routing_table(document, ENV, model_catalog=catalog)
+    endpoint = table.tiers["main"].primary
+
+    assert endpoint.context_window_tokens == 196_608
+    assert endpoint.max_output_tokens == 16_384
+    assert endpoint.thinking_levels == ("low", "high")
+    assert endpoint.metadata_source == "test-catalog"
+    pricing = gateway_pricing_from_settings(Settings(_env_file=None), table)
+    assert pricing.for_tier("main").input_usd_per_mtok == Decimal("1.25")
+    assert pricing.for_tier("main").output_usd_per_mtok == Decimal("5")
+
+
+def test_explicit_context_must_not_drift_from_known_catalog() -> None:
+    document = _minimal()
+    tiers = document["tiers"]
+    assert isinstance(tiers, dict)
+    main = tiers["main"]
+    assert isinstance(main, dict)
+    primary = main["primary"]
+    assert isinstance(primary, dict)
+    primary["context_window_tokens"] = 65_536
+    catalog = ModelCatalog(
+        models=(
+            ModelMetadata(
+                provider="openai_compatible",
+                model="qwen3.6-35b-a3b",
+                context_window_tokens=131_072,
+                max_output_tokens=None,
+                thinking_levels=(),
+                input_usd_per_mtok=None,
+                output_usd_per_mtok=None,
+                source="test-catalog",
+            ),
+        )
+    )
+
+    with pytest.raises(RoutingConfigError, match=r"与模型目录.*不一致"):
+        parse_routing_table(document, ENV, model_catalog=catalog)
 
 
 def test_every_routed_task_type_actually_exists_in_the_code() -> None:
@@ -424,6 +492,7 @@ async def test_task_type_picks_the_configured_tier() -> None:
     result = await gateway.complete([Message(role="user", content="改写")], task_type="rewrite")
 
     assert result.text == "light 答的"
+    assert result.model_identity == "deterministic_test/fake-chat"
     assert [record.tier for record in sink.records] == ["light"]
 
 

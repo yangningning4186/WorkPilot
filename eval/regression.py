@@ -889,18 +889,27 @@ def _evaluate_metric(
 ) -> tuple[dict[str, Any], list[Violation]]:
     paired: list[tuple[str, MetricPoint, MetricPoint]] = []
     eligibility_drift: list[str] = []
+    baseline_eligible = 0
+    candidate_eligible = 0
     for case_id in ids:
         left = baseline[case_id].metrics.get(rule.name)
         right = candidate[case_id].metrics.get(rule.name)
         left_ok = left is not None and left.eligible
         right_ok = right is not None and right.eligible
+        baseline_eligible += int(left_ok)
+        candidate_eligible += int(right_ok)
         if left_ok != right_ok:
             eligibility_drift.append(case_id)
             continue
         if left_ok and right_ok:
             assert left is not None and right is not None
             paired.append((case_id, left, right))
-    if eligibility_drift:
+    # Required metrics define the gate population, so any denominator drift
+    # makes a paired verdict invalid. Optional diagnostics (for example quote
+    # verifiability) are response-contingent: a correct answer may simply not
+    # contain a quote. Compare their stable intersection and retain the exact
+    # drift in the artifact instead of refusing the entire quality gate.
+    if eligibility_drift and rule.required:
         raise RegressionRefused(f"指标 {rule.name} 的适用样本发生漂移: {eligibility_drift[:5]}")
     if not paired:
         if rule.required:
@@ -910,6 +919,9 @@ def _evaluate_metric(
             "direction": rule.direction,
             "status": "not_applicable",
             "sample_count": 0,
+            "baseline_eligible_count": baseline_eligible,
+            "candidate_eligible_count": candidate_eligible,
+            "eligibility_drift_case_ids": eligibility_drift,
         }, []
     baseline_value = _aggregate([left for _, left, _ in paired])
     candidate_value = _aggregate([right for _, _, right in paired])
@@ -941,6 +953,9 @@ def _evaluate_metric(
         "gain": gain,
         "allowed_regression": allowed_regression,
         "sample_count": len(paired),
+        "baseline_eligible_count": baseline_eligible,
+        "candidate_eligible_count": candidate_eligible,
+        "eligibility_drift_case_ids": eligibility_drift,
         "improved_samples": len(improved),
         "regressed_samples": len(regressed),
         "regressed_case_ids": regressed,

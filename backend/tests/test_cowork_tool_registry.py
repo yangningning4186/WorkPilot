@@ -1,6 +1,7 @@
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from app.agent_core.tools import render_tool_prompt_instructions
 from app.cowork.browser_tools import register_browser_tools
 from app.cowork.tools import (
     CoworkToolContext,
@@ -15,11 +16,17 @@ class _EmptyArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class _QueryArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+
+
 async def _read_handler(
     _: CoworkToolContext,
     __: BaseModel,
 ) -> CoworkToolResult:
-    return CoworkToolResult(output={})
+    return CoworkToolResult(content={})
 
 
 def test_path_capability_requires_path_argument() -> None:
@@ -45,6 +52,54 @@ def test_pathless_meta_tools_have_no_capability() -> None:
 
     for name in ("ask_user", "request_directory", "request_capability"):
         assert registry.get(name).capability is None
+
+
+def test_tool_argument_compatibility_runs_before_schema_validation() -> None:
+    registry = CoworkToolRegistry()
+    registry.register(
+        CoworkToolSpec(
+            name="compat_search",
+            description="兼容旧参数名",
+            args_model=_QueryArgs,
+            capability=None,
+            risk="read",
+            effect="none",
+            parallel_safe=True,
+            handler=_read_handler,
+            prepare_arguments=lambda raw: {"query": raw.get("query", raw.get("q"))},
+        )
+    )
+
+    assert registry.parse_arguments("compat_search", {"q": "季度报告"}) == {"query": "季度报告"}
+
+
+def test_tool_prompt_guidance_and_sequential_execution_are_declared_on_spec() -> None:
+    registry = CoworkToolRegistry()
+    for name, execution_mode in (("guided", "sequential"), ("other", "auto")):
+        registry.register(
+            CoworkToolSpec(
+                name=name,
+                description="有自带提示的工具",
+                args_model=_EmptyArgs,
+                capability=None,
+                risk="read",
+                effect="none",
+                parallel_safe=True,
+                handler=_read_handler,
+                prompt_snippet="只在已有证据不足时调用。" if name == "guided" else "",
+                prompt_guidelines=("先缩小查询范围",) if name == "guided" else (),
+                execution_mode=execution_mode,  # type: ignore[arg-type]
+            )
+        )
+
+    definitions = {item.name: item for item in registry.tool_definitions()}
+    rendered = render_tool_prompt_instructions(definitions.values())
+
+    assert definitions["guided"].prompt_snippet == "只在已有证据不足时调用。"
+    assert definitions["guided"].prompt_guidelines == ("先缩小查询范围",)
+    assert "<tool_prompt_guidance>" in rendered
+    assert "[guided]" in rendered
+    assert registry.parallel_safe(["guided", "other"]) is False
 
 
 def test_retired_duplicate_tools_are_not_registered() -> None:

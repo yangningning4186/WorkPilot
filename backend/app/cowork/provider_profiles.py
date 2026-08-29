@@ -16,7 +16,7 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from uuid6 import uuid7
@@ -25,6 +25,7 @@ from app.core.config import Settings
 from app.core.db import DbSession as AsyncSession
 from app.core.db import SessionFactory
 from app.core.private_json import read_private_json, write_private_json
+from app.cowork_contracts import ApprovalMode
 from app.llm_bootstrap import build_custom_model_gateway
 from app.security.secret_store import LocalSecretStore
 from app.telemetry import default_telemetry_store
@@ -163,6 +164,84 @@ def list_provider_profiles(settings: Settings) -> list[ProviderProfileRecord]:
     return records
 
 
+def default_provider_profile(
+    settings: Settings,
+    *,
+    profiles: list[ProviderProfileRecord] | None = None,
+) -> ProviderProfileRecord | None:
+    """选择新会话默认绑定的用户 Provider。
+
+    主模型配置是桌面端当前部署的首选身份；本机已有对应 Profile 时优先使用它。
+    旧配置里模型名可能没有与 ``TIER_MAIN_MODEL`` 完全同步，因此再识别一次 qwen 35b。
+    两者都不存在时退回第一个启用的用户 Profile，保证只有一个模型配置的常见场景
+    不需要每次手选。这里绝不构造部署级 Provider，也不会绕过用户保存的密钥配置。
+    """
+
+    enabled = [
+        profile
+        for profile in (list_provider_profiles(settings) if profiles is None else profiles)
+        if profile.enabled
+    ]
+    if not enabled:
+        return None
+    preferred_model = settings.tier_main_model.strip().casefold()
+    if preferred_model:
+        exact = next(
+            (
+                profile
+                for profile in enabled
+                if profile.default_model.strip().casefold() == preferred_model
+            ),
+            None,
+        )
+        if exact is not None:
+            return exact
+    qwen_35b = next(
+        (
+            profile
+            for profile in enabled
+            if "qwen" in profile.default_model.casefold()
+            and "35b" in profile.default_model.casefold()
+        ),
+        None,
+    )
+    return qwen_35b or enabled[0]
+
+
+async def ensure_default_provider_binding(
+    *,
+    conversation_id: UUID,
+    settings: Settings,
+) -> ProviderProfileRecord | None:
+    """给尚未选模型的会话持久化默认用户 Provider；已有选择绝不覆盖。"""
+
+    from app.cowork_store.routing import cowork_store
+
+    store = cowork_store()
+    if store is None:
+        return None
+    rows = await store.list_conversation_metadata(
+        conversation_id=conversation_id,
+        archived=None,
+        limit=1,
+    )
+    if not rows or rows[0].get("provider_profile_id") is not None:
+        return None
+    profile = default_provider_profile(settings)
+    if profile is None:
+        return None
+    row = rows[0]
+    changed = await store.update_conversation_runtime(
+        conversation_id=conversation_id,
+        provider_profile_id=profile.id,
+        model_override=profile.default_model,
+        unattended=bool(row.get("unattended", False)),
+        approval_mode=cast(ApprovalMode, str(row.get("approval_mode") or "interactive")),
+        persona_name=str(row.get("persona_name") or "general"),
+    )
+    return profile if changed else None
+
+
 def get_provider_profile(settings: Settings, profile_id: UUID) -> ProviderProfileRecord | None:
     value = _read_all(store_path(settings)).get(str(profile_id))
     return None if value is None else _record(str(profile_id), value)
@@ -293,11 +372,11 @@ async def build_conversation_gateway(
     session_factory: SessionFactory,
     run_id: UUID,
 ) -> ModelGateway:
-    """按会话选定的 Provider 造网关；没有显式选择就拒绝运行。
+    """按会话选定的 Provider 造网关；旧会话未绑定时补上用户默认项。
 
     Profile 出了数据库之后这里少了两条 `LEFT JOIN provider_profiles`——会话记的
-    只是一个 id，解引用在内存里做。代价是 id 可能悬空（用户删掉了 profile），
-    所以必须把"未选择"和"已删除"都报成可操作错误，不能悄悄切到部署级模型。
+    只是一个 id，解引用在内存里做。旧会话没有 id 时只允许补绑用户配置的默认项；
+    没有可用配置或 id 已悬空（用户删掉了 profile）时仍报可操作错误，绝不切到部署级模型。
     """
 
     from app.cowork_store.routing import cowork_store
@@ -315,10 +394,18 @@ async def build_conversation_gateway(
     selection = (local_metadata[0]["provider_profile_id"], local_metadata[0]["model_override"])
     raw_profile_id, model_override = selection
     if raw_profile_id is None:
-        raise ProviderSelectionRequiredError(
-            "当前会话尚未选择模型服务，请先在“模型与密钥”中添加并选择 Provider"
+        profile = await ensure_default_provider_binding(
+            conversation_id=conversation_id,
+            settings=settings,
         )
-    profile = get_provider_profile(settings, UUID(str(raw_profile_id)))
+        if profile is None:
+            raise ProviderSelectionRequiredError(
+                "当前会话尚未选择模型服务，请先在“模型与密钥”中添加并选择 Provider"
+            )
+        raw_profile_id = profile.id
+        model_override = profile.default_model
+    else:
+        profile = get_provider_profile(settings, UUID(str(raw_profile_id)))
     if profile is None:
         raise ProviderSelectionRequiredError("当前会话选择的模型服务已被删除，请重新选择 Provider")
     telemetry = default_telemetry_store()

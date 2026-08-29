@@ -26,7 +26,9 @@ from workpilot_ai.errors import (
 )
 from workpilot_ai.gateway import PromptBudget, request_character_count
 from workpilot_ai.pricing import estimate_tokens
+from workpilot_ai.routing import Tier
 from workpilot_ai.types import (
+    CacheRetention,
     CompletionChunk,
     CompletionResult,
     EmbeddingResult,
@@ -75,6 +77,9 @@ class CompletionClient(Protocol):
         task_type: str = "generate",
         max_tokens: int = 1024,
         temperature: float = 0.0,
+        tier_override: Tier | None = None,
+        cache_retention: CacheRetention = "default",
+        session_id: str | None = None,
     ) -> CompletionResult: ...
 
 
@@ -88,6 +93,9 @@ class ToolCompletionClient(Protocol):
         task_type: str = "generate",
         max_tokens: int = 1024,
         temperature: float = 0.0,
+        tier_override: Tier | None = None,
+        cache_retention: CacheRetention = "default",
+        session_id: str | None = None,
     ) -> CompletionResult: ...
 
 
@@ -101,6 +109,7 @@ class StreamingToolCompletionClient(Protocol):
         task_type: str = "generate",
         max_tokens: int = 1024,
         temperature: float = 0.0,
+        tier_override: Tier | None = None,
     ) -> AsyncIterator[CompletionChunk]: ...
 
 
@@ -120,6 +129,10 @@ class PromptBudgetClient(Protocol):
         *,
         max_tokens: int,
     ) -> PromptBudget: ...
+
+
+class EscalationPlanClient(Protocol):
+    def escalation_plan(self, task_type: str) -> tuple[Tier | None, Tier | None]: ...
 
 
 class BudgetMeter:
@@ -223,6 +236,19 @@ class BudgetMeter:
         self._release_reservation(projected_tokens=projected_tokens)
         self._budget["used_calls"] += 1
 
+    def restore_settled(self, usage: Usage) -> None:
+        """Restore a durably recorded completion after a worker crash.
+
+        The original gateway already settled its external cost.  The pre-call checkpoint did
+        not yet contain the per-run counters, so recovery must add the recorded usage exactly
+        once without reserving or dispatching another request.
+        """
+
+        if self._reserved_calls or self._reserved_tokens:
+            raise RuntimeError("有模型预留未结算，不能恢复已完成用量")
+        self._budget["used_calls"] += 1
+        self._budget["used_tokens"] += usage.input_tokens + usage.output_tokens
+
     def _release_reservation(self, *, projected_tokens: int) -> None:
         if self._reserved_calls <= 0 or self._reserved_tokens < projected_tokens:
             raise RuntimeError("模型预算预留账本不一致")
@@ -264,6 +290,20 @@ class BudgetedGateway:
         gateway = cast("PromptBudgetClient", self._gateway)
         return gateway.prompt_budget(task_type, max_tokens=max_tokens)
 
+    def model_identities(self) -> frozenset[str]:
+        candidate = getattr(self._gateway, "model_identities", None)
+        if callable(candidate):
+            return frozenset(candidate())
+        provider = str(getattr(self._gateway, "chat_provider", "unknown"))
+        model = str(getattr(self._gateway, "chat_model", "unknown"))
+        return frozenset({f"{provider}/{model}"})
+
+    def escalation_plan(self, task_type: str) -> tuple[Tier | None, Tier | None]:
+        candidate = getattr(self._gateway, "escalation_plan", None)
+        if not callable(candidate):
+            return (None, None)
+        return cast("EscalationPlanClient", self._gateway).escalation_plan(task_type)
+
     async def complete(
         self,
         messages: list[Message],
@@ -271,16 +311,25 @@ class BudgetedGateway:
         task_type: str = "generate",
         max_tokens: int = 1024,
         temperature: float = 0.0,
+        tier_override: Tier | None = None,
+        cache_retention: CacheRetention = "default",
+        session_id: str | None = None,
     ) -> CompletionResult:
         projected = self._meter.project_tokens(messages, max_tokens=max_tokens)
         self._meter.reserve(projected_tokens=projected)
         try:
-            result = await self._gateway.complete(
-                messages,
-                task_type=task_type,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+            kwargs: dict[str, object] = {
+                "task_type": task_type,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if tier_override is not None:
+                kwargs["tier_override"] = tier_override
+            # 默认路径不传新关键字，保留测试/第三方最小 CompletionClient 的结构兼容性。
+            if cache_retention != "default" or session_id is not None:
+                kwargs["cache_retention"] = cache_retention
+                kwargs["session_id"] = session_id
+            result = await self._gateway.complete(messages, **kwargs)  # type: ignore[arg-type]
         except (ProviderNotDispatchedError, ModelContextOverflowError):
             # 能证明请求没发出去, 不记账。这是唯一允许不记账的失败。
             self._meter.release(projected_tokens=projected)
@@ -306,19 +355,27 @@ class BudgetedGateway:
         task_type: str = "generate",
         max_tokens: int = 1024,
         temperature: float = 0.0,
+        tier_override: Tier | None = None,
+        cache_retention: CacheRetention = "default",
+        session_id: str | None = None,
     ) -> CompletionResult:
         gateway = cast("ToolCompletionClient", self._gateway)
         projected = self._meter.project_tokens(messages, max_tokens=max_tokens, tools=tools)
         self._meter.reserve(projected_tokens=projected)
         try:
-            result = await gateway.complete_with_tools(
-                messages,
-                tools=tools,
-                parallel_tool_calls=parallel_tool_calls,
-                task_type=task_type,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+            kwargs: dict[str, object] = {
+                "tools": tools,
+                "parallel_tool_calls": parallel_tool_calls,
+                "task_type": task_type,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if tier_override is not None:
+                kwargs["tier_override"] = tier_override
+            if cache_retention != "default" or session_id is not None:
+                kwargs["cache_retention"] = cache_retention
+                kwargs["session_id"] = session_id
+            result = await gateway.complete_with_tools(messages, **kwargs)  # type: ignore[arg-type]
         except (ProviderNotDispatchedError, ModelContextOverflowError):
             self._meter.release(projected_tokens=projected)
             raise
@@ -343,6 +400,7 @@ class BudgetedGateway:
         task_type: str = "generate",
         max_tokens: int = 1024,
         temperature: float = 0.0,
+        tier_override: Tier | None = None,
     ) -> AsyncIterator[CompletionChunk]:
         """`complete_with_tools` 的流式版本，计量口径逐字相同。
 
@@ -358,14 +416,27 @@ class BudgetedGateway:
         self._meter.reserve(projected_tokens=projected)
         settled = False
         try:
-            async for chunk in gateway.stream_with_tools(
-                messages,
-                tools=tools,
-                parallel_tool_calls=parallel_tool_calls,
-                task_type=task_type,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            ):
+            stream = (
+                gateway.stream_with_tools(
+                    messages,
+                    tools=tools,
+                    parallel_tool_calls=parallel_tool_calls,
+                    task_type=task_type,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                if tier_override is None
+                else gateway.stream_with_tools(
+                    messages,
+                    tools=tools,
+                    parallel_tool_calls=parallel_tool_calls,
+                    task_type=task_type,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    tier_override=tier_override,
+                )
+            )
+            async for chunk in stream:
                 if chunk.result is not None:
                     self._meter.settle(chunk.result.usage, projected_tokens=projected)
                     settled = True

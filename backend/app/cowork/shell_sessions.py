@@ -402,9 +402,9 @@ def _read_until_marker(fd: int, marker: str, max_output_bytes: int) -> tuple[int
     def retain(chunk: bytes) -> None:
         nonlocal total_output
         total_output += len(chunk)
-        room = max_output_bytes - len(retained)
-        if room > 0:
-            retained.extend(chunk[:room])
+        retained.extend(chunk)
+        if len(retained) > max_output_bytes:
+            del retained[: len(retained) - max_output_bytes]
 
     while True:
         readable, _, _ = select.select([fd], [], [], 0.25)

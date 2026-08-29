@@ -11,6 +11,7 @@ from app.cowork.skills.lifecycle import (
     import_skill_zip,
     install_skill,
     list_managed_skills,
+    list_skill_resources,
     read_skill_resource,
     set_skill_enabled,
 )
@@ -106,6 +107,28 @@ def test_skill_resource_rejects_symlinked_parent_escape(tmp_path: Path) -> None:
             root,
             name="summarize",
             resource="references/secret.txt",
+            max_bytes=64_000,
+        )
+
+
+def test_skill_resource_enumeration_bounds_directory_entries(tmp_path: Path) -> None:
+    root = tmp_path / "skills"
+    install_skill(
+        root,
+        name="summarize",
+        skill_md=SKILL_MD,
+        enabled=True,
+        max_bytes=64_000,
+        replace=False,
+    )
+    references = root / "summarize" / "references"
+    references.mkdir()
+    (references / "one.md").write_text("one", encoding="utf-8")
+
+    with pytest.raises(SkillCatalogError, match="目录项超过扫描上限"):
+        list_skill_resources(
+            root / "summarize" / "SKILL.md",
+            max_files=2,
             max_bytes=64_000,
         )
 

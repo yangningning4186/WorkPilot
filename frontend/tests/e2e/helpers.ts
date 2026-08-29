@@ -30,7 +30,7 @@ export async function ask(
   return body.run_id;
 }
 
-/** 新任务没有内置默认模型；测试显式选择假后端提供的用户配置 Provider。 */
+/** 兼容显式选择测试；产品现在会默认绑定假后端排在首位的用户 Provider。 */
 export async function selectConfiguredProvider(page: Page): Promise<void> {
   const select = page.getByLabel("模型服务");
   if (!(await select.isVisible())) {

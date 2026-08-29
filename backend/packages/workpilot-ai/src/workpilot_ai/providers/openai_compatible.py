@@ -5,6 +5,8 @@ import json
 import re
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,20 +15,37 @@ import httpx
 from workpilot_ai.errors import (
     ProviderContextOverflowError,
     ProviderNotDispatchedError,
+    ProviderRateLimitError,
     ProviderResponseError,
+    ProviderRetryableError,
     ProviderTimeoutError,
     ProviderTransportError,
 )
+from workpilot_ai.overflow import is_context_overflow_response
 from workpilot_ai.pricing import estimate_tokens
 from workpilot_ai.types import (
     CompletionChunk,
     CompletionResult,
+    CompletionStopReason,
     EmbeddingResult,
     Message,
     ToolCall,
+    ToolCallDelta,
     ToolDefinition,
     Usage,
 )
+
+
+def _openai_stop_reason(raw: object, *, has_tool_calls: bool) -> CompletionStopReason:
+    normalized = str(raw or "").casefold()
+    if normalized in {"length", "max_tokens"}:
+        return "length"
+    if normalized in {"tool_calls", "function_call"} or has_tool_calls:
+        return "tool_use"
+    if normalized in {"", "stop", "end_turn"}:
+        return "stop"
+    return "error"
+
 
 # 流式端点不给 usage 时用来估产出量。1 字符 1 token 是上界, 宁可高估:
 # 低估会让 run 的 token 预算永远触不到顶, 熔断形同虚设(约束 5)。
@@ -307,21 +326,7 @@ def _dispatch_guard() -> Iterator[None]:
 
 
 def _is_context_overflow(response: httpx.Response, body: str) -> bool:
-    if response.status_code not in {400, 413, 422}:
-        return False
-    normalized = body.casefold()
-    markers = (
-        "context_length_exceeded",
-        "maximum context length",
-        "max context length",
-        "context window",
-        "max_model_len",
-        "maximum model length",
-        "prompt is too long",
-        "input is too long",
-        "too many tokens",
-    )
-    return any(marker in normalized for marker in markers)
+    return is_context_overflow_response(status_code=response.status_code, body=body)
 
 
 def _raise_with_body(response: httpx.Response, body: str) -> None:
@@ -335,12 +340,56 @@ def _raise_with_body(response: httpx.Response, body: str) -> None:
     detail = body.strip()
     if len(detail) > 600:
         detail = detail[:600] + "…"
-    error_type = (
-        ProviderContextOverflowError
-        if _is_context_overflow(response, body)
-        else ProviderResponseError
+    message = f"模型服务返回 {response.status_code}：{detail or '（响应体为空）'}"
+    if _is_context_overflow(response, body):
+        raise ProviderContextOverflowError(message)
+    if response.status_code == 429 and not _is_quota_exhausted(body):
+        raise ProviderRateLimitError(
+            message,
+            status_code=response.status_code,
+            retry_after_s=_retry_after_seconds(response),
+        )
+    if response.status_code in {408, 409, 425, 500, 502, 503, 504}:
+        raise ProviderRetryableError(
+            message,
+            status_code=response.status_code,
+            retry_after_s=_retry_after_seconds(response),
+        )
+    raise ProviderResponseError(message)
+
+
+def _is_quota_exhausted(body: str) -> bool:
+    normalized = body.casefold()
+    return any(
+        marker in normalized
+        for marker in (
+            "insufficient_quota",
+            "quota exhausted",
+            "quota has been exhausted",
+            "billing hard limit",
+            "billing_limit",
+            "credit balance",
+            "credits exhausted",
+            "账户余额不足",
+            "配额已耗尽",
+        )
     )
-    raise error_type(f"模型服务返回 {response.status_code}：{detail or '（响应体为空）'}")
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    raw = response.headers.get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        return max(0.0, float(raw.strip()))
+    except ValueError:
+        try:
+            deadline = parsedate_to_datetime(raw)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=UTC)
+        return max(0.0, (deadline - datetime.now(UTC)).total_seconds())
 
 
 class OpenAICompatibleProvider:
@@ -534,8 +583,9 @@ class OpenAICompatibleProvider:
                 tool_calls.extend(parsed_calls)
         # reasoning 模型在推理耗尽输出额度时会回 content=null。此处若直接 str()
         # 会得到字符串 "None"，把"模型没给内容"静默伪装成内容，调用方拿到的是假数据。
-        if content is None and not tool_calls:
-            finish_reason = payload["choices"][0].get("finish_reason")
+        finish_reason = payload["choices"][0].get("finish_reason")
+        normalized_stop_reason = _openai_stop_reason(finish_reason, has_tool_calls=bool(tool_calls))
+        if content is None and not tool_calls and normalized_stop_reason != "length":
             raise ProviderResponseError(
                 f"模型返回空 content(finish_reason={finish_reason})；"
                 + (
@@ -558,6 +608,7 @@ class OpenAICompatibleProvider:
                 prompt_cache_write_tokens=int(prompt_details.get("cache_write_tokens", 0)),
             ),
             tool_calls=tuple(tool_calls),
+            stop_reason=normalized_stop_reason,
         )
 
     async def stream_with_tools(
@@ -620,6 +671,7 @@ class OpenAICompatibleProvider:
         partial: dict[int, dict[str, str]] = {}
         model = self.chat_model
         finish_reason: object = None
+        terminal_seen = False
         usage_payload: dict[str, Any] = {}
         generated_chars = 0
         # DSML wrapper 可能横跨两片；扣住这么多字符就足以在拼完之前认出它的开头。
@@ -642,8 +694,11 @@ class OpenAICompatibleProvider:
                 if not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
-                if not data or data == "[DONE]":
+                if not data:
                     continue
+                if data == "[DONE]":
+                    terminal_seen = True
+                    break
                 try:
                     payload = json.loads(data)
                 except json.JSONDecodeError as error:
@@ -696,17 +751,37 @@ class OpenAICompatibleProvider:
                         if not isinstance(index, int):
                             raise ProviderResponseError("模型流式 tool_call 缺少 index")
                         slot = partial.setdefault(index, {"id": "", "name": "", "arguments": ""})
-                        if raw.get("id"):
-                            slot["id"] = str(raw["id"])
+                        call_id = str(raw.get("id") or "")
+                        if call_id:
+                            slot["id"] = call_id
+                        name_delta = ""
+                        arguments_delta = ""
                         function = raw.get("function")
                         if isinstance(function, dict):
                             if function.get("name"):
-                                slot["name"] = str(function["name"])
+                                name_delta = str(function["name"])
+                                if name_delta == slot["name"]:
+                                    name_delta = ""
+                                else:
+                                    slot["name"] += name_delta
                             fragment = function.get("arguments")
                             if isinstance(fragment, str):
-                                slot["arguments"] += fragment
+                                arguments_delta = fragment
+                                slot["arguments"] += arguments_delta
+                        if call_id or name_delta or arguments_delta:
+                            yield CompletionChunk(
+                                tool_call_delta=ToolCallDelta(
+                                    index=index,
+                                    id=call_id,
+                                    name_delta=name_delta,
+                                    arguments_delta=arguments_delta,
+                                )
+                            )
         finally:
             await stream.__aexit__(None, None, None)
+
+        if not terminal_seen:
+            raise ProviderRetryableError("OpenAI-compatible stream ended before [DONE]")
 
         visible_tail, reasoning_tail = think_filter.finish()
         if reasoning_tail:
@@ -742,7 +817,8 @@ class OpenAICompatibleProvider:
                 assert parsed is not None
                 text, parsed_calls = parsed
                 tool_calls.extend(parsed_calls)
-        if not text and not tool_calls:
+        normalized_stop_reason = _openai_stop_reason(finish_reason, has_tool_calls=bool(tool_calls))
+        if not text and not tool_calls and normalized_stop_reason != "length":
             raise ProviderResponseError(
                 f"模型流式响应为空(finish_reason={finish_reason})；"
                 + (
@@ -777,6 +853,7 @@ class OpenAICompatibleProvider:
                     prompt_cache_write_tokens=int(prompt_details.get("cache_write_tokens", 0)),
                 ),
                 tool_calls=tuple(tool_calls),
+                stop_reason=normalized_stop_reason,
             )
         )
 
@@ -863,6 +940,7 @@ class OpenAICompatibleProvider:
                 json=request_payload,
             )
             response = await stream.__aenter__()
+        terminal_seen = False
         try:
             if response.is_error:
                 # 流式响应要先把体读出来才有内容, 否则拿到的是空串。
@@ -872,13 +950,18 @@ class OpenAICompatibleProvider:
                     continue
                 data = line[5:].strip()
                 if data == "[DONE]":
-                    return
+                    terminal_seen = True
+                    break
+                if not data:
+                    continue
                 payload = json.loads(data)
                 delta = payload.get("choices", [{}])[0].get("delta", {}).get("content")
                 if delta:
                     yield str(delta)
         finally:
             await stream.__aexit__(None, None, None)
+        if not terminal_seen:
+            raise ProviderRetryableError("OpenAI-compatible stream ended before [DONE]")
 
     async def embed(self, texts: list[str]) -> EmbeddingResult:
         with _dispatch_guard():

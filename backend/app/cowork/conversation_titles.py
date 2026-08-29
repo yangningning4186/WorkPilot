@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from uuid import uuid4
 
 from workpilot_ai.gateway import ModelGateway
 from workpilot_ai.types import Message
@@ -135,6 +136,8 @@ async def generate_conversation_title(
                 task_type="conversation_title",
                 max_tokens=80,
                 temperature=0.2,
+                cache_retention="none",
+                session_id=f"conversation-title:{uuid4()}",
             ),
             timeout=timeout_s,
         )

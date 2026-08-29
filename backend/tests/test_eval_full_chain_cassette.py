@@ -66,7 +66,7 @@ async def test_full_chain_records_then_replays_with_zero_real_io(tmp_path: Path)
     async def tool_delegate(name: str, arguments: dict[str, object]) -> CoworkToolResult:
         nonlocal tool_calls
         tool_calls += 1
-        return CoworkToolResult(output={"tool": name, "content": arguments["path"]})
+        return CoworkToolResult(content={"tool": name, "content": arguments["path"]})
 
     async def effect_delegate(
         connector: str,
@@ -155,7 +155,7 @@ async def test_replay_is_ordered_and_request_strict(tmp_path: Path) -> None:
     )
 
     async def tool(name: str, arguments: dict[str, object]) -> CoworkToolResult:
-        return CoworkToolResult(output={"name": name, **arguments})
+        return CoworkToolResult(content={"name": name, **arguments})
 
     async def effect(*args: object) -> object:
         return {"ok": True, "args": len(args)}

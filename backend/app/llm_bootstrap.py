@@ -8,6 +8,7 @@
 业务代码拿到的仍然只有 `workpilot_ai.gateway.ModelGateway`。
 """
 
+from decimal import Decimal
 from uuid import UUID
 
 import structlog
@@ -17,7 +18,7 @@ from workpilot_ai.cache import CompletionCache, shared_completion_cache
 from workpilot_ai.gateway import ModelGateway, TierProviderPool
 from workpilot_ai.pricing import GatewayPricing, ModelPricing
 from workpilot_ai.providers.openai_compatible import OpenAICompatibleProvider
-from workpilot_ai.routing import RoutingMode, RoutingTable, load_routing_table
+from workpilot_ai.routing import RoutingMode, RoutingTable, Tier, load_routing_table
 from workpilot_ai.types import AuditSink, BudgetGuard, ModelProvider
 
 logger = structlog.get_logger(__name__)
@@ -57,31 +58,62 @@ def routing_env(settings: Settings) -> dict[str, str]:
     }
 
 
-def gateway_pricing_from_settings(settings: Settings) -> GatewayPricing:
+def gateway_pricing_from_settings(
+    settings: Settings,
+    routing_table: RoutingTable | None = None,
+) -> GatewayPricing:
+    """Build the price table, preferring explicit deployment overrides.
+
+    A non-zero Settings value is an operator override.  Otherwise an endpoint's generated
+    catalog metadata is used when available.  This keeps private/free deployments at zero,
+    while a catalog refresh can update hosted-model prices without an ``.env`` edit.
+    """
+
+    def tier_price(
+        tier: Tier,
+        configured_input: Decimal,
+        configured_output: Decimal,
+    ) -> ModelPricing:
+        input_price = configured_input
+        output_price = configured_output
+        endpoint = None if routing_table is None else routing_table.tiers.get(tier)
+        if endpoint is not None:
+            metadata = endpoint.primary
+            if input_price == 0 and metadata.input_usd_per_mtok is not None:
+                input_price = metadata.input_usd_per_mtok
+            if output_price == 0 and metadata.output_usd_per_mtok is not None:
+                output_price = metadata.output_usd_per_mtok
+        return ModelPricing(
+            input_usd_per_mtok=input_price,
+            output_usd_per_mtok=output_price,
+        )
+
+    main = tier_price(
+        "main",
+        settings.price_main_input_usd_per_mtok,
+        settings.price_main_output_usd_per_mtok,
+    )
     return GatewayPricing(
-        chat=ModelPricing(
-            input_usd_per_mtok=settings.price_main_input_usd_per_mtok,
-            output_usd_per_mtok=settings.price_main_output_usd_per_mtok,
-        ),
+        chat=main,
         embedding=ModelPricing(
             input_usd_per_mtok=settings.price_embedding_input_usd_per_mtok,
         ),
         by_tier={
-            "light": ModelPricing(
-                input_usd_per_mtok=settings.price_light_input_usd_per_mtok,
-                output_usd_per_mtok=settings.price_light_output_usd_per_mtok,
+            "light": tier_price(
+                "light",
+                settings.price_light_input_usd_per_mtok,
+                settings.price_light_output_usd_per_mtok,
             ),
-            "main": ModelPricing(
-                input_usd_per_mtok=settings.price_main_input_usd_per_mtok,
-                output_usd_per_mtok=settings.price_main_output_usd_per_mtok,
+            "main": main,
+            "heavy": tier_price(
+                "heavy",
+                settings.price_heavy_input_usd_per_mtok,
+                settings.price_heavy_output_usd_per_mtok,
             ),
-            "heavy": ModelPricing(
-                input_usd_per_mtok=settings.price_heavy_input_usd_per_mtok,
-                output_usd_per_mtok=settings.price_heavy_output_usd_per_mtok,
-            ),
-            "external": ModelPricing(
-                input_usd_per_mtok=settings.price_external_input_usd_per_mtok,
-                output_usd_per_mtok=settings.price_external_output_usd_per_mtok,
+            "external": tier_price(
+                "external",
+                settings.price_external_input_usd_per_mtok,
+                settings.price_external_output_usd_per_mtok,
             ),
         },
     )
@@ -160,7 +192,7 @@ def build_model_gateway(
         embedding_provider=embedding_provider,
         audit_sink=audit_sink,
         budget_guard=budget_guard,
-        pricing=gateway_pricing_from_settings(settings),
+        pricing=gateway_pricing_from_settings(settings, table),
         chars_per_token=settings.cost_estimate_chars_per_token,
         run_id=run_id,
         eval_run_id=eval_run_id,
@@ -169,7 +201,14 @@ def build_model_gateway(
         completion_cache=completion_cache,
         cache_ttl_s=settings.llm_cache_ttl_s,
         provider_prompt_cache_enabled=settings.provider_prompt_cache_enabled,
-        default_context_window_tokens=settings.tier_main_context_window_tokens,
+        provider_max_retries=settings.llm_provider_max_retries,
+        provider_retry_base_delay_s=settings.llm_provider_retry_base_delay_s,
+        provider_retry_max_delay_s=settings.llm_provider_retry_max_delay_s,
+        default_context_window_tokens=(
+            settings.tier_main_context_window_tokens
+            if table is None
+            else table.tiers[table.default_tier].primary.context_window_tokens
+        ),
         context_safety_tokens=settings.llm_context_safety_tokens,
     )
 
@@ -213,6 +252,9 @@ def build_custom_model_gateway(
         completion_cache=completion_cache,
         cache_ttl_s=settings.llm_cache_ttl_s,
         provider_prompt_cache_enabled=settings.provider_prompt_cache_enabled,
+        provider_max_retries=settings.llm_provider_max_retries,
+        provider_retry_base_delay_s=settings.llm_provider_retry_base_delay_s,
+        provider_retry_max_delay_s=settings.llm_provider_retry_max_delay_s,
         default_context_window_tokens=context_window_tokens,
         context_safety_tokens=settings.llm_context_safety_tokens,
     )

@@ -18,6 +18,8 @@ from app.cowork_contracts import (
 )
 from app.cowork_contracts import (
     ApprovalRuleRecord,
+    QueuedMessageDelivery,
+    SteeringSource,
 )
 from app.cowork_contracts import (
     InboxRecord as InboxRecord,
@@ -56,10 +58,37 @@ async def enqueue_steering(
     run_id: UUID,
     conversation_id: UUID,
     content: str,
+    source: SteeringSource = "unknown",
+    source_wake_id: UUID | None = None,
 ) -> SteeringRecord:
     store = cowork_store()
     return await store.enqueue_steering(
-        run_id=run_id, conversation_id=conversation_id, content=content
+        run_id=run_id,
+        conversation_id=conversation_id,
+        content=content,
+        source=source,
+        source_wake_id=source_wake_id,
+    )
+
+
+async def enqueue_queued_message(
+    session: AsyncSession,
+    *,
+    run_id: UUID,
+    conversation_id: UUID,
+    content: str,
+    source: SteeringSource,
+    delivery: QueuedMessageDelivery,
+    source_wake_id: UUID | None = None,
+) -> SteeringRecord:
+    del session
+    return await cowork_store().enqueue_queued_message(
+        run_id=run_id,
+        conversation_id=conversation_id,
+        content=content,
+        source=source,
+        delivery=delivery,
+        source_wake_id=source_wake_id,
     )
 
 
@@ -68,6 +97,16 @@ async def consume_pending_steering(session: AsyncSession, *, run_id: UUID) -> li
 
     store = cowork_store()
     return await store.consume_pending_steering(run_id=run_id)
+
+
+async def claim_follow_up_or_seal(
+    session: AsyncSession,
+    *,
+    run_id: UUID,
+    worker_id: str,
+) -> list[SteeringRecord]:
+    del session
+    return await cowork_store().claim_follow_up_or_seal(run_id=run_id, worker_id=worker_id)
 
 
 async def create_inbox_item(
@@ -249,6 +288,8 @@ async def _remember_approval(
 
     if item.kind not in {"shell_approval", "external_approval"}:
         raise ValueError("这类请求不支持常驻授权")
+    if item.request.get("human_only") is True:
+        raise ValueError("这项受保护动作只能逐次人工批准，不能创建常驻授权")
     if remember == "command":
         pattern = item.request.get("standing_argv_pattern")
         if not isinstance(pattern, str) or not pattern:

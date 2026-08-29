@@ -39,6 +39,21 @@ def test_entries_with_shell_operators_are_rejected_with_a_reason(tmp_path: Path)
     assert "操作符" in allowlist.rejected[0][1]
 
 
+def test_workspace_prefixes_reject_nested_executors_and_inline_code(tmp_path: Path) -> None:
+    _write_config(
+        tmp_path,
+        '[shell]\nallow = ["python", "python -c print(1)", "env", "find . -delete"]\n',
+    )
+
+    allowlist = read_workspace_allowlist(tmp_path)
+
+    assert allowlist.entries == ("python",)
+    assert len(allowlist.rejected) == 3
+    assert any("内联代码" in reason for _, reason in allowlist.rejected)
+    assert any("另一个程序" in reason for _, reason in allowlist.rejected)
+    assert any("删除文件" in reason for _, reason in allowlist.rejected)
+
+
 def test_the_entry_count_is_capped(tmp_path: Path) -> None:
     """没有上限的话，一份被污染的配置可以把白名单撑成"什么都放行"。"""
 
@@ -100,7 +115,9 @@ async def test_a_declared_command_does_nothing_until_the_user_trusts_the_directo
         )
         == "npm test"
     )
-    # 没声明过的命令不沾光。
+    # 信任绑定用户当时看见的 policy 内容；仓库更新后不能继承旧信任。
+    _write_config(Path(root.canonical_path), '[shell]\nallow = ["npm publish"]\n')
+    assert not await is_workspace_trusted(db_session, canonical_path=root.canonical_path)
     assert (
         await workspace_allows_command(
             db_session,
@@ -110,13 +127,34 @@ async def test_a_declared_command_does_nothing_until_the_user_trusts_the_directo
             has_operators=False,
         )
     ) is None
+    await set_workspace_trust(db_session, canonical_path=root.canonical_path, trusted=True)
+    assert (
+        await workspace_allows_command(
+            db_session,
+            conversation_id=conversation_id,
+            cwd=Path(root.canonical_path),
+            argv=("npm", "publish"),
+            has_operators=False,
+        )
+        == "npm publish"
+    )
+    # 没声明过的命令不沾光。
+    assert (
+        await workspace_allows_command(
+            db_session,
+            conversation_id=conversation_id,
+            cwd=Path(root.canonical_path),
+            argv=("npm", "install"),
+            has_operators=False,
+        )
+    ) is None
     # 带操作符的命令即使前缀命中也不放行。
     assert (
         await workspace_allows_command(
             db_session,
             conversation_id=conversation_id,
             cwd=Path(root.canonical_path),
-            argv=("npm", "test"),
+            argv=("npm", "publish"),
             has_operators=True,
         )
     ) is None

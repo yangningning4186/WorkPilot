@@ -76,6 +76,40 @@ def test_job_is_idempotent_per_run_and_carries_its_own_source(tmp_path: Path) ->
     # 重复入队不能改写来源快照，也不能把重试计数清零。
     assert second.goal == "整理预算并输出报告"
     assert second.successful_tools == ["read_text_file", "create_artifact"]
+    # 没有 registry 风险快照的旧调用方 fail closed，不能把未知工具当成可自动晋升。
+    assert second.review_required_tools == ("read_text_file", "create_artifact")
+
+
+def test_job_persists_an_explicit_read_only_promotion_snapshot(tmp_path: Path) -> None:
+    job = schedule_skill_distillation(
+        tmp_path,
+        run_id=uuid7(),
+        goal="读取报告",
+        final_message="已读取",
+        successful_tools=["read_file"],
+        review_required_tools=[],
+    )
+
+    assert job is not None
+    assert job.review_required_tools == ()
+
+
+def test_job_rejects_sensitive_source_without_persisting_raw_text(tmp_path: Path) -> None:
+    run_id = uuid7()
+    assert (
+        schedule_skill_distillation(
+            tmp_path,
+            run_id=run_id,
+            goal="把结果发给 alice@example.com",
+            final_message="access_token=top-secret-value",
+            successful_tools=["read_text_file"],
+        )
+        is None
+    )
+    archived = (tmp_path / ".queue" / f"{run_id}.failed.json").read_text(encoding="utf-8")
+    assert "alice@example.com" not in archived
+    assert "top-secret-value" not in archived
+    assert "source_rejected:" in archived
 
 
 def test_lease_blocks_a_second_worker_until_it_expires(tmp_path: Path) -> None:
@@ -126,6 +160,10 @@ def test_exhausted_job_is_archived_instead_of_blocking_the_queue(tmp_path: Path)
             path.write_text(json.dumps(payload))
     assert not (tmp_path / ".queue" / f"{run_id}.json").exists()
     assert (tmp_path / ".queue" / f"{run_id}.failed.json").exists()
+    archived = json.loads((tmp_path / ".queue" / f"{run_id}.failed.json").read_text())
+    assert archived["goal"] == ""
+    assert archived["final_message"] == ""
+    assert archived["successful_tools"] == []
     assert list_dispatchable_skill_jobs(tmp_path, max_attempts=2, lease_s=300) == []
     # 留档的失败作业不会被下一次完成重新入队，否则它会永远重跑。
     assert (

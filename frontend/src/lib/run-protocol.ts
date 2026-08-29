@@ -5,6 +5,10 @@
  */
 
 export type RunEventType =
+  | "agent.start"
+  | "agent.end"
+  | "turn.start"
+  | "turn.end"
   | "message.start"
   | "message.delta"
   // 终态正文的原子替换，用于对齐流式显示与落盘消息。
@@ -20,7 +24,10 @@ export type RunEventType =
   | "message.done"
   | "plan"
   | "step.update"
+  // 模型仍在拼装 tool call；只携带安全元数据，不包含可能有正文/凭据的参数片段。
+  | "tool.prepare"
   | "tool.start"
+  | "tool.update"
   | "tool.result"
   | "tool.error"
   | "context.compacted"
@@ -33,7 +40,12 @@ export type RunEventType =
   | "subagent.progress"
   | "team.created"
   | "team.worker.started"
+  | "team.pause"
+  | "team.resume"
+  | "team.archive"
+  | "team.revoke_write_delegation"
   | "board.task.created"
+  | "board.task.assigned"
   | "board.task.review"
   | "board.task.failed"
   | "board.task.reviewed"
@@ -41,10 +53,15 @@ export type RunEventType =
   | "team.summary"
   | "steering.queued"
   | "steering.applied"
+  | "queue.message.queued"
+  | "queue.message.applied"
+  | "queue.message.cancelled"
   | "interrupt"
   // 免审批放行：会话处于 auto 档、命中常驻规则、或仓库白名单 + 目录信任同时成立。
   // 必须在时间线上看得见，否则用户只会看到一条命令凭空执行了。
   | "approval.waived"
+  | "approval.semantic_review"
+  | "cowork.persona.reselected"
   | "run.sleeping"
   | "interaction.resolved"
   | "artifact"
@@ -79,6 +96,38 @@ export interface MessageStartPayload {
   message_id: string;
 }
 
+export interface AgentLifecyclePayload {
+  workflow_type?: string;
+  status?: string;
+  worker_id?: string;
+}
+
+export interface TurnLifecyclePayload {
+  turn_id: string;
+  iteration: number;
+  recovery: number;
+  status: "running" | "completed" | "failed" | "cancelled";
+  stop_reason?: string;
+  model?: string;
+  provider?: string;
+  tool_call_count?: number;
+}
+
+export interface ToolUpdatePayload {
+  step_id: string;
+  tool_call_id: string;
+  tool: string;
+  update_type: string;
+  update: Record<string, unknown>;
+}
+
+export interface ToolPreparePayload {
+  tool_call_index: number;
+  tool_call_id: string | null;
+  tool: string | null;
+  arguments_received_chars: number;
+}
+
 export interface MessageDeltaPayload {
   text: string;
 }
@@ -110,6 +159,52 @@ export interface ErrorPayload {
   user_message: string;
   retryable: boolean;
   code: string;
+}
+
+export interface CitationValidationFailedPayload {
+  attempt: number;
+  errors: string[];
+}
+
+export interface SteeringQueuedPayload {
+  message_id: string;
+  message: string;
+}
+
+export interface SteeringAppliedPayload {
+  message_ids: string[];
+  count: number;
+}
+
+export type QueuedMessageDelivery = "steer" | "follow_up" | "next_run";
+export type QueuedMessageStatus = "pending" | "ready" | "consumed" | "cancelled";
+
+export interface QueuedMessageResponse {
+  message_id: string;
+  run_id: string;
+  conversation_id: string;
+  message: string;
+  requested_delivery: QueuedMessageDelivery;
+  delivery: QueuedMessageDelivery;
+  status: QueuedMessageStatus;
+}
+
+export interface QueueMessageQueuedPayload {
+  message_id: string;
+  message: string;
+  requested_delivery: QueuedMessageDelivery;
+  delivery: QueuedMessageDelivery;
+  status: QueuedMessageStatus;
+}
+
+export interface QueueMessageAppliedPayload {
+  message_ids: string[];
+  count: number;
+  delivery: QueuedMessageDelivery;
+}
+
+export interface QueueMessageCancelledPayload {
+  message_id: string;
 }
 
 export type AgentStepStatus = "pending" | "running" | "done" | "failed" | "skipped";
@@ -180,6 +275,8 @@ export interface ToolEventPayload {
   effect_ref?: string | null;
   authorization_receipt?: Record<string, unknown> | null;
   activity?: ToolActivityPayload;
+  usage?: { input_tokens: number; output_tokens: number };
+  terminate?: boolean;
 }
 
 export interface ContextCompactedPayload {
@@ -187,9 +284,17 @@ export interface ContextCompactedPayload {
   mode: "summary" | "summary_fallback" | "trim";
   revision: number;
   summary_upto: number;
+  turn_prefix_upto: number;
   archived_messages: number;
   before_tokens: number;
   after_tokens: number;
+  /** 触发判定所用的上下文量；可能来自 provider usage，而非完整历史估算。 */
+  trigger_tokens: number;
+  trigger_source: "provider_usage" | "estimate";
+}
+
+export interface RuntimeAuditPayload {
+  [key: string]: unknown;
 }
 
 export interface InterruptPayload {
@@ -293,13 +398,11 @@ export interface MemorySavedPayload {
     id: string;
     scope: "global" | "workspace" | "conversation";
     key: string | null;
-    content: string;
-    source: "agent" | "user";
     workspace_path: string | null;
     forgotten: boolean;
     updated_at: string;
   };
-  previous_content: string | null;
+  previous_memory_id: string | null;
 }
 
 /**
@@ -406,34 +509,63 @@ export interface RunDonePayload {
   status?: "done" | "partial" | "failed" | "cancelled" | "budget_exceeded";
 }
 
-export type RunEventData =
-  | MessageStartPayload
-  | MessageDeltaPayload
-  | MessageSnapshotPayload
-  | MessageReasoningPayload
-  | CitationPayload
-  | MessageDonePayload
-  | PlanPayload
-  | StepUpdatePayload
-  | ToolEventPayload
-  | ContextCompactedPayload
-  | InterruptPayload
-  | ApprovalWaivedPayload
-  | InteractionResolvedPayload
-  | ArtifactPayload
-  | TodoUpdatePayload
-  | MemorySavedPayload
-  | ConversationTitlePayload
-  | ReadingGotoPayload
-  | ReadingAnnotatedPayload
-  | SubagentProgressPayload
-  | TeamCreatedPayload
-  | TeamWorkerStartedPayload
-  | BoardTaskPayload
-  | TeamSummaryPayload
-  | RunSleepingPayload
-  | RunDonePayload
-  | ErrorPayload;
+export interface RunEventPayloadMap {
+  "agent.start": AgentLifecyclePayload;
+  "agent.end": AgentLifecyclePayload;
+  "turn.start": TurnLifecyclePayload;
+  "turn.end": TurnLifecyclePayload;
+  "message.start": MessageStartPayload;
+  "message.delta": MessageDeltaPayload;
+  "message.snapshot": MessageSnapshotPayload;
+  "message.reset": RuntimeAuditPayload;
+  "message.reasoning": MessageReasoningPayload;
+  citation: CitationPayload;
+  "citation.validation_failed": CitationValidationFailedPayload;
+  "message.done": MessageDonePayload;
+  plan: PlanPayload;
+  "step.update": StepUpdatePayload;
+  "tool.prepare": ToolPreparePayload;
+  "tool.start": ToolEventPayload;
+  "tool.update": ToolUpdatePayload;
+  "tool.result": ToolEventPayload;
+  "tool.error": ToolEventPayload;
+  "context.compacted": ContextCompactedPayload;
+  "todo.update": TodoUpdatePayload;
+  "memory.saved": MemorySavedPayload;
+  "conversation.title": ConversationTitlePayload;
+  "reading.goto": ReadingGotoPayload;
+  "reading.annotated": ReadingAnnotatedPayload;
+  "subagent.progress": SubagentProgressPayload;
+  "team.created": TeamCreatedPayload;
+  "team.worker.started": TeamWorkerStartedPayload;
+  "team.pause": RuntimeAuditPayload;
+  "team.resume": RuntimeAuditPayload;
+  "team.archive": RuntimeAuditPayload;
+  "team.revoke_write_delegation": RuntimeAuditPayload;
+  "board.task.created": BoardTaskPayload;
+  "board.task.assigned": BoardTaskPayload;
+  "board.task.review": BoardTaskPayload;
+  "board.task.failed": BoardTaskPayload;
+  "board.task.reviewed": BoardTaskPayload;
+  "board.task.resolved": BoardTaskPayload;
+  "team.summary": TeamSummaryPayload;
+  "steering.queued": SteeringQueuedPayload;
+  "steering.applied": SteeringAppliedPayload;
+  "queue.message.queued": QueueMessageQueuedPayload;
+  "queue.message.applied": QueueMessageAppliedPayload;
+  "queue.message.cancelled": QueueMessageCancelledPayload;
+  interrupt: InterruptPayload;
+  "approval.waived": ApprovalWaivedPayload;
+  "approval.semantic_review": RuntimeAuditPayload;
+  "cowork.persona.reselected": RuntimeAuditPayload;
+  "run.sleeping": RunSleepingPayload;
+  "interaction.resolved": InteractionResolvedPayload;
+  artifact: ArtifactPayload;
+  "run.done": RunDonePayload;
+  error: ErrorPayload;
+}
+
+export type RunEventData = RunEventPayloadMap[RunEventType];
 
 /**
  * SSE data: 字段里的信封。
@@ -441,15 +573,20 @@ export type RunEventData =
  * seq 是字符串——后端是 BIGINT，直接当 number 用会在 2^53 之后丢精度。
  * 所有比较都要走 BigInt，不要 parseInt。
  */
-export interface StreamEnvelope<T extends RunEventData = RunEventData> {
+interface StreamEnvelopeBase {
   id: string;
   run_id: string;
   seq: string;
-  type: RunEventType;
-  data: T;
   /** 后端持久化事件时间；旧 sidecar 可能不带，因此消费端要保留兼容回退。 */
   created_at?: string;
 }
+
+export type StreamEnvelope = {
+  [Type in RunEventType]: StreamEnvelopeBase & {
+    type: Type;
+    data: RunEventPayloadMap[Type];
+  };
+}[RunEventType];
 
 export function envelopeSeq(envelope: StreamEnvelope): bigint {
   return BigInt(envelope.seq);

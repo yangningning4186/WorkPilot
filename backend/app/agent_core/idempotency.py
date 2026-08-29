@@ -12,6 +12,13 @@ class InvocationInFlightError(RuntimeError):
     """相同副作用仍由另一个未过期租约持有。"""
 
 
+class InvocationOutcomeUnknownError(RuntimeError):
+    """A prior attempt may have taken effect and therefore cannot be automatically replayed."""
+
+    def __init__(self) -> None:
+        super().__init__("先前外部动作的结果未知，已阻止自动重试；请先核实目标系统状态")
+
+
 def canonical_json(value: object) -> str:
     return json.dumps(
         value,

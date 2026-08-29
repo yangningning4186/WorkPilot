@@ -7,8 +7,10 @@ WAL 允许 SSE/客户端读取与 worker 写入并行，busy_timeout 处理极�
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import re
 import sqlite3
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -28,10 +30,20 @@ from app.agent_core.contracts import (
 from app.agent_core.errors import RunNotFoundError
 from app.agent_core.idempotency import (
     InvocationInFlightError,
+    InvocationOutcomeUnknownError,
     canonical_json,
     invocation_identity,
 )
+from app.agent_core.session_entries import SessionEntry, SessionEntryKind
+from app.agent_core.session_records import (
+    SessionRecord,
+    SessionRecordKind,
+    SessionRecordPhase,
+)
 from app.cowork_contracts import (
+    DEFAULT_TEAM_BUDGET_LIMITS,
+    MAX_STANDING_RULES_CHARS,
+    MEMORY_JOB_ERROR_MAX_CHARS,
     AnnotationColor,
     ApprovalMatchKind,
     ApprovalMode,
@@ -44,28 +56,48 @@ from app.cowork_contracts import (
     CapabilityGrantRecord,
     ChannelSubscriptionRecord,
     ConversationBusyError,
+    ConversationMemoryPolicy,
     ConversationNotFoundError,
     CoworkAttachmentError,
     CoworkAttachmentRecord,
+    CoworkMemoryMutation,
     CoworkMemoryRecord,
     InboxBindingRecord,
     InboxRecord,
     MemoryExtractionJob,
     MemoryNotFoundError,
+    MemoryPolicyConflictError,
+    MemoryPolicyMode,
+    MemoryPolicySnapshot,
+    OwnerMemoryPolicy,
     PathAuthorization,
     PinnedMemoryError,
+    QueuedMessageDelivery,
+    QueuedMessageStatus,
     ReadingAnnotationRecord,
     ScheduleRecord,
     ScheduleView,
     SessionRootNotFoundError,
     SessionRootRecord,
     SteeringRecord,
+    SteeringSource,
+    TeamBudgetDimension,
+    TeamBudgetExceededError,
+    TeamBudgetReservationRecord,
+    TeamEventCursorRecord,
+    TeamEventIntegrityError,
+    TeamEventRecord,
+    TeamEventVerification,
+    TeamProjectionSummaryRecord,
     TeamRecord,
+    TeamWakeDeliveryRecord,
     TeamWorkerRecord,
     TeamWorkerSessionRecord,
+    TeamWorkerToolAttemptRecord,
     ThreadSessionRecord,
     UnattendedInboxRecord,
     UnroutedRecord,
+    normalize_memory_job_result,
 )
 from app.cowork_policy import (
     ALL_CAPABILITIES,
@@ -78,9 +110,33 @@ from app.cowork_policy import (
     normalize_network_scope,
     resolve_target_within_root,
 )
-from app.cowork_store.base import StoredCheckpoint
+from app.cowork_store.base import SessionLaneNavigation, StoredCheckpoint
+from app.cowork_store.run_config import merge_cowork_state, split_cowork_state
+from app.run_events import RunEventDraft, RunEventType, run_event
+from app.security.redaction import redact_persisted_tool_value
 
 T = TypeVar("T")
+
+_TEAM_EVENT_GENESIS = "0" * 64
+_TEAM_EVENT_SCHEMA_VERSION = 1
+_TEAM_WAKE_WORKER_EVENTS = frozenset({"board.task.assigned", "board.task.rework_requested"})
+_TEAM_WAKE_LEAD_EVENTS = frozenset(
+    {"board.task.submitted", "board.task.blocked", "board.task.failed"}
+)
+_TEAM_WAKE_CONSUMER = "team-wake-dispatcher"
+_TEAM_TOOL_ATTEMPT_RESULT_MAX_CHARS = 22_000
+_TEAM_TOOL_ATTEMPT_RECEIPT_MAX_CHARS = 64_000
+_TEAM_WORKER_LAST_ERROR_MAX_CHARS = 500
+_CURRENT_SCHEMA_VERSION = 26
+_MEMORY_JOB_BARE_CREDENTIALS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"(?<![A-Fa-f0-9])[A-Fa-f0-9]{32,}(?![A-Fa-f0-9])",
+        r"(?<![A-Za-z0-9+/_=-])(?=[A-Za-z0-9+/_=-]{32,}(?![A-Za-z0-9+/_=-]))"
+        r"(?=[A-Za-z0-9+/_=-]*[A-Z])(?=[A-Za-z0-9+/_=-]*[a-z])"
+        r"(?=[A-Za-z0-9+/_=-]*[0-9])[A-Za-z0-9+/_-]{32,}={0,2}",
+    )
+)
 
 _SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -105,6 +161,13 @@ CREATE TABLE IF NOT EXISTS conversations (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS cowork_conversation_skill_mutes (
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    skill_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, skill_name)
+);
+
 CREATE TABLE IF NOT EXISTS conversation_message_index (
     record_id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -119,6 +182,30 @@ CREATE TABLE IF NOT EXISTS conversation_message_index (
     content_preview TEXT,
     created_at TEXT NOT NULL,
     UNIQUE (conversation_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS session_entries (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    parent_id TEXT REFERENCES session_entries(id) ON DELETE RESTRICT,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN (
+        'message','model_change','thinking_level_change','active_tools_change',
+        'compaction','branch_summary','custom'
+    )),
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (conversation_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_session_entries_conversation
+ON session_entries(conversation_id, seq);
+
+CREATE TABLE IF NOT EXISTS session_lanes (
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    head_entry_id TEXT REFERENCES session_entries(id) ON DELETE SET NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, name)
 );
 
 CREATE TABLE IF NOT EXISTS agent_runs (
@@ -144,6 +231,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     schedule_id TEXT,
     unattended INTEGER NOT NULL DEFAULT 0 CHECK (unattended IN (0, 1)),
     run_trigger TEXT NOT NULL DEFAULT 'manual',
+    source_wake_id TEXT UNIQUE,
     retrieval_top_k INTEGER NOT NULL DEFAULT 5 CHECK (retrieval_top_k BETWEEN 1 AND 20),
     recovery_count INTEGER NOT NULL DEFAULT 0,
     started_at TEXT,
@@ -164,6 +252,25 @@ CREATE INDEX IF NOT EXISTS idx_local_conversations_recent
 ON conversations(archived_at, updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_local_messages_run_status
 ON conversation_message_index(run_id, status, seq);
+
+CREATE TABLE IF NOT EXISTS session_records (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (
+        kind IN ('step_attempt','queue_event','abort_requested','harness_action')
+    ),
+    operation_id TEXT NOT NULL,
+    phase TEXT NOT NULL CHECK (
+        phase IN ('started','completed','failed','enqueued','consumed','cancelled','requested')
+    ),
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (run_id, seq),
+    UNIQUE (run_id, operation_id, phase)
+);
+CREATE INDEX IF NOT EXISTS idx_session_records_run
+ON session_records(run_id, seq);
 
 CREATE TABLE IF NOT EXISTS run_events (
     run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
@@ -215,6 +322,14 @@ CREATE TABLE IF NOT EXISTS agent_checkpoints (
 );
 CREATE INDEX IF NOT EXISTS idx_local_checkpoints_latest
 ON agent_checkpoints(run_id, created_at DESC, checkpoint_id DESC);
+
+-- RunConfig 与每轮变化的 checkpoint 分开：稳定 prompt 前缀和 run 入口事实只存一份。
+CREATE TABLE IF NOT EXISTS cowork_run_configs (
+    run_id TEXT PRIMARY KEY REFERENCES agent_runs(id) ON DELETE CASCADE,
+    config TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS tool_invocations (
     idempotency_key TEXT PRIMARY KEY,
@@ -326,6 +441,18 @@ CREATE TABLE IF NOT EXISTS cowork_inbox_bindings (
     CHECK ((platform IS NULL) = (chat_id IS NULL))
 );
 
+CREATE TABLE IF NOT EXISTS cowork_messaging_event_receipts (
+    -- event_key 是 platform + NUL + 上游 event_id 的 SHA-256；不保存原始 id 或 payload。
+    event_key TEXT PRIMARY KEY,
+    platform TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('claimed', 'completed')),
+    received_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_local_messaging_event_receipts_retention
+ON cowork_messaging_event_receipts(received_at);
+
 CREATE TABLE IF NOT EXISTS cowork_channel_subscriptions (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -363,6 +490,8 @@ CREATE INDEX IF NOT EXISTS idx_local_unrouted_recent ON cowork_unrouted(created_
 CREATE TABLE IF NOT EXISTS cowork_workspace_trust (
     -- 主键是规范化路径而不是会话：用户信任的是"这个目录"，不是"这一次对话里的这个目录"。
     canonical_path TEXT PRIMARY KEY,
+    -- 信任同时绑定用户当时看见的 policy 内容；NULL 只可能来自旧库并按未信任处理。
+    policy_sha256 TEXT,
     trusted_at TEXT NOT NULL,
     revoked_at TEXT
 );
@@ -417,6 +546,20 @@ CREATE TABLE IF NOT EXISTS cowork_teams (
     status TEXT NOT NULL DEFAULT 'active'
         CHECK (status IN ('active','paused','archived')),
     note TEXT NOT NULL DEFAULT '',
+    write_delegation_scope TEXT NOT NULL DEFAULT '[]',
+    write_delegation_receipt TEXT,
+    pause_reason TEXT,
+    budget_max_model_calls INTEGER NOT NULL DEFAULT 96 CHECK (budget_max_model_calls >= 5),
+    budget_max_tool_calls INTEGER NOT NULL DEFAULT 256 CHECK (budget_max_tool_calls >= 0),
+    budget_max_wall_ms INTEGER NOT NULL DEFAULT 3600000 CHECK (budget_max_wall_ms >= 30000),
+    budget_max_assignments INTEGER NOT NULL DEFAULT 24 CHECK (budget_max_assignments >= 1),
+    budget_used_model_calls INTEGER NOT NULL DEFAULT 0 CHECK (budget_used_model_calls >= 0),
+    budget_used_tool_calls INTEGER NOT NULL DEFAULT 0 CHECK (budget_used_tool_calls >= 0),
+    budget_used_wall_ms INTEGER NOT NULL DEFAULT 0 CHECK (budget_used_wall_ms >= 0),
+    budget_used_assignments INTEGER NOT NULL DEFAULT 0 CHECK (budget_used_assignments >= 0),
+    budget_reserved_model_calls INTEGER NOT NULL DEFAULT 0 CHECK (budget_reserved_model_calls >= 0),
+    budget_reserved_tool_calls INTEGER NOT NULL DEFAULT 0 CHECK (budget_reserved_tool_calls >= 0),
+    budget_reserved_wall_ms INTEGER NOT NULL DEFAULT 0 CHECK (budget_reserved_wall_ms >= 0),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -451,6 +594,7 @@ CREATE TABLE IF NOT EXISTS cowork_board_tasks (
     description TEXT NOT NULL DEFAULT '',
     acceptance_criteria TEXT NOT NULL,
     resource_scope TEXT NOT NULL DEFAULT '[]',
+    scope_receipt TEXT,
     status TEXT NOT NULL DEFAULT 'open'
         CHECK (status IN ('open','in_progress','blocked','review','done','cancelled')),
     assignee_worker_id TEXT REFERENCES cowork_team_workers(id) ON DELETE SET NULL,
@@ -467,14 +611,175 @@ CREATE TABLE IF NOT EXISTS cowork_board_tasks (
 CREATE INDEX IF NOT EXISTS idx_local_board_tasks_team_status
 ON cowork_board_tasks(team_id, status, created_at, id);
 
+CREATE TABLE IF NOT EXISTS cowork_team_budget_reservations (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL REFERENCES cowork_teams(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES cowork_board_tasks(id) ON DELETE CASCADE,
+    assignment_call_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','settled')),
+    reserved_model_calls INTEGER NOT NULL CHECK (reserved_model_calls >= 0),
+    reserved_tool_calls INTEGER NOT NULL CHECK (reserved_tool_calls >= 0),
+    reserved_wall_ms INTEGER NOT NULL CHECK (reserved_wall_ms >= 0),
+    used_model_calls INTEGER NOT NULL DEFAULT 0 CHECK (used_model_calls >= 0),
+    used_tool_calls INTEGER NOT NULL DEFAULT 0 CHECK (used_tool_calls >= 0),
+    used_wall_ms INTEGER NOT NULL DEFAULT 0 CHECK (used_wall_ms >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    settled_at TEXT,
+    UNIQUE (team_id, task_id, assignment_call_id)
+);
+CREATE INDEX IF NOT EXISTS idx_local_team_budget_active
+ON cowork_team_budget_reservations(team_id, status);
+
+CREATE TABLE IF NOT EXISTS cowork_team_worker_tool_attempts (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL REFERENCES cowork_teams(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL REFERENCES cowork_team_worker_sessions(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES cowork_board_tasks(id) ON DELETE CASCADE,
+    tool_call_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    effect TEXT NOT NULL,
+    retry_safe INTEGER NOT NULL CHECK (retry_safe IN (0, 1)),
+    status TEXT NOT NULL CHECK (status IN ('in_flight','succeeded','failed','unknown')),
+    arguments_sha256 TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 1 CHECK (attempt_count >= 1),
+    result TEXT,
+    effect_ref TEXT,
+    authorization_receipt TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    updated_at TEXT NOT NULL,
+    UNIQUE (session_id, task_id, tool_call_id)
+);
+CREATE INDEX IF NOT EXISTS idx_local_team_tool_attempts_task
+ON cowork_team_worker_tool_attempts(task_id, started_at);
+
+-- Team/Board 的写模型仍由上面的 projection 表承载；这里是同事务追加的不可变事实流。
+-- 独立 head 能识别只删除尾事件这种单靠 hash linkage 无法发现的篡改。
+CREATE TABLE IF NOT EXISTS cowork_team_events (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    event_type TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    cause TEXT NOT NULL,
+    parent_event_id TEXT,
+    payload TEXT NOT NULL,
+    prev_hash TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (team_id, sequence),
+    UNIQUE (team_id, hash)
+);
+CREATE INDEX IF NOT EXISTS idx_local_team_events_team_sequence
+ON cowork_team_events(team_id, sequence);
+
+CREATE TABLE IF NOT EXISTS cowork_team_event_heads (
+    team_id TEXT PRIMARY KEY,
+    last_sequence INTEGER NOT NULL CHECK (last_sequence > 0),
+    last_event_id TEXT NOT NULL,
+    head_hash TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cowork_team_event_cursors (
+    team_id TEXT NOT NULL,
+    consumer TEXT NOT NULL,
+    last_sequence INTEGER NOT NULL CHECK (last_sequence >= 0),
+    last_event_hash TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (team_id, consumer)
+);
+
+-- 每个 Team event 都有一条 durable feed 项，保证 cursor 可以无跳号推进；只有固定
+-- allowlist 的行带 lead/worker target，其余行由 dispatcher 持久 ack 为 suppressed。
+CREATE TABLE IF NOT EXISTS cowork_team_wake_outbox (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL REFERENCES cowork_teams(id) ON DELETE CASCADE,
+    event_id TEXT NOT NULL UNIQUE REFERENCES cowork_team_events(id),
+    event_sequence INTEGER NOT NULL CHECK (event_sequence > 0),
+    event_hash TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    target_kind TEXT NOT NULL CHECK (target_kind IN ('none','lead','worker')),
+    target_id TEXT,
+    payload TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','claimed','delivered')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    claim_owner TEXT,
+    claim_until TEXT,
+    validation_outcome TEXT CHECK (validation_outcome IN ('deliver','suppress')),
+    validated_at TEXT,
+    delivery_receipt TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    delivered_at TEXT,
+    UNIQUE (team_id, event_sequence),
+    CHECK ((target_kind = 'none' AND target_id IS NULL)
+           OR (target_kind <> 'none' AND target_id IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_local_team_wake_dispatch
+ON cowork_team_wake_outbox(status, claim_until, team_id, event_sequence);
+
+CREATE TABLE IF NOT EXISTS cowork_team_event_projection_summaries (
+    team_id TEXT PRIMARY KEY,
+    watermark INTEGER NOT NULL CHECK (watermark > 0),
+    head_hash TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    rebuilt_at TEXT NOT NULL
+);
+
+-- Event rows are immutable during normal operation, but an explicit conversation deletion must
+-- also erase privacy-sensitive audit payloads.  The transaction-local guard is populated only by
+-- delete_conversation while holding BEGIN IMMEDIATE, then removed before commit.
+CREATE TABLE IF NOT EXISTS cowork_team_event_purge_guards (
+    team_id TEXT PRIMARY KEY
+);
+
+DROP TRIGGER IF EXISTS trg_local_team_events_no_update;
+CREATE TRIGGER trg_local_team_events_no_update
+BEFORE UPDATE ON cowork_team_events
+BEGIN
+    SELECT RAISE(ABORT, 'cowork_team_events is append-only');
+END;
+
+DROP TRIGGER IF EXISTS trg_local_team_events_no_delete;
+CREATE TRIGGER trg_local_team_events_no_delete
+BEFORE DELETE ON cowork_team_events
+WHEN NOT EXISTS (
+    SELECT 1 FROM cowork_team_event_purge_guards AS guards
+    WHERE guards.team_id = OLD.team_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'cowork_team_events is append-only');
+END;
+
 CREATE TABLE IF NOT EXISTS cowork_steering_messages (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     content TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'unknown' CHECK (
+        source IN ('local_owner','external_inbound','runtime','unknown')
+    ),
+    source_wake_id TEXT UNIQUE,
+    requested_delivery TEXT NOT NULL DEFAULT 'steer' CHECK (
+        requested_delivery IN ('steer','follow_up','next_run')
+    ),
+    delivery TEXT NOT NULL DEFAULT 'steer' CHECK (
+        delivery IN ('steer','follow_up','next_run')
+    ),
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TEXT NOT NULL,
-    consumed_at TEXT
+    consumed_at TEXT,
+    cancelled_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS cowork_run_queue_state (
+    run_id TEXT PRIMARY KEY REFERENCES agent_runs(id) ON DELETE CASCADE,
+    follow_up_open INTEGER NOT NULL DEFAULT 1 CHECK (follow_up_open IN (0,1)),
+    sealed_at TEXT
 );
 
 -- 持久化批注。锚在 material_id（文件内容哈希）上而不是路径：文件改名后批注还在，
@@ -529,14 +834,37 @@ CREATE TABLE IF NOT EXISTS cowork_memories (
         OR (scope = 'conversation' AND conversation_id IS NOT NULL AND workspace_path IS NULL)
     )
 );
+
+-- Memory policy 是本机单 owner 控制面，和 learned memories 独立。singleton key 的
+-- CHECK 防止未来误插第二份“全局”策略；常驻规则只存 owner 文本，不给 Agent 写入口。
+CREATE TABLE IF NOT EXISTS cowork_memory_owner_policy (
+    singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+    save_enabled INTEGER NOT NULL DEFAULT 1 CHECK (save_enabled IN (0,1)),
+    recall_enabled INTEGER NOT NULL DEFAULT 1 CHECK (recall_enabled IN (0,1)),
+    standing_rules TEXT NOT NULL DEFAULT ''
+        CHECK (length(standing_rules) <= 20000),
+    revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cowork_memory_conversation_policies (
+    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    save_mode TEXT NOT NULL DEFAULT 'inherit'
+        CHECK (save_mode IN ('inherit','on','off')),
+    recall_mode TEXT NOT NULL DEFAULT 'inherit'
+        CHECK (recall_mode IN ('inherit','on','off')),
+    revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    updated_at TEXT NOT NULL
+);
+
 -- 记忆抽取作业。和记忆写在同一个库里，所以"提炼出一条记忆"与"把作业标记完成"
 -- 可以在同一个事务里，不会出现记了却没结算、或结算了没记的半截状态。
--- 来源快照（消息内容、会话、时间）随作业一起存：claim 时不必回查会话，
--- 也就没有了"作业还在、来源消息已被删除"这一类失败。
+-- 来源快照只保留到作业终态；done/failed 会清空 content。会话删除时作业随 FK 或显式
+-- purge 删除，避免完整用户消息成为孤儿数据。
 CREATE TABLE IF NOT EXISTS memory_extraction_jobs (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL UNIQUE,
-    conversation_id TEXT,
+    conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
     source_message_id TEXT,
     content TEXT NOT NULL,
     source_created_at TEXT NOT NULL,
@@ -547,6 +875,7 @@ CREATE TABLE IF NOT EXISTS memory_extraction_jobs (
     lease_until TEXT,
     available_at TEXT NOT NULL,
     error TEXT,
+    result_json TEXT,
     finished_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -554,7 +883,6 @@ CREATE TABLE IF NOT EXISTS memory_extraction_jobs (
 CREATE INDEX IF NOT EXISTS ix_local_memory_jobs_dispatch
 ON memory_extraction_jobs(available_at, id) WHERE status IN ('queued','running');
 
-PRAGMA user_version = 14;
 """
 
 _MEMORY_INDEX_SCHEMA = """
@@ -580,6 +908,66 @@ def _datetime(value: str | None) -> datetime | None:
     return None if value is None else datetime.fromisoformat(value).astimezone(UTC)
 
 
+def _memory_job_retry_error(value: str) -> str:
+    """重试期间保留最小诊断；终态一律改成固定错误码。"""
+
+    redacted = str(redact_persisted_tool_value(value))
+    for pattern in _MEMORY_JOB_BARE_CREDENTIALS:
+        redacted = pattern.sub("<redacted-secret>", redacted)
+    normalized = " ".join(redacted.split())
+    return normalized[:MEMORY_JOB_ERROR_MAX_CHARS] or "memory_extraction_retry_failed"
+
+
+def _json_sha256(value: Any) -> str:
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _team_budget_limits(value: dict[str, int] | None) -> dict[str, int]:
+    limits = {**DEFAULT_TEAM_BUDGET_LIMITS, **(value or {})}
+    required = {"model_calls", "tool_calls", "wall_ms", "assignments"}
+    if set(limits) != required or any(type(limits[key]) is not int for key in required):
+        raise ValueError("Team budget limits 字段无效")
+    if (
+        limits["model_calls"] < 5
+        or limits["tool_calls"] < 0
+        or limits["wall_ms"] < 30_000
+        or limits["assignments"] < 1
+    ):
+        raise ValueError("Team budget limits 低于安全执行下限")
+    return limits
+
+
+def _team_event_hash(
+    *,
+    event_id: str,
+    team_id: str,
+    sequence: int,
+    event_type: str,
+    actor: str,
+    cause: str,
+    parent_event_id: str | None,
+    payload_json: str,
+    prev_hash: str,
+    created_at: str,
+) -> str:
+    envelope = {
+        "schema_version": _TEAM_EVENT_SCHEMA_VERSION,
+        "id": event_id,
+        "team_id": team_id,
+        "sequence": sequence,
+        "event_type": event_type,
+        "actor": actor,
+        "cause": cause,
+        "parent_event_id": parent_event_id,
+        # 保留 canonical JSON 字节串而不是反序列化对象，连同 out-of-band whitespace
+        # 改写也能被识别；正常写入路径始终生成 canonical_json。
+        "payload_json": payload_json,
+        "prev_hash": prev_hash,
+        "created_at": created_at,
+    }
+    return hashlib.sha256(canonical_json(envelope).encode("utf-8")).hexdigest()
+
+
 class SqliteCoworkStore:
     def __init__(self, path: Path, *, busy_timeout_ms: int = 5000) -> None:
         self.path = path.expanduser()
@@ -600,11 +988,15 @@ class SqliteCoworkStore:
         connection = self._connect()
         try:
             database_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if database_version > 14:
+            if database_version > _CURRENT_SCHEMA_VERSION:
                 raise RuntimeError(
-                    f"cowork.db schema v{database_version} 高于当前应用支持的 v14，拒绝降级打开"
+                    f"cowork.db schema v{database_version} 高于当前应用支持的 "
+                    f"v{_CURRENT_SCHEMA_VERSION}，拒绝降级打开"
                 )
             connection.executescript(_SCHEMA)
+            # purge guard 只允许存在于 delete_conversation 的单个写事务内；启动时清掉任何
+            # 异常终止/手工写入留下的 marker，不能把 append-only 例外变成持久能力。
+            connection.execute("DELETE FROM cowork_team_event_purge_guards")
             conversation_columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(conversations)").fetchall()
@@ -652,12 +1044,71 @@ class SqliteCoworkStore:
                 )
             if "wake_at" not in run_columns:
                 connection.execute("ALTER TABLE agent_runs ADD COLUMN wake_at TEXT")
+            if "source_wake_id" not in run_columns:
+                connection.execute("ALTER TABLE agent_runs ADD COLUMN source_wake_id TEXT")
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_local_runs_source_wake "
+                    "ON agent_runs(source_wake_id) WHERE source_wake_id IS NOT NULL"
+                )
+            steering_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(cowork_steering_messages)"
+                ).fetchall()
+            }
+            if "source_wake_id" not in steering_columns:
+                connection.execute(
+                    "ALTER TABLE cowork_steering_messages ADD COLUMN source_wake_id TEXT"
+                )
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_local_steering_source_wake "
+                    "ON cowork_steering_messages(source_wake_id) "
+                    "WHERE source_wake_id IS NOT NULL"
+                )
+            if "source" not in steering_columns:
+                connection.execute(
+                    "ALTER TABLE cowork_steering_messages "
+                    "ADD COLUMN source TEXT NOT NULL DEFAULT 'unknown'"
+                )
+                connection.execute(
+                    "UPDATE cowork_steering_messages SET source = 'runtime' "
+                    "WHERE source_wake_id IS NOT NULL"
+                )
+            if "requested_delivery" not in steering_columns:
+                connection.execute(
+                    "ALTER TABLE cowork_steering_messages "
+                    "ADD COLUMN requested_delivery TEXT NOT NULL DEFAULT 'steer'"
+                )
+            if "delivery" not in steering_columns:
+                connection.execute(
+                    "ALTER TABLE cowork_steering_messages "
+                    "ADD COLUMN delivery TEXT NOT NULL DEFAULT 'steer'"
+                )
+            if "cancelled_at" not in steering_columns:
+                connection.execute(
+                    "ALTER TABLE cowork_steering_messages ADD COLUMN cancelled_at TEXT"
+                )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cowork_queued_messages_dispatch "
+                "ON cowork_steering_messages(delivery, status, created_at, id)"
+            )
             grant_columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(capability_grants)").fetchall()
             }
             if "resource_scope" not in grant_columns:
                 connection.execute("ALTER TABLE capability_grants ADD COLUMN resource_scope TEXT")
+            workspace_trust_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(cowork_workspace_trust)"
+                ).fetchall()
+            }
+            if "policy_sha256" not in workspace_trust_columns:
+                # 旧记录没有证据说明用户看过哪一版 policy；保留行但让 NULL fail closed。
+                connection.execute(
+                    "ALTER TABLE cowork_workspace_trust ADD COLUMN policy_sha256 TEXT"
+                )
             # 旧索引会把同一 capability 的不同网络 origin 错当成一条授权。
             connection.execute("DROP INDEX IF EXISTS uq_local_active_grant")
             connection.execute(
@@ -696,6 +1147,36 @@ class SqliteCoworkStore:
             # 这些索引引用记忆合并后新增的 invalid_at。必须等旧库补完列再创建，
             # 否则 executescript 会先报 no such column，迁移代码永远没有机会执行。
             connection.executescript(_MEMORY_INDEX_SCHEMA)
+            owner_policy_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(cowork_memory_owner_policy)"
+                ).fetchall()
+            }
+            if "revision" not in owner_policy_columns:
+                connection.execute(
+                    "ALTER TABLE cowork_memory_owner_policy "
+                    "ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"
+                )
+            conversation_policy_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(cowork_memory_conversation_policies)"
+                ).fetchall()
+            }
+            if "revision" not in conversation_policy_columns:
+                connection.execute(
+                    "ALTER TABLE cowork_memory_conversation_policies "
+                    "ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"
+                )
+            memory_job_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(memory_extraction_jobs)"
+                ).fetchall()
+            }
+            if "result_json" not in memory_job_columns:
+                connection.execute("ALTER TABLE memory_extraction_jobs ADD COLUMN result_json TEXT")
             board_columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(cowork_board_tasks)").fetchall()
@@ -705,9 +1186,32 @@ class SqliteCoworkStore:
                 ("completion_kind", "TEXT NOT NULL DEFAULT 'pending'"),
                 ("last_rejection_comment", "TEXT"),
                 ("last_error", "TEXT"),
+                ("scope_receipt", "TEXT"),
             ):
                 if column not in board_columns:
                     connection.execute(f"ALTER TABLE cowork_board_tasks ADD COLUMN {column} {ddl}")
+            team_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(cowork_teams)").fetchall()
+            }
+            for column, ddl in (
+                ("write_delegation_scope", "TEXT NOT NULL DEFAULT '[]'"),
+                ("write_delegation_receipt", "TEXT"),
+                ("pause_reason", "TEXT"),
+                ("budget_max_model_calls", "INTEGER NOT NULL DEFAULT 96"),
+                ("budget_max_tool_calls", "INTEGER NOT NULL DEFAULT 256"),
+                ("budget_max_wall_ms", "INTEGER NOT NULL DEFAULT 3600000"),
+                ("budget_max_assignments", "INTEGER NOT NULL DEFAULT 24"),
+                ("budget_used_model_calls", "INTEGER NOT NULL DEFAULT 0"),
+                ("budget_used_tool_calls", "INTEGER NOT NULL DEFAULT 0"),
+                ("budget_used_wall_ms", "INTEGER NOT NULL DEFAULT 0"),
+                ("budget_used_assignments", "INTEGER NOT NULL DEFAULT 0"),
+                ("budget_reserved_model_calls", "INTEGER NOT NULL DEFAULT 0"),
+                ("budget_reserved_tool_calls", "INTEGER NOT NULL DEFAULT 0"),
+                ("budget_reserved_wall_ms", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if column not in team_columns:
+                    connection.execute(f"ALTER TABLE cowork_teams ADD COLUMN {column} {ddl}")
             # v13 及更早没有尝试次数和独立拒绝字段；已有 assignment 至少算一次，open
             # 任务当前的 review_comment 就是最近拒绝原因。只能保守回填可证明的下界，
             # 不能根据消息文本猜历史到底重试过几轮。
@@ -746,7 +1250,26 @@ class SqliteCoworkStore:
                        'initializing','queued','executing','waiting_human','sleeping'
                    )"""
             )
-            connection.execute("PRAGMA user_version = 14")
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._migrate_v26_session_records(connection)
+                self._backfill_team_event_snapshots(connection)
+                self._backfill_team_wake_feed(
+                    connection,
+                    # executescript(_SCHEMA) 在迁移事务前建表。若第一次 v18 数据迁移
+                    # 失败，表会留下但 user_version 仍是 17；重试仍必须把历史 feed
+                    # 当作升级前状态 suppress，不能仅凭表已存在将其重新激活。
+                    suppress_existing=database_version < 18,
+                )
+                if database_version < 18:
+                    self._migrate_v18_team_state(connection)
+                if database_version < 20:
+                    self._migrate_v20_memory_state(connection)
+                connection.execute(f"PRAGMA user_version = {_CURRENT_SCHEMA_VERSION}")
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
         finally:
             connection.close()
         try:
@@ -755,8 +1278,807 @@ class SqliteCoworkStore:
         except PermissionError:  # pragma: no cover - 不支持 chmod 的文件系统
             pass
 
+    @staticmethod
+    def _migrate_v26_session_records(connection: sqlite3.Connection) -> None:
+        schema = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'session_records'"
+        ).fetchone()
+        raw_schema = "" if schema is None else str(schema[0] or "")
+        if schema is None or all(
+            marker in raw_schema for marker in ("queue_event", "harness_action")
+        ):
+            return
+        connection.execute("ALTER TABLE session_records RENAME TO session_records_legacy")
+        connection.execute(
+            """CREATE TABLE session_records (
+                   id TEXT PRIMARY KEY,
+                   run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+                   seq INTEGER NOT NULL,
+                   kind TEXT NOT NULL CHECK (
+                       kind IN (
+                           'step_attempt','queue_event','abort_requested','harness_action'
+                       )
+                   ),
+                   operation_id TEXT NOT NULL,
+                   phase TEXT NOT NULL CHECK (
+                       phase IN (
+                           'started','completed','failed','enqueued','consumed',
+                           'cancelled','requested'
+                       )
+                   ),
+                   payload TEXT NOT NULL,
+                   created_at TEXT NOT NULL,
+                   UNIQUE (run_id, seq),
+                   UNIQUE (run_id, operation_id, phase)
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO session_records(
+                   id, run_id, seq, kind, operation_id, phase, payload, created_at
+               )
+               SELECT id, run_id, seq, kind, operation_id, phase, payload, created_at
+               FROM session_records_legacy"""
+        )
+        connection.execute("DROP TABLE session_records_legacy")
+        connection.execute("CREATE INDEX idx_session_records_run ON session_records(run_id, seq)")
+
     async def close(self) -> None:
         return None
+
+    @staticmethod
+    def _receipt_event_summary(raw_receipt: Any) -> dict[str, Any] | None:
+        if raw_receipt is None:
+            return None
+        receipt = json.loads(str(raw_receipt)) if isinstance(raw_receipt, str) else raw_receipt
+        if not isinstance(receipt, dict):
+            raise ValueError("Team receipt 必须是 JSON object")
+        return {
+            "receipt_id": receipt.get("receipt_id"),
+            "mechanism": receipt.get("mechanism"),
+            "scope_sha256": receipt.get("scope_sha256"),
+            "delegation_receipt_id": receipt.get("delegation_receipt_id"),
+            "receipt_sha256": _json_sha256(receipt),
+        }
+
+    @staticmethod
+    def _team_budget_summary(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "limits": {
+                "model_calls": int(row["budget_max_model_calls"]),
+                "tool_calls": int(row["budget_max_tool_calls"]),
+                "wall_ms": int(row["budget_max_wall_ms"]),
+                "assignments": int(row["budget_max_assignments"]),
+            },
+            "used": {
+                "model_calls": int(row["budget_used_model_calls"]),
+                "tool_calls": int(row["budget_used_tool_calls"]),
+                "wall_ms": int(row["budget_used_wall_ms"]),
+                "assignments": int(row["budget_used_assignments"]),
+            },
+            "reserved": {
+                "model_calls": int(row["budget_reserved_model_calls"]),
+                "tool_calls": int(row["budget_reserved_tool_calls"]),
+                "wall_ms": int(row["budget_reserved_wall_ms"]),
+            },
+        }
+
+    def _team_event_summary(self, row: sqlite3.Row) -> dict[str, Any]:
+        raw_scope = json.loads(str(row["write_delegation_scope"] or "[]"))
+        if not isinstance(raw_scope, list):
+            raise ValueError("Team write_delegation_scope 必须是 JSON array")
+        return {
+            "id": str(row["id"]),
+            "lead_conversation_id": str(row["lead_conversation_id"]),
+            "proposal_call_id": str(row["proposal_call_id"]),
+            "status": str(row["status"]),
+            "pause_reason": row["pause_reason"],
+            "note": str(row["note"]),
+            "write_delegation_scope": raw_scope,
+            "write_delegation_receipt": self._receipt_event_summary(
+                row["write_delegation_receipt"]
+            ),
+            "budget": self._team_budget_summary(row),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+        }
+
+    def _team_event_projection_snapshot(
+        self, connection: sqlite3.Connection, team_row: sqlite3.Row
+    ) -> dict[str, Any]:
+        team_id = str(team_row["id"])
+        raw_scope = json.loads(str(team_row["write_delegation_scope"] or "[]"))
+        if not isinstance(raw_scope, list):
+            raise ValueError("Team write_delegation_scope 必须是 JSON array")
+        team_receipt = self._receipt_event_summary(team_row["write_delegation_receipt"])
+        worker_rows = connection.execute(
+            """SELECT workers.*, sessions.status AS session_status,
+                      sessions.active_task_id, sessions.state AS session_state,
+                      sessions.updated_at AS session_updated_at
+               FROM cowork_team_workers AS workers
+               JOIN cowork_team_worker_sessions AS sessions
+                 ON sessions.id = workers.session_id
+               WHERE workers.team_id = ? ORDER BY workers.created_at, workers.id""",
+            (team_id,),
+        ).fetchall()
+        task_rows = connection.execute(
+            "SELECT * FROM cowork_board_tasks WHERE team_id = ? ORDER BY created_at, id",
+            (team_id,),
+        ).fetchall()
+        workers = [
+            {
+                "id": str(row["id"]),
+                "name": str(row["name"]),
+                "role": str(row["role"]),
+                "reason": str(row["reason"]),
+                "session_id": str(row["session_id"]),
+                "session_status": str(row["session_status"]),
+                "active_task_id": row["active_task_id"],
+                "session_state_sha256": _json_sha256(json.loads(str(row["session_state"]))),
+                "created_at": str(row["created_at"]),
+                "updated_at": str(row["session_updated_at"]),
+            }
+            for row in worker_rows
+        ]
+        tasks = [self._board_task_event_summary(row) for row in task_rows]
+        receipts = [] if team_receipt is None else [{"kind": "team_write", **team_receipt}]
+        receipts.extend(
+            {"kind": "task_scope", "task_id": task["id"], **receipt}
+            for task in tasks
+            if (receipt := task.get("scope_receipt")) is not None
+        )
+        return {
+            "schema_version": "team-projection-summary.v1",
+            "team": self._team_event_summary(team_row),
+            "workers": workers,
+            "tasks": tasks,
+            "receipts": receipts,
+            "worker_checkpoint_count": 0,
+            "worker_tool_attempt_count": 0,
+            "worker_tool_unknown_count": 0,
+        }
+
+    def _board_task_event_summary(self, row: sqlite3.Row) -> dict[str, Any]:
+        raw_scope = json.loads(str(row["resource_scope"] or "[]"))
+        if not isinstance(raw_scope, list):
+            raise ValueError("Board task resource_scope 必须是 JSON array")
+        return {
+            "id": str(row["id"]),
+            "team_id": str(row["team_id"]),
+            "title": str(row["title"]),
+            "description": str(row["description"]),
+            "acceptance_criteria": str(row["acceptance_criteria"]),
+            "resource_scope": raw_scope,
+            "resource_scope_sha256": _json_sha256(raw_scope),
+            "scope_receipt": self._receipt_event_summary(row["scope_receipt"]),
+            "status": str(row["status"]),
+            "assignee_worker_id": row["assignee_worker_id"],
+            "assignment_call_id": row["assignment_call_id"],
+            "attempt_count": int(row["attempt_count"]),
+            "completion_kind": str(row["completion_kind"]),
+            "worker_report": row["worker_report"],
+            "review_comment": row["review_comment"],
+            "last_rejection_comment": row["last_rejection_comment"],
+            "last_error": row["last_error"],
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+        }
+
+    @staticmethod
+    def _team_wake_target_transaction(
+        connection: sqlite3.Connection,
+        *,
+        team_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> tuple[Literal["none", "lead", "worker"], str | None]:
+        if event_type in _TEAM_WAKE_WORKER_EVENTS:
+            worker_id = payload.get("worker_id")
+            if not isinstance(worker_id, str) or not worker_id:
+                raise TeamEventIntegrityError(f"{event_type} 缺少 Worker wake target")
+            return "worker", worker_id
+        if event_type in _TEAM_WAKE_LEAD_EVENTS:
+            team = connection.execute(
+                "SELECT lead_conversation_id FROM cowork_teams WHERE id = ?", (team_id,)
+            ).fetchone()
+            if team is None:
+                raise TeamEventIntegrityError(f"{event_type} 缺少 Lead wake target")
+            return "lead", str(team["lead_conversation_id"])
+        return "none", None
+
+    def _append_team_events_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        team_id: UUID | str,
+        actor: str,
+        cause: str,
+        events: Sequence[tuple[str, dict[str, Any]]],
+        created_at: str | None = None,
+    ) -> list[TeamEventRecord]:
+        if not events:
+            return []
+        normalized_actor = actor.strip()
+        normalized_cause = cause.strip()
+        if not normalized_actor or not normalized_cause:
+            raise ValueError("Team event actor/cause 不能为空")
+        team_key = str(team_id)
+        head = connection.execute(
+            "SELECT * FROM cowork_team_event_heads WHERE team_id = ?", (team_key,)
+        ).fetchone()
+        if head is None:
+            stray = connection.execute(
+                "SELECT id FROM cowork_team_events WHERE team_id = ? LIMIT 1", (team_key,)
+            ).fetchone()
+            if stray is not None:
+                raise TeamEventIntegrityError("Team event head 缺失但日志非空")
+            sequence = 0
+            previous_id: str | None = None
+            previous_hash = _TEAM_EVENT_GENESIS
+        else:
+            tail = connection.execute(
+                """SELECT id, sequence, hash FROM cowork_team_events
+                   WHERE team_id = ? ORDER BY sequence DESC LIMIT 1""",
+                (team_key,),
+            ).fetchone()
+            if (
+                tail is None
+                or int(tail["sequence"]) != int(head["last_sequence"])
+                or str(tail["id"]) != str(head["last_event_id"])
+                or str(tail["hash"]) != str(head["head_hash"])
+            ):
+                raise TeamEventIntegrityError("Team event tail 与独立 head 不一致")
+            sequence = int(head["last_sequence"])
+            previous_id = str(head["last_event_id"])
+            previous_hash = str(head["head_hash"])
+
+        timestamp = created_at or _iso()
+        stored: list[TeamEventRecord] = []
+        for event_type, payload in events:
+            normalized_type = event_type.strip()
+            if not normalized_type or not isinstance(payload, dict):
+                raise ValueError("Team event type 必须非空且 payload 必须是 object")
+            sequence += 1
+            event_id = str(uuid7())
+            payload_json = canonical_json(payload)
+            event_hash = _team_event_hash(
+                event_id=event_id,
+                team_id=team_key,
+                sequence=sequence,
+                event_type=normalized_type,
+                actor=normalized_actor,
+                cause=normalized_cause,
+                parent_event_id=previous_id,
+                payload_json=payload_json,
+                prev_hash=previous_hash,
+                created_at=timestamp,
+            )
+            connection.execute(
+                """INSERT INTO cowork_team_events(
+                       id, team_id, sequence, event_type, actor, cause, parent_event_id,
+                       payload, prev_hash, hash, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event_id,
+                    team_key,
+                    sequence,
+                    normalized_type,
+                    normalized_actor,
+                    normalized_cause,
+                    previous_id,
+                    payload_json,
+                    previous_hash,
+                    event_hash,
+                    timestamp,
+                ),
+            )
+            target_kind, target_id = self._team_wake_target_transaction(
+                connection,
+                team_id=team_key,
+                event_type=normalized_type,
+                payload=payload,
+            )
+            connection.execute(
+                """INSERT INTO cowork_team_wake_outbox(
+                       id, team_id, event_id, event_sequence, event_hash, event_type,
+                       target_kind, target_id, payload, status, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+                (
+                    str(uuid7()),
+                    team_key,
+                    event_id,
+                    sequence,
+                    event_hash,
+                    normalized_type,
+                    target_kind,
+                    target_id,
+                    payload_json,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            stored.append(
+                TeamEventRecord(
+                    id=UUID(event_id),
+                    team_id=UUID(team_key),
+                    sequence=sequence,
+                    event_type=normalized_type,
+                    actor=normalized_actor,
+                    cause=normalized_cause,
+                    parent_event_id=(None if previous_id is None else UUID(previous_id)),
+                    payload=json.loads(payload_json),
+                    prev_hash=previous_hash,
+                    hash=event_hash,
+                    created_at=datetime.fromisoformat(timestamp).astimezone(UTC),
+                )
+            )
+            previous_id = event_id
+            previous_hash = event_hash
+
+        connection.execute(
+            """INSERT INTO cowork_team_event_heads(
+                   team_id, last_sequence, last_event_id, head_hash, updated_at
+               ) VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(team_id) DO UPDATE SET
+                   last_sequence = excluded.last_sequence,
+                   last_event_id = excluded.last_event_id,
+                   head_hash = excluded.head_hash,
+                   updated_at = excluded.updated_at""",
+            (team_key, sequence, previous_id, previous_hash, timestamp),
+        )
+        return stored
+
+    def _backfill_team_wake_feed(
+        self, connection: sqlite3.Connection, *, suppress_existing: bool
+    ) -> None:
+        """升级时补齐 feed；历史事件不会在安装新版本后突然唤醒旧任务。"""
+
+        rows = connection.execute(
+            """SELECT events.* FROM cowork_team_events AS events
+               LEFT JOIN cowork_team_wake_outbox AS wake ON wake.event_id = events.id
+               WHERE wake.id IS NULL ORDER BY events.team_id, events.sequence"""
+        ).fetchall()
+        timestamp = _iso()
+        for row in rows:
+            payload = json.loads(str(row["payload"]))
+            if not isinstance(payload, dict):
+                raise TeamEventIntegrityError("Team wake backfill event payload 非法")
+            target_kind, target_id = self._team_wake_target_transaction(
+                connection,
+                team_id=str(row["team_id"]),
+                event_type=str(row["event_type"]),
+                payload=payload,
+            )
+            connection.execute(
+                """INSERT INTO cowork_team_wake_outbox(
+                       id, team_id, event_id, event_sequence, event_hash, event_type,
+                       target_kind, target_id, payload, status, delivery_receipt,
+                       created_at, updated_at, delivered_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(uuid7()),
+                    str(row["team_id"]),
+                    str(row["id"]),
+                    int(row["sequence"]),
+                    str(row["hash"]),
+                    str(row["event_type"]),
+                    target_kind,
+                    target_id,
+                    canonical_json(payload),
+                    "delivered" if suppress_existing else "pending",
+                    "migration:suppressed-existing" if suppress_existing else None,
+                    str(row["created_at"]),
+                    timestamp,
+                    timestamp if suppress_existing else None,
+                ),
+            )
+        if not suppress_existing:
+            return
+        # _backfill_team_event_snapshots 可能刚在同一事务内追加了 snapshot feed；它同样
+        # 属于升级前状态。cursor 与 suppressed rows 一次提交，下一条 v18 事件才可投递。
+        connection.execute(
+            """UPDATE cowork_team_wake_outbox SET status = 'delivered',
+                      claim_owner = NULL, claim_until = NULL,
+                      delivery_receipt = COALESCE(
+                          delivery_receipt, 'migration:suppressed-existing'
+                      ),
+                      delivered_at = COALESCE(delivered_at, ?), updated_at = ?
+               WHERE status <> 'delivered'""",
+            (timestamp, timestamp),
+        )
+        heads = connection.execute("SELECT * FROM cowork_team_event_heads").fetchall()
+        for head in heads:
+            connection.execute(
+                """INSERT INTO cowork_team_event_cursors(
+                       team_id, consumer, last_sequence, last_event_hash, updated_at
+                   ) VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(team_id, consumer) DO UPDATE SET
+                       last_sequence = excluded.last_sequence,
+                       last_event_hash = excluded.last_event_hash,
+                       updated_at = excluded.updated_at""",
+                (
+                    str(head["team_id"]),
+                    _TEAM_WAKE_CONSUMER,
+                    int(head["last_sequence"]),
+                    str(head["head_hash"]),
+                    timestamp,
+                ),
+            )
+
+    def _backfill_team_event_snapshots(self, connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """SELECT teams.* FROM cowork_teams AS teams
+               LEFT JOIN cowork_team_event_heads AS heads ON heads.team_id = teams.id
+               WHERE heads.team_id IS NULL ORDER BY teams.created_at, teams.id"""
+        ).fetchall()
+        for row in rows:
+            snapshot = self._team_event_projection_snapshot(connection, row)
+            self._append_team_events_transaction(
+                connection,
+                team_id=str(row["id"]),
+                actor="system:migration",
+                cause="schema:v17",
+                events=[
+                    (
+                        "team.projection_imported",
+                        {
+                            "source_schema_version": 16,
+                            "summary": snapshot,
+                        },
+                    )
+                ],
+                created_at=_iso(),
+            )
+
+    def _migrate_v18_team_state(self, connection: sqlite3.Connection) -> None:
+        """为 v17 Team 建立累计预算；旧的 in-flight 写结果未知，保守转 blocked。"""
+
+        timestamp = _iso()
+        connection.execute(
+            """UPDATE cowork_teams SET budget_used_assignments =
+                   COALESCE((SELECT SUM(tasks.attempt_count) FROM cowork_board_tasks AS tasks
+                             WHERE tasks.team_id = cowork_teams.id), 0)"""
+        )
+        connection.execute(
+            """UPDATE cowork_teams SET budget_max_assignments = budget_used_assignments
+               WHERE budget_used_assignments > budget_max_assignments"""
+        )
+        teams = connection.execute("SELECT * FROM cowork_teams ORDER BY created_at, id").fetchall()
+        for team_row in teams:
+            team_id = str(team_row["id"])
+            events: list[tuple[str, dict[str, Any]]] = []
+            running = connection.execute(
+                """SELECT tasks.*, sessions.id AS session_id,
+                          sessions.state AS session_state, sessions.worker_id AS worker_id
+                   FROM cowork_board_tasks AS tasks
+                   JOIN cowork_team_worker_sessions AS sessions
+                     ON sessions.active_task_id = tasks.id
+                   WHERE tasks.team_id = ? AND tasks.status = 'in_progress'
+                     AND sessions.status = 'running'""",
+                (team_id,),
+            ).fetchall()
+            for task in running:
+                reason = (
+                    "v18 恢复边界：旧版本未记录 Worker 内部工具 attempt，"
+                    "崩溃点副作用结果未知；已阻塞，需 Lead 核验后显式重试"
+                )
+                connection.execute(
+                    """UPDATE cowork_board_tasks SET status = 'blocked', last_error = ?,
+                              updated_at = ? WHERE id = ?""",
+                    (reason, timestamp, str(task["id"])),
+                )
+                connection.execute(
+                    """UPDATE cowork_team_worker_sessions SET status = 'idle',
+                              active_task_id = NULL, updated_at = ? WHERE id = ?""",
+                    (timestamp, str(task["session_id"])),
+                )
+                updated = connection.execute(
+                    "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task["id"]),)
+                ).fetchone()
+                assert updated is not None
+                events.append(
+                    (
+                        "board.task.blocked",
+                        {
+                            "task": self._board_task_event_summary(updated),
+                            "worker_id": str(task["worker_id"]),
+                            "session_id": str(task["session_id"]),
+                            "session_state_sha256": _json_sha256(
+                                json.loads(str(task["session_state"]))
+                            ),
+                            "migration_fail_closed": True,
+                        },
+                    )
+                )
+            refreshed = connection.execute(
+                "SELECT * FROM cowork_teams WHERE id = ?", (team_id,)
+            ).fetchone()
+            assert refreshed is not None
+            events.append(
+                (
+                    "team.budget_initialized",
+                    {
+                        "team": self._team_event_summary(refreshed),
+                        "migration_from_schema": 17,
+                    },
+                )
+            )
+            self._append_team_events_transaction(
+                connection,
+                team_id=team_id,
+                actor="system:migration",
+                cause="schema:v18",
+                events=events,
+                created_at=timestamp,
+            )
+
+    @staticmethod
+    def _migrate_v20_memory_state(connection: sqlite3.Connection) -> None:
+        """清掉旧 orphan，并把历史终态作业收敛成无用户原文的最小审计记录。"""
+
+        connection.execute(
+            """DELETE FROM memory_extraction_jobs
+               WHERE conversation_id IS NOT NULL
+                 AND NOT EXISTS (
+                     SELECT 1 FROM conversations
+                     WHERE conversations.id = memory_extraction_jobs.conversation_id
+                 )"""
+        )
+        connection.execute(
+            """UPDATE memory_extraction_jobs
+               SET content = '',
+                   error = CASE status WHEN 'failed' THEN 'memory_extraction_failed' ELSE NULL END
+               WHERE status IN ('done', 'failed')"""
+        )
+
+    @staticmethod
+    def _team_event_record(row: sqlite3.Row) -> TeamEventRecord:
+        payload = json.loads(str(row["payload"]))
+        if not isinstance(payload, dict):
+            raise TeamEventIntegrityError(f"Team event {row['sequence']} payload 不是 JSON object")
+        return TeamEventRecord(
+            id=UUID(str(row["id"])),
+            team_id=UUID(str(row["team_id"])),
+            sequence=int(row["sequence"]),
+            event_type=str(row["event_type"]),
+            actor=str(row["actor"]),
+            cause=str(row["cause"]),
+            parent_event_id=(
+                None if row["parent_event_id"] is None else UUID(str(row["parent_event_id"]))
+            ),
+            payload=payload,
+            prev_hash=str(row["prev_hash"]),
+            hash=str(row["hash"]),
+            created_at=datetime.fromisoformat(str(row["created_at"])).astimezone(UTC),
+        )
+
+    def _verified_team_event_rows(
+        self, connection: sqlite3.Connection, team_id: UUID | str
+    ) -> tuple[list[sqlite3.Row], sqlite3.Row]:
+        team_key = str(team_id)
+        rows = connection.execute(
+            "SELECT * FROM cowork_team_events WHERE team_id = ? ORDER BY sequence",
+            (team_key,),
+        ).fetchall()
+        head = connection.execute(
+            "SELECT * FROM cowork_team_event_heads WHERE team_id = ?", (team_key,)
+        ).fetchone()
+        if not rows or head is None:
+            raise TeamEventIntegrityError("Team event log/head 缺失")
+        expected_sequence = 1
+        previous_id: str | None = None
+        previous_hash = _TEAM_EVENT_GENESIS
+        for row in rows:
+            sequence = int(row["sequence"])
+            if sequence != expected_sequence:
+                raise TeamEventIntegrityError(f"Team event sequence 在 {expected_sequence} 处断裂")
+            parent = None if row["parent_event_id"] is None else str(row["parent_event_id"])
+            if parent != previous_id:
+                raise TeamEventIntegrityError(f"Team event {sequence} parent linkage 已损坏")
+            if str(row["prev_hash"]) != previous_hash:
+                raise TeamEventIntegrityError(f"Team event {sequence} prev_hash 已损坏")
+            payload_json = str(row["payload"])
+            try:
+                payload = json.loads(payload_json)
+            except json.JSONDecodeError as error:
+                raise TeamEventIntegrityError(
+                    f"Team event {sequence} payload 不是合法 JSON"
+                ) from error
+            if not isinstance(payload, dict):
+                raise TeamEventIntegrityError(f"Team event {sequence} payload 不是 JSON object")
+            calculated = _team_event_hash(
+                event_id=str(row["id"]),
+                team_id=str(row["team_id"]),
+                sequence=sequence,
+                event_type=str(row["event_type"]),
+                actor=str(row["actor"]),
+                cause=str(row["cause"]),
+                parent_event_id=parent,
+                payload_json=payload_json,
+                prev_hash=str(row["prev_hash"]),
+                created_at=str(row["created_at"]),
+            )
+            if calculated != str(row["hash"]):
+                raise TeamEventIntegrityError(f"Team event {sequence} 内容与 hash 不匹配")
+            previous_id = str(row["id"])
+            previous_hash = str(row["hash"])
+            expected_sequence += 1
+        if (
+            int(head["last_sequence"]) != len(rows)
+            or str(head["last_event_id"]) != previous_id
+            or str(head["head_hash"]) != previous_hash
+        ):
+            raise TeamEventIntegrityError("Team event log 尾部与独立 head 不一致")
+        return rows, head
+
+    @staticmethod
+    def _fold_team_event_projection(events: Sequence[TeamEventRecord]) -> dict[str, Any]:
+        summary: dict[str, Any] = {
+            "schema_version": "team-projection-summary.v1",
+            "team": None,
+            "workers": [],
+            "tasks": [],
+            "receipts": [],
+            "worker_checkpoint_count": 0,
+            "worker_tool_attempt_count": 0,
+            "worker_tool_unknown_count": 0,
+        }
+        event_counts: dict[str, int] = {}
+        for event in events:
+            event_counts[event.event_type] = event_counts.get(event.event_type, 0) + 1
+            payload = event.payload
+            if event.event_type == "team.projection_imported":
+                imported = payload.get("summary")
+                if not isinstance(imported, dict):
+                    raise TeamEventIntegrityError(
+                        f"Team event {event.sequence} migration summary 非法"
+                    )
+                summary = json.loads(canonical_json(imported))
+                continue
+            if event.event_type == "team.created":
+                team = payload.get("team")
+                workers = payload.get("workers")
+                if not isinstance(team, dict) or not isinstance(workers, list):
+                    raise TeamEventIntegrityError(
+                        f"Team event {event.sequence} create payload 非法"
+                    )
+                summary["team"] = team
+                summary["workers"] = workers
+                continue
+            if event.event_type.startswith("team."):
+                team = payload.get("team")
+                if isinstance(team, dict):
+                    current_team = summary.get("team")
+                    if isinstance(current_team, dict):
+                        current_team.update(team)
+                    else:
+                        summary["team"] = team
+                budget = payload.get("budget")
+                current_team = summary.get("team")
+                if isinstance(budget, dict) and isinstance(current_team, dict):
+                    current_team["budget"] = budget
+            task = payload.get("task")
+            if isinstance(task, dict):
+                tasks = {
+                    str(item["id"]): item
+                    for item in cast("list[dict[str, Any]]", summary.get("tasks", []))
+                    if isinstance(item, dict) and item.get("id") is not None
+                }
+                tasks[str(task["id"])] = task
+                summary["tasks"] = list(tasks.values())
+            worker_id = payload.get("worker_id")
+            workers = cast("list[dict[str, Any]]", summary.get("workers", []))
+            if event.event_type == "board.task.assigned":
+                for worker in workers:
+                    if str(worker.get("id")) == str(worker_id):
+                        worker.update(
+                            {
+                                "session_status": payload.get("session_status"),
+                                "active_task_id": (
+                                    task.get("id") if isinstance(task, dict) else None
+                                ),
+                                "updated_at": event.created_at.isoformat(),
+                            }
+                        )
+                        break
+            elif event.event_type in {"board.task.submitted", "board.task.blocked"}:
+                for worker in workers:
+                    if str(worker.get("id")) == str(worker_id):
+                        worker.update(
+                            {
+                                "session_status": "idle",
+                                "active_task_id": None,
+                                "session_state_sha256": payload.get("session_state_sha256"),
+                                "updated_at": event.created_at.isoformat(),
+                            }
+                        )
+                        break
+            receipt = payload.get("receipt")
+            if isinstance(receipt, dict):
+                receipt_key = (
+                    str(receipt.get("kind")),
+                    str(receipt.get("task_id") or ""),
+                    str(receipt.get("receipt_id") or ""),
+                )
+                receipts = [
+                    item
+                    for item in cast("list[dict[str, Any]]", summary.get("receipts", []))
+                    if (
+                        str(item.get("kind")),
+                        str(item.get("task_id") or ""),
+                        str(item.get("receipt_id") or ""),
+                    )
+                    != receipt_key
+                ]
+                receipts.append(receipt)
+                summary["receipts"] = receipts
+            if event.event_type == "team.worker_session.checkpointed":
+                summary["worker_checkpoint_count"] = (
+                    int(summary.get("worker_checkpoint_count", 0)) + 1
+                )
+                for worker in workers:
+                    if str(worker.get("id")) == str(worker_id):
+                        worker.update(
+                            {
+                                "session_status": payload.get("session_status"),
+                                "active_task_id": payload.get("task_id"),
+                                "session_state_sha256": payload.get("state_sha256"),
+                                "updated_at": event.created_at.isoformat(),
+                            }
+                        )
+                        break
+            if event.event_type in {
+                "team.worker_tool.started",
+                "team.worker_tool.retried",
+            }:
+                summary["worker_tool_attempt_count"] = (
+                    int(summary.get("worker_tool_attempt_count", 0)) + 1
+                )
+            elif event.event_type == "team.worker_tool.unknown":
+                summary["worker_tool_unknown_count"] = (
+                    int(summary.get("worker_tool_unknown_count", 0)) + 1
+                )
+            if event.event_type in {
+                "team.write_delegation_revoked",
+                "team.archived",
+            }:
+                summary["receipts"] = [
+                    item
+                    for item in cast("list[dict[str, Any]]", summary.get("receipts", []))
+                    if item.get("kind") != "team_write"
+                ]
+        summary["tasks"] = sorted(
+            cast("list[dict[str, Any]]", summary.get("tasks", [])),
+            key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")),
+        )
+        summary["workers"] = sorted(
+            cast("list[dict[str, Any]]", summary.get("workers", [])),
+            key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")),
+        )
+        summary["receipts"] = sorted(
+            cast("list[dict[str, Any]]", summary.get("receipts", [])),
+            key=lambda item: (
+                str(item.get("kind") or ""),
+                str(item.get("task_id") or ""),
+                str(item.get("receipt_id") or ""),
+            ),
+        )
+        summary["event_count"] = len(events)
+        summary["events_by_type"] = dict(sorted(event_counts.items()))
+        return summary
+
+    def _replay_team_event_projection_transaction(
+        self, connection: sqlite3.Connection, team_id: UUID
+    ) -> TeamProjectionSummaryRecord:
+        rows, head = self._verified_team_event_rows(connection, team_id)
+        events = [self._team_event_record(row) for row in rows]
+        rebuilt_at = _now()
+        return TeamProjectionSummaryRecord(
+            team_id=team_id,
+            watermark=int(head["last_sequence"]),
+            head_hash=str(head["head_hash"]),
+            summary=self._fold_team_event_projection(events),
+            rebuilt_at=rebuilt_at,
+        )
 
     async def import_rows(
         self,
@@ -770,11 +2092,15 @@ class SqliteCoworkStore:
         allowed = {
             "conversations",
             "conversation_message_index",
+            "session_entries",
+            "session_lanes",
+            "session_records",
             "agent_runs",
             "run_events",
             "agent_plan_steps",
             "agent_attempts",
             "agent_checkpoints",
+            "cowork_run_configs",
             "tool_invocations",
             "session_roots",
             "capability_grants",
@@ -783,6 +2109,7 @@ class SqliteCoworkStore:
             "cowork_schedules",
             "cowork_inbox_items",
             "cowork_steering_messages",
+            "cowork_run_queue_state",
             "cowork_teams",
             "cowork_team_workers",
             "cowork_team_worker_sessions",
@@ -836,11 +2163,15 @@ class SqliteCoworkStore:
         allowed = {
             "conversations",
             "conversation_message_index",
+            "session_entries",
+            "session_lanes",
+            "session_records",
             "agent_runs",
             "run_events",
             "agent_plan_steps",
             "agent_attempts",
             "agent_checkpoints",
+            "cowork_run_configs",
             "tool_invocations",
             "session_roots",
             "capability_grants",
@@ -1087,14 +2418,54 @@ class SqliteCoworkStore:
             where = "" if not clauses else "WHERE " + " AND ".join(clauses)
             parameters.append(limit)
             rows = connection.execute(
-                f"""SELECT conversations.*,
+                f"""WITH RECURSIVE main_branch(
+                           conversation_id, id, parent_id, kind, payload, path
+                       ) AS (
+                           SELECT lanes.conversation_id, entries.id, entries.parent_id,
+                                  entries.kind, entries.payload, ',' || entries.id || ','
+                           FROM session_lanes AS lanes
+                           JOIN session_entries AS entries ON entries.id = lanes.head_entry_id
+                           WHERE lanes.name = 'main'
+                           UNION ALL
+                           SELECT parent.conversation_id, parent.id, parent.parent_id,
+                                  parent.kind, parent.payload, child.path || parent.id || ','
+                           FROM session_entries AS parent
+                           JOIN main_branch AS child ON child.parent_id = parent.id
+                           WHERE parent.conversation_id = child.conversation_id
+                             AND instr(child.path, ',' || parent.id || ',') = 0
+                       )
+                    SELECT conversations.*,
                            (SELECT COUNT(*) FROM conversation_message_index AS messages
                             WHERE messages.conversation_id = conversations.id
-                              AND messages.role IN ('user', 'assistant')) AS message_count,
+                              AND messages.role IN ('user', 'assistant')
+                              AND (
+                                  NOT EXISTS (
+                                      SELECT 1 FROM main_branch AS branch
+                                      WHERE branch.conversation_id = conversations.id
+                                  )
+                                  OR messages.record_id IN (
+                                      SELECT json_extract(branch.payload, '$.record_id')
+                                      FROM main_branch AS branch
+                                      WHERE branch.conversation_id = conversations.id
+                                        AND branch.kind = 'message'
+                                  )
+                              )) AS message_count,
                            (SELECT messages.content_preview
                             FROM conversation_message_index AS messages
                             WHERE messages.conversation_id = conversations.id
                               AND messages.role IN ('user', 'assistant')
+                              AND (
+                                  NOT EXISTS (
+                                      SELECT 1 FROM main_branch AS branch
+                                      WHERE branch.conversation_id = conversations.id
+                                  )
+                                  OR messages.record_id IN (
+                                      SELECT json_extract(branch.payload, '$.record_id')
+                                      FROM main_branch AS branch
+                                      WHERE branch.conversation_id = conversations.id
+                                        AND branch.kind = 'message'
+                                  )
+                              )
                               AND messages.content_preview IS NOT NULL
                               AND messages.content_preview <> ''
                             ORDER BY messages.seq DESC LIMIT 1) AS latest_message,
@@ -1102,6 +2473,18 @@ class SqliteCoworkStore:
                             FROM conversation_message_index AS messages
                             WHERE messages.conversation_id = conversations.id
                               AND messages.role IN ('user', 'assistant')
+                              AND (
+                                  NOT EXISTS (
+                                      SELECT 1 FROM main_branch AS branch
+                                      WHERE branch.conversation_id = conversations.id
+                                  )
+                                  OR messages.record_id IN (
+                                      SELECT json_extract(branch.payload, '$.record_id')
+                                      FROM main_branch AS branch
+                                      WHERE branch.conversation_id = conversations.id
+                                        AND branch.kind = 'message'
+                                  )
+                              )
                             ORDER BY messages.seq DESC LIMIT 1) AS last_message_at,
                            (SELECT runs.id FROM agent_runs AS runs
                             WHERE runs.conversation_id = conversations.id
@@ -1148,8 +2531,12 @@ class SqliteCoworkStore:
         approval_mode: ApprovalMode,
         persona_name: str,
     ) -> bool:
-        return await self._write(
-            lambda connection: (
+        def operation(connection: sqlite3.Connection) -> bool:
+            previous = connection.execute(
+                "SELECT provider_profile_id, model_override FROM conversations WHERE id = ?",
+                (str(conversation_id),),
+            ).fetchone()
+            changed = (
                 connection.execute(
                     """UPDATE conversations SET provider_profile_id = ?, model_override = ?,
                           unattended = ?, approval_mode = ?, persona_name = ?, updated_at = ?
@@ -1166,7 +2553,532 @@ class SqliteCoworkStore:
                 ).rowcount
                 == 1
             )
+            if (
+                changed
+                and previous is not None
+                and (
+                    previous["provider_profile_id"]
+                    != (None if provider_profile_id is None else str(provider_profile_id))
+                    or previous["model_override"] != model_override
+                )
+            ):
+                self._append_session_entry_transaction(
+                    connection,
+                    conversation_id=conversation_id,
+                    kind="model_change",
+                    payload={
+                        "provider_profile_id": (
+                            None if provider_profile_id is None else str(provider_profile_id)
+                        ),
+                        "model_override": model_override,
+                    },
+                    entry_id=None,
+                    parent_id=None,
+                    lane="main",
+                )
+            return changed
+
+        return await self._write(operation)
+
+    @staticmethod
+    def _session_entry(row: sqlite3.Row) -> SessionEntry:
+        payload = json.loads(str(row["payload"]))
+        if not isinstance(payload, dict):
+            raise ValueError("session entry payload 不是对象")
+        return SessionEntry(
+            id=str(row["id"]),
+            conversation_id=UUID(str(row["conversation_id"])),
+            parent_id=None if row["parent_id"] is None else str(row["parent_id"]),
+            seq=int(row["seq"]),
+            kind=cast("SessionEntryKind", str(row["kind"])),
+            payload=payload,
+            created_at=str(row["created_at"]),
         )
+
+    def _append_session_entry_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        conversation_id: UUID,
+        kind: SessionEntryKind,
+        payload: dict[str, Any],
+        entry_id: str | None,
+        parent_id: str | None,
+        lane: str,
+    ) -> SessionEntry:
+        if not lane.strip() or len(lane) > 80:
+            raise ValueError("session lane 名称长度必须位于 1 到 80")
+        if (
+            connection.execute(
+                "SELECT 1 FROM conversations WHERE id = ?", (str(conversation_id),)
+            ).fetchone()
+            is None
+        ):
+            raise ConversationNotFoundError(str(conversation_id))
+        resolved_id = entry_id or str(uuid7())
+        encoded_payload = canonical_json(payload)
+        existing = connection.execute(
+            "SELECT * FROM session_entries WHERE id = ?", (resolved_id,)
+        ).fetchone()
+        if existing is not None:
+            record = self._session_entry(existing)
+            if (
+                record.conversation_id != conversation_id
+                or record.kind != kind
+                or canonical_json(record.payload) != encoded_payload
+            ):
+                raise ValueError(f"session entry id 冲突: {resolved_id}")
+            return record
+        if parent_id is None:
+            lane_row = connection.execute(
+                "SELECT head_entry_id FROM session_lanes WHERE conversation_id = ? AND name = ?",
+                (str(conversation_id), lane),
+            ).fetchone()
+            parent_id = None if lane_row is None else lane_row["head_entry_id"]
+        if parent_id is not None:
+            parent = connection.execute(
+                "SELECT conversation_id FROM session_entries WHERE id = ?", (parent_id,)
+            ).fetchone()
+            if parent is None or str(parent["conversation_id"]) != str(conversation_id):
+                raise ValueError("session entry parent 不存在或属于其他会话")
+        row = connection.execute(
+            "SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM session_entries WHERE conversation_id = ?",
+            (str(conversation_id),),
+        ).fetchone()
+        assert row is not None
+        seq = int(row["seq"])
+        timestamp = _iso()
+        connection.execute(
+            """INSERT INTO session_entries(id, conversation_id, parent_id, seq, kind, payload, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                resolved_id,
+                str(conversation_id),
+                parent_id,
+                seq,
+                kind,
+                encoded_payload,
+                timestamp,
+            ),
+        )
+        connection.execute(
+            """INSERT INTO session_lanes(conversation_id, name, head_entry_id, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(conversation_id, name) DO UPDATE SET
+                   head_entry_id = excluded.head_entry_id, updated_at = excluded.updated_at""",
+            (str(conversation_id), lane, resolved_id, timestamp),
+        )
+        inserted = connection.execute(
+            "SELECT * FROM session_entries WHERE id = ?", (resolved_id,)
+        ).fetchone()
+        assert inserted is not None
+        return self._session_entry(inserted)
+
+    async def append_session_entry(
+        self,
+        *,
+        conversation_id: UUID,
+        kind: SessionEntryKind,
+        payload: dict[str, Any],
+        entry_id: str | None = None,
+        parent_id: str | None = None,
+        lane: str = "main",
+    ) -> SessionEntry:
+        return await self._write(
+            lambda connection: self._append_session_entry_transaction(
+                connection,
+                conversation_id=conversation_id,
+                kind=kind,
+                payload=payload,
+                entry_id=entry_id,
+                parent_id=parent_id,
+                lane=lane,
+            )
+        )
+
+    async def list_session_entries(
+        self,
+        *,
+        conversation_id: UUID,
+        lane: str | None = None,
+        limit: int = 1000,
+    ) -> list[SessionEntry]:
+        if not 1 <= limit <= 10_000:
+            raise ValueError("session entry limit 必须位于 1 到 10000")
+
+        def operation(connection: sqlite3.Connection) -> list[SessionEntry]:
+            if lane is None:
+                rows = connection.execute(
+                    """SELECT * FROM session_entries WHERE conversation_id = ?
+                       ORDER BY seq DESC LIMIT ?""",
+                    (str(conversation_id), limit),
+                ).fetchall()
+                return list(reversed([self._session_entry(row) for row in rows]))
+            head = connection.execute(
+                "SELECT head_entry_id FROM session_lanes WHERE conversation_id = ? AND name = ?",
+                (str(conversation_id), lane),
+            ).fetchone()
+            if head is None or head["head_entry_id"] is None:
+                return []
+            rows = connection.execute(
+                """WITH RECURSIVE ancestry(
+                       id, conversation_id, parent_id, seq, kind, payload, created_at, path
+                   ) AS (
+                       SELECT id, conversation_id, parent_id, seq, kind, payload, created_at,
+                              ',' || id || ','
+                       FROM session_entries WHERE id = ? AND conversation_id = ?
+                       UNION ALL
+                       SELECT parent.id, parent.conversation_id, parent.parent_id, parent.seq,
+                              parent.kind, parent.payload, parent.created_at,
+                              child.path || parent.id || ','
+                       FROM session_entries AS parent
+                       JOIN ancestry AS child ON child.parent_id = parent.id
+                       WHERE parent.conversation_id = ?
+                         AND instr(child.path, ',' || parent.id || ',') = 0
+                   )
+                   SELECT id, conversation_id, parent_id, seq, kind, payload, created_at
+                   FROM ancestry ORDER BY seq DESC LIMIT ?""",
+                (
+                    str(head["head_entry_id"]),
+                    str(conversation_id),
+                    str(conversation_id),
+                    limit + 1,
+                ),
+            ).fetchall()
+            if not rows:
+                raise ValueError("session lane head 已损坏")
+            records = list(reversed([self._session_entry(row) for row in rows]))
+            if len(records) <= limit and records[0].parent_id is not None:
+                raise ValueError("session lane parent 链已损坏或成环")
+            return records[-limit:]
+
+        return await self._read(operation)
+
+    async def move_session_lane(
+        self,
+        *,
+        conversation_id: UUID,
+        lane: str,
+        entry_id: str | None,
+    ) -> bool:
+        def operation(connection: sqlite3.Connection) -> bool:
+            if not lane.strip() or len(lane) > 80:
+                raise ValueError("session lane 名称长度必须位于 1 到 80")
+            if (
+                connection.execute(
+                    "SELECT 1 FROM conversations WHERE id = ?", (str(conversation_id),)
+                ).fetchone()
+                is None
+            ):
+                raise ConversationNotFoundError(str(conversation_id))
+            if entry_id is not None:
+                row = connection.execute(
+                    "SELECT conversation_id FROM session_entries WHERE id = ?", (entry_id,)
+                ).fetchone()
+                if row is None or str(row["conversation_id"]) != str(conversation_id):
+                    return False
+            connection.execute(
+                """INSERT INTO session_lanes(conversation_id, name, head_entry_id, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(conversation_id, name) DO UPDATE SET
+                       head_entry_id = excluded.head_entry_id, updated_at = excluded.updated_at""",
+                (str(conversation_id), lane, entry_id, _iso()),
+            )
+            return True
+
+        return await self._write(operation)
+
+    async def navigate_session_lane(
+        self,
+        *,
+        conversation_id: UUID,
+        lane: str,
+        target_entry_id: str | None,
+        expected_head_entry_id: str | None,
+        abandoned_lane: str,
+        branch_summary_payload: dict[str, Any] | None = None,
+    ) -> SessionLaneNavigation:
+        """Atomically preserve the lane being left and move its active pointer.
+
+        The expected-head compare closes the race between building an abandoned-branch preview
+        and committing the navigation.  Runs and navigation are mutually exclusive: otherwise a
+        worker could append an assistant result to a branch after the UI has left it.
+        """
+
+        def operation(connection: sqlite3.Connection) -> SessionLaneNavigation:
+            for value, label in ((lane, "lane"), (abandoned_lane, "abandoned_lane")):
+                if not value.strip() or len(value) > 80:
+                    raise ValueError(f"session {label} 名称长度必须位于 1 到 80")
+            if lane == abandoned_lane:
+                raise ValueError("abandoned lane 不能与当前 lane 同名")
+            if (
+                connection.execute(
+                    "SELECT 1 FROM conversations WHERE id = ?", (str(conversation_id),)
+                ).fetchone()
+                is None
+            ):
+                raise ConversationNotFoundError(str(conversation_id))
+            active = connection.execute(
+                """SELECT 1 FROM agent_runs WHERE conversation_id = ? AND status IN (
+                       'initializing','queued','executing','waiting_human','sleeping'
+                   ) LIMIT 1""",
+                (str(conversation_id),),
+            ).fetchone()
+            if active is not None:
+                raise ConversationBusyError("会话仍有任务在运行，不能移动会话分支")
+            lane_row = connection.execute(
+                "SELECT head_entry_id FROM session_lanes WHERE conversation_id = ? AND name = ?",
+                (str(conversation_id), lane),
+            ).fetchone()
+            previous_head = None if lane_row is None else lane_row["head_entry_id"]
+            if previous_head != expected_head_entry_id:
+                raise ConversationBusyError("会话分支已被其他操作移动，请刷新后重试")
+            if target_entry_id is not None:
+                target = connection.execute(
+                    "SELECT conversation_id FROM session_entries WHERE id = ?",
+                    (target_entry_id,),
+                ).fetchone()
+                if target is None or str(target["conversation_id"]) != str(conversation_id):
+                    raise ValueError("目标 session entry 不存在或属于其他会话")
+            if previous_head == target_entry_id:
+                return SessionLaneNavigation(
+                    conversation_id=conversation_id,
+                    lane=lane,
+                    previous_head_entry_id=previous_head,
+                    current_head_entry_id=target_entry_id,
+                    abandoned_lane=None,
+                    branch_summary_entry_id=None,
+                )
+
+            timestamp = _iso()
+            preserved_lane: str | None = None
+            summary_id: str | None = None
+            if previous_head is not None:
+                collision = connection.execute(
+                    "SELECT 1 FROM session_lanes WHERE conversation_id = ? AND name = ?",
+                    (str(conversation_id), abandoned_lane),
+                ).fetchone()
+                if collision is not None:
+                    raise ValueError("abandoned lane 名称已存在")
+                connection.execute(
+                    """INSERT INTO session_lanes(
+                           conversation_id, name, head_entry_id, updated_at
+                       ) VALUES (?, ?, ?, ?)""",
+                    (str(conversation_id), abandoned_lane, previous_head, timestamp),
+                )
+                preserved_lane = abandoned_lane
+                if branch_summary_payload is not None:
+                    summary = self._append_session_entry_transaction(
+                        connection,
+                        conversation_id=conversation_id,
+                        kind="branch_summary",
+                        payload=branch_summary_payload,
+                        entry_id=None,
+                        parent_id=str(previous_head),
+                        lane=abandoned_lane,
+                    )
+                    summary_id = summary.id
+            connection.execute(
+                """INSERT INTO session_lanes(conversation_id, name, head_entry_id, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(conversation_id, name) DO UPDATE SET
+                       head_entry_id = excluded.head_entry_id, updated_at = excluded.updated_at""",
+                (str(conversation_id), lane, target_entry_id, timestamp),
+            )
+            connection.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ?",
+                (timestamp, str(conversation_id)),
+            )
+            return SessionLaneNavigation(
+                conversation_id=conversation_id,
+                lane=lane,
+                previous_head_entry_id=None if previous_head is None else str(previous_head),
+                current_head_entry_id=target_entry_id,
+                abandoned_lane=preserved_lane,
+                branch_summary_entry_id=summary_id,
+            )
+
+        return await self._write(operation)
+
+    @staticmethod
+    def _session_record(row: sqlite3.Row) -> SessionRecord:
+        payload = json.loads(str(row["payload"]))
+        if not isinstance(payload, dict):
+            raise ValueError("session record payload 不是对象")
+        created_at = _datetime(row["created_at"])
+        if created_at is None:
+            raise ValueError("session record created_at 无效")
+        return SessionRecord(
+            id=str(row["id"]),
+            run_id=UUID(str(row["run_id"])),
+            seq=int(row["seq"]),
+            kind=cast("SessionRecordKind", str(row["kind"])),
+            operation_id=str(row["operation_id"]),
+            phase=cast("SessionRecordPhase", str(row["phase"])),
+            payload=payload,
+            created_at=created_at,
+        )
+
+    def _append_session_record_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        run_id: UUID,
+        kind: SessionRecordKind,
+        operation_id: str,
+        phase: SessionRecordPhase,
+        payload: dict[str, Any],
+        record_id: str | None = None,
+    ) -> SessionRecord:
+        if not operation_id.strip() or len(operation_id) > 120:
+            raise ValueError("session record operation_id 长度必须位于 1 到 120")
+        encoded = canonical_json(payload)
+        resolved_id = record_id or str(uuid7())
+        existing = connection.execute(
+            """SELECT * FROM session_records
+               WHERE run_id = ? AND operation_id = ? AND phase = ?""",
+            (str(run_id), operation_id, phase),
+        ).fetchone()
+        if existing is not None:
+            record = self._session_record(existing)
+            if record.kind != kind or canonical_json(record.payload) != encoded:
+                raise ValueError(f"session record operation/phase 冲突: {operation_id}/{phase}")
+            return record
+        if (
+            connection.execute("SELECT 1 FROM agent_runs WHERE id = ?", (str(run_id),)).fetchone()
+            is None
+        ):
+            raise RunNotFoundError(str(run_id))
+        seq = int(
+            connection.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM session_records WHERE run_id = ?",
+                (str(run_id),),
+            ).fetchone()[0]
+        )
+        connection.execute(
+            """INSERT INTO session_records(
+                   id, run_id, seq, kind, operation_id, phase, payload, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                resolved_id,
+                str(run_id),
+                seq,
+                kind,
+                operation_id,
+                phase,
+                encoded,
+                _iso(),
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM session_records WHERE id = ?", (resolved_id,)
+        ).fetchone()
+        assert row is not None
+        return self._session_record(row)
+
+    async def append_session_record(
+        self,
+        *,
+        run_id: UUID,
+        kind: SessionRecordKind,
+        operation_id: str,
+        phase: SessionRecordPhase,
+        payload: dict[str, Any],
+        record_id: str | None = None,
+    ) -> SessionRecord:
+        return await self._write(
+            lambda connection: self._append_session_record_transaction(
+                connection,
+                run_id=run_id,
+                kind=kind,
+                operation_id=operation_id,
+                phase=phase,
+                payload=payload,
+                record_id=record_id,
+            )
+        )
+
+    async def list_session_records(self, *, run_id: UUID) -> list[SessionRecord]:
+        return await self._read(
+            lambda connection: [
+                self._session_record(row)
+                for row in connection.execute(
+                    "SELECT * FROM session_records WHERE run_id = ? ORDER BY seq",
+                    (str(run_id),),
+                ).fetchall()
+            ]
+        )
+
+    async def list_conversation_skill_mutes(self, *, conversation_id: UUID) -> frozenset[str]:
+        def operation(connection: sqlite3.Connection) -> frozenset[str]:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM conversations WHERE id = ?", (str(conversation_id),)
+                ).fetchone()
+                is None
+            ):
+                raise ConversationNotFoundError(str(conversation_id))
+            return frozenset(
+                str(row["skill_name"])
+                for row in connection.execute(
+                    """SELECT skill_name FROM cowork_conversation_skill_mutes
+                       WHERE conversation_id = ? ORDER BY skill_name""",
+                    (str(conversation_id),),
+                ).fetchall()
+            )
+
+        return await self._read(operation)
+
+    async def set_conversation_skill_muted(
+        self,
+        *,
+        conversation_id: UUID,
+        skill_name: str,
+        muted: bool,
+    ) -> frozenset[str]:
+        def operation(connection: sqlite3.Connection) -> frozenset[str]:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM conversations WHERE id = ?", (str(conversation_id),)
+                ).fetchone()
+                is None
+            ):
+                raise ConversationNotFoundError(str(conversation_id))
+            active = connection.execute(
+                """SELECT 1 FROM agent_runs WHERE conversation_id = ?
+                   AND status IN ('initializing','queued','executing','waiting_human','sleeping')
+                   LIMIT 1""",
+                (str(conversation_id),),
+            ).fetchone()
+            if active is not None:
+                raise ConversationBusyError("会话仍有任务在运行，Skill 设置只能在两次运行之间修改")
+            if muted:
+                connection.execute(
+                    """INSERT INTO cowork_conversation_skill_mutes(
+                           conversation_id, skill_name, created_at
+                       ) VALUES (?, ?, ?) ON CONFLICT(conversation_id, skill_name) DO NOTHING""",
+                    (str(conversation_id), skill_name, _iso()),
+                )
+            else:
+                connection.execute(
+                    """DELETE FROM cowork_conversation_skill_mutes
+                       WHERE conversation_id = ? AND skill_name = ?""",
+                    (str(conversation_id), skill_name),
+                )
+            connection.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ?",
+                (_iso(), str(conversation_id)),
+            )
+            return frozenset(
+                str(row["skill_name"])
+                for row in connection.execute(
+                    """SELECT skill_name FROM cowork_conversation_skill_mutes
+                       WHERE conversation_id = ? ORDER BY skill_name""",
+                    (str(conversation_id),),
+                ).fetchall()
+            )
+
+        return await self._write(operation)
 
     async def delete_conversation(self, *, conversation_id: UUID) -> bool:
         def operation(connection: sqlite3.Connection) -> bool:
@@ -1179,6 +3091,63 @@ class SqliteCoworkStore:
             ).fetchone()
             if leased_worker is not None:
                 raise ConversationBusyError("会话任务正在执行")
+            # v20 新库有 ON DELETE CASCADE；旧库无法原地补 FK，仍在同一事务显式 purge。
+            # 先清空再删除，使未来若 DELETE 被 trigger/扩展改成归档，也不会残留完整消息。
+            connection.execute(
+                "UPDATE memory_extraction_jobs SET content = '' WHERE conversation_id = ?",
+                (str(conversation_id),),
+            )
+            connection.execute(
+                "DELETE FROM memory_extraction_jobs WHERE conversation_id = ?",
+                (str(conversation_id),),
+            )
+            team_ids = [
+                str(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM cowork_teams WHERE lead_conversation_id = ?",
+                    (str(conversation_id),),
+                ).fetchall()
+            ]
+            for team_id in team_ids:
+                connection.execute(
+                    "INSERT INTO cowork_team_event_purge_guards(team_id) VALUES (?)",
+                    (team_id,),
+                )
+                # outbox 先删：它以 event_id FK 保护未决投递；其余无 FK 的 Team audit
+                # projection 也必须随用户删除一起清除，避免 task/path/report 摘要 orphan。
+                connection.execute(
+                    "DELETE FROM cowork_team_wake_outbox WHERE team_id = ?", (team_id,)
+                )
+                connection.execute("DELETE FROM cowork_team_events WHERE team_id = ?", (team_id,))
+                connection.execute(
+                    "DELETE FROM cowork_team_event_heads WHERE team_id = ?", (team_id,)
+                )
+                connection.execute(
+                    "DELETE FROM cowork_team_event_cursors WHERE team_id = ?", (team_id,)
+                )
+                connection.execute(
+                    "DELETE FROM cowork_team_event_projection_summaries WHERE team_id = ?",
+                    (team_id,),
+                )
+                connection.execute(
+                    "DELETE FROM cowork_team_event_purge_guards WHERE team_id = ?", (team_id,)
+                )
+            # session_entries uses a self-referencing RESTRICT edge so callers cannot
+            # accidentally orphan a branch by deleting an individual parent.  A whole
+            # conversation purge is different: detach the private tree in this same
+            # transaction, then remove lanes and entries before deleting the owner.
+            connection.execute(
+                "DELETE FROM session_lanes WHERE conversation_id = ?",
+                (str(conversation_id),),
+            )
+            connection.execute(
+                "UPDATE session_entries SET parent_id = NULL WHERE conversation_id = ?",
+                (str(conversation_id),),
+            )
+            connection.execute(
+                "DELETE FROM session_entries WHERE conversation_id = ?",
+                (str(conversation_id),),
+            )
             return (
                 connection.execute(
                     "DELETE FROM conversations WHERE id = ?", (str(conversation_id),)
@@ -1203,6 +3172,7 @@ class SqliteCoworkStore:
         unattended: bool = False,
         run_trigger: Literal["manual", "schedule", "catchup"] = "manual",
         initializing: bool = False,
+        source_wake_id: UUID | None = None,
     ) -> RunRecord:
         if not goal.strip():
             raise ValueError("run 目标不能为空")
@@ -1213,14 +3183,21 @@ class SqliteCoworkStore:
         initial_status = "initializing" if initializing else "queued"
 
         def operation(connection: sqlite3.Connection) -> RunRecord:
+            if source_wake_id is not None:
+                existing = connection.execute(
+                    "SELECT * FROM agent_runs WHERE source_wake_id = ?",
+                    (str(source_wake_id),),
+                ).fetchone()
+                if existing is not None:
+                    return self._run_record(existing)
             connection.execute(
                 """
                 INSERT INTO agent_runs(
                     id, conversation_id, goal, status, budget_tokens, budget_calls,
                     budget_wall_ms, answer_mode, workflow_type, schedule_id, unattended, run_trigger,
-                    retrieval_top_k,
+                    retrieval_top_k, source_wake_id,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(run_id),
@@ -1236,6 +3213,7 @@ class SqliteCoworkStore:
                     int(unattended),
                     run_trigger,
                     retrieval_top_k,
+                    None if source_wake_id is None else str(source_wake_id),
                     timestamp,
                     timestamp,
                 ),
@@ -1248,13 +3226,84 @@ class SqliteCoworkStore:
 
         return await self._write(operation)
 
+    @staticmethod
+    def _persisted_checkpoint_state(
+        connection: sqlite3.Connection,
+        *,
+        run_id: UUID,
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
+        """同步单行 RunConfig，并返回只含可变字段的 checkpoint state。"""
+
+        run_config, checkpoint_state = split_cowork_state(state)
+        if run_config is None:
+            return checkpoint_state
+        exists = connection.execute(
+            "SELECT 1 FROM cowork_run_configs WHERE run_id = ?", (str(run_id),)
+        ).fetchone()
+        if exists is None:
+            timestamp = _iso()
+            connection.execute(
+                """INSERT INTO cowork_run_configs(run_id, config, created_at, updated_at)
+                   VALUES (?, ?, ?, ?)""",
+                (str(run_id), canonical_json(run_config), timestamp, timestamp),
+            )
+        return checkpoint_state
+
+    @staticmethod
+    def _update_run_config_transaction(
+        connection: sqlite3.Connection,
+        *,
+        run_id: UUID,
+        run_config: dict[str, Any],
+    ) -> None:
+        changed = connection.execute(
+            """UPDATE cowork_run_configs SET config = ?, updated_at = ?
+               WHERE run_id = ?""",
+            (canonical_json(run_config), _iso(), str(run_id)),
+        ).rowcount
+        if changed != 1:
+            raise LookupError(f"Cowork RunConfig 不存在: {run_id}")
+
+    @staticmethod
+    def _run_config_transaction(
+        connection: sqlite3.Connection, *, run_id: UUID
+    ) -> dict[str, Any] | None:
+        row = connection.execute(
+            "SELECT config FROM cowork_run_configs WHERE run_id = ?", (str(run_id),)
+        ).fetchone()
+        if row is None:
+            return None
+        value = json.loads(row["config"])
+        if not isinstance(value, dict):  # pragma: no cover - 写入路径保证 object
+            raise ValueError("Cowork RunConfig 不是 JSON object")
+        return value
+
+    @classmethod
+    def _stored_checkpoint(
+        cls, connection: sqlite3.Connection, row: sqlite3.Row
+    ) -> StoredCheckpoint:
+        checkpoint_state = json.loads(row["state"])
+        if not isinstance(checkpoint_state, dict):  # pragma: no cover - 写入路径保证 object
+            raise ValueError("Cowork checkpoint state 不是 JSON object")
+        run_id = UUID(row["run_id"])
+        return StoredCheckpoint(
+            run_id=run_id,
+            checkpoint_id=str(row["checkpoint_id"]),
+            parent_id=row["parent_id"],
+            state=merge_cowork_state(
+                checkpoint_state,
+                cls._run_config_transaction(connection, run_id=run_id),
+            ),
+        )
+
     async def initialize_run(
         self,
         *,
         run_id: UUID,
         state: dict[str, Any],
         checkpoint_id: str,
-        events: Sequence[tuple[str, dict[str, Any]]],
+        events: Sequence[RunEventDraft],
     ) -> tuple[RunRecord, StoredCheckpoint, list[RunEvent]]:
         """原子写入初始 checkpoint/event，并把 initializing run 变为 queued。
 
@@ -1279,11 +3328,14 @@ class SqliteCoworkStore:
                 "SELECT 1 FROM agent_checkpoints WHERE run_id = ? LIMIT 1", (str(run_id),)
             ).fetchone():
                 raise RuntimeError("run 已存在初始 checkpoint")
+            checkpoint_state = self._persisted_checkpoint_state(
+                connection, run_id=run_id, state=state
+            )
             connection.execute(
                 """INSERT INTO agent_checkpoints(
                            run_id, checkpoint_id, parent_id, state, created_at
                        ) VALUES (?, ?, NULL, ?, ?)""",
-                (str(run_id), checkpoint_id, canonical_json(state), _iso()),
+                (str(run_id), checkpoint_id, canonical_json(checkpoint_state), _iso()),
             )
             stored_events = self._append_events_transaction(connection, run_id, events)
             if status == "initializing":
@@ -1415,7 +3467,7 @@ class SqliteCoworkStore:
         return await self._write(operation)
 
     async def append_events(
-        self, *, run_id: UUID, events: Sequence[tuple[str, dict[str, Any]]]
+        self, *, run_id: UUID, events: Sequence[RunEventDraft]
     ) -> list[RunEvent]:
         if not events:
             return []
@@ -1429,7 +3481,7 @@ class SqliteCoworkStore:
         self,
         connection: sqlite3.Connection,
         run_id: UUID,
-        events: Sequence[tuple[str, dict[str, Any]]],
+        events: Sequence[RunEventDraft],
     ) -> list[RunEvent]:
         if not events:
             return []
@@ -1441,23 +3493,24 @@ class SqliteCoworkStore:
         first_seq = int(row["next_seq"])
         created_at = _iso()
         timestamp = cast(datetime, _datetime(created_at))
+        validated_events = [run_event(event_type, payload) for event_type, payload in events]
         encoded = [
             (
                 str(run_id),
                 first_seq + offset,
                 event_type,
-                canonical_json(payload),
+                canonical_json(dict(payload)),
                 created_at,
             )
-            for offset, (event_type, payload) in enumerate(events)
+            for offset, (event_type, payload) in enumerate(validated_events)
         ]
         connection.executemany(
             "INSERT INTO run_events(run_id, seq, type, payload, created_at) VALUES (?, ?, ?, ?, ?)",
             encoded,
         )
         output = [
-            RunEvent(run_id, first_seq + offset, event_type, payload, timestamp)
-            for offset, (event_type, payload) in enumerate(events)
+            RunEvent(run_id, first_seq + offset, event_type, dict(payload), timestamp)
+            for offset, (event_type, payload) in enumerate(validated_events)
         ]
         connection.execute(
             "UPDATE agent_runs SET next_seq = ?, updated_at = ? WHERE id = ?",
@@ -1488,7 +3541,7 @@ class SqliteCoworkStore:
                 RunEvent(
                     run_id=UUID(row["run_id"]),
                     seq=int(row["seq"]),
-                    type=str(row["type"]),
+                    type=cast("RunEventType", str(row["type"])),
                     payload=json.loads(row["payload"]),
                     created_at=cast(datetime, _datetime(row["created_at"])),
                 )
@@ -1508,6 +3561,9 @@ class SqliteCoworkStore:
         checkpoint = StoredCheckpoint(run_id, checkpoint_id or str(uuid7()), parent_id, state)
 
         def operation(connection: sqlite3.Connection) -> StoredCheckpoint:
+            checkpoint_state = self._persisted_checkpoint_state(
+                connection, run_id=run_id, state=state
+            )
             connection.execute(
                 """
                 INSERT INTO agent_checkpoints(run_id, checkpoint_id, parent_id, state, created_at)
@@ -1517,7 +3573,7 @@ class SqliteCoworkStore:
                     str(run_id),
                     checkpoint.checkpoint_id,
                     parent_id,
-                    canonical_json(state),
+                    canonical_json(checkpoint_state),
                     _iso(),
                 ),
             )
@@ -1534,7 +3590,8 @@ class SqliteCoworkStore:
         checkpoint_id: str,
         used_tokens: int,
         used_calls: int,
-        events: Sequence[tuple[str, dict[str, Any]]],
+        events: Sequence[RunEventDraft],
+        run_config: dict[str, Any] | None = None,
         worker_id: str | None = None,
         transition_to: Literal["queued", "waiting_human", "sleeping"] | None = None,
         wake_at: datetime | None = None,
@@ -1551,7 +3608,8 @@ class SqliteCoworkStore:
             connection: sqlite3.Connection,
         ) -> tuple[StoredCheckpoint, list[RunEvent]]:
             row = connection.execute(
-                "SELECT status, worker_id FROM agent_runs WHERE id = ?", (str(run_id),)
+                "SELECT status, worker_id, conversation_id FROM agent_runs WHERE id = ?",
+                (str(run_id),),
             ).fetchone()
             if row is None:
                 raise LookupError(f"run 不存在: {run_id}")
@@ -1598,6 +3656,13 @@ class SqliteCoworkStore:
                        WHERE id = ?""",
                     (used_tokens, used_calls, _iso(), str(run_id)),
                 )
+            checkpoint_state = self._persisted_checkpoint_state(
+                connection, run_id=run_id, state=state
+            )
+            if run_config is not None:
+                self._update_run_config_transaction(
+                    connection, run_id=run_id, run_config=run_config
+                )
             connection.execute(
                 """INSERT INTO agent_checkpoints(
                            run_id, checkpoint_id, parent_id, state, created_at
@@ -1606,10 +3671,43 @@ class SqliteCoworkStore:
                     str(run_id),
                     checkpoint_id,
                     parent_id,
-                    canonical_json(state),
+                    canonical_json(checkpoint_state),
                     _iso(),
                 ),
             )
+            state_status = state.get("status")
+            if state_status in {"done", "failed", "cancelled", "budget_exceeded"}:
+                compaction = state.get("compaction")
+                compaction_payload = (
+                    {
+                        "revision": compaction.get("revision"),
+                        "summary_upto": compaction.get("summary_upto"),
+                        "turn_prefix_upto": compaction.get("turn_prefix_upto"),
+                        "mode": compaction.get("last_mode"),
+                    }
+                    if isinstance(compaction, dict)
+                    else None
+                )
+                self._append_session_entry_transaction(
+                    connection,
+                    conversation_id=UUID(str(row["conversation_id"])),
+                    kind="custom",
+                    payload={
+                        "type": "checkpoint_ref",
+                        "run_id": str(run_id),
+                        "checkpoint_id": checkpoint_id,
+                        "status": state_status,
+                        "canonical_message_count": (
+                            len(state["messages"])
+                            if isinstance(state.get("messages"), list)
+                            else None
+                        ),
+                        "compaction": compaction_payload,
+                    },
+                    entry_id=f"checkpoint-ref:{run_id}:{checkpoint_id}",
+                    parent_id=None,
+                    lane="main",
+                )
             stored_events = self._append_events_transaction(connection, run_id, events)
             return checkpoint, stored_events
 
@@ -1626,12 +3724,23 @@ class SqliteCoworkStore:
             ).fetchone()
             if row is None:
                 return None
-            return StoredCheckpoint(
-                run_id=UUID(row["run_id"]),
-                checkpoint_id=str(row["checkpoint_id"]),
-                parent_id=row["parent_id"],
-                state=json.loads(row["state"]),
-            )
+            return self._stored_checkpoint(connection, row)
+
+        return await self._read(operation)
+
+    async def load_checkpoint(
+        self,
+        *,
+        run_id: UUID,
+        checkpoint_id: str,
+    ) -> StoredCheckpoint | None:
+        def operation(connection: sqlite3.Connection) -> StoredCheckpoint | None:
+            row = connection.execute(
+                """SELECT * FROM agent_checkpoints
+                   WHERE run_id = ? AND checkpoint_id = ?""",
+                (str(run_id), checkpoint_id),
+            ).fetchone()
+            return None if row is None else self._stored_checkpoint(connection, row)
 
         return await self._read(operation)
 
@@ -1656,14 +3765,14 @@ class SqliteCoworkStore:
             ).fetchone()
             if row is None:
                 return None
-            return StoredCheckpoint(
-                run_id=UUID(row["run_id"]),
-                checkpoint_id=str(row["checkpoint_id"]),
-                parent_id=row["parent_id"],
-                state=json.loads(row["state"]),
-            )
+            return self._stored_checkpoint(connection, row)
 
         return await self._read(operation)
+
+    async def load_run_config(self, *, run_id: UUID) -> dict[str, Any] | None:
+        return await self._read(
+            lambda connection: self._run_config_transaction(connection, run_id=run_id)
+        )
 
     async def acquire_invocation(
         self,
@@ -1684,7 +3793,7 @@ class SqliteCoworkStore:
         now = _now()
         lease_until = _iso(now + timedelta(seconds=lease_s))
 
-        def operation(connection: sqlite3.Connection) -> InvocationLease:
+        def operation(connection: sqlite3.Connection) -> InvocationLease | None:
             existing = connection.execute(
                 "SELECT * FROM tool_invocations WHERE idempotency_key = ?", (key,)
             ).fetchone()
@@ -1712,8 +3821,35 @@ class SqliteCoworkStore:
             if str(existing["args_hash"]) != args_hash:
                 raise RuntimeError("幂等键碰撞：已有调用的参数摘要不同")
             status = str(existing["status"])
+            if status == "outcome_unknown":
+                raise InvocationOutcomeUnknownError()
             expired = status == "in_flight" and str(existing["lease_until"] or "") < _iso(now)
-            if status == "failed" or expired:
+            if expired:
+                # A dead worker may have crashed before the effect, during it, or after it.
+                # Reclaiming this lease would silently duplicate the latter two cases.  Persist
+                # the uncertainty in the same transaction, then raise only after commit.
+                timestamp = _iso(now)
+                connection.execute(
+                    """
+                    UPDATE tool_invocations
+                    SET status = 'outcome_unknown', result = ?, effect_ref = NULL,
+                        lease_owner = NULL, lease_until = NULL, completed_at = ?, updated_at = ?
+                    WHERE idempotency_key = ? AND status = 'in_flight'
+                    """,
+                    (
+                        canonical_json(
+                            {
+                                "outcome": "unknown",
+                                "reason": "effect_may_have_completed_before_lease_expiry",
+                            }
+                        ),
+                        timestamp,
+                        timestamp,
+                        key,
+                    ),
+                )
+                return None
+            if status == "failed":
                 connection.execute(
                     """
                     UPDATE tool_invocations
@@ -1734,7 +3870,10 @@ class SqliteCoworkStore:
                 )
             raise InvocationInFlightError("相同工具调用正在执行，请稍后重试")
 
-        return await self._write(operation)
+        lease = await self._write(operation)
+        if lease is None:
+            raise InvocationOutcomeUnknownError()
+        return lease
 
     async def complete_invocation(
         self,
@@ -1770,6 +3909,8 @@ class SqliteCoworkStore:
         )
 
     async def fail_invocation(self, *, key: str, worker_id: str, error: str) -> None:
+        safe_error = str(redact_persisted_tool_value(error)).strip()[:160]
+
         def operation(connection: sqlite3.Connection) -> None:
             connection.execute(
                 """
@@ -1778,8 +3919,44 @@ class SqliteCoworkStore:
                     updated_at = ?
                 WHERE idempotency_key = ? AND status = 'in_flight' AND lease_owner = ?
                 """,
-                (canonical_json({"error": error}), _iso(), key, worker_id),
+                (
+                    canonical_json({"error": safe_error or "tool_handler_failed"}),
+                    _iso(),
+                    key,
+                    worker_id,
+                ),
             )
+
+        await self._write(operation)
+
+    async def mark_invocation_outcome_unknown(self, *, key: str, worker_id: str) -> None:
+        """Terminalize a dispatched call whose remote effect cannot be proven either way."""
+
+        now = _iso()
+
+        def operation(connection: sqlite3.Connection) -> None:
+            changed = connection.execute(
+                """
+                UPDATE tool_invocations
+                SET status = 'outcome_unknown', result = ?, effect_ref = NULL,
+                    lease_owner = NULL, lease_until = NULL, completed_at = ?, updated_at = ?
+                WHERE idempotency_key = ? AND status = 'in_flight' AND lease_owner = ?
+                """,
+                (
+                    canonical_json(
+                        {
+                            "outcome": "unknown",
+                            "reason": "remote_result_unavailable",
+                        }
+                    ),
+                    now,
+                    now,
+                    key,
+                    worker_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise InvocationInFlightError("工具调用租约已被其他 worker 接管")
 
         await self._write(operation)
 
@@ -2236,6 +4413,53 @@ class SqliteCoworkStore:
 
         return await self._read(operation)
 
+    async def claim_messaging_event(
+        self,
+        *,
+        event_key: str,
+        platform: str,
+        event_type: str,
+        retention_days: int,
+    ) -> bool:
+        if (
+            len(event_key) != 64
+            or any(character not in "0123456789abcdef" for character in event_key)
+            or not 1 <= len(platform) <= 32
+            or not 1 <= len(event_type) <= 256
+            or not 1 <= retention_days <= 365
+        ):
+            raise ValueError("消息事件 receipt 参数无效")
+        now = _now()
+        cutoff = _iso(now - timedelta(days=retention_days))
+
+        def operation(connection: sqlite3.Connection) -> bool:
+            connection.execute(
+                "DELETE FROM cowork_messaging_event_receipts WHERE received_at < ?",
+                (cutoff,),
+            )
+            changed = connection.execute(
+                """INSERT INTO cowork_messaging_event_receipts(
+                       event_key, platform, event_type, status, received_at
+                   ) VALUES (?, ?, ?, 'claimed', ?) ON CONFLICT(event_key) DO NOTHING""",
+                (event_key, platform, event_type, _iso(now)),
+            ).rowcount
+            return changed == 1
+
+        return await self._write(operation)
+
+    async def complete_messaging_event(self, *, event_key: str) -> bool:
+        return await self._write(
+            lambda connection: (
+                connection.execute(
+                    """UPDATE cowork_messaging_event_receipts
+                       SET status = 'completed', completed_at = ?
+                       WHERE event_key = ? AND status = 'claimed'""",
+                    (_iso(), event_key),
+                ).rowcount
+                == 1
+            )
+        )
+
     async def create_channel_subscription(
         self,
         *,
@@ -2533,15 +4757,26 @@ class SqliteCoworkStore:
 
         return await self._write(operation)
 
-    async def set_workspace_trust(self, *, canonical_path: str, trusted: bool) -> bool:
+    async def set_workspace_trust(
+        self,
+        *,
+        canonical_path: str,
+        trusted: bool,
+        policy_sha256: str | None,
+    ) -> bool:
         def operation(connection: sqlite3.Connection) -> bool:
             if trusted:
+                if policy_sha256 is None:
+                    raise ValueError("信任 workspace 必须绑定 policy_sha256")
                 connection.execute(
-                    """INSERT INTO cowork_workspace_trust(canonical_path, trusted_at, revoked_at)
-                       VALUES (?, ?, NULL)
+                    """INSERT INTO cowork_workspace_trust(
+                           canonical_path, policy_sha256, trusted_at, revoked_at
+                       ) VALUES (?, ?, ?, NULL)
                        ON CONFLICT(canonical_path) DO UPDATE
-                       SET trusted_at = excluded.trusted_at, revoked_at = NULL""",
-                    (canonical_path, _iso()),
+                       SET policy_sha256 = excluded.policy_sha256,
+                           trusted_at = excluded.trusted_at,
+                           revoked_at = NULL""",
+                    (canonical_path, policy_sha256, _iso()),
                 )
                 return True
             return (
@@ -2555,13 +4790,18 @@ class SqliteCoworkStore:
 
         return await self._write(operation)
 
-    async def is_workspace_trusted(self, *, canonical_path: str) -> bool:
+    async def is_workspace_trusted(
+        self,
+        *,
+        canonical_path: str,
+        policy_sha256: str,
+    ) -> bool:
         return await self._read(
             lambda connection: (
                 connection.execute(
                     """SELECT 1 FROM cowork_workspace_trust
-                   WHERE canonical_path = ? AND revoked_at IS NULL""",
-                    (canonical_path,),
+                   WHERE canonical_path = ? AND policy_sha256 = ? AND revoked_at IS NULL""",
+                    (canonical_path, policy_sha256),
                 ).fetchone()
                 is not None
             )
@@ -3001,29 +5241,161 @@ class SqliteCoworkStore:
 
         return await self._read(operation)
 
-    async def enqueue_steering(self, *, run_id: UUID, conversation_id: UUID, content: str) -> Any:
+    @staticmethod
+    def _queued_message_record(
+        row: sqlite3.Row,
+        *,
+        status: QueuedMessageStatus | None = None,
+        consumed_at: datetime | None = None,
+    ) -> SteeringRecord:
+        return SteeringRecord(
+            id=UUID(str(row["id"])),
+            run_id=UUID(str(row["run_id"])),
+            conversation_id=UUID(str(row["conversation_id"])),
+            content=str(row["content"]),
+            source=cast("SteeringSource", str(row["source"])),
+            status=status or cast("QueuedMessageStatus", str(row["status"])),
+            created_at=cast(datetime, _datetime(row["created_at"])),
+            consumed_at=(consumed_at if consumed_at is not None else _datetime(row["consumed_at"])),
+            requested_delivery=cast("QueuedMessageDelivery", str(row["requested_delivery"])),
+            delivery=cast("QueuedMessageDelivery", str(row["delivery"])),
+            cancelled_at=_datetime(row["cancelled_at"]),
+        )
+
+    def _append_queue_record_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        row: sqlite3.Row,
+        phase: Literal["enqueued", "consumed", "cancelled"],
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        payload = {
+            "message_id": str(row["id"]),
+            "requested_delivery": str(row["requested_delivery"]),
+            "delivery": str(row["delivery"]),
+            "source": str(row["source"]),
+        }
+        if extra is not None:
+            payload.update(extra)
+        self._append_session_record_transaction(
+            connection,
+            run_id=UUID(str(row["run_id"])),
+            kind="queue_event",
+            operation_id=f"queue:{row['id']}",
+            phase=phase,
+            payload=payload,
+        )
+
+    async def enqueue_steering(
+        self,
+        *,
+        run_id: UUID,
+        conversation_id: UUID,
+        content: str,
+        source: SteeringSource = "unknown",
+        source_wake_id: UUID | None = None,
+    ) -> SteeringRecord:
+        return await self.enqueue_queued_message(
+            run_id=run_id,
+            conversation_id=conversation_id,
+            content=content,
+            source=source,
+            delivery="steer",
+            source_wake_id=source_wake_id,
+        )
+
+    async def enqueue_queued_message(
+        self,
+        *,
+        run_id: UUID,
+        conversation_id: UUID,
+        content: str,
+        source: SteeringSource,
+        delivery: QueuedMessageDelivery,
+        source_wake_id: UUID | None = None,
+    ) -> SteeringRecord:
         normalized = content.strip()
         if not 1 <= len(normalized) <= 4000:
-            raise ValueError("steering 内容长度必须位于 1 到 4000")
+            raise ValueError("queued message 内容长度必须位于 1 到 4000")
+        if source not in {"local_owner", "external_inbound", "runtime", "unknown"}:
+            raise ValueError("queued message source 无效")
+        if delivery not in {"steer", "follow_up", "next_run"}:
+            raise ValueError("queued message delivery 无效")
         item_id = uuid7()
         timestamp = _iso()
 
-        def operation(connection: sqlite3.Connection) -> Any:
+        def operation(connection: sqlite3.Connection) -> SteeringRecord:
+            if source_wake_id is not None:
+                existing = connection.execute(
+                    "SELECT * FROM cowork_steering_messages WHERE source_wake_id = ?",
+                    (str(source_wake_id),),
+                ).fetchone()
+                if existing is not None:
+                    self._append_queue_record_transaction(
+                        connection,
+                        row=existing,
+                        phase="enqueued",
+                    )
+                    return self._queued_message_record(existing)
+            run = connection.execute(
+                "SELECT conversation_id, status FROM agent_runs WHERE id = ?",
+                (str(run_id),),
+            ).fetchone()
+            if run is None:
+                raise RunNotFoundError(str(run_id))
+            if str(run["conversation_id"]) != str(conversation_id):
+                raise ValueError("queued message 的 run 与 conversation 不匹配")
+            terminal = str(run["status"]) in TERMINAL_RUN_STATUSES
+            effective_delivery = delivery
+            if delivery == "steer" and terminal:
+                raise ValueError("终态 run 不能接收 steering")
+            if delivery in {"steer", "follow_up"}:
+                queue_state = connection.execute(
+                    "SELECT follow_up_open FROM cowork_run_queue_state WHERE run_id = ?",
+                    (str(run_id),),
+                ).fetchone()
+                if (delivery == "follow_up" and terminal) or (
+                    queue_state is not None and not bool(queue_state[0])
+                ):
+                    # The terminal boundary already sealed this run. Preserve the user message
+                    # by routing it to the next run instead of leaving an unobservable orphan.
+                    effective_delivery = "next_run"
+            initial_status = "pending"
             connection.execute(
                 """INSERT INTO cowork_steering_messages(
-                       id, run_id, conversation_id, content, status, created_at
-                   ) VALUES (?, ?, ?, ?, 'pending', ?)""",
-                (str(item_id), str(run_id), str(conversation_id), normalized, timestamp),
+                       id, run_id, conversation_id, content, source, source_wake_id,
+                       requested_delivery, delivery, status, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(item_id),
+                    str(run_id),
+                    str(conversation_id),
+                    normalized,
+                    source,
+                    None if source_wake_id is None else str(source_wake_id),
+                    delivery,
+                    effective_delivery,
+                    initial_status,
+                    timestamp,
+                ),
             )
-            return SteeringRecord(
-                item_id,
-                run_id,
-                conversation_id,
-                normalized,
-                "pending",
-                cast(datetime, _datetime(timestamp)),
-                None,
+            row = connection.execute(
+                "SELECT * FROM cowork_steering_messages WHERE id = ?", (str(item_id),)
+            ).fetchone()
+            assert row is not None
+            if effective_delivery == "next_run" and terminal:
+                self._promote_next_run_transaction(connection, run_id=run_id)
+                row = connection.execute(
+                    "SELECT * FROM cowork_steering_messages WHERE id = ?", (str(item_id),)
+                ).fetchone()
+                assert row is not None
+            self._append_queue_record_transaction(
+                connection,
+                row=row,
+                phase="enqueued",
             )
+            return self._queued_message_record(row)
 
         return await self._write(operation)
 
@@ -3033,7 +5405,8 @@ class SqliteCoworkStore:
         def operation(connection: sqlite3.Connection) -> list[Any]:
             rows = connection.execute(
                 """SELECT * FROM cowork_steering_messages
-                   WHERE run_id = ? AND status = 'pending' ORDER BY created_at, id""",
+                   WHERE run_id = ? AND delivery = 'steer' AND status = 'pending'
+                   ORDER BY created_at, id""",
                 (str(run_id),),
             ).fetchall()
             if rows:
@@ -3042,18 +5415,188 @@ class SqliteCoworkStore:
                        SET status = 'consumed', consumed_at = ? WHERE id = ? AND status = 'pending'""",
                     [(timestamp, row["id"]) for row in rows],
                 )
+                for row in rows:
+                    self._append_queue_record_transaction(
+                        connection,
+                        row=row,
+                        phase="consumed",
+                    )
             return [
-                SteeringRecord(
-                    UUID(row["id"]),
-                    UUID(row["run_id"]),
-                    UUID(row["conversation_id"]),
-                    str(row["content"]),
-                    "consumed",
-                    cast(datetime, _datetime(row["created_at"])),
-                    cast(datetime, _datetime(timestamp)),
+                self._queued_message_record(
+                    row,
+                    status="consumed",
+                    consumed_at=cast(datetime, _datetime(timestamp)),
                 )
                 for row in rows
             ]
+
+        return await self._write(operation)
+
+    async def claim_follow_up_or_seal(
+        self,
+        *,
+        run_id: UUID,
+        worker_id: str,
+    ) -> list[SteeringRecord]:
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> list[SteeringRecord]:
+            run = connection.execute(
+                "SELECT status, worker_id FROM agent_runs WHERE id = ?", (str(run_id),)
+            ).fetchone()
+            if run is None:
+                raise RunNotFoundError(str(run_id))
+            if str(run["status"]) != "executing" or str(run["worker_id"] or "") != worker_id:
+                raise ValueError("只有当前 run 租约持有者可以封闭 follow-up 队列")
+            rows = connection.execute(
+                """SELECT * FROM cowork_steering_messages
+                   WHERE run_id = ? AND delivery IN ('steer','follow_up')
+                     AND status = 'pending'
+                   ORDER BY created_at, id""",
+                (str(run_id),),
+            ).fetchall()
+            if rows:
+                connection.executemany(
+                    """UPDATE cowork_steering_messages
+                       SET status = 'consumed', consumed_at = ?
+                       WHERE id = ? AND status = 'pending'""",
+                    [(timestamp, row["id"]) for row in rows],
+                )
+                for row in rows:
+                    self._append_queue_record_transaction(
+                        connection,
+                        row=row,
+                        phase="consumed",
+                    )
+                return [
+                    self._queued_message_record(
+                        row,
+                        status="consumed",
+                        consumed_at=cast(datetime, _datetime(timestamp)),
+                    )
+                    for row in rows
+                ]
+            connection.execute(
+                """INSERT INTO cowork_run_queue_state(run_id, follow_up_open, sealed_at)
+                   VALUES (?, 0, ?)
+                   ON CONFLICT(run_id) DO UPDATE SET follow_up_open = 0, sealed_at = excluded.sealed_at""",
+                (str(run_id), timestamp),
+            )
+            return []
+
+        return await self._write(operation)
+
+    async def cancel_queued_message(
+        self,
+        *,
+        message_id: UUID,
+        conversation_id: UUID,
+    ) -> bool:
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> bool:
+            row = connection.execute(
+                """SELECT run_id, delivery, status FROM cowork_steering_messages
+                   WHERE id = ? AND conversation_id = ? AND status IN ('pending','ready')""",
+                (str(message_id), str(conversation_id)),
+            ).fetchone()
+            if row is None:
+                return False
+            changed = connection.execute(
+                """UPDATE cowork_steering_messages
+                   SET status = 'cancelled', cancelled_at = ?
+                   WHERE id = ? AND status IN ('pending','ready')""",
+                (timestamp, str(message_id)),
+            ).rowcount
+            if changed != 1:
+                return False
+            if str(row["delivery"]) == "next_run" and str(row["status"]) == "ready":
+                self._promote_next_run_transaction(
+                    connection,
+                    run_id=UUID(str(row["run_id"])),
+                )
+            full_row = connection.execute(
+                "SELECT * FROM cowork_steering_messages WHERE id = ?",
+                (str(message_id),),
+            ).fetchone()
+            assert full_row is not None
+            self._append_queue_record_transaction(
+                connection,
+                row=full_row,
+                phase="cancelled",
+            )
+            return True
+
+        return await self._write(operation)
+
+    async def list_ready_next_run_messages(self, *, limit: int = 100) -> list[SteeringRecord]:
+        if not 1 <= limit <= 1000:
+            raise ValueError("ready next-run limit 必须位于 1 到 1000")
+        return await self._read(
+            lambda connection: [
+                self._queued_message_record(row)
+                for row in connection.execute(
+                    """SELECT * FROM cowork_steering_messages
+                       WHERE delivery = 'next_run' AND status = 'ready'
+                       ORDER BY created_at, id LIMIT ?""",
+                    (limit,),
+                ).fetchall()
+            ]
+        )
+
+    async def consume_ready_next_run_message(
+        self,
+        *,
+        message_id: UUID,
+        launched_run_id: UUID,
+    ) -> bool:
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> bool:
+            row = connection.execute(
+                """SELECT run_id, conversation_id FROM cowork_steering_messages
+                   WHERE id = ? AND delivery = 'next_run' AND status = 'ready'""",
+                (str(message_id),),
+            ).fetchone()
+            if row is None:
+                return False
+            launched = connection.execute(
+                "SELECT conversation_id, status FROM agent_runs WHERE id = ?",
+                (str(launched_run_id),),
+            ).fetchone()
+            if launched is None or str(launched["conversation_id"]) != str(row["conversation_id"]):
+                raise ValueError("next-run delivery 与新 run 会话不匹配")
+            changed = connection.execute(
+                """UPDATE cowork_steering_messages
+                   SET status = 'consumed', consumed_at = ?
+                   WHERE id = ? AND status = 'ready'""",
+                (timestamp, str(message_id)),
+            ).rowcount
+            if changed != 1:
+                return False
+            full_row = connection.execute(
+                "SELECT * FROM cowork_steering_messages WHERE id = ?",
+                (str(message_id),),
+            ).fetchone()
+            assert full_row is not None
+            self._append_queue_record_transaction(
+                connection,
+                row=full_row,
+                phase="consumed",
+                extra={"launched_run_id": str(launched_run_id)},
+            )
+            # Preserve FIFO across more than one next_run message: the remaining tail now waits
+            # for the run created from this head, and that run's terminal transaction promotes
+            # exactly one successor.
+            connection.execute(
+                """UPDATE cowork_steering_messages SET run_id = ?
+                   WHERE run_id = ? AND conversation_id = ?
+                     AND delivery = 'next_run' AND status = 'pending'""",
+                (str(launched_run_id), str(row["run_id"]), str(row["conversation_id"])),
+            )
+            if str(launched["status"]) in TERMINAL_RUN_STATUSES:
+                self._promote_next_run_transaction(connection, run_id=launched_run_id)
+            return True
 
         return await self._write(operation)
 
@@ -3187,14 +5730,593 @@ class SqliteCoworkStore:
                 ),
             )
             connection.execute(
-                """UPDATE cowork_steering_messages SET status = 'cancelled'
-                   WHERE run_id = ? AND status = 'pending'""",
-                (str(run_id),),
+                """UPDATE cowork_steering_messages
+                   SET status = 'cancelled', cancelled_at = ?
+                   WHERE run_id = ? AND delivery = 'steer' AND status = 'pending'""",
+                (timestamp, str(run_id)),
             )
 
         await self._write(operation)
 
     # ---- Agent Teams / Board -----------------------------------------------
+    async def list_team_events(
+        self, *, team_id: UUID, after_sequence: int = 0, limit: int = 200
+    ) -> list[TeamEventRecord]:
+        if after_sequence < 0:
+            raise ValueError("after_sequence 不能为负数")
+        if limit <= 0 or limit > 2_000:
+            raise ValueError("Team event limit 必须在 1..2000")
+        return await self._read(
+            lambda connection: [
+                self._team_event_record(row)
+                for row in connection.execute(
+                    """SELECT * FROM cowork_team_events
+                       WHERE team_id = ? AND sequence > ?
+                       ORDER BY sequence LIMIT ?""",
+                    (str(team_id), after_sequence, limit),
+                ).fetchall()
+            ]
+        )
+
+    async def verify_team_event_log(self, *, team_id: UUID) -> TeamEventVerification:
+        def operation(connection: sqlite3.Connection) -> TeamEventVerification:
+            connection.execute("BEGIN")
+            try:
+                rows, head = self._verified_team_event_rows(connection, team_id)
+                return TeamEventVerification(
+                    team_id=team_id,
+                    valid=True,
+                    event_count=len(rows),
+                    head_sequence=int(head["last_sequence"]),
+                    head_hash=str(head["head_hash"]),
+                    verified_at=_now(),
+                )
+            finally:
+                connection.rollback()
+
+        return await self._read(operation)
+
+    async def replay_team_event_projection(self, *, team_id: UUID) -> TeamProjectionSummaryRecord:
+        def operation(connection: sqlite3.Connection) -> TeamProjectionSummaryRecord:
+            connection.execute("BEGIN")
+            try:
+                return self._replay_team_event_projection_transaction(connection, team_id)
+            finally:
+                connection.rollback()
+
+        return await self._read(operation)
+
+    async def rebuild_team_event_projection(self, *, team_id: UUID) -> TeamProjectionSummaryRecord:
+        def operation(connection: sqlite3.Connection) -> TeamProjectionSummaryRecord:
+            projection = self._replay_team_event_projection_transaction(connection, team_id)
+            connection.execute(
+                """INSERT INTO cowork_team_event_projection_summaries(
+                       team_id, watermark, head_hash, summary, rebuilt_at
+                   ) VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(team_id) DO UPDATE SET
+                       watermark = excluded.watermark,
+                       head_hash = excluded.head_hash,
+                       summary = excluded.summary,
+                       rebuilt_at = excluded.rebuilt_at""",
+                (
+                    str(team_id),
+                    projection.watermark,
+                    projection.head_hash,
+                    canonical_json(projection.summary),
+                    _iso(projection.rebuilt_at),
+                ),
+            )
+            return projection
+
+        return await self._write(operation)
+
+    async def get_team_event_cursor(
+        self, *, team_id: UUID, consumer: str
+    ) -> TeamEventCursorRecord | None:
+        normalized_consumer = consumer.strip()
+        if not normalized_consumer:
+            raise ValueError("Team event consumer 不能为空")
+
+        def operation(connection: sqlite3.Connection) -> TeamEventCursorRecord | None:
+            row = connection.execute(
+                """SELECT * FROM cowork_team_event_cursors
+                   WHERE team_id = ? AND consumer = ?""",
+                (str(team_id), normalized_consumer),
+            ).fetchone()
+            if row is None:
+                return None
+            return TeamEventCursorRecord(
+                team_id=team_id,
+                consumer=normalized_consumer,
+                last_sequence=int(row["last_sequence"]),
+                last_event_hash=str(row["last_event_hash"]),
+                updated_at=datetime.fromisoformat(str(row["updated_at"])).astimezone(UTC),
+            )
+
+        return await self._read(operation)
+
+    async def advance_team_event_cursor(
+        self,
+        *,
+        team_id: UUID,
+        consumer: str,
+        expected_sequence: int,
+        event_sequence: int,
+        event_hash: str,
+    ) -> TeamEventCursorRecord:
+        normalized_consumer = consumer.strip()
+        if not normalized_consumer:
+            raise ValueError("Team event consumer 不能为空")
+        if expected_sequence < 0 or event_sequence != expected_sequence + 1:
+            raise ValueError("Team event cursor 只能逐条、无跳号前进")
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> TeamEventCursorRecord:
+            rows, _ = self._verified_team_event_rows(connection, team_id)
+            target = next((row for row in rows if int(row["sequence"]) == event_sequence), None)
+            if target is None or str(target["hash"]) != event_hash:
+                raise TeamEventIntegrityError("cursor 目标 event/hash 不匹配")
+            current = connection.execute(
+                """SELECT * FROM cowork_team_event_cursors
+                   WHERE team_id = ? AND consumer = ?""",
+                (str(team_id), normalized_consumer),
+            ).fetchone()
+            current_sequence = 0 if current is None else int(current["last_sequence"])
+            if current_sequence != expected_sequence:
+                raise ValueError(
+                    f"Team event cursor CAS 失败：当前为 {current_sequence}，"
+                    f"期望 {expected_sequence}"
+                )
+            if current is None:
+                connection.execute(
+                    """INSERT INTO cowork_team_event_cursors(
+                           team_id, consumer, last_sequence, last_event_hash, updated_at
+                       ) VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        str(team_id),
+                        normalized_consumer,
+                        event_sequence,
+                        event_hash,
+                        timestamp,
+                    ),
+                )
+            else:
+                changed = connection.execute(
+                    """UPDATE cowork_team_event_cursors SET
+                           last_sequence = ?, last_event_hash = ?, updated_at = ?
+                       WHERE team_id = ? AND consumer = ? AND last_sequence = ?""",
+                    (
+                        event_sequence,
+                        event_hash,
+                        timestamp,
+                        str(team_id),
+                        normalized_consumer,
+                        expected_sequence,
+                    ),
+                ).rowcount
+                if changed != 1:  # pragma: no cover - 同进程写锁外的防御式 CAS
+                    raise ValueError("Team event cursor CAS 失败")
+            return TeamEventCursorRecord(
+                team_id=team_id,
+                consumer=normalized_consumer,
+                last_sequence=event_sequence,
+                last_event_hash=event_hash,
+                updated_at=datetime.fromisoformat(timestamp).astimezone(UTC),
+            )
+
+        return await self._write(operation)
+
+    async def claim_team_wake_deliveries(
+        self,
+        *,
+        consumer: str,
+        claim_owner: str,
+        limit: int = 20,
+        lease_seconds: int = 30,
+    ) -> list[TeamWakeDeliveryRecord]:
+        normalized_consumer = consumer.strip()
+        normalized_owner = claim_owner.strip()
+        if normalized_consumer != _TEAM_WAKE_CONSUMER:
+            raise ValueError(f"Team wake outbox 只允许 consumer {_TEAM_WAKE_CONSUMER!r}")
+        if not normalized_owner:
+            raise ValueError("Team wake claim_owner 不能为空")
+        if limit < 1 or limit > 200 or lease_seconds < 1 or lease_seconds > 3600:
+            raise ValueError("Team wake claim limit/lease 无效")
+        now = _now()
+        now_iso = _iso(now)
+        lease_until = _iso(now + timedelta(seconds=lease_seconds))
+
+        def operation(connection: sqlite3.Connection) -> list[TeamWakeDeliveryRecord]:
+            rows = connection.execute(
+                """SELECT wake.* FROM cowork_team_wake_outbox AS wake
+                   LEFT JOIN cowork_team_event_cursors AS cursor
+                     ON cursor.team_id = wake.team_id AND cursor.consumer = ?
+                   WHERE wake.event_sequence = COALESCE(cursor.last_sequence, 0) + 1
+                     AND (wake.status = 'pending'
+                          OR (wake.status = 'claimed' AND wake.claim_until < ?))
+                   ORDER BY wake.created_at, wake.team_id, wake.event_sequence LIMIT ?""",
+                (normalized_consumer, now_iso, limit),
+            ).fetchall()
+            claimed: list[TeamWakeDeliveryRecord] = []
+            for row in rows:
+                changed = connection.execute(
+                    """UPDATE cowork_team_wake_outbox SET status = 'claimed',
+                              claim_owner = ?, claim_until = ?, attempt_count = attempt_count + 1,
+                              validation_outcome = NULL, validated_at = NULL,
+                              last_error = NULL, updated_at = ?
+                       WHERE id = ? AND (status = 'pending'
+                              OR (status = 'claimed' AND claim_until < ?))""",
+                    (
+                        normalized_owner,
+                        lease_until,
+                        now_iso,
+                        str(row["id"]),
+                        now_iso,
+                    ),
+                ).rowcount
+                if changed != 1:  # pragma: no cover - 进程外竞争由条件更新兜底
+                    continue
+                current = connection.execute(
+                    "SELECT * FROM cowork_team_wake_outbox WHERE id = ?", (str(row["id"]),)
+                ).fetchone()
+                assert current is not None
+                claimed.append(self._team_wake_delivery_record(current))
+            return claimed
+
+        return await self._write(operation)
+
+    @staticmethod
+    def _wake_receipt_is_intact(receipt: dict[str, Any]) -> bool:
+        receipt_id = receipt.get("receipt_id")
+        unsigned = {key: value for key, value in receipt.items() if key != "receipt_id"}
+        return isinstance(receipt_id, str) and receipt_id == _json_sha256(unsigned)
+
+    def _validate_worker_wake_authority_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        team: sqlite3.Row,
+        task: sqlite3.Row,
+    ) -> None:
+        scope = json.loads(str(task["resource_scope"] or "[]"))
+        if not isinstance(scope, list):
+            raise TeamEventIntegrityError("Worker wake task scope 非法")
+        grants: list[sqlite3.Row] = list(
+            connection.execute(
+                """SELECT grants.id AS grant_id, grants.capability, grants.expires_at,
+                          roots.id AS root_id, roots.canonical_path
+                   FROM capability_grants AS grants
+                   JOIN session_roots AS roots ON roots.id = grants.session_root_id
+                   WHERE grants.conversation_id = ? AND grants.revoked_at IS NULL
+                     AND roots.enabled = 1""",
+                (str(team["lead_conversation_id"]),),
+            ).fetchall()
+        )
+        now = _now()
+
+        def active_grant(path: str, capability: str) -> sqlite3.Row | None:
+            target = Path(path)
+            for grant in grants:
+                expires_at = _datetime(grant["expires_at"])
+                root = Path(str(grant["canonical_path"]))
+                if (
+                    str(grant["capability"]) == capability
+                    and (expires_at is None or expires_at > now)
+                    and (target == root or target.is_relative_to(root))
+                ):
+                    return grant
+            return None
+
+        write_scope = [
+            item
+            for item in scope
+            if isinstance(item, dict) and item.get("access_mode") == "read_write"
+        ]
+        for item in scope:
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                raise TeamEventIntegrityError("Worker wake task scope item 非法")
+            capability = (
+                "filesystem.write" if item.get("access_mode") == "read_write" else "filesystem.read"
+            )
+            if active_grant(str(item["path"]), capability) is None:
+                raise ValueError(f"Worker wake 前 {capability} grant 已失效")
+        if not write_scope:
+            return
+
+        raw_delegation = team["write_delegation_receipt"]
+        raw_task_receipt = task["scope_receipt"]
+        if raw_delegation is None or raw_task_receipt is None:
+            raise ValueError("Worker write wake 缺少 active delegation/scope receipt")
+        delegation = json.loads(str(raw_delegation))
+        receipt = json.loads(str(raw_task_receipt))
+        team_scope = json.loads(str(team["write_delegation_scope"] or "[]"))
+        if (
+            not isinstance(delegation, dict)
+            or not isinstance(receipt, dict)
+            or not isinstance(team_scope, list)
+            or not self._wake_receipt_is_intact(delegation)
+            or not self._wake_receipt_is_intact(receipt)
+            or delegation.get("conversation_id") != str(team["lead_conversation_id"])
+            or delegation.get("proposal_call_id") != str(team["proposal_call_id"])
+            or delegation.get("scope_sha256") != _json_sha256({"resource_scope": team_scope})
+            or receipt.get("team_id") != str(team["id"])
+            or receipt.get("scope_sha256") != _json_sha256({"resource_scope": scope})
+            or receipt.get("delegation_receipt_id") != delegation.get("receipt_id")
+        ):
+            raise ValueError("Worker write wake receipt 已失效或与当前 scope 不一致")
+        chains = receipt.get("authorization_chain")
+        if not isinstance(chains, list):
+            raise ValueError("Worker write wake receipt 授权链不完整")
+        chain_by_path = {str(item.get("path")): item for item in chains if isinstance(item, dict)}
+        for item in write_scope:
+            path = str(item["path"])
+            grant = active_grant(path, "filesystem.write")
+            chain = chain_by_path.get(path)
+            if (
+                grant is None
+                or chain is None
+                or chain.get("grant_id") != str(grant["grant_id"])
+                or chain.get("root_id") != str(grant["root_id"])
+            ):
+                raise ValueError("Worker write wake grant identity 与 receipt 不一致")
+
+    async def validate_team_wake_delivery(
+        self, *, delivery_id: UUID, claim_owner: str
+    ) -> Literal["deliver", "suppress"]:
+        normalized_owner = claim_owner.strip()
+        if not normalized_owner:
+            raise ValueError("Team wake claim_owner 不能为空")
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> Literal["deliver", "suppress"]:
+            row = connection.execute(
+                "SELECT * FROM cowork_team_wake_outbox WHERE id = ?", (str(delivery_id),)
+            ).fetchone()
+            if (
+                row is None
+                or row["status"] != "claimed"
+                or str(row["claim_owner"] or "") != normalized_owner
+            ):
+                raise ValueError("Team wake delivery 未由当前 worker claim")
+            claim_until = _datetime(row["claim_until"])
+            if claim_until is None or claim_until <= _now():
+                raise ValueError("Team wake delivery claim 已过期")
+            event = connection.execute(
+                "SELECT * FROM cowork_team_events WHERE id = ?", (str(row["event_id"]),)
+            ).fetchone()
+            if (
+                event is None
+                or int(event["sequence"]) != int(row["event_sequence"])
+                or str(event["hash"]) != str(row["event_hash"])
+                or str(event["event_type"]) != str(row["event_type"])
+                or canonical_json(json.loads(str(event["payload"])))
+                != canonical_json(json.loads(str(row["payload"])))
+            ):
+                raise TeamEventIntegrityError("Team wake outbox 与 hash-bound event 不一致")
+            cursor = connection.execute(
+                """SELECT last_sequence FROM cowork_team_event_cursors
+                   WHERE team_id = ? AND consumer = ?""",
+                (str(row["team_id"]), _TEAM_WAKE_CONSUMER),
+            ).fetchone()
+            cursor_sequence = 0 if cursor is None else int(cursor["last_sequence"])
+            if int(row["event_sequence"]) != cursor_sequence + 1:
+                raise ValueError("Team wake delivery 不是 cursor 的下一条 event")
+
+            outcome: Literal["deliver", "suppress"] = "suppress"
+            if row["target_kind"] != "none":
+                team = connection.execute(
+                    "SELECT * FROM cowork_teams WHERE id = ?", (str(row["team_id"]),)
+                ).fetchone()
+                if team is None:
+                    raise TeamEventIntegrityError("Team wake target Team 不存在")
+                for dimension in ("model_calls", "tool_calls", "wall_ms"):
+                    if int(team[f"budget_used_{dimension}"]) + int(
+                        team[f"budget_reserved_{dimension}"]
+                    ) > int(team[f"budget_max_{dimension}"]):
+                        raise ValueError(f"Team wake 前 {dimension} budget 状态非法")
+                if int(team["budget_used_assignments"]) > int(team["budget_max_assignments"]):
+                    raise ValueError("Team wake 前 assignments budget 状态非法")
+                payload = json.loads(str(row["payload"]))
+                task_payload = payload.get("task") if isinstance(payload, dict) else None
+                task_id = task_payload.get("id") if isinstance(task_payload, dict) else None
+                task = (
+                    None
+                    if not isinstance(task_id, str)
+                    else connection.execute(
+                        "SELECT * FROM cowork_board_tasks WHERE id = ? AND team_id = ?",
+                        (task_id, str(team["id"])),
+                    ).fetchone()
+                )
+                if task is None:
+                    raise TeamEventIntegrityError("Team wake event 缺少当前 Board task")
+                if row["target_kind"] == "lead":
+                    if str(row["target_id"]) != str(team["lead_conversation_id"]):
+                        raise TeamEventIntegrityError("Team wake Lead target 已漂移")
+                    if team["status"] == "archived":
+                        # archived 是不可恢复终态；旧结果只需推进 feed，不能再启动/steer Lead。
+                        outcome = "suppress"
+                    elif team["status"] != "active":
+                        raise ValueError("Team 非 active，暂不投递 Lead wake")
+                    else:
+                        outcome = "deliver"
+                else:
+                    expected_worker = str(payload.get("worker_id") or "")
+                    if (
+                        str(row["target_id"]) != expected_worker
+                        or str(task["assignee_worker_id"] or "") != expected_worker
+                    ):
+                        raise TeamEventIntegrityError("Team wake Worker ownership 已漂移")
+                    expected_status = (
+                        "in_progress" if row["event_type"] == "board.task.assigned" else "open"
+                    )
+                    if str(task["status"]) != expected_status:
+                        outcome = "suppress"
+                    elif team["status"] == "archived":
+                        # archived 是不可恢复的 lifecycle 终态；旧 assignment/rework 不能
+                        # 永久占住本 Team 的 gap-free cursor。
+                        outcome = "suppress"
+                    else:
+                        if team["status"] != "active":
+                            raise ValueError("Team 非 active，暂不投递 Worker wake")
+                        if row["event_type"] == "board.task.assigned":
+                            reservation = connection.execute(
+                                """SELECT 1 FROM cowork_team_budget_reservations
+                                   WHERE team_id = ? AND task_id = ?
+                                     AND assignment_call_id = ? AND status = 'active'""",
+                                (
+                                    str(team["id"]),
+                                    str(task["id"]),
+                                    str(task["assignment_call_id"] or ""),
+                                ),
+                            ).fetchone()
+                            if reservation is None:
+                                raise ValueError("Worker wake 缺少 active budget reservation")
+                        elif int(team["budget_used_assignments"]) >= int(
+                            team["budget_max_assignments"]
+                        ):
+                            raise ValueError("Worker rework wake 前 assignment budget 已耗尽")
+                        try:
+                            self._validate_worker_wake_authority_transaction(
+                                connection, team=team, task=task
+                            )
+                        except TeamEventIntegrityError:
+                            raise
+                        except ValueError:
+                            # assignment 绑定的是当时的授权。授权/receipt 已撤销或过期后，
+                            # 即便未来重新 grant，也必须由 Lead 产生新 assignment event，
+                            # 不能让旧 wake 复活或永久形成 HOL blocking。
+                            outcome = "suppress"
+                        else:
+                            outcome = "deliver"
+            connection.execute(
+                """UPDATE cowork_team_wake_outbox SET validation_outcome = ?,
+                          validated_at = ?, updated_at = ? WHERE id = ?""",
+                (outcome, timestamp, timestamp, str(delivery_id)),
+            )
+            return outcome
+
+        return await self._write(operation)
+
+    async def ack_team_wake_delivery(
+        self,
+        *,
+        delivery_id: UUID,
+        consumer: str,
+        claim_owner: str,
+        delivery_receipt: str,
+    ) -> TeamWakeDeliveryRecord:
+        normalized_consumer = consumer.strip()
+        normalized_owner = claim_owner.strip()
+        normalized_receipt = delivery_receipt.strip()
+        if normalized_consumer != _TEAM_WAKE_CONSUMER:
+            raise ValueError(f"Team wake outbox 只允许 consumer {_TEAM_WAKE_CONSUMER!r}")
+        if not normalized_owner or not normalized_receipt or len(normalized_receipt) > 1000:
+            raise ValueError("Team wake ack identity/receipt 无效")
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> TeamWakeDeliveryRecord:
+            row = connection.execute(
+                "SELECT * FROM cowork_team_wake_outbox WHERE id = ?", (str(delivery_id),)
+            ).fetchone()
+            if (
+                row is None
+                or row["status"] != "claimed"
+                or str(row["claim_owner"] or "") != normalized_owner
+                or row["validation_outcome"] not in {"deliver", "suppress"}
+            ):
+                raise ValueError("Team wake delivery 尚未由当前 worker 验证")
+            event = connection.execute(
+                "SELECT * FROM cowork_team_events WHERE id = ?", (str(row["event_id"]),)
+            ).fetchone()
+            if event is None or str(event["hash"]) != str(row["event_hash"]):
+                raise TeamEventIntegrityError("Team wake ack event/hash 不匹配")
+            cursor = connection.execute(
+                """SELECT * FROM cowork_team_event_cursors
+                   WHERE team_id = ? AND consumer = ?""",
+                (str(row["team_id"]), normalized_consumer),
+            ).fetchone()
+            expected = int(row["event_sequence"]) - 1
+            current = 0 if cursor is None else int(cursor["last_sequence"])
+            if current != expected:
+                raise ValueError(f"Team wake cursor CAS 失败：当前 {current}，期望 {expected}")
+            connection.execute(
+                """UPDATE cowork_team_wake_outbox SET status = 'delivered',
+                          delivery_receipt = ?, claim_owner = NULL, claim_until = NULL,
+                          delivered_at = ?, updated_at = ?
+                   WHERE id = ? AND status = 'claimed' AND claim_owner = ?""",
+                (
+                    normalized_receipt,
+                    timestamp,
+                    timestamp,
+                    str(delivery_id),
+                    normalized_owner,
+                ),
+            )
+            if cursor is None:
+                connection.execute(
+                    """INSERT INTO cowork_team_event_cursors(
+                           team_id, consumer, last_sequence, last_event_hash, updated_at
+                       ) VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        str(row["team_id"]),
+                        normalized_consumer,
+                        int(row["event_sequence"]),
+                        str(row["event_hash"]),
+                        timestamp,
+                    ),
+                )
+            else:
+                changed = connection.execute(
+                    """UPDATE cowork_team_event_cursors SET last_sequence = ?,
+                              last_event_hash = ?, updated_at = ?
+                       WHERE team_id = ? AND consumer = ? AND last_sequence = ?""",
+                    (
+                        int(row["event_sequence"]),
+                        str(row["event_hash"]),
+                        timestamp,
+                        str(row["team_id"]),
+                        normalized_consumer,
+                        expected,
+                    ),
+                ).rowcount
+                if changed != 1:  # pragma: no cover - 写锁外防御式 CAS
+                    raise ValueError("Team wake cursor CAS 失败")
+            updated = connection.execute(
+                "SELECT * FROM cowork_team_wake_outbox WHERE id = ?", (str(delivery_id),)
+            ).fetchone()
+            assert updated is not None
+            return self._team_wake_delivery_record(updated)
+
+        return await self._write(operation)
+
+    async def release_team_wake_delivery(
+        self, *, delivery_id: UUID, claim_owner: str, error: str
+    ) -> TeamWakeDeliveryRecord:
+        normalized_owner = claim_owner.strip()
+        safe_error = " ".join(error.split())[:1000] or "delivery failed"
+        if not normalized_owner:
+            raise ValueError("Team wake claim_owner 不能为空")
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> TeamWakeDeliveryRecord:
+            changed = connection.execute(
+                """UPDATE cowork_team_wake_outbox SET status = 'pending',
+                          claim_owner = NULL, claim_until = NULL,
+                          validation_outcome = NULL, validated_at = NULL,
+                          last_error = ?, updated_at = ?
+                   WHERE id = ? AND status = 'claimed' AND claim_owner = ?""",
+                (safe_error, timestamp, str(delivery_id), normalized_owner),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("Team wake delivery 未由当前 worker claim")
+            row = connection.execute(
+                "SELECT * FROM cowork_team_wake_outbox WHERE id = ?", (str(delivery_id),)
+            ).fetchone()
+            assert row is not None
+            return self._team_wake_delivery_record(row)
+
+        return await self._write(operation)
+
     async def create_team(
         self,
         *,
@@ -3202,10 +6324,16 @@ class SqliteCoworkStore:
         proposal_call_id: str,
         note: str,
         members: Sequence[dict[str, Any]],
+        write_delegation_scope: Sequence[dict[str, str]] = (),
+        write_delegation_receipt: dict[str, Any] | None = None,
+        budget_limits: dict[str, int] | None = None,
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> tuple[TeamRecord, list[TeamWorkerRecord]]:
         """审批通过后原子创建 roster 与零 token 的空闲 Worker Session。"""
 
         timestamp = _iso()
+        limits = _team_budget_limits(budget_limits)
 
         def operation(
             connection: sqlite3.Connection,
@@ -3241,13 +6369,25 @@ class SqliteCoworkStore:
             connection.execute(
                 """INSERT INTO cowork_teams(
                        id, lead_conversation_id, proposal_call_id, status, note,
-                       created_at, updated_at
-                   ) VALUES (?, ?, ?, 'active', ?, ?, ?)""",
+                       write_delegation_scope, write_delegation_receipt,
+                       budget_max_model_calls, budget_max_tool_calls,
+                       budget_max_wall_ms, budget_max_assignments, created_at, updated_at
+                   ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     str(team_id),
                     str(lead_conversation_id),
                     proposal_call_id,
                     note,
+                    canonical_json(write_delegation_scope),
+                    (
+                        None
+                        if write_delegation_receipt is None
+                        else canonical_json(write_delegation_receipt)
+                    ),
+                    limits["model_calls"],
+                    limits["tool_calls"],
+                    limits["wall_ms"],
+                    limits["assignments"],
                     timestamp,
                     timestamp,
                 ),
@@ -3293,6 +6433,33 @@ class SqliteCoworkStore:
                 "SELECT * FROM cowork_teams WHERE id = ?", (str(team_id),)
             ).fetchone()
             assert row is not None
+            snapshot = self._team_event_projection_snapshot(connection, row)
+            event_payloads: list[tuple[str, dict[str, Any]]] = [
+                (
+                    "team.created",
+                    {
+                        "team": snapshot["team"],
+                        "workers": snapshot["workers"],
+                    },
+                )
+            ]
+            team_summary = cast("dict[str, Any]", snapshot["team"])
+            team_receipt = cast("dict[str, Any] | None", team_summary["write_delegation_receipt"])
+            if team_receipt is not None:
+                event_payloads.append(
+                    (
+                        "team.write_delegation_receipt_minted",
+                        {"receipt": {"kind": "team_write", **team_receipt}},
+                    )
+                )
+            self._append_team_events_transaction(
+                connection,
+                team_id=team_id,
+                actor=event_actor,
+                cause=event_cause or proposal_call_id,
+                events=event_payloads,
+                created_at=timestamp,
+            )
             return self._team_record(row), workers
 
         return await self._write(operation)
@@ -3323,6 +6490,230 @@ class SqliteCoworkStore:
             ]
         )
 
+    async def manage_team(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        action: Literal["pause", "resume", "archive", "revoke_write_delegation"],
+        budget_limits: dict[str, int] | None = None,
+        reason: str,
+        event_actor: str,
+        event_cause: str,
+    ) -> TeamRecord:
+        timestamp = _iso()
+        normalized_reason = reason.strip()
+        if event_actor != "human:user":
+            raise ValueError("Team lifecycle 只能由已验证的人工批准路径执行")
+        if not normalized_reason:
+            raise ValueError("Team lifecycle 变更必须说明 reason")
+        limits = None if budget_limits is None else _team_budget_limits(budget_limits)
+
+        def operation(connection: sqlite3.Connection) -> TeamRecord:
+            row = connection.execute(
+                "SELECT * FROM cowork_teams WHERE lead_conversation_id = ?",
+                (str(lead_conversation_id),),
+            ).fetchone()
+            if row is None:
+                raise ValueError("当前 Lead 会话没有 Agent Team")
+            current = str(row["status"])
+            if current == "archived" and action != "archive":
+                raise ValueError("archived Team 不可恢复或修改")
+            events: list[tuple[str, dict[str, Any]]] = []
+            if action == "pause":
+                if current == "active":
+                    connection.execute(
+                        """UPDATE cowork_teams SET status = 'paused', pause_reason = ?,
+                                  updated_at = ? WHERE id = ?""",
+                        (normalized_reason, timestamp, str(row["id"])),
+                    )
+            elif action == "resume":
+                if current not in {"active", "paused"}:
+                    raise ValueError("只有 active/paused Team 可以 resume")
+                if limits is not None:
+                    required = {
+                        "model_calls": int(row["budget_used_model_calls"])
+                        + int(row["budget_reserved_model_calls"]),
+                        "tool_calls": int(row["budget_used_tool_calls"])
+                        + int(row["budget_reserved_tool_calls"]),
+                        "wall_ms": int(row["budget_used_wall_ms"])
+                        + int(row["budget_reserved_wall_ms"]),
+                        "assignments": int(row["budget_used_assignments"]),
+                    }
+                    if any(limits[key] < required[key] for key in required):
+                        raise ValueError("新 Team budget 不能低于已经使用或预留的额度")
+                    connection.execute(
+                        """UPDATE cowork_teams SET budget_max_model_calls = ?,
+                                  budget_max_tool_calls = ?, budget_max_wall_ms = ?,
+                                  budget_max_assignments = ? WHERE id = ?""",
+                        (
+                            limits["model_calls"],
+                            limits["tool_calls"],
+                            limits["wall_ms"],
+                            limits["assignments"],
+                            str(row["id"]),
+                        ),
+                    )
+                connection.execute(
+                    """UPDATE cowork_teams SET status = 'active', pause_reason = NULL,
+                              updated_at = ? WHERE id = ?""",
+                    (timestamp, str(row["id"])),
+                )
+            elif action == "revoke_write_delegation":
+                if current not in {"active", "paused"}:
+                    raise ValueError("当前 Team 不可撤销写委派")
+                running = connection.execute(
+                    """SELECT tasks.*, sessions.id AS session_id,
+                              sessions.state AS session_state,
+                              sessions.worker_id AS worker_id
+                       FROM cowork_board_tasks AS tasks
+                       JOIN cowork_team_worker_sessions AS sessions
+                         ON sessions.active_task_id = tasks.id
+                       WHERE tasks.team_id = ? AND tasks.status = 'in_progress'
+                         AND sessions.status = 'running'""",
+                    (str(row["id"]),),
+                ).fetchall()
+                for task in running:
+                    scope = json.loads(str(task["resource_scope"] or "[]"))
+                    has_write_scope = isinstance(scope, list) and any(
+                        isinstance(item, dict) and item.get("access_mode") == "read_write"
+                        for item in scope
+                    )
+                    if not has_write_scope:
+                        continue
+                    connection.execute(
+                        """UPDATE cowork_board_tasks SET status = 'blocked', last_error = ?,
+                                  updated_at = ? WHERE id = ?""",
+                        (
+                            f"Team write delegation revoked：{normalized_reason}",
+                            timestamp,
+                            str(task["id"]),
+                        ),
+                    )
+                    connection.execute(
+                        """UPDATE cowork_team_worker_sessions SET status = 'idle',
+                                  active_task_id = NULL, updated_at = ? WHERE id = ?""",
+                        (timestamp, str(task["session_id"])),
+                    )
+                    settlement = self._settle_team_budget_transaction(
+                        connection, task_id=str(task["id"]), timestamp=timestamp
+                    )
+                    if settlement is not None:
+                        events.append(("team.budget_settled", settlement))
+                    updated_task = connection.execute(
+                        "SELECT * FROM cowork_board_tasks WHERE id = ?",
+                        (str(task["id"]),),
+                    ).fetchone()
+                    assert updated_task is not None
+                    events.append(
+                        (
+                            "board.task.blocked",
+                            {
+                                "task": self._board_task_event_summary(updated_task),
+                                "worker_id": str(task["worker_id"]),
+                                "session_id": str(task["session_id"]),
+                                "session_state_sha256": _json_sha256(
+                                    json.loads(str(task["session_state"]))
+                                ),
+                                "write_delegation_revoked": True,
+                            },
+                        )
+                    )
+                connection.execute(
+                    """UPDATE cowork_teams SET write_delegation_scope = '[]',
+                              write_delegation_receipt = NULL, updated_at = ? WHERE id = ?""",
+                    (timestamp, str(row["id"])),
+                )
+            elif action == "archive":
+                if current != "archived":
+                    running = connection.execute(
+                        """SELECT tasks.*, sessions.id AS session_id,
+                                  sessions.state AS session_state,
+                                  sessions.worker_id AS worker_id
+                           FROM cowork_board_tasks AS tasks
+                           JOIN cowork_team_worker_sessions AS sessions
+                             ON sessions.active_task_id = tasks.id
+                           WHERE tasks.team_id = ? AND tasks.status = 'in_progress'
+                             AND sessions.status = 'running'""",
+                        (str(row["id"]),),
+                    ).fetchall()
+                    for task in running:
+                        connection.execute(
+                            """UPDATE cowork_board_tasks SET status = 'blocked', last_error = ?,
+                                      updated_at = ? WHERE id = ?""",
+                            (
+                                f"Team archived：{normalized_reason}",
+                                timestamp,
+                                str(task["id"]),
+                            ),
+                        )
+                        connection.execute(
+                            """UPDATE cowork_team_worker_sessions SET status = 'idle',
+                                      active_task_id = NULL, updated_at = ? WHERE id = ?""",
+                            (timestamp, str(task["session_id"])),
+                        )
+                        settlement = self._settle_team_budget_transaction(
+                            connection, task_id=str(task["id"]), timestamp=timestamp
+                        )
+                        if settlement is not None:
+                            events.append(("team.budget_settled", settlement))
+                        updated_task = connection.execute(
+                            "SELECT * FROM cowork_board_tasks WHERE id = ?",
+                            (str(task["id"]),),
+                        ).fetchone()
+                        assert updated_task is not None
+                        events.append(
+                            (
+                                "board.task.blocked",
+                                {
+                                    "task": self._board_task_event_summary(updated_task),
+                                    "worker_id": str(task["worker_id"]),
+                                    "session_id": str(task["session_id"]),
+                                    "session_state_sha256": _json_sha256(
+                                        json.loads(str(task["session_state"]))
+                                    ),
+                                    "team_archived": True,
+                                },
+                            )
+                        )
+                    connection.execute(
+                        """UPDATE cowork_teams SET status = 'archived', pause_reason = ?,
+                                  write_delegation_scope = '[]',
+                                  write_delegation_receipt = NULL, updated_at = ? WHERE id = ?""",
+                        (normalized_reason, timestamp, str(row["id"])),
+                    )
+            else:  # pragma: no cover - Literal contract
+                raise ValueError(f"未知 Team lifecycle action: {action}")
+            updated = connection.execute(
+                "SELECT * FROM cowork_teams WHERE id = ?", (str(row["id"]),)
+            ).fetchone()
+            assert updated is not None
+            events.append(
+                (
+                    {
+                        "pause": "team.paused",
+                        "resume": "team.resumed",
+                        "archive": "team.archived",
+                        "revoke_write_delegation": "team.write_delegation_revoked",
+                    }[action],
+                    {
+                        "action": action,
+                        "reason": normalized_reason,
+                        "team": self._team_event_summary(updated),
+                    },
+                )
+            )
+            self._append_team_events_transaction(
+                connection,
+                team_id=str(row["id"]),
+                actor=event_actor,
+                cause=event_cause,
+                events=events,
+                created_at=timestamp,
+            )
+            return self._team_record(updated)
+
+        return await self._write(operation)
+
     async def create_board_task(
         self,
         *,
@@ -3331,6 +6722,9 @@ class SqliteCoworkStore:
         description: str,
         acceptance_criteria: str,
         resource_scope: Sequence[dict[str, str]],
+        scope_receipt: dict[str, Any] | None = None,
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> BoardTaskRecord:
         task_id = uuid7()
         timestamp = _iso()
@@ -3346,8 +6740,8 @@ class SqliteCoworkStore:
             connection.execute(
                 """INSERT INTO cowork_board_tasks(
                        id, team_id, title, description, acceptance_criteria,
-                       resource_scope, status, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
+                       resource_scope, scope_receipt, status, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
                 (
                     str(task_id),
                     str(team["id"]),
@@ -3355,6 +6749,7 @@ class SqliteCoworkStore:
                     description,
                     acceptance_criteria,
                     canonical_json(resource_scope),
+                    None if scope_receipt is None else canonical_json(scope_receipt),
                     timestamp,
                     timestamp,
                 ),
@@ -3363,6 +6758,33 @@ class SqliteCoworkStore:
                 "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task_id),)
             ).fetchone()
             assert row is not None
+            task_summary = self._board_task_event_summary(row)
+            event_payloads: list[tuple[str, dict[str, Any]]] = [
+                ("board.task.created", {"task": task_summary})
+            ]
+            task_receipt = task_summary["scope_receipt"]
+            if task_receipt is not None:
+                event_payloads.append(
+                    (
+                        "board.task.scope_receipt_minted",
+                        {
+                            "task": task_summary,
+                            "receipt": {
+                                "kind": "task_scope",
+                                "task_id": str(task_id),
+                                **task_receipt,
+                            },
+                        },
+                    )
+                )
+            self._append_team_events_transaction(
+                connection,
+                team_id=str(team["id"]),
+                actor=event_actor,
+                cause=event_cause or f"store:create_board_task:{task_id}",
+                events=event_payloads,
+                created_at=timestamp,
+            )
             return self._board_task_record(row)
 
         return await self._write(operation)
@@ -3404,12 +6826,21 @@ class SqliteCoworkStore:
         task_id: UUID,
         worker_name: str,
         assignment_call_id: str,
+        source_run_id: UUID | None = None,
+        budget_reservation: dict[str, int] | None = None,
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> tuple[BoardTaskRecord, TeamWorkerRecord, TeamWorkerSessionRecord]:
         timestamp = _iso()
+        if budget_reservation is not None:
+            if set(budget_reservation) != {"model_calls", "tool_calls", "wall_ms"} or any(
+                type(value) is not int or value < 0 for value in budget_reservation.values()
+            ):
+                raise ValueError("Team assignment budget reservation 无效")
+            if budget_reservation["model_calls"] < 1 or budget_reservation["wall_ms"] < 1:
+                raise ValueError("Team assignment 至少需要一次模型调用和正墙钟预留")
 
-        def operation(
-            connection: sqlite3.Connection,
-        ) -> tuple[BoardTaskRecord, TeamWorkerRecord, TeamWorkerSessionRecord]:
+        def operation(connection: sqlite3.Connection) -> Any:
             row = connection.execute(
                 """SELECT tasks.*, teams.lead_conversation_id
                    FROM cowork_board_tasks AS tasks
@@ -3419,6 +6850,17 @@ class SqliteCoworkStore:
             ).fetchone()
             if row is None or str(row["lead_conversation_id"]) != str(lead_conversation_id):
                 raise ValueError("Board task 不存在或不属于当前 Lead 会话")
+            requested_budget = budget_reservation or {
+                "model_calls": 11,
+                "tool_calls": 26 if json.loads(str(row["resource_scope"] or "[]")) else 0,
+                "wall_ms": 300_000,
+            }
+            team_row = connection.execute(
+                "SELECT * FROM cowork_teams WHERE id = ?", (str(row["team_id"]),)
+            ).fetchone()
+            assert team_row is not None
+            if team_row["status"] != "active":
+                raise ValueError("只有 active Team 可以分配或恢复 Worker task")
             worker_row = connection.execute(
                 """SELECT * FROM cowork_team_workers
                    WHERE team_id = ? AND name = ?""",
@@ -3462,6 +6904,87 @@ class SqliteCoworkStore:
             if session_row["status"] != "idle":
                 raise ValueError(f"Worker {worker_name!r} 当前仍有任务在执行")
 
+            dimensions = ("model_calls", "tool_calls", "wall_ms")
+            exceeded: tuple[str, int, int] | None = None
+            for dimension in dimensions:
+                used = int(team_row[f"budget_used_{dimension}"])
+                reserved = int(team_row[f"budget_reserved_{dimension}"])
+                requested = requested_budget[dimension]
+                limit = int(team_row[f"budget_max_{dimension}"])
+                if used + reserved + requested > limit:
+                    exceeded = (dimension, used + reserved + requested, limit)
+                    break
+            assignment_used = int(team_row["budget_used_assignments"])
+            assignment_limit = int(team_row["budget_max_assignments"])
+            if exceeded is None and assignment_used + 1 > assignment_limit:
+                exceeded = ("assignments", assignment_used + 1, assignment_limit)
+            if exceeded is not None:
+                dimension, used, limit = exceeded
+                reason = f"budget:{dimension}"
+                connection.execute(
+                    """UPDATE cowork_teams SET status = 'paused', pause_reason = ?,
+                              updated_at = ? WHERE id = ?""",
+                    (reason, timestamp, str(row["team_id"])),
+                )
+                paused = connection.execute(
+                    "SELECT * FROM cowork_teams WHERE id = ?", (str(row["team_id"]),)
+                ).fetchone()
+                assert paused is not None
+                self._append_team_events_transaction(
+                    connection,
+                    team_id=str(row["team_id"]),
+                    actor=event_actor,
+                    cause=event_cause or assignment_call_id,
+                    events=[
+                        (
+                            "team.budget_exceeded",
+                            {
+                                "dimension": dimension,
+                                "used_or_reserved": used,
+                                "limit": limit,
+                                "team": self._team_event_summary(paused),
+                            },
+                        )
+                    ],
+                    created_at=timestamp,
+                )
+                return ("budget_exceeded", dimension, used, limit)
+
+            reservation_id = uuid7()
+            connection.execute(
+                """INSERT INTO cowork_team_budget_reservations(
+                       id, team_id, task_id, assignment_call_id, status,
+                       reserved_model_calls, reserved_tool_calls, reserved_wall_ms,
+                       created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
+                (
+                    str(reservation_id),
+                    str(row["team_id"]),
+                    str(task_id),
+                    assignment_call_id,
+                    requested_budget["model_calls"],
+                    requested_budget["tool_calls"],
+                    requested_budget["wall_ms"],
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            connection.execute(
+                """UPDATE cowork_teams SET
+                       budget_reserved_model_calls = budget_reserved_model_calls + ?,
+                       budget_reserved_tool_calls = budget_reserved_tool_calls + ?,
+                       budget_reserved_wall_ms = budget_reserved_wall_ms + ?,
+                       budget_used_assignments = budget_used_assignments + 1,
+                       updated_at = ? WHERE id = ?""",
+                (
+                    requested_budget["model_calls"],
+                    requested_budget["tool_calls"],
+                    requested_budget["wall_ms"],
+                    timestamp,
+                    str(row["team_id"]),
+                ),
+            )
+
             connection.execute(
                 """UPDATE cowork_board_tasks SET
                        status = 'in_progress', assignee_worker_id = ?, assignment_call_id = ?,
@@ -3484,13 +7007,506 @@ class SqliteCoworkStore:
                 (str(session_row["id"]),),
             ).fetchone()
             assert task_row is not None and current_session is not None
+            reserved_team = connection.execute(
+                "SELECT * FROM cowork_teams WHERE id = ?", (str(task_row["team_id"]),)
+            ).fetchone()
+            assert reserved_team is not None
+            self._append_team_events_transaction(
+                connection,
+                team_id=str(task_row["team_id"]),
+                actor=event_actor,
+                cause=event_cause or assignment_call_id,
+                events=[
+                    (
+                        "team.budget_reserved",
+                        {
+                            "task_id": str(task_id),
+                            "assignment_call_id": assignment_call_id,
+                            "source_run_id": (
+                                None if source_run_id is None else str(source_run_id)
+                            ),
+                            "reservation_id": str(reservation_id),
+                            "reserved": requested_budget,
+                            "budget": self._team_budget_summary(reserved_team),
+                        },
+                    ),
+                    (
+                        "board.task.assigned",
+                        {
+                            "task": self._board_task_event_summary(task_row),
+                            "worker_id": str(worker_row["id"]),
+                            "worker_name": str(worker_row["name"]),
+                            "session_id": str(current_session["id"]),
+                            "session_status": str(current_session["status"]),
+                            "lead_conversation_id": str(row["lead_conversation_id"]),
+                            "source_run_id": (
+                                None if source_run_id is None else str(source_run_id)
+                            ),
+                        },
+                    ),
+                ],
+                created_at=timestamp,
+            )
             return (
                 self._board_task_record(task_row),
                 self._team_worker_record(worker_row),
                 self._team_worker_session_record(current_session),
             )
 
+        result = await self._write(operation)
+        if isinstance(result, tuple) and result and result[0] == "budget_exceeded":
+            _, dimension, used, limit = result
+            raise TeamBudgetExceededError(
+                cast("TeamBudgetDimension", dimension), used=int(used), limit=int(limit)
+            )
+        return cast("tuple[BoardTaskRecord, TeamWorkerRecord, TeamWorkerSessionRecord]", result)
+
+    async def validate_team_worker_execution(
+        self, *, session_id: UUID, task_id: UUID
+    ) -> tuple[TeamRecord, BoardTaskRecord, TeamWorkerRecord, TeamWorkerSessionRecord]:
+        def operation(
+            connection: sqlite3.Connection,
+        ) -> tuple[TeamRecord, BoardTaskRecord, TeamWorkerRecord, TeamWorkerSessionRecord]:
+            session_row = connection.execute(
+                "SELECT * FROM cowork_team_worker_sessions WHERE id = ?",
+                (str(session_id),),
+            ).fetchone()
+            if (
+                session_row is None
+                or session_row["status"] != "running"
+                or str(session_row["active_task_id"] or "") != str(task_id)
+            ):
+                raise ValueError("Worker Session 已不再执行这条 Board task")
+            task_row = connection.execute(
+                "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task_id),)
+            ).fetchone()
+            worker_row = connection.execute(
+                "SELECT * FROM cowork_team_workers WHERE id = ?",
+                (str(session_row["worker_id"]),),
+            ).fetchone()
+            team_row = connection.execute(
+                "SELECT * FROM cowork_teams WHERE id = ?", (str(session_row["team_id"]),)
+            ).fetchone()
+            if task_row is None or worker_row is None or team_row is None:
+                raise ValueError("Team Worker execution 关系不完整")
+            if team_row["status"] != "active":
+                raise ValueError("Team 已暂停或归档，Worker 必须在安全点停止")
+            if (
+                task_row["status"] != "in_progress"
+                or str(task_row["team_id"]) != str(team_row["id"])
+                or str(task_row["assignee_worker_id"] or "") != str(worker_row["id"])
+                or str(worker_row["team_id"]) != str(team_row["id"])
+            ):
+                raise ValueError("Board task ownership/status 已变化，Worker 必须停止")
+            reservation = connection.execute(
+                """SELECT 1 FROM cowork_team_budget_reservations
+                   WHERE team_id = ? AND task_id = ? AND assignment_call_id = ?
+                     AND status = 'active'""",
+                (
+                    str(team_row["id"]),
+                    str(task_id),
+                    str(task_row["assignment_call_id"] or ""),
+                ),
+            ).fetchone()
+            if reservation is None:
+                raise ValueError("Worker assignment 缺少 active Team budget reservation")
+            return (
+                self._team_record(team_row),
+                self._board_task_record(task_row),
+                self._team_worker_record(worker_row),
+                self._team_worker_session_record(session_row),
+            )
+
+        return await self._read(operation)
+
+    async def charge_team_budget(
+        self,
+        *,
+        session_id: UUID,
+        task_id: UUID,
+        dimension: TeamBudgetDimension,
+        amount: int,
+        event_actor: str,
+        event_cause: str,
+    ) -> TeamBudgetReservationRecord:
+        if dimension == "assignments":
+            raise ValueError("assignment budget 在分配事务内结算")
+        if type(amount) is not int or amount <= 0:
+            raise ValueError("Team budget charge amount 必须为正整数")
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> Any:
+            session_row = connection.execute(
+                """SELECT * FROM cowork_team_worker_sessions
+                   WHERE id = ? AND status = 'running' AND active_task_id = ?""",
+                (str(session_id), str(task_id)),
+            ).fetchone()
+            if session_row is None:
+                raise ValueError("Worker Session 已不再执行这条 Board task")
+            task_row = connection.execute(
+                "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task_id),)
+            ).fetchone()
+            team_row = connection.execute(
+                "SELECT * FROM cowork_teams WHERE id = ?", (str(session_row["team_id"]),)
+            ).fetchone()
+            if task_row is None or team_row is None or team_row["status"] != "active":
+                raise ValueError("Team/task 已不再允许 Worker 消耗预算")
+            reservation = connection.execute(
+                """SELECT * FROM cowork_team_budget_reservations
+                   WHERE team_id = ? AND task_id = ? AND assignment_call_id = ?
+                     AND status = 'active'""",
+                (
+                    str(team_row["id"]),
+                    str(task_id),
+                    str(task_row["assignment_call_id"] or ""),
+                ),
+            ).fetchone()
+            if reservation is None:
+                raise ValueError("Worker assignment 缺少 active Team budget reservation")
+            remaining = int(reservation[f"reserved_{dimension}"]) - int(
+                reservation[f"used_{dimension}"]
+            )
+            if amount > remaining:
+                used = int(team_row[f"budget_used_{dimension}"]) + amount
+                limit = int(team_row[f"budget_max_{dimension}"])
+                connection.execute(
+                    """UPDATE cowork_teams SET status = 'paused', pause_reason = ?,
+                              updated_at = ? WHERE id = ?""",
+                    (f"budget:{dimension}", timestamp, str(team_row["id"])),
+                )
+                paused = connection.execute(
+                    "SELECT * FROM cowork_teams WHERE id = ?", (str(team_row["id"]),)
+                ).fetchone()
+                assert paused is not None
+                self._append_team_events_transaction(
+                    connection,
+                    team_id=str(team_row["id"]),
+                    actor=event_actor,
+                    cause=event_cause,
+                    events=[
+                        (
+                            "team.budget_exceeded",
+                            {
+                                "dimension": dimension,
+                                "used_or_reserved": used,
+                                "limit": limit,
+                                "task_id": str(task_id),
+                                "team": self._team_event_summary(paused),
+                            },
+                        )
+                    ],
+                    created_at=timestamp,
+                )
+                return ("budget_exceeded", dimension, used, limit)
+            connection.execute(
+                f"""UPDATE cowork_team_budget_reservations SET
+                           used_{dimension} = used_{dimension} + ?, updated_at = ?
+                     WHERE id = ?""",
+                (amount, timestamp, str(reservation["id"])),
+            )
+            connection.execute(
+                f"""UPDATE cowork_teams SET
+                           budget_reserved_{dimension} = budget_reserved_{dimension} - ?,
+                           budget_used_{dimension} = budget_used_{dimension} + ?,
+                           updated_at = ? WHERE id = ?""",
+                (amount, amount, timestamp, str(team_row["id"])),
+            )
+            updated_reservation = connection.execute(
+                "SELECT * FROM cowork_team_budget_reservations WHERE id = ?",
+                (str(reservation["id"]),),
+            ).fetchone()
+            updated_team = connection.execute(
+                "SELECT * FROM cowork_teams WHERE id = ?", (str(team_row["id"]),)
+            ).fetchone()
+            assert updated_reservation is not None and updated_team is not None
+            self._append_team_events_transaction(
+                connection,
+                team_id=str(team_row["id"]),
+                actor=event_actor,
+                cause=event_cause,
+                events=[
+                    (
+                        "team.budget_consumed",
+                        {
+                            "task_id": str(task_id),
+                            "reservation_id": str(reservation["id"]),
+                            "dimension": dimension,
+                            "amount": amount,
+                            "budget": self._team_budget_summary(updated_team),
+                        },
+                    )
+                ],
+                created_at=timestamp,
+            )
+            return self._team_budget_reservation_record(updated_reservation)
+
+        result = await self._write(operation)
+        if isinstance(result, tuple) and result and result[0] == "budget_exceeded":
+            _, failed_dimension, used, limit = result
+            raise TeamBudgetExceededError(
+                cast("TeamBudgetDimension", failed_dimension),
+                used=int(used),
+                limit=int(limit),
+            )
+        return cast("TeamBudgetReservationRecord", result)
+
+    async def begin_team_worker_tool_attempt(
+        self,
+        *,
+        session_id: UUID,
+        task_id: UUID,
+        tool_call_id: str,
+        tool_name: str,
+        effect: str,
+        retry_safe: bool,
+        arguments_sha256: str,
+        event_actor: str,
+        event_cause: str,
+    ) -> TeamWorkerToolAttemptRecord:
+        if not tool_call_id.strip() or len(tool_call_id) > 500 or not tool_name.strip():
+            raise ValueError("Team Worker tool identity 无效")
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> TeamWorkerToolAttemptRecord:
+            session_row = connection.execute(
+                """SELECT * FROM cowork_team_worker_sessions
+                   WHERE id = ? AND status = 'running' AND active_task_id = ?""",
+                (str(session_id), str(task_id)),
+            ).fetchone()
+            if session_row is None:
+                raise ValueError("Worker Session 已不再执行这条 Board task")
+            task_row = connection.execute(
+                "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task_id),)
+            ).fetchone()
+            team_row = connection.execute(
+                "SELECT * FROM cowork_teams WHERE id = ?", (str(session_row["team_id"]),)
+            ).fetchone()
+            if (
+                task_row is None
+                or team_row is None
+                or team_row["status"] != "active"
+                or task_row["status"] != "in_progress"
+                or str(task_row["assignee_worker_id"] or "") != str(session_row["worker_id"])
+            ):
+                raise ValueError("Team/task 已不再允许 Worker 启动工具")
+            existing = connection.execute(
+                """SELECT * FROM cowork_team_worker_tool_attempts
+                   WHERE session_id = ? AND task_id = ? AND tool_call_id = ?""",
+                (str(session_id), str(task_id), tool_call_id),
+            ).fetchone()
+            event_type = "team.worker_tool.started"
+            if existing is None:
+                attempt_id = UUID(str(uuid7()))
+                connection.execute(
+                    """INSERT INTO cowork_team_worker_tool_attempts(
+                           id, team_id, session_id, task_id, tool_call_id, tool_name,
+                           effect, retry_safe, status, arguments_sha256, attempt_count,
+                           started_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'in_flight', ?, 1, ?, ?)""",
+                    (
+                        str(attempt_id),
+                        str(team_row["id"]),
+                        str(session_id),
+                        str(task_id),
+                        tool_call_id,
+                        tool_name,
+                        effect,
+                        int(retry_safe),
+                        arguments_sha256,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            else:
+                if (
+                    str(existing["tool_name"]) != tool_name
+                    or str(existing["effect"]) != effect
+                    or bool(existing["retry_safe"]) != retry_safe
+                    or str(existing["arguments_sha256"]) != arguments_sha256
+                ):
+                    raise ValueError("同一 Worker tool_call_id 的工具或参数发生变化")
+                if existing["status"] in {"succeeded", "failed", "unknown"}:
+                    return self._team_worker_tool_attempt_record(existing)
+                if not retry_safe:
+                    connection.execute(
+                        """UPDATE cowork_team_worker_tool_attempts SET status = 'unknown',
+                                  finished_at = ?, updated_at = ? WHERE id = ?""",
+                        (timestamp, timestamp, str(existing["id"])),
+                    )
+                    event_type = "team.worker_tool.unknown"
+                else:
+                    connection.execute(
+                        """UPDATE cowork_team_worker_tool_attempts SET
+                                  attempt_count = attempt_count + 1, started_at = ?,
+                                  updated_at = ? WHERE id = ?""",
+                        (timestamp, timestamp, str(existing["id"])),
+                    )
+                    event_type = "team.worker_tool.retried"
+                attempt_id = UUID(str(existing["id"]))
+            current = connection.execute(
+                "SELECT * FROM cowork_team_worker_tool_attempts WHERE id = ?",
+                (str(attempt_id),),
+            ).fetchone()
+            assert current is not None
+            self._append_team_events_transaction(
+                connection,
+                team_id=str(team_row["id"]),
+                actor=event_actor,
+                cause=event_cause,
+                events=[
+                    (
+                        event_type,
+                        {
+                            "attempt_id": str(attempt_id),
+                            "task_id": str(task_id),
+                            "session_id": str(session_id),
+                            "tool_call_id": tool_call_id,
+                            "tool_name": tool_name,
+                            "effect": effect,
+                            "retry_safe": retry_safe,
+                            "attempt_count": int(current["attempt_count"]),
+                            "arguments_sha256": arguments_sha256,
+                        },
+                    )
+                ],
+                created_at=timestamp,
+            )
+            return self._team_worker_tool_attempt_record(current)
+
         return await self._write(operation)
+
+    async def finish_team_worker_tool_attempt(
+        self,
+        *,
+        attempt_id: UUID,
+        status: Literal["succeeded", "failed"],
+        result: dict[str, Any],
+        effect_ref: str | None,
+        authorization_receipt: dict[str, Any] | None,
+        event_actor: str,
+        event_cause: str,
+    ) -> TeamWorkerToolAttemptRecord:
+        safe_result = cast("dict[str, Any]", redact_persisted_tool_value(result))
+        safe_effect_ref = (
+            None if effect_ref is None else str(redact_persisted_tool_value(effect_ref))
+        )
+        result_json = canonical_json(safe_result)
+        receipt_json = (
+            None if authorization_receipt is None else canonical_json(authorization_receipt)
+        )
+        if len(result_json) > _TEAM_TOOL_ATTEMPT_RESULT_MAX_CHARS:
+            raise ValueError("Team Worker tool attempt result 超过持久化上限")
+        if receipt_json is not None and len(receipt_json) > _TEAM_TOOL_ATTEMPT_RECEIPT_MAX_CHARS:
+            raise ValueError("Team Worker tool authorization receipt 超过持久化上限")
+        if safe_effect_ref is not None and len(safe_effect_ref) > 2_000:
+            raise ValueError("Team Worker tool effect_ref 超过持久化上限")
+        timestamp = _iso()
+
+        def operation(connection: sqlite3.Connection) -> TeamWorkerToolAttemptRecord:
+            row = connection.execute(
+                "SELECT * FROM cowork_team_worker_tool_attempts WHERE id = ?",
+                (str(attempt_id),),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Team Worker tool attempt 不存在")
+            if row["status"] in {"succeeded", "failed"}:
+                return self._team_worker_tool_attempt_record(row)
+            if row["status"] != "in_flight":
+                raise ValueError("结果未知的写工具 attempt 不得改写为成功或失败")
+            connection.execute(
+                """UPDATE cowork_team_worker_tool_attempts SET status = ?, result = ?,
+                          effect_ref = ?, authorization_receipt = ?, finished_at = ?,
+                          updated_at = ? WHERE id = ? AND status = 'in_flight'""",
+                (
+                    status,
+                    result_json,
+                    safe_effect_ref,
+                    (receipt_json),
+                    timestamp,
+                    timestamp,
+                    str(attempt_id),
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM cowork_team_worker_tool_attempts WHERE id = ?",
+                (str(attempt_id),),
+            ).fetchone()
+            assert updated is not None
+            self._append_team_events_transaction(
+                connection,
+                team_id=str(row["team_id"]),
+                actor=event_actor,
+                cause=event_cause,
+                events=[
+                    (
+                        "team.worker_tool.finished",
+                        {
+                            "attempt_id": str(attempt_id),
+                            "task_id": str(row["task_id"]),
+                            "session_id": str(row["session_id"]),
+                            "tool_call_id": str(row["tool_call_id"]),
+                            "tool_name": str(row["tool_name"]),
+                            "status": status,
+                            "result_sha256": _json_sha256(safe_result),
+                            "effect_ref": safe_effect_ref,
+                            "authorization_receipt_sha256": (
+                                None
+                                if authorization_receipt is None
+                                else _json_sha256(authorization_receipt)
+                            ),
+                        },
+                    )
+                ],
+                created_at=timestamp,
+            )
+            return self._team_worker_tool_attempt_record(updated)
+
+        return await self._write(operation)
+
+    def _settle_team_budget_transaction(
+        self, connection: sqlite3.Connection, *, task_id: str, timestamp: str
+    ) -> dict[str, Any] | None:
+        reservation = connection.execute(
+            """SELECT * FROM cowork_team_budget_reservations
+               WHERE task_id = ? AND status = 'active'""",
+            (task_id,),
+        ).fetchone()
+        if reservation is None:
+            return None
+        remaining = {
+            dimension: int(reservation[f"reserved_{dimension}"])
+            - int(reservation[f"used_{dimension}"])
+            for dimension in ("model_calls", "tool_calls", "wall_ms")
+        }
+        connection.execute(
+            """UPDATE cowork_teams SET
+                   budget_reserved_model_calls = budget_reserved_model_calls - ?,
+                   budget_reserved_tool_calls = budget_reserved_tool_calls - ?,
+                   budget_reserved_wall_ms = budget_reserved_wall_ms - ?,
+                   updated_at = ? WHERE id = ?""",
+            (
+                remaining["model_calls"],
+                remaining["tool_calls"],
+                remaining["wall_ms"],
+                timestamp,
+                str(reservation["team_id"]),
+            ),
+        )
+        connection.execute(
+            """UPDATE cowork_team_budget_reservations SET status = 'settled',
+                      settled_at = ?, updated_at = ? WHERE id = ?""",
+            (timestamp, timestamp, str(reservation["id"])),
+        )
+        team = connection.execute(
+            "SELECT * FROM cowork_teams WHERE id = ?", (str(reservation["team_id"]),)
+        ).fetchone()
+        assert team is not None
+        return {
+            "task_id": task_id,
+            "reservation_id": str(reservation["id"]),
+            "released": remaining,
+            "budget": self._team_budget_summary(team),
+        }
 
     async def save_team_worker_session(
         self,
@@ -3498,10 +7514,24 @@ class SqliteCoworkStore:
         session_id: UUID,
         task_id: UUID,
         state: dict[str, Any],
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> TeamWorkerSessionRecord:
         timestamp = _iso()
 
         def operation(connection: sqlite3.Connection) -> TeamWorkerSessionRecord:
+            valid = connection.execute(
+                """SELECT 1 FROM cowork_team_worker_sessions AS sessions
+                   JOIN cowork_board_tasks AS tasks ON tasks.id = sessions.active_task_id
+                   JOIN cowork_teams AS teams ON teams.id = sessions.team_id
+                   WHERE sessions.id = ? AND sessions.status = 'running'
+                     AND sessions.active_task_id = ? AND tasks.status = 'in_progress'
+                     AND tasks.assignee_worker_id = sessions.worker_id
+                     AND teams.status = 'active'""",
+                (str(session_id), str(task_id)),
+            ).fetchone()
+            if valid is None:
+                raise ValueError("Team/task 已不再允许 Worker checkpoint")
             changed = connection.execute(
                 """UPDATE cowork_team_worker_sessions SET state = ?, updated_at = ?
                    WHERE id = ? AND status = 'running' AND active_task_id = ?""",
@@ -3513,6 +7543,25 @@ class SqliteCoworkStore:
                 "SELECT * FROM cowork_team_worker_sessions WHERE id = ?", (str(session_id),)
             ).fetchone()
             assert row is not None
+            self._append_team_events_transaction(
+                connection,
+                team_id=str(row["team_id"]),
+                actor=event_actor,
+                cause=event_cause or f"store:worker_checkpoint:{task_id}",
+                events=[
+                    (
+                        "team.worker_session.checkpointed",
+                        {
+                            "task_id": str(task_id),
+                            "worker_id": str(row["worker_id"]),
+                            "session_id": str(session_id),
+                            "session_status": str(row["status"]),
+                            "state_sha256": _json_sha256(state),
+                        },
+                    )
+                ],
+                created_at=timestamp,
+            )
             return self._team_worker_session_record(row)
 
         return await self._write(operation)
@@ -3524,6 +7573,8 @@ class SqliteCoworkStore:
         task_id: UUID,
         state: dict[str, Any],
         worker_report: str,
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> BoardTaskRecord:
         return await self._finish_worker_task(
             session_id=session_id,
@@ -3533,6 +7584,8 @@ class SqliteCoworkStore:
             worker_report=worker_report,
             last_error=None,
             session_status="idle",
+            event_actor=event_actor,
+            event_cause=event_cause,
         )
 
     async def fail_board_task(
@@ -3542,15 +7595,22 @@ class SqliteCoworkStore:
         task_id: UUID,
         state: dict[str, Any],
         error: str,
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> BoardTaskRecord:
+        if not error.strip() or len(error) > _TEAM_WORKER_LAST_ERROR_MAX_CHARS:
+            raise ValueError("Team Worker last_error 为空或超过持久化上限")
+        safe_error = str(redact_persisted_tool_value(error))
         return await self._finish_worker_task(
             session_id=session_id,
             task_id=task_id,
             state=state,
             task_status="blocked",
             worker_report=None,
-            last_error=error,
+            last_error=safe_error,
             session_status="idle",
+            event_actor=event_actor,
+            event_cause=event_cause,
         )
 
     async def _finish_worker_task(
@@ -3563,6 +7623,8 @@ class SqliteCoworkStore:
         worker_report: str | None,
         last_error: str | None,
         session_status: str,
+        event_actor: str,
+        event_cause: str | None,
     ) -> BoardTaskRecord:
         timestamp = _iso()
 
@@ -3574,6 +7636,13 @@ class SqliteCoworkStore:
             ).fetchone()
             if session_row is None:
                 raise ValueError("Worker Session 已不再执行这条 Board task")
+            team_row = connection.execute(
+                "SELECT * FROM cowork_teams WHERE id = ?", (str(session_row["team_id"]),)
+            ).fetchone()
+            if team_row is None:
+                raise ValueError("Worker Team 不存在")
+            if task_status == "review" and team_row["status"] != "active":
+                raise ValueError("Team 已暂停或归档，不能提交新的 review")
             changed = connection.execute(
                 """UPDATE cowork_board_tasks SET status = ?,
                           worker_report = COALESCE(?, worker_report), last_error = ?, updated_at = ?
@@ -3600,6 +7669,30 @@ class SqliteCoworkStore:
                 "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task_id),)
             ).fetchone()
             assert row is not None
+            settlement = self._settle_team_budget_transaction(
+                connection, task_id=str(task_id), timestamp=timestamp
+            )
+            events: list[tuple[str, dict[str, Any]]] = [
+                (
+                    ("board.task.submitted" if task_status == "review" else "board.task.blocked"),
+                    {
+                        "task": self._board_task_event_summary(row),
+                        "worker_id": str(session_row["worker_id"]),
+                        "session_id": str(session_id),
+                        "session_state_sha256": _json_sha256(state),
+                    },
+                )
+            ]
+            if settlement is not None:
+                events.append(("team.budget_settled", settlement))
+            self._append_team_events_transaction(
+                connection,
+                team_id=str(row["team_id"]),
+                actor=event_actor,
+                cause=event_cause or f"store:worker_finish:{task_id}",
+                events=events,
+                created_at=timestamp,
+            )
             return self._board_task_record(row)
 
         return await self._write(operation)
@@ -3611,6 +7704,9 @@ class SqliteCoworkStore:
         task_id: UUID,
         accepted: bool,
         feedback: str,
+        source_run_id: UUID | None = None,
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> BoardTaskRecord:
         timestamp = _iso()
 
@@ -3618,7 +7714,8 @@ class SqliteCoworkStore:
             row = connection.execute(
                 """SELECT tasks.* FROM cowork_board_tasks AS tasks
                    JOIN cowork_teams AS teams ON teams.id = tasks.team_id
-                   WHERE tasks.id = ? AND teams.lead_conversation_id = ?""",
+                   WHERE tasks.id = ? AND teams.lead_conversation_id = ?
+                     AND teams.status = 'active'""",
                 (str(task_id), str(lead_conversation_id)),
             ).fetchone()
             if row is None:
@@ -3646,6 +7743,44 @@ class SqliteCoworkStore:
                 "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task_id),)
             ).fetchone()
             assert updated is not None
+            event_payloads: list[tuple[str, dict[str, Any]]] = [
+                (
+                    "board.task.reviewed",
+                    {
+                        "task": self._board_task_event_summary(updated),
+                        "accepted": accepted,
+                        "feedback": feedback,
+                        "from_status": "review",
+                        "to_status": next_status,
+                    },
+                )
+            ]
+            if not accepted:
+                worker_id = updated["assignee_worker_id"]
+                if worker_id is None:  # pragma: no cover - review 任务必有 assignee
+                    raise ValueError("返工任务缺少原 Worker")
+                event_payloads.append(
+                    (
+                        "board.task.rework_requested",
+                        {
+                            "task": self._board_task_event_summary(updated),
+                            "worker_id": str(worker_id),
+                            "feedback": feedback,
+                            "lead_conversation_id": str(lead_conversation_id),
+                            "source_run_id": (
+                                None if source_run_id is None else str(source_run_id)
+                            ),
+                        },
+                    )
+                )
+            self._append_team_events_transaction(
+                connection,
+                team_id=str(updated["team_id"]),
+                actor=event_actor,
+                cause=event_cause or f"store:review_board_task:{task_id}",
+                events=event_payloads,
+                created_at=timestamp,
+            )
             return self._board_task_record(updated)
 
         return await self._write(operation)
@@ -3657,6 +7792,8 @@ class SqliteCoworkStore:
         task_id: UUID,
         resolution: Literal["accept_partial", "cancel"],
         reason: str,
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> BoardTaskRecord:
         """显式收束无法继续执行的任务；不会伪造一次 Worker review。"""
 
@@ -3666,7 +7803,8 @@ class SqliteCoworkStore:
             row = connection.execute(
                 """SELECT tasks.* FROM cowork_board_tasks AS tasks
                    JOIN cowork_teams AS teams ON teams.id = tasks.team_id
-                   WHERE tasks.id = ? AND teams.lead_conversation_id = ?""",
+                   WHERE tasks.id = ? AND teams.lead_conversation_id = ?
+                     AND teams.status = 'active'""",
                 (str(task_id), str(lead_conversation_id)),
             ).fetchone()
             if row is None:
@@ -3684,6 +7822,25 @@ class SqliteCoworkStore:
                 "SELECT * FROM cowork_board_tasks WHERE id = ?", (str(task_id),)
             ).fetchone()
             assert updated is not None
+            self._append_team_events_transaction(
+                connection,
+                team_id=str(updated["team_id"]),
+                actor=event_actor,
+                cause=event_cause or f"store:resolve_board_task:{task_id}",
+                events=[
+                    (
+                        "board.task.resolved",
+                        {
+                            "task": self._board_task_event_summary(updated),
+                            "resolution": resolution,
+                            "reason": reason,
+                            "from_status": str(row["status"]),
+                            "to_status": status,
+                        },
+                    )
+                ],
+                created_at=timestamp,
+            )
             return self._board_task_record(updated)
 
         return await self._write(operation)
@@ -4070,6 +8227,34 @@ class SqliteCoworkStore:
             )
         )
 
+    @staticmethod
+    def _promote_next_run_transaction(
+        connection: sqlite3.Connection,
+        *,
+        run_id: UUID,
+    ) -> None:
+        # Failed/cancelled runs do not pass the successful outer follow-up boundary. Preserve
+        # their queued user messages by carrying them into successor runs.
+        connection.execute(
+            """UPDATE cowork_steering_messages SET delivery = 'next_run'
+               WHERE run_id = ? AND delivery IN ('steer','follow_up') AND status = 'pending'""",
+            (str(run_id),),
+        )
+        connection.execute(
+            """UPDATE cowork_steering_messages SET status = 'ready'
+               WHERE id = (
+                   SELECT id FROM cowork_steering_messages
+                   WHERE run_id = ? AND delivery = 'next_run' AND status = 'pending'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM cowork_steering_messages AS active
+                         WHERE active.run_id = cowork_steering_messages.run_id
+                           AND active.delivery = 'next_run' AND active.status = 'ready'
+                     )
+                   ORDER BY created_at, id LIMIT 1
+               )""",
+            (str(run_id),),
+        )
+
     async def finish_run(
         self,
         *,
@@ -4097,7 +8282,7 @@ class SqliteCoworkStore:
             ]
             if worker_id is not None:
                 parameters.append(worker_id)
-            return (
+            changed = (
                 connection.execute(
                     f"""UPDATE agent_runs SET status = ?, error = ?,
                                used_tokens = used_tokens + ?, used_calls = used_calls + ?,
@@ -4107,6 +8292,9 @@ class SqliteCoworkStore:
                 ).rowcount
                 == 1
             )
+            if changed:
+                self._promote_next_run_transaction(connection, run_id=run_id)
+            return changed
 
         return await self._write(operation)
 
@@ -4115,7 +8303,7 @@ class SqliteCoworkStore:
         *,
         run_id: UUID,
         status: str,
-        events: Sequence[tuple[str, dict[str, Any]]],
+        events: Sequence[RunEventDraft],
         worker_id: str | None = None,
         error: str | None = None,
         used_tokens: int = 0,
@@ -4153,6 +8341,7 @@ class SqliteCoworkStore:
             )
             if not changed:
                 return False, []
+            self._promote_next_run_transaction(connection, run_id=run_id)
             return True, self._append_events_transaction(connection, run_id, events)
 
         return await self._write(operation)
@@ -4178,6 +8367,16 @@ class SqliteCoworkStore:
                 "SELECT * FROM agent_runs WHERE id = ?", (str(run_id),)
             ).fetchone()
             assert row is not None
+            self._append_session_record_transaction(
+                connection,
+                run_id=run_id,
+                kind="abort_requested",
+                operation_id=f"abort:{run_id}",
+                phase="requested",
+                payload={"source": "control_plane"},
+            )
+            if str(row["status"]) == "cancelled":
+                self._promote_next_run_transaction(connection, run_id=run_id)
             return self._run_record(row)
 
         return await self._write(operation)
@@ -4213,7 +8412,18 @@ class SqliteCoworkStore:
             expired = connection.execute(
                 """SELECT runs.id, runs.recovery_count,
                           EXISTS(SELECT 1 FROM agent_checkpoints AS checkpoints
-                                 WHERE checkpoints.run_id = runs.id) AS has_checkpoint
+                                 WHERE checkpoints.run_id = runs.id) AS has_checkpoint,
+                          EXISTS(
+                              SELECT 1 FROM session_records AS started
+                              WHERE started.run_id = runs.id AND started.kind = 'step_attempt'
+                                AND started.phase = 'started'
+                                AND NOT EXISTS (
+                                    SELECT 1 FROM session_records AS terminal
+                                    WHERE terminal.run_id = started.run_id
+                                      AND terminal.operation_id = started.operation_id
+                                      AND terminal.phase IN ('completed','failed')
+                                )
+                          ) AS has_open_model_attempt
                    FROM agent_runs AS runs
                    WHERE runs.cancel_requested_at IS NULL
                      AND runs.status NOT IN ('done','partial','failed','cancelled','budget_exceeded')
@@ -4226,7 +8436,16 @@ class SqliteCoworkStore:
             for row in expired:
                 run_id = UUID(row["id"])
                 recovery = int(row["recovery_count"])
-                if bool(row["has_checkpoint"]) and recovery < max_recovery:
+                if bool(row["has_open_model_attempt"]):
+                    connection.execute(
+                        """UPDATE agent_runs SET status = 'failed',
+                                  error = 'model invocation outcome unknown; automatic replay refused',
+                                  finished_at = ?, worker_id = NULL, lease_until = NULL,
+                                  heartbeat_at = NULL, updated_at = ? WHERE id = ?""",
+                        (now, now, str(run_id)),
+                    )
+                    failed.append(run_id)
+                elif bool(row["has_checkpoint"]) and recovery < max_recovery:
                     attempt = recovery + 1
                     connection.execute(
                         """UPDATE agent_runs SET status = 'queued', recovery_count = ?,
@@ -4244,6 +8463,8 @@ class SqliteCoworkStore:
                         (now, now, str(run_id)),
                     )
                     failed.append(run_id)
+            for terminal_run_id in [*cancelled, *failed]:
+                self._promote_next_run_transaction(connection, run_id=terminal_run_id)
             return {"cancelled": cancelled, "recovered": recovered, "failed": failed}
 
         return await self._write(operation)
@@ -4367,6 +8588,103 @@ class SqliteCoworkStore:
 
     # ---- 长期记忆 --------------------------------------------------------------
 
+    @staticmethod
+    def _assert_memory_save_policy(
+        connection: sqlite3.Connection,
+        snapshot: MemoryPolicySnapshot,
+    ) -> None:
+        """在持有 BEGIN IMMEDIATE 的同一事务里重查 any-off-wins 与 revision。"""
+
+        owner = connection.execute(
+            """SELECT save_enabled, revision FROM cowork_memory_owner_policy
+               WHERE singleton_id = 1"""
+        ).fetchone()
+        owner_enabled = True if owner is None else bool(owner["save_enabled"])
+        owner_revision = 0 if owner is None else int(owner["revision"])
+        if not owner_enabled:
+            raise MemoryPolicyConflictError("memory_save_disabled_by_owner")
+        if owner_revision != snapshot.owner_revision:
+            raise MemoryPolicyConflictError()
+
+        if snapshot.conversation_id is None:
+            if snapshot.conversation_revision is not None:
+                raise MemoryPolicyConflictError()
+            return
+        if snapshot.conversation_revision is None:
+            raise MemoryPolicyConflictError()
+        if (
+            connection.execute(
+                "SELECT 1 FROM conversations WHERE id = ?",
+                (str(snapshot.conversation_id),),
+            ).fetchone()
+            is None
+        ):
+            raise MemoryPolicyConflictError("memory_policy_conversation_missing")
+        conversation = connection.execute(
+            """SELECT save_mode, revision FROM cowork_memory_conversation_policies
+               WHERE conversation_id = ?""",
+            (str(snapshot.conversation_id),),
+        ).fetchone()
+        save_mode = "inherit" if conversation is None else str(conversation["save_mode"])
+        revision = 0 if conversation is None else int(conversation["revision"])
+        if save_mode == "off":
+            raise MemoryPolicyConflictError("memory_save_disabled_for_conversation")
+        if revision != snapshot.conversation_revision:
+            raise MemoryPolicyConflictError()
+
+    @staticmethod
+    def _insert_cowork_memory_transaction(
+        connection: sqlite3.Connection,
+        *,
+        memory_id: UUID,
+        scope: str,
+        conversation_id: UUID | None,
+        workspace_path: str | None,
+        key: str | None,
+        content: str,
+        source: str,
+        timestamp: str,
+        category: str,
+        confidence: float,
+        pinned: bool,
+        valid_from: str,
+        invalid_at: str | None = None,
+        superseded_by: UUID | None = None,
+        source_message_id: UUID | None = None,
+        run_id: UUID | None = None,
+    ) -> sqlite3.Row:
+        connection.execute(
+            """INSERT INTO cowork_memories(
+                   id, scope, conversation_id, workspace_path, key, content, source,
+                   created_at, updated_at, category, confidence, pinned, valid_from,
+                   invalid_at, superseded_by, source_message_id, run_id
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                str(memory_id),
+                scope,
+                None if conversation_id is None else str(conversation_id),
+                workspace_path,
+                key,
+                content,
+                source,
+                timestamp,
+                timestamp,
+                category,
+                confidence,
+                int(pinned),
+                valid_from,
+                invalid_at,
+                None if superseded_by is None else str(superseded_by),
+                None if source_message_id is None else str(source_message_id),
+                None if run_id is None else str(run_id),
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM cowork_memories WHERE id = ?", (str(memory_id),)
+        ).fetchone()
+        assert row is not None
+        return cast(sqlite3.Row, row)
+
     async def remember_cowork_memory(
         self,
         *,
@@ -4382,12 +8700,14 @@ class SqliteCoworkStore:
         valid_from: datetime | None = None,
         source_message_id: UUID | None = None,
         run_id: UUID | None = None,
+        policy_snapshot: MemoryPolicySnapshot,
     ) -> tuple[Any, Any]:
         memory_id = uuid7()
         timestamp = _iso()
         effective_from = _iso(valid_from)
 
         def operation(connection: sqlite3.Connection) -> tuple[Any, Any]:
+            self._assert_memory_save_policy(connection, policy_snapshot)
             previous: Any = None
             if key is not None:
                 row = connection.execute(
@@ -4395,7 +8715,7 @@ class SqliteCoworkStore:
                        WHERE scope = ?
                          AND IFNULL(conversation_id, '') = IFNULL(?, '')
                          AND IFNULL(workspace_path, '') = IFNULL(?, '')
-                         AND key = ? AND forgotten_at IS NULL""",
+                         AND key = ? AND forgotten_at IS NULL AND invalid_at IS NULL""",
                     (
                         scope,
                         None if conversation_id is None else str(conversation_id),
@@ -4408,85 +8728,261 @@ class SqliteCoworkStore:
                     if previous.pinned:
                         # 置顶记忆是用户明确按住的那几条，模型的同 key 覆盖不能动它。
                         raise PinnedMemoryError(str(previous.id))
+                    if (
+                        previous.content == content
+                        and previous.source == source
+                        and previous.category == category
+                        and previous.confidence == confidence
+                        and previous.pinned == pinned
+                    ):
+                        return previous, None
+                    # 先在同一事务里让旧版本退出 active unique index，再插入继承同 key
+                    # 的 successor。INSERT 或回链失败会整体 rollback，不会丢当前版本。
                     connection.execute(
                         """UPDATE cowork_memories
-                           SET content = ?, source = ?, category = ?, confidence = ?,
-                               valid_from = ?, source_message_id = ?, run_id = ?,
-                               updated_at = ?
+                           SET invalid_at = ?, updated_at = ?
                            WHERE id = ?""",
-                        (
-                            content,
-                            source,
-                            category,
-                            confidence,
-                            effective_from,
-                            None if source_message_id is None else str(source_message_id),
-                            None if run_id is None else str(run_id),
-                            timestamp,
-                            str(previous.id),
-                        ),
+                        (effective_from, timestamp, str(previous.id)),
                     )
-                    updated = connection.execute(
-                        "SELECT * FROM cowork_memories WHERE id = ?", (str(previous.id),)
-                    ).fetchone()
-                    return self._memory_record(updated), previous
-            connection.execute(
-                """INSERT INTO cowork_memories(
-                       id, scope, conversation_id, workspace_path, key, content, source,
-                       created_at, updated_at, category, confidence, pinned, valid_from,
-                       source_message_id, run_id
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    str(memory_id),
-                    scope,
-                    None if conversation_id is None else str(conversation_id),
-                    workspace_path,
-                    key,
-                    content,
-                    source,
-                    timestamp,
-                    timestamp,
-                    category,
-                    confidence,
-                    int(pinned),
-                    effective_from,
-                    None if source_message_id is None else str(source_message_id),
-                    None if run_id is None else str(run_id),
-                ),
+            inserted = self._insert_cowork_memory_transaction(
+                connection,
+                memory_id=memory_id,
+                scope=scope,
+                conversation_id=conversation_id,
+                workspace_path=workspace_path,
+                key=key,
+                content=content,
+                source=source,
+                timestamp=timestamp,
+                category=category,
+                confidence=confidence,
+                pinned=pinned,
+                valid_from=effective_from,
+                source_message_id=source_message_id,
+                run_id=run_id,
             )
-            row = connection.execute(
-                "SELECT * FROM cowork_memories WHERE id = ?", (str(memory_id),)
-            ).fetchone()
-            return self._memory_record(row), None
+            if previous is not None:
+                connection.execute(
+                    "UPDATE cowork_memories SET superseded_by = ? WHERE id = ?",
+                    (str(memory_id), str(previous.id)),
+                )
+            return self._memory_record(inserted), previous
 
         return await self._write(operation)
 
     async def update_cowork_memory(
-        self, *, memory_id: UUID, content: str | None, restore: bool
+        self,
+        *,
+        memory_id: UUID,
+        content: str | None,
+        restore: bool,
+        source: str,
+        policy_snapshot: MemoryPolicySnapshot,
     ) -> tuple[Any, Any]:
         timestamp = _iso()
 
         def operation(connection: sqlite3.Connection) -> tuple[Any, Any]:
+            self._assert_memory_save_policy(connection, policy_snapshot)
             row = connection.execute(
                 "SELECT * FROM cowork_memories WHERE id = ?", (str(memory_id),)
             ).fetchone()
             if row is None:
                 raise MemoryNotFoundError(str(memory_id))
             previous = self._memory_record(row)
+            if restore:
+                connection.execute(
+                    """UPDATE cowork_memories SET forgotten_at = NULL, updated_at = ?
+                       WHERE id = ?""",
+                    (timestamp, str(memory_id)),
+                )
+                updated = connection.execute(
+                    "SELECT * FROM cowork_memories WHERE id = ?", (str(memory_id),)
+                ).fetchone()
+                assert updated is not None
+                return self._memory_record(updated), previous
+            if content is None or content == previous.content:
+                return previous, previous
+            if not previous.active:
+                raise MemoryNotFoundError(str(memory_id))
+            if source == "agent" and previous.pinned:
+                raise PinnedMemoryError(str(memory_id))
+
+            successor_id = uuid7()
             connection.execute(
-                """UPDATE cowork_memories
-                   SET content = COALESCE(?, content),
-                       forgotten_at = CASE WHEN ? THEN NULL ELSE forgotten_at END,
-                       updated_at = ?
-                   WHERE id = ?""",
-                (content, int(restore), timestamp, str(memory_id)),
+                """UPDATE cowork_memories SET invalid_at = ?, updated_at = ?
+                   WHERE id = ? AND forgotten_at IS NULL AND invalid_at IS NULL""",
+                (timestamp, timestamp, str(memory_id)),
             )
-            updated = connection.execute(
-                "SELECT * FROM cowork_memories WHERE id = ?", (str(memory_id),)
-            ).fetchone()
-            return self._memory_record(updated), previous
+            inserted = self._insert_cowork_memory_transaction(
+                connection,
+                memory_id=successor_id,
+                scope=previous.scope,
+                conversation_id=previous.conversation_id,
+                workspace_path=previous.workspace_path,
+                key=previous.key,
+                content=content,
+                source=source,
+                timestamp=timestamp,
+                category=previous.category,
+                confidence=previous.confidence,
+                pinned=previous.pinned,
+                valid_from=timestamp,
+            )
+            connection.execute(
+                "UPDATE cowork_memories SET superseded_by = ? WHERE id = ?",
+                (str(successor_id), str(memory_id)),
+            )
+            return self._memory_record(inserted), previous
 
         return await self._write(operation)
+
+    async def apply_cowork_memory_operation(
+        self,
+        *,
+        operation: Literal["ADD", "UPDATE", "DELETE", "NOOP"],
+        category: str,
+        fact: str,
+        confidence: float,
+        valid_from: datetime,
+        source: Literal["agent", "user"],
+        source_message_id: UUID | None,
+        run_id: UUID | None,
+        target_id: UUID | None,
+        pinned: bool | None,
+        scope: str,
+        conversation_id: UUID | None,
+        workspace_path: str | None,
+        key: str | None,
+        policy_snapshot: MemoryPolicySnapshot | None,
+    ) -> CoworkMemoryMutation:
+        """CAS gate 与 ADD/UPDATE/DELETE/NOOP 在一个 SQLite 写事务内完成。"""
+
+        if policy_snapshot is None and operation != "DELETE":
+            raise ValueError("只有 owner 明确隐私清理 DELETE 可以绕过 Memory save policy")
+        timestamp = _iso()
+        effective_from = _iso(valid_from)
+
+        def mutate(connection: sqlite3.Connection) -> CoworkMemoryMutation:
+            if policy_snapshot is not None:
+                self._assert_memory_save_policy(connection, policy_snapshot)
+            target_row = (
+                None
+                if target_id is None
+                else connection.execute(
+                    "SELECT * FROM cowork_memories WHERE id = ?", (str(target_id),)
+                ).fetchone()
+            )
+            target = None if target_row is None else self._memory_record(target_row)
+
+            if operation == "NOOP":
+                if target_id is None:
+                    return CoworkMemoryMutation(False, False, None)
+                if target is None or not target.active:
+                    raise MemoryNotFoundError(str(target_id))
+                connection.execute(
+                    """UPDATE cowork_memories
+                       SET access_count = access_count + 1, last_used_at = ?
+                       WHERE id = ?""",
+                    (timestamp, str(target.id)),
+                )
+                updated = connection.execute(
+                    "SELECT * FROM cowork_memories WHERE id = ?", (str(target.id),)
+                ).fetchone()
+                assert updated is not None
+                return CoworkMemoryMutation(True, False, self._memory_record(updated), target)
+
+            if operation in {"UPDATE", "DELETE"}:
+                if target is None:
+                    raise MemoryNotFoundError(str(target_id))
+                if not target.active:
+                    # Worker 在 mutation 成功后、job complete 前退出时可能重放同一决定。
+                    # 相同 successor/DELETE 返回 unchanged，不能再制造第二条版本。
+                    if operation == "UPDATE" and target.superseded_by is not None:
+                        successor_row = connection.execute(
+                            "SELECT * FROM cowork_memories WHERE id = ?",
+                            (str(target.superseded_by),),
+                        ).fetchone()
+                        if successor_row is not None:
+                            successor = self._memory_record(successor_row)
+                            if successor.active and successor.content == fact:
+                                return CoworkMemoryMutation(False, False, successor, target)
+                    if operation == "DELETE" and target.superseded_by is None:
+                        return CoworkMemoryMutation(False, False, target, target)
+                    raise MemoryNotFoundError(str(target_id))
+                if target.pinned and source == "agent":
+                    raise PinnedMemoryError("置顶记忆不能被自动改写或失效")
+
+            if operation == "DELETE":
+                assert target is not None
+                if target.valid_from is not None and valid_from < target.valid_from:
+                    return CoworkMemoryMutation(False, False, target, target)
+                connection.execute(
+                    """UPDATE cowork_memories
+                       SET invalid_at = ?, superseded_by = NULL, updated_at = ?
+                       WHERE id = ?""",
+                    (effective_from, timestamp, str(target.id)),
+                )
+                deleted = connection.execute(
+                    "SELECT * FROM cowork_memories WHERE id = ?", (str(target.id),)
+                ).fetchone()
+                assert deleted is not None
+                return CoworkMemoryMutation(True, True, self._memory_record(deleted), target)
+
+            stale = (
+                target is not None
+                and target.valid_from is not None
+                and valid_from < target.valid_from
+            )
+            write_scope = target.scope if target is not None else scope
+            write_conversation = target.conversation_id if target is not None else conversation_id
+            write_workspace = target.workspace_path if target is not None else workspace_path
+            write_key = target.key if target is not None else key
+            write_pinned = target.pinned if pinned is None and target is not None else bool(pinned)
+            created_id = uuid7()
+
+            if target is not None and not stale:
+                # 先释放 active keyed unique slot；后续任一步失败会整笔 rollback。
+                connection.execute(
+                    """UPDATE cowork_memories SET invalid_at = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (effective_from, timestamp, str(target.id)),
+                )
+            inserted = self._insert_cowork_memory_transaction(
+                connection,
+                memory_id=created_id,
+                scope=write_scope,
+                conversation_id=write_conversation,
+                workspace_path=write_workspace,
+                key=write_key,
+                content=fact,
+                source=source,
+                timestamp=timestamp,
+                category=category,
+                confidence=confidence,
+                pinned=write_pinned,
+                valid_from=effective_from,
+                invalid_at=(
+                    _iso(cast(datetime, target.valid_from))
+                    if stale and target is not None
+                    else None
+                ),
+                superseded_by=target.id if stale and target is not None else None,
+                source_message_id=source_message_id,
+                run_id=run_id,
+            )
+            if target is not None and not stale:
+                connection.execute(
+                    "UPDATE cowork_memories SET superseded_by = ? WHERE id = ?",
+                    (str(created_id), str(target.id)),
+                )
+            return CoworkMemoryMutation(
+                True,
+                not stale,
+                self._memory_record(inserted),
+                target,
+            )
+
+        return await self._write(mutate)
 
     async def forget_cowork_memory(self, *, memory_id: UUID) -> Any | None:
         timestamp = _iso()
@@ -4600,12 +9096,20 @@ class SqliteCoworkStore:
 
         return await self._write(operation)
 
-    async def set_cowork_memory_pinned(self, *, memory_id: UUID, pinned: bool) -> Any | None:
+    async def set_cowork_memory_pinned(
+        self,
+        *,
+        memory_id: UUID,
+        pinned: bool,
+        policy_snapshot: MemoryPolicySnapshot,
+    ) -> Any | None:
         timestamp = _iso()
 
         def operation(connection: sqlite3.Connection) -> Any | None:
+            self._assert_memory_save_policy(connection, policy_snapshot)
             changed = connection.execute(
-                "UPDATE cowork_memories SET pinned = ?, updated_at = ? WHERE id = ?",
+                """UPDATE cowork_memories SET pinned = ?, updated_at = ?
+                   WHERE id = ? AND forgotten_at IS NULL AND invalid_at IS NULL""",
                 (int(pinned), timestamp, str(memory_id)),
             ).rowcount
             if not changed:
@@ -4613,6 +9117,7 @@ class SqliteCoworkStore:
             row = connection.execute(
                 "SELECT * FROM cowork_memories WHERE id = ?", (str(memory_id),)
             ).fetchone()
+            assert row is not None
             return self._memory_record(row)
 
         return await self._write(operation)
@@ -4651,6 +9156,156 @@ class SqliteCoworkStore:
             return [self._memory_record(row) for row in rows]
 
         return await self._read(operation)
+
+    async def get_owner_memory_policy(self) -> OwnerMemoryPolicy:
+        def operation(connection: sqlite3.Connection) -> OwnerMemoryPolicy:
+            row = connection.execute(
+                """SELECT save_enabled, recall_enabled, standing_rules, revision
+                   FROM cowork_memory_owner_policy WHERE singleton_id = 1"""
+            ).fetchone()
+            if row is None:
+                return OwnerMemoryPolicy()
+            return OwnerMemoryPolicy(
+                save_enabled=bool(row["save_enabled"]),
+                recall_enabled=bool(row["recall_enabled"]),
+                standing_rules=str(row["standing_rules"]),
+                revision=int(row["revision"]),
+            )
+
+        return await self._read(operation)
+
+    async def upsert_owner_memory_policy(
+        self,
+        *,
+        save_enabled: bool,
+        recall_enabled: bool,
+        standing_rules: str,
+        expected_revision: int,
+    ) -> OwnerMemoryPolicy:
+        if type(save_enabled) is not bool or type(recall_enabled) is not bool:
+            raise ValueError("Memory owner policy 开关必须是 bool")
+        normalized_rules = standing_rules.strip()
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("Memory owner policy expected_revision 无效")
+        if len(normalized_rules) > MAX_STANDING_RULES_CHARS:
+            raise ValueError(f"standing_rules 最多 {MAX_STANDING_RULES_CHARS} 个字符")
+        now = _iso()
+
+        def operation(connection: sqlite3.Connection) -> OwnerMemoryPolicy:
+            row = connection.execute(
+                "SELECT revision FROM cowork_memory_owner_policy WHERE singleton_id = 1"
+            ).fetchone()
+            current_revision = 0 if row is None else int(row["revision"])
+            if current_revision != expected_revision:
+                raise MemoryPolicyConflictError()
+            next_revision = current_revision + 1
+            connection.execute(
+                """INSERT INTO cowork_memory_owner_policy(
+                       singleton_id, save_enabled, recall_enabled, standing_rules,
+                       revision, updated_at
+                   ) VALUES (1, ?, ?, ?, ?, ?)
+                   ON CONFLICT(singleton_id) DO UPDATE SET
+                       save_enabled = excluded.save_enabled,
+                       recall_enabled = excluded.recall_enabled,
+                       standing_rules = excluded.standing_rules,
+                       revision = excluded.revision,
+                       updated_at = excluded.updated_at""",
+                (
+                    int(save_enabled),
+                    int(recall_enabled),
+                    normalized_rules,
+                    next_revision,
+                    now,
+                ),
+            )
+            return OwnerMemoryPolicy(
+                save_enabled=save_enabled,
+                recall_enabled=recall_enabled,
+                standing_rules=normalized_rules,
+                revision=next_revision,
+            )
+
+        return await self._write(operation)
+
+    async def get_conversation_memory_policy(
+        self, *, conversation_id: UUID
+    ) -> ConversationMemoryPolicy:
+        def operation(connection: sqlite3.Connection) -> ConversationMemoryPolicy:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM conversations WHERE id = ?", (str(conversation_id),)
+                ).fetchone()
+                is None
+            ):
+                raise ConversationNotFoundError(str(conversation_id))
+            row = connection.execute(
+                """SELECT save_mode, recall_mode, revision
+                   FROM cowork_memory_conversation_policies WHERE conversation_id = ?""",
+                (str(conversation_id),),
+            ).fetchone()
+            if row is None:
+                return ConversationMemoryPolicy(conversation_id=conversation_id)
+            return ConversationMemoryPolicy(
+                conversation_id=conversation_id,
+                save_mode=cast(MemoryPolicyMode, row["save_mode"]),
+                recall_mode=cast(MemoryPolicyMode, row["recall_mode"]),
+                revision=int(row["revision"]),
+            )
+
+        return await self._read(operation)
+
+    async def upsert_conversation_memory_policy(
+        self,
+        *,
+        conversation_id: UUID,
+        save_mode: MemoryPolicyMode,
+        recall_mode: MemoryPolicyMode,
+        expected_revision: int,
+    ) -> ConversationMemoryPolicy:
+        if save_mode not in {"inherit", "on", "off"}:
+            raise ValueError("conversation memory save_mode 无效")
+        if recall_mode not in {"inherit", "on", "off"}:
+            raise ValueError("conversation memory recall_mode 无效")
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("conversation memory expected_revision 无效")
+        now = _iso()
+
+        def operation(connection: sqlite3.Connection) -> ConversationMemoryPolicy:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM conversations WHERE id = ?", (str(conversation_id),)
+                ).fetchone()
+                is None
+            ):
+                raise ConversationNotFoundError(str(conversation_id))
+            row = connection.execute(
+                """SELECT revision FROM cowork_memory_conversation_policies
+                   WHERE conversation_id = ?""",
+                (str(conversation_id),),
+            ).fetchone()
+            current_revision = 0 if row is None else int(row["revision"])
+            if current_revision != expected_revision:
+                raise MemoryPolicyConflictError()
+            next_revision = current_revision + 1
+            connection.execute(
+                """INSERT INTO cowork_memory_conversation_policies(
+                       conversation_id, save_mode, recall_mode, revision, updated_at
+                   ) VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(conversation_id) DO UPDATE SET
+                       save_mode = excluded.save_mode,
+                       recall_mode = excluded.recall_mode,
+                       revision = excluded.revision,
+                       updated_at = excluded.updated_at""",
+                (str(conversation_id), save_mode, recall_mode, next_revision, now),
+            )
+            return ConversationMemoryPolicy(
+                conversation_id=conversation_id,
+                save_mode=save_mode,
+                recall_mode=recall_mode,
+                revision=next_revision,
+            )
+
+        return await self._write(operation)
 
     # ---- 记忆抽取作业 ----------------------------------------------------------
 
@@ -4703,7 +9358,8 @@ class SqliteCoworkStore:
             changed = connection.execute(
                 """UPDATE memory_extraction_jobs
                    SET status = 'running', worker_id = ?, lease_until = ?,
-                       attempts = attempts + 1, error = NULL, updated_at = ?
+                       attempts = attempts + 1, error = NULL, result_json = NULL,
+                       finished_at = NULL, updated_at = ?
                    WHERE id = ?
                      AND attempts < ?
                      AND available_at <= ?
@@ -4719,17 +9375,43 @@ class SqliteCoworkStore:
 
         return await self._write(operation)
 
-    async def complete_memory_job(self, *, job_id: UUID, worker_id: str) -> bool:
+    async def get_memory_job(self, *, job_id: UUID) -> Any | None:
+        return await self._read(
+            lambda connection: (
+                None
+                if (
+                    row := connection.execute(
+                        "SELECT * FROM memory_extraction_jobs WHERE id = ?",
+                        (str(job_id),),
+                    ).fetchone()
+                )
+                is None
+                else self._memory_job_record(row)
+            )
+        )
+
+    async def complete_memory_job(
+        self, *, job_id: UUID, worker_id: str, result: dict[str, Any]
+    ) -> bool:
         now = _iso()
+        normalized_result = normalize_memory_job_result(result)
+        result_json = json.dumps(
+            normalized_result,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
         def operation(connection: sqlite3.Connection) -> bool:
             return bool(
                 connection.execute(
                     """UPDATE memory_extraction_jobs
                        SET status = 'done', worker_id = NULL, lease_until = NULL,
-                           finished_at = ?, error = NULL, updated_at = ?
+                           content = '', finished_at = ?, error = NULL,
+                           result_json = ?, updated_at = ?
                        WHERE id = ? AND status = 'running' AND worker_id = ?""",
-                    (now, now, str(job_id), worker_id),
+                    (now, result_json, now, str(job_id), worker_id),
                 ).rowcount
             )
 
@@ -4748,14 +9430,19 @@ class SqliteCoworkStore:
             if row is None:
                 return None
             exhausted = int(row["attempts"]) >= max_attempts
+            stored_error = (
+                "memory_extraction_failed" if exhausted else _memory_job_retry_error(error)
+            )
             connection.execute(
                 """UPDATE memory_extraction_jobs
                    SET status = ?, worker_id = NULL, lease_until = NULL, error = ?,
-                       available_at = ?, finished_at = ?, updated_at = ?
+                       content = CASE WHEN ? THEN '' ELSE content END,
+                       result_json = NULL, available_at = ?, finished_at = ?, updated_at = ?
                    WHERE id = ? AND worker_id = ?""",
                 (
                     "failed" if exhausted else "queued",
-                    error[:2_000],
+                    stored_error,
+                    int(exhausted),
                     _iso(now if exhausted else now + timedelta(seconds=retry_delay_s)),
                     _iso(now) if exhausted else None,
                     _iso(now),
@@ -4782,7 +9469,8 @@ class SqliteCoworkStore:
             connection.execute(
                 """UPDATE memory_extraction_jobs
                    SET status = 'failed', worker_id = NULL, lease_until = NULL,
-                       finished_at = ?, updated_at = ?
+                       content = '', error = 'memory_extraction_failed',
+                       result_json = NULL, finished_at = ?, updated_at = ?
                    WHERE attempts >= ? AND status IN ('queued','running')
                      AND (lease_until IS NULL OR lease_until < ?)""",
                 (now, now, max_attempts, now),
@@ -4800,6 +9488,11 @@ class SqliteCoworkStore:
 
     @staticmethod
     def _memory_job_record(row: sqlite3.Row) -> Any:
+        result = (
+            None
+            if row["result_json"] is None
+            else normalize_memory_job_result(json.loads(str(row["result_json"])))
+        )
         return MemoryExtractionJob(
             id=UUID(row["id"]),
             run_id=UUID(row["run_id"]),
@@ -4815,6 +9508,7 @@ class SqliteCoworkStore:
             attempts=int(row["attempts"]),
             error=row["error"],
             created_at=cast(datetime, _datetime(row["created_at"])),
+            result=result,
         )
 
     @staticmethod
@@ -4866,13 +9560,136 @@ class SqliteCoworkStore:
 
     @staticmethod
     def _team_record(row: sqlite3.Row) -> TeamRecord:
+        raw_scope = json.loads(str(row["write_delegation_scope"]))
+        raw_receipt = (
+            None
+            if row["write_delegation_receipt"] is None
+            else json.loads(str(row["write_delegation_receipt"]))
+        )
+        if not isinstance(raw_scope, list):
+            raise ValueError("Team write_delegation_scope 必须是 JSON array")
+        if raw_receipt is not None and not isinstance(raw_receipt, dict):
+            raise ValueError("Team write_delegation_receipt 必须是 JSON object")
         return TeamRecord(
             id=UUID(row["id"]),
             lead_conversation_id=UUID(row["lead_conversation_id"]),
             proposal_call_id=str(row["proposal_call_id"]),
             status=row["status"],
             note=str(row["note"]),
+            write_delegation_scope=[
+                {str(key): str(value) for key, value in item.items()}
+                for item in raw_scope
+                if isinstance(item, dict)
+            ],
+            write_delegation_receipt=(
+                None if raw_receipt is None else cast("dict[str, Any]", raw_receipt)
+            ),
+            pause_reason=(None if row["pause_reason"] is None else str(row["pause_reason"])),
+            budget_limits={
+                "model_calls": int(row["budget_max_model_calls"]),
+                "tool_calls": int(row["budget_max_tool_calls"]),
+                "wall_ms": int(row["budget_max_wall_ms"]),
+                "assignments": int(row["budget_max_assignments"]),
+            },
+            budget_usage={
+                "model_calls": int(row["budget_used_model_calls"]),
+                "tool_calls": int(row["budget_used_tool_calls"]),
+                "wall_ms": int(row["budget_used_wall_ms"]),
+                "assignments": int(row["budget_used_assignments"]),
+                "reserved_model_calls": int(row["budget_reserved_model_calls"]),
+                "reserved_tool_calls": int(row["budget_reserved_tool_calls"]),
+                "reserved_wall_ms": int(row["budget_reserved_wall_ms"]),
+            },
             created_at=cast(datetime, _datetime(row["created_at"])),
+            updated_at=cast(datetime, _datetime(row["updated_at"])),
+        )
+
+    @staticmethod
+    def _team_budget_reservation_record(row: sqlite3.Row) -> TeamBudgetReservationRecord:
+        return TeamBudgetReservationRecord(
+            id=UUID(str(row["id"])),
+            team_id=UUID(str(row["team_id"])),
+            task_id=UUID(str(row["task_id"])),
+            assignment_call_id=str(row["assignment_call_id"]),
+            status=row["status"],
+            reserved={
+                "model_calls": int(row["reserved_model_calls"]),
+                "tool_calls": int(row["reserved_tool_calls"]),
+                "wall_ms": int(row["reserved_wall_ms"]),
+            },
+            used={
+                "model_calls": int(row["used_model_calls"]),
+                "tool_calls": int(row["used_tool_calls"]),
+                "wall_ms": int(row["used_wall_ms"]),
+            },
+            created_at=cast(datetime, _datetime(row["created_at"])),
+            updated_at=cast(datetime, _datetime(row["updated_at"])),
+            settled_at=_datetime(row["settled_at"]),
+        )
+
+    @staticmethod
+    def _team_wake_delivery_record(row: sqlite3.Row) -> TeamWakeDeliveryRecord:
+        payload = json.loads(str(row["payload"]))
+        if not isinstance(payload, dict):
+            raise TeamEventIntegrityError("Team wake delivery payload 不是 object")
+        return TeamWakeDeliveryRecord(
+            id=UUID(str(row["id"])),
+            team_id=UUID(str(row["team_id"])),
+            event_id=UUID(str(row["event_id"])),
+            event_sequence=int(row["event_sequence"]),
+            event_hash=str(row["event_hash"]),
+            event_type=str(row["event_type"]),
+            target_kind=row["target_kind"],
+            target_id=None if row["target_id"] is None else str(row["target_id"]),
+            payload=cast("dict[str, Any]", payload),
+            status=row["status"],
+            attempt_count=int(row["attempt_count"]),
+            claim_owner=None if row["claim_owner"] is None else str(row["claim_owner"]),
+            claim_until=_datetime(row["claim_until"]),
+            validation_outcome=(
+                None if row["validation_outcome"] is None else row["validation_outcome"]
+            ),
+            validated_at=_datetime(row["validated_at"]),
+            delivery_receipt=(
+                None if row["delivery_receipt"] is None else str(row["delivery_receipt"])
+            ),
+            last_error=None if row["last_error"] is None else str(row["last_error"]),
+            created_at=cast(datetime, _datetime(row["created_at"])),
+            updated_at=cast(datetime, _datetime(row["updated_at"])),
+            delivered_at=_datetime(row["delivered_at"]),
+        )
+
+    @staticmethod
+    def _team_worker_tool_attempt_record(row: sqlite3.Row) -> TeamWorkerToolAttemptRecord:
+        raw_result = None if row["result"] is None else json.loads(str(row["result"]))
+        raw_receipt = (
+            None
+            if row["authorization_receipt"] is None
+            else json.loads(str(row["authorization_receipt"]))
+        )
+        if raw_result is not None and not isinstance(raw_result, dict):
+            raise ValueError("Team tool attempt result 必须是 JSON object")
+        if raw_receipt is not None and not isinstance(raw_receipt, dict):
+            raise ValueError("Team tool attempt authorization receipt 必须是 JSON object")
+        return TeamWorkerToolAttemptRecord(
+            id=UUID(str(row["id"])),
+            team_id=UUID(str(row["team_id"])),
+            session_id=UUID(str(row["session_id"])),
+            task_id=UUID(str(row["task_id"])),
+            tool_call_id=str(row["tool_call_id"]),
+            tool_name=str(row["tool_name"]),
+            effect=str(row["effect"]),
+            retry_safe=bool(row["retry_safe"]),
+            status=row["status"],
+            arguments_sha256=str(row["arguments_sha256"]),
+            attempt_count=int(row["attempt_count"]),
+            result=(None if raw_result is None else cast("dict[str, Any]", raw_result)),
+            effect_ref=None if row["effect_ref"] is None else str(row["effect_ref"]),
+            authorization_receipt=(
+                None if raw_receipt is None else cast("dict[str, Any]", raw_receipt)
+            ),
+            started_at=cast(datetime, _datetime(row["started_at"])),
+            finished_at=_datetime(row["finished_at"]),
             updated_at=cast(datetime, _datetime(row["updated_at"])),
         )
 
@@ -4907,8 +9724,13 @@ class SqliteCoworkStore:
     @staticmethod
     def _board_task_record(row: sqlite3.Row) -> BoardTaskRecord:
         raw_scope = json.loads(str(row["resource_scope"]))
+        raw_receipt = (
+            None if row["scope_receipt"] is None else json.loads(str(row["scope_receipt"]))
+        )
         if not isinstance(raw_scope, list):  # pragma: no cover - 写入端固定为 JSON array
             raise ValueError("Board task resource_scope 必须是 JSON array")
+        if raw_receipt is not None and not isinstance(raw_receipt, dict):
+            raise ValueError("Board task scope_receipt 必须是 JSON object")
         return BoardTaskRecord(
             id=UUID(row["id"]),
             team_id=UUID(row["team_id"]),
@@ -4920,6 +9742,7 @@ class SqliteCoworkStore:
                 for item in raw_scope
                 if isinstance(item, dict)
             ],
+            scope_receipt=(None if raw_receipt is None else cast("dict[str, Any]", raw_receipt)),
             status=row["status"],
             assignee_worker_id=(
                 None if row["assignee_worker_id"] is None else UUID(row["assignee_worker_id"])

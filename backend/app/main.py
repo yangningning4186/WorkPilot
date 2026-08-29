@@ -1,8 +1,10 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.auth import router as auth_router
 from app.api.automations import router as automations_router
@@ -29,6 +31,20 @@ from app.telemetry import initialize_telemetry_store
 from app.worker.local_runtime import EmbeddedWorkerRuntime
 
 
+async def _safe_request_validation_error(
+    _request: Request,
+    _error: Exception,
+) -> JSONResponse:
+    """Never reflect rejected request values from secret-bearing control-plane forms.
+
+    FastAPI's default 422 body includes Pydantic's ``input`` field.  Provider, Connector and
+    MCP payloads can contain credentials, and a malformed sibling field must not echo those
+    credentials back into the response, browser logs or telemetry.
+    """
+
+    return JSONResponse(status_code=422, content={"detail": "请求参数无效"})
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
@@ -51,6 +67,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app(settings: Settings | None = None) -> FastAPI:
     runtime_settings = get_settings() if settings is None else settings
     app = FastAPI(title="WorkPilot API", version="0.1.0", lifespan=lifespan)
+    app.add_exception_handler(RequestValidationError, _safe_request_validation_error)
     app.add_middleware(TraceIdMiddleware)
     app.add_middleware(
         DesktopLaunchTokenMiddleware,

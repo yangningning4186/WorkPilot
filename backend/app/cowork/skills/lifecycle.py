@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import hmac
+import json
 import os
 import shutil
 import tempfile
@@ -18,14 +21,20 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import IO, Any
 
+from app.cowork.skills.candidate_store import skill_persistence_skip_reason
 from app.cowork.skills.catalog import (
     BUILTIN_DISABLED_DIRNAME,
     BUILTIN_SKILLS_ROOT,
     SkillCatalogError,
     SkillOrigin,
-    builtin_disabled_names,
+    disabled_skill_names,
     load_skill_file,
 )
+
+AUTO_DISTILLED_PROVENANCE_PURPOSE = "skill-auto-distillation-provenance-v1"
+_AUTO_DISTILLED_RECEIPT = ".auto-distilled.json"
+_INTERNAL_SKILL_FILES = frozenset({_AUTO_DISTILLED_RECEIPT})
+_AUTO_RECEIPT_MAX_BYTES = 4 * 1024
 
 
 @dataclass(frozen=True)
@@ -56,6 +65,123 @@ class ManagedSkill:
         }
 
 
+@dataclass(frozen=True)
+class SkillResource:
+    path: str
+    size_bytes: int
+    readable: bool
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "size_bytes": self.size_bytes,
+            "readable": self.readable,
+        }
+
+
+def list_skill_resources(
+    skill_file: Path,
+    *,
+    max_files: int,
+    max_bytes: int,
+) -> tuple[SkillResource, ...]:
+    """枚举一份已选中 Skill 的普通资源文件，不跟随任何符号链接。
+
+    ``max_files`` 同时限制目录项扫描量：大量空目录也不能把一次 ``load_skill`` 变成
+    无界遍历。超过单文件读取上限的资源仍列出，但明确标为不可读。
+    """
+
+    if max_files < 1 or max_bytes < 1:
+        raise SkillCatalogError("Skill resource 上限必须为正数")
+    skill_dir = _skill_directory_from_file(skill_file)
+    pending = [skill_dir]
+    scanned = 0
+    resources: list[SkillResource] = []
+    try:
+        while pending:
+            directory = pending.pop()
+            with os.scandir(directory) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name)
+            child_directories: list[Path] = []
+            for entry in entries:
+                scanned += 1
+                if scanned > max_files:
+                    raise SkillCatalogError(f"Skill resource 目录项超过扫描上限 {max_files}")
+                if entry.is_symlink():
+                    continue
+                path = Path(entry.path)
+                if entry.is_dir(follow_symlinks=False):
+                    child_directories.append(path)
+                    continue
+                if not entry.is_file(follow_symlinks=False) or entry.name in {
+                    "SKILL.md",
+                    ".disabled",
+                    *_INTERNAL_SKILL_FILES,
+                }:
+                    continue
+                relative = path.relative_to(skill_dir).as_posix()
+                size = entry.stat(follow_symlinks=False).st_size
+                resources.append(
+                    SkillResource(path=relative, size_bytes=size, readable=size <= max_bytes)
+                )
+            # 反向压栈，让字典序靠前的目录先扫描；最终仍排序，输出与文件系统遍历顺序无关。
+            pending.extend(reversed(child_directories))
+    except SkillCatalogError:
+        raise
+    except OSError as error:
+        raise SkillCatalogError("Skill resource 目录无法安全枚举") from error
+    return tuple(sorted(resources, key=lambda item: item.path))
+
+
+def resolve_skill_resource_path(skill_file: Path, *, resource: str) -> tuple[Path, str]:
+    """解析资源但不读取内容，供 project Skill 在读取前完成目录授权。"""
+
+    skill_dir = _skill_directory_from_file(skill_file)
+    relative = PurePosixPath(resource)
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or not relative.parts
+        or relative.name in {"SKILL.md", ".disabled", *_INTERNAL_SKILL_FILES}
+    ):
+        raise SkillCatalogError("Skill resource 路径非法")
+    candidate = skill_dir.joinpath(*relative.parts)
+    current = skill_dir
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise FileNotFoundError(resource)
+    try:
+        target = candidate.resolve(strict=True)
+    except (FileNotFoundError, OSError) as error:
+        raise FileNotFoundError(resource) from error
+    if not target.is_relative_to(skill_dir) or not target.is_file():
+        raise FileNotFoundError(resource)
+    return target, relative.as_posix()
+
+
+def read_skill_resource_file(
+    skill_file: Path,
+    *,
+    resource: str,
+    max_bytes: int,
+) -> tuple[str, str]:
+    """按实际读取字节限制文本资源，避免 stat/read 竞态绕过大小边界。"""
+
+    target, normalized = resolve_skill_resource_path(skill_file, resource=resource)
+    try:
+        with target.open("rb") as stream:
+            content = stream.read(max_bytes + 1)
+    except OSError as error:
+        raise FileNotFoundError(resource) from error
+    if len(content) > max_bytes:
+        raise SkillCatalogError("Skill resource 超过读取上限")
+    try:
+        return content.decode("utf-8"), normalized
+    except UnicodeDecodeError as error:
+        raise SkillCatalogError("Skill resource 不是 UTF-8 文本") from error
+
+
 def _scan_managed(
     resolved: Path,
     *,
@@ -77,7 +203,7 @@ def _scan_managed(
             for path in sorted(child.rglob("*"))
             if path.is_file()
             and not path.is_symlink()
-            and path.name not in {"SKILL.md", ".disabled"}
+            and path.name not in {"SKILL.md", ".disabled", *_INTERNAL_SKILL_FILES}
         )
         try:
             skill = load_skill_file(child / "SKILL.md", max_bytes=max_bytes, origin=origin)
@@ -124,7 +250,8 @@ def list_managed_skills(
     if builtin_root is None:
         return user
     user_names = {item.name for item in user}
-    disabled = builtin_disabled_names(resolved)
+    disabled = disabled_skill_names(resolved)
+    user = [replace(item, enabled=item.name not in disabled) for item in user]
     builtin = [
         replace(item, shadowed=item.name in user_names)
         for item in _scan_managed(
@@ -146,6 +273,7 @@ def install_skill(
     enabled: bool,
     max_bytes: int,
     replace: bool,
+    _internal_files: dict[str, str] | None = None,
 ) -> ManagedSkill:
     resolved = _safe_root(root)
     resolved.mkdir(parents=True, exist_ok=True)
@@ -162,9 +290,16 @@ def install_skill(
         candidate = final_staging / "SKILL.md"
         candidate.write_bytes(encoded)
         load_skill_file(candidate, max_bytes=max_bytes)
+        for internal_name, internal_body in (_internal_files or {}).items():
+            if internal_name not in _INTERNAL_SKILL_FILES:
+                raise SkillCatalogError("Skill 内部元数据文件名无效")
+            _write_private_file(final_staging / internal_name, internal_body)
         if target.is_dir() and not target.is_symlink():
             for source in target.iterdir():
-                if source.name in {"SKILL.md", ".disabled"} or source.is_symlink():
+                if (
+                    source.name in {"SKILL.md", ".disabled", *_INTERNAL_SKILL_FILES}
+                    or source.is_symlink()
+                ):
                     continue
                 destination = final_staging / source.name
                 if source.is_dir():
@@ -198,9 +333,16 @@ def install_auto_distilled_skill(
     capability_key: str,
     skill_md: str,
     max_bytes: int,
+    provenance_signing_key: str,
     builtin_root: Path | None = BUILTIN_SKILLS_ROOT,
 ) -> ManagedSkill:
-    """幂等安装自动蒸馏 Skill，但绝不覆盖同名人工 Skill，也不遮蔽出厂 Skill。"""
+    """凭签名来源收据幂等更新自动 Skill；绝不靠正文子串判断来源。"""
+
+    if not provenance_signing_key:
+        raise SkillCatalogError("自动 Skill 来源签名键不可用")
+    privacy_reason = skill_persistence_skip_reason(skill_md)
+    if privacy_reason is not None:
+        raise SkillCatalogError("自动 Skill 包含禁止持久化的敏感信息")
 
     resolved = _safe_root(root)
     if builtin_root is not None:
@@ -212,14 +354,20 @@ def install_auto_distilled_skill(
     target = _skill_dir(resolved, name)
     replace = target.exists()
     if replace:
-        existing = target / "SKILL.md"
-        try:
-            raw = existing.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as error:
-            raise FileExistsError(f"同名 Skill 已存在且无法确认来源: {name}") from error
-        markers = ("origin: auto_distilled", f"capability_key: {capability_key}")
-        if not all(marker in raw for marker in markers):
+        if not _valid_auto_distilled_receipt(
+            target,
+            name=name,
+            capability_key=capability_key,
+            provenance_signing_key=provenance_signing_key,
+            max_bytes=max_bytes,
+        ):
             raise FileExistsError(f"同名人工 Skill 已存在，自动晋升未覆盖: {name}")
+    receipt = _build_auto_distilled_receipt(
+        name=name,
+        capability_key=capability_key,
+        skill_md=skill_md,
+        provenance_signing_key=provenance_signing_key,
+    )
     return install_skill(
         resolved,
         name=name,
@@ -227,11 +375,110 @@ def install_auto_distilled_skill(
         enabled=True,
         max_bytes=max_bytes,
         replace=replace,
+        _internal_files={_AUTO_DISTILLED_RECEIPT: receipt},
     )
 
 
+def _auto_receipt_payload(*, name: str, capability_key: str, skill_sha256: str) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "origin": "auto_distilled",
+        "name": name,
+        "capability_key": capability_key,
+        "skill_sha256": skill_sha256,
+    }
+
+
+def _receipt_signature(payload: dict[str, Any], provenance_signing_key: str) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hmac.new(provenance_signing_key.encode("utf-8"), encoded, hashlib.sha256).hexdigest()
+
+
+def _build_auto_distilled_receipt(
+    *,
+    name: str,
+    capability_key: str,
+    skill_md: str,
+    provenance_signing_key: str,
+) -> str:
+    payload = _auto_receipt_payload(
+        name=name,
+        capability_key=capability_key,
+        skill_sha256=hashlib.sha256(skill_md.encode("utf-8")).hexdigest(),
+    )
+    return json.dumps(
+        {**payload, "signature": _receipt_signature(payload, provenance_signing_key)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _valid_auto_distilled_receipt(
+    target: Path,
+    *,
+    name: str,
+    capability_key: str,
+    provenance_signing_key: str,
+    max_bytes: int,
+) -> bool:
+    marker = target / _AUTO_DISTILLED_RECEIPT
+    skill_file = target / "SKILL.md"
+    if (
+        target.is_symlink()
+        or marker.is_symlink()
+        or skill_file.is_symlink()
+        or not marker.is_file()
+        or not skill_file.is_file()
+    ):
+        return False
+    try:
+        marker_raw = marker.read_bytes()
+        skill_raw = skill_file.read_bytes()
+        if (
+            not marker_raw
+            or len(marker_raw) > _AUTO_RECEIPT_MAX_BYTES
+            or not skill_raw
+            or len(skill_raw) > max_bytes
+        ):
+            return False
+        receipt = json.loads(marker_raw)
+    except (OSError, UnicodeError, ValueError):
+        return False
+    if not isinstance(receipt, dict) or set(receipt) != {
+        "version",
+        "origin",
+        "name",
+        "capability_key",
+        "skill_sha256",
+        "signature",
+    }:
+        return False
+    payload = _auto_receipt_payload(
+        name=name,
+        capability_key=capability_key,
+        skill_sha256=hashlib.sha256(skill_raw).hexdigest(),
+    )
+    if any(receipt.get(key) != value for key, value in payload.items()):
+        return False
+    signature = receipt.get("signature")
+    return isinstance(signature, str) and hmac.compare_digest(
+        signature,
+        _receipt_signature(payload, provenance_signing_key),
+    )
+
+
+def _write_private_file(path: Path, body: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(body)
+
+
 def _write_marker(marker: Path, body: str) -> None:
-    descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if marker.parent.is_symlink():
+        raise SkillCatalogError("Skill 停用标记目录不能是符号链接")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(marker, flags, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         stream.write(body)
 
@@ -244,36 +491,36 @@ def set_skill_enabled(
     max_bytes: int,
     builtin_root: Path | None = BUILTIN_SKILLS_ROOT,
 ) -> ManagedSkill:
-    """user 层写目录内的 ``.disabled``；builtin 写 user 层的停用标记。
-
-    先看 user 层：同名 fork 存在时开关管的就是那份 fork——它才是实际生效的那一个，
-    去切 builtin 的开关会得到"点了没反应"。
-    """
+    """设置名称级开关；关闭后任何 origin 的同名 Skill 都不能 fallback 复活。"""
 
     resolved = _safe_root(root)
     target = _skill_dir(resolved, name)
+    selected: tuple[Path, SkillOrigin] | None = None
     if target.is_dir() and not target.is_symlink():
-        marker = target / ".disabled"
-        if enabled:
-            marker.unlink(missing_ok=True)
-        else:
-            _write_marker(marker, "disabled\n")
-        return _managed_one(target, max_bytes=max_bytes, origin="user")
-    if builtin_root is not None:
+        selected = (target, "user")
+    elif builtin_root is not None:
         builtin_dir = _skill_dir(_safe_root(builtin_root), name)
         if builtin_dir.is_dir() and not builtin_dir.is_symlink():
-            marker_root = resolved / BUILTIN_DISABLED_DIRNAME
-            marker_root.mkdir(parents=True, exist_ok=True)
-            marker = marker_root / name
-            if enabled:
-                marker.unlink(missing_ok=True)
-            else:
-                _write_marker(marker, "disabled\n")
-            return replace(
-                _managed_one(builtin_dir, max_bytes=max_bytes, origin="builtin"),
-                enabled=enabled,
-            )
-    raise FileNotFoundError(f"Skill 不存在: {name}")
+            selected = (builtin_dir, "builtin")
+    if selected is None:
+        raise FileNotFoundError(f"Skill 不存在: {name}")
+
+    marker_root = resolved / BUILTIN_DISABLED_DIRNAME
+    if marker_root.exists() and (not marker_root.is_dir() or marker_root.is_symlink()):
+        raise SkillCatalogError("Skill 停用标记目录必须是普通目录")
+    marker_root.mkdir(parents=True, exist_ok=True)
+    marker = marker_root / name
+    legacy_marker = target / ".disabled" if target.is_dir() and not target.is_symlink() else None
+    if enabled:
+        marker.unlink(missing_ok=True)
+        if legacy_marker is not None:
+            legacy_marker.unlink(missing_ok=True)
+    else:
+        _write_marker(marker, "disabled\n")
+        if legacy_marker is not None:
+            legacy_marker.unlink(missing_ok=True)
+    result = _managed_one(selected[0], max_bytes=max_bytes, origin=selected[1])
+    return replace(result, enabled=enabled)
 
 
 def remove_skill(
@@ -358,7 +605,11 @@ def import_skill_zip(
         target_dir = _skill_dir(root_path, skill.name)
         source_dir = candidates[0].parent
         for source in source_dir.rglob("*"):
-            if not source.is_file() or source.name == "SKILL.md" or source.is_symlink():
+            if (
+                not source.is_file()
+                or source.name in {"SKILL.md", *_INTERNAL_SKILL_FILES}
+                or source.is_symlink()
+            ):
                 continue
             resource_relative = source.relative_to(source_dir)
             resource_target = target_dir / resource_relative
@@ -402,22 +653,13 @@ def read_skill_resource(
         # user 层没有这份技能时才回落出厂层；顺序和目录合并保持一致，否则
         # fork 过的技能会读到出厂那份的资源。
         skill_dir = _skill_dir(_safe_root(builtin_root), name)
-    relative = PurePosixPath(resource)
-    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
-        raise SkillCatalogError("Skill resource 路径非法")
     if not skill_dir.is_dir() or skill_dir.is_symlink():
         raise FileNotFoundError(name)
-    resolved_skill_dir = skill_dir.resolve(strict=True)
-    candidate = skill_dir.joinpath(*relative.parts)
-    try:
-        target = candidate.resolve(strict=True)
-    except (FileNotFoundError, OSError) as error:
-        raise FileNotFoundError(resource) from error
-    if not target.is_relative_to(resolved_skill_dir) or not target.is_file():
-        raise FileNotFoundError(resource)
-    if target.stat().st_size > max_bytes:
-        raise SkillCatalogError("Skill resource 超过读取上限")
-    return target.read_text(encoding="utf-8"), relative.as_posix()
+    return read_skill_resource_file(
+        skill_dir / "SKILL.md",
+        resource=resource,
+        max_bytes=max_bytes,
+    )
 
 
 def _managed_one(target: Path, *, max_bytes: int, origin: SkillOrigin = "user") -> ManagedSkill:
@@ -425,7 +667,9 @@ def _managed_one(target: Path, *, max_bytes: int, origin: SkillOrigin = "user") 
     resources = tuple(
         path.relative_to(target).as_posix()
         for path in sorted(target.rglob("*"))
-        if path.is_file() and path.name not in {"SKILL.md", ".disabled"} and not path.is_symlink()
+        if path.is_file()
+        and path.name not in {"SKILL.md", ".disabled", *_INTERNAL_SKILL_FILES}
+        and not path.is_symlink()
     )
     return ManagedSkill(
         skill.name,
@@ -443,6 +687,23 @@ def _safe_root(root: Path) -> Path:
     if expanded.exists() and (not expanded.is_dir() or expanded.is_symlink()):
         raise SkillCatalogError("Skill 根目录必须是普通目录")
     return expanded.resolve()
+
+
+def _skill_directory_from_file(skill_file: Path) -> Path:
+    if skill_file.name != "SKILL.md" or skill_file.is_symlink() or skill_file.parent.is_symlink():
+        raise SkillCatalogError("Skill resource 必须绑定普通 SKILL.md")
+    try:
+        resolved_file = skill_file.resolve(strict=True)
+        resolved_dir = skill_file.parent.resolve(strict=True)
+    except (FileNotFoundError, OSError) as error:
+        raise FileNotFoundError(skill_file.name) from error
+    if (
+        not resolved_file.is_file()
+        or resolved_file.parent != resolved_dir
+        or resolved_dir.is_symlink()
+    ):
+        raise SkillCatalogError("Skill resource 目录非法")
+    return resolved_dir
 
 
 def _skill_dir(root: Path, name: str) -> Path:

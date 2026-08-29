@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import secrets
 import time
@@ -38,11 +39,32 @@ from app.cowork.web import (
     normalize_public_url,
 )
 from app.cowork_store.routing import cowork_store
+from workpilot_ai.types import MessageAttachment
 
 _CONTROL_SELECTOR = (
     "a[href],button,input,textarea,select,[role=button],[role=link],"
     "[role=checkbox],[role=radio],[role=combobox],[contenteditable=true]"
 )
+
+
+def _image_attachment(path: str, max_bytes: int) -> MessageAttachment:
+    image_path = Path(path).resolve()
+    stat = image_path.stat()
+    if stat.st_size > max_bytes:
+        raise ValueError(f"网页截图超过模型附件上限 {max_bytes} bytes")
+    digest = hashlib.sha256()
+    with image_path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    media_type = "image/jpeg" if image_path.suffix.casefold() in {".jpg", ".jpeg"} else "image/png"
+    return MessageAttachment(
+        kind="image",
+        filename=image_path.name,
+        media_type=media_type,
+        path=str(image_path),
+        size_bytes=stat.st_size,
+        sha256=digest.hexdigest(),
+    )
 
 
 def _installed_chromium_fallback() -> Path | None:
@@ -408,7 +430,7 @@ def register_browser_tools(
             session,
             max_chars=context.settings.cowork_web_text_max_chars,
         )
-        return CoworkToolResult(output=output, effect_ref=_effect(session_id, session, "open"))
+        return CoworkToolResult(content=output, effect_ref=_effect(session_id, session, "open"))
 
     async def find_page_text(
         session: _BrowserSession, query: str, max_matches: int
@@ -435,7 +457,7 @@ def register_browser_tools(
         )
         if args.query is not None:
             output.update(await find_page_text(session, args.query, args.max_matches))
-        return CoworkToolResult(output=output)
+        return CoworkToolResult(content=output)
 
     async def click_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = BrowserControlArgs.model_validate(raw.model_dump())
@@ -452,7 +474,7 @@ def register_browser_tools(
             args.session_id, session, max_chars=context.settings.cowork_web_text_max_chars
         )
         return CoworkToolResult(
-            output=output, effect_ref=_effect(args.session_id, session, "click")
+            content=output, effect_ref=_effect(args.session_id, session, "click")
         )
 
     async def back_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
@@ -468,7 +490,9 @@ def register_browser_tools(
         output = await _snapshot(
             args.session_id, session, max_chars=context.settings.cowork_web_text_max_chars
         )
-        return CoworkToolResult(output=output, effect_ref=_effect(args.session_id, session, "back"))
+        return CoworkToolResult(
+            content=output, effect_ref=_effect(args.session_id, session, "back")
+        )
 
     async def type_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = BrowserTypeArgs.model_validate(raw.model_dump())
@@ -485,7 +509,7 @@ def register_browser_tools(
         except PlaywrightError as error:
             raise CoworkToolError(f"输入控件失败，请刷新 DOM 后重试：{error}") from error
         return CoworkToolResult(
-            output={
+            content={
                 "session_id": args.session_id,
                 "url": session.page.url,
                 "typed_chars": len(args.text),
@@ -504,7 +528,7 @@ def register_browser_tools(
         except PlaywrightError as error:
             raise CoworkToolError(f"选择下拉项失败，请刷新 DOM 后重试：{error}") from error
         return CoworkToolResult(
-            output={"session_id": args.session_id, "url": session.page.url, "selected": selected},
+            content={"session_id": args.session_id, "url": session.page.url, "selected": selected},
             effect_ref=_effect(args.session_id, session, "select"),
         )
 
@@ -530,7 +554,7 @@ def register_browser_tools(
         except PlaywrightError as error:
             raise CoworkToolError(f"上传文件失败，请确认目标是文件选择控件：{error}") from error
         return CoworkToolResult(
-            output={"session_id": args.session_id, "filename": authorization.target_path.name},
+            content={"session_id": args.session_id, "filename": authorization.target_path.name},
             effect_ref=_effect(args.session_id, session, "upload"),
         )
 
@@ -554,7 +578,7 @@ def register_browser_tools(
         except PlaywrightError as error:
             raise CoworkToolError(f"下载失败或控件未触发下载：{error}") from error
         return CoworkToolResult(
-            output={
+            content={
                 "session_id": args.session_id,
                 "path": str(authorization.target_path),
                 "suggested_filename": download.suggested_filename,
@@ -572,9 +596,22 @@ def register_browser_tools(
             await session.page.screenshot(path=args.path, full_page=args.full_page)
         except PlaywrightError as error:
             raise CoworkToolError(f"网页截图失败：{error}") from error
+        try:
+            attachment = await asyncio.to_thread(
+                _image_attachment,
+                args.path,
+                context.settings.cowork_attachment_max_bytes,
+            )
+        except (OSError, ValueError) as error:
+            raise CoworkToolError(f"网页截图已生成但无法读取：{error}") from error
         return CoworkToolResult(
-            output={"session_id": args.session_id, "path": args.path, "url": session.page.url},
-            effect_ref=args.path,
+            content={
+                "session_id": args.session_id,
+                "path": attachment.path,
+                "url": session.page.url,
+            },
+            attachments=(attachment,),
+            effect_ref=attachment.path,
         )
 
     async def find_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
@@ -584,7 +621,7 @@ def register_browser_tools(
             conversation_id=context.conversation_id,
         )
         return CoworkToolResult(
-            output={
+            content={
                 "session_id": args.session_id,
                 "url": session.page.url,
                 **await find_page_text(session, args.query, args.max_matches),
@@ -597,7 +634,7 @@ def register_browser_tools(
             args.session_id,
             conversation_id=context.conversation_id,
         )
-        return CoworkToolResult(output={"session_id": args.session_id, "closed": True})
+        return CoworkToolResult(content={"session_id": args.session_id, "closed": True})
 
     specs = (
         CoworkToolSpec(
@@ -649,6 +686,9 @@ def register_browser_tools(
             handler=click_handler,
             approval_required=True,
             approval_target_fields=("session_id", "control_index"),
+            # The enumerated control is the whole side effect; unlike connector writes,
+            # there is no hidden body that can change what gets submitted.
+            semantic_review_target_complete=True,
             exclusive=True,
             search_aliases=("点击", "click"),
         ),

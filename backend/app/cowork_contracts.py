@@ -7,6 +7,8 @@ Cowork 的目录授权、附件、交付物、HITL inbox 和自动化计划。�
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,8 +53,19 @@ ActiveCapability = Literal[
 MemoryScope = Literal["global", "workspace", "conversation"]
 MemoryCategory = Literal["preference", "profile", "interest", "fact"]
 MEMORY_CATEGORIES: frozenset[str] = frozenset({"preference", "profile", "interest", "fact"})
+MemoryPolicyMode = Literal["inherit", "on", "off"]
+MEMORY_POLICY_MODES: frozenset[str] = frozenset({"inherit", "on", "off"})
+MAX_STANDING_RULES_CHARS = 20_000
+MEMORY_JOB_RESULT_SCHEMA = "memory_extraction_result.v1"
+MEMORY_JOB_RESULT_MAX_BYTES = 16_384
+MEMORY_JOB_RESULT_MAX_OPERATIONS = 12
+MEMORY_JOB_RESULT_REASON_MAX_CHARS = 500
+MEMORY_JOB_ERROR_MAX_CHARS = 500
 ArtifactKind = Literal["file", "report", "diff", "table"]
 AttachmentKind = Literal["image", "pdf", "text"]
+SteeringSource = Literal["local_owner", "external_inbound", "runtime", "unknown"]
+QueuedMessageDelivery = Literal["steer", "follow_up", "next_run"]
+QueuedMessageStatus = Literal["pending", "ready", "consumed", "cancelled"]
 InteractionKind = Literal[
     "ask_user",
     "directory_request",
@@ -64,6 +77,17 @@ InteractionKind = Literal[
 InteractionStatus = Literal["pending", "answered", "approved", "rejected", "cancelled"]
 TeamStatus = Literal["active", "paused", "archived"]
 TeamWorkerSessionStatus = Literal["idle", "running", "failed"]
+TeamBudgetDimension = Literal["model_calls", "tool_calls", "wall_ms", "assignments"]
+TeamBudgetReservationStatus = Literal["active", "settled"]
+TeamToolAttemptStatus = Literal["in_flight", "succeeded", "failed", "unknown"]
+TeamWakeTargetKind = Literal["none", "lead", "worker"]
+TeamWakeDeliveryStatus = Literal["pending", "claimed", "delivered"]
+DEFAULT_TEAM_BUDGET_LIMITS: dict[str, int] = {
+    "model_calls": 96,
+    "tool_calls": 256,
+    "wall_ms": 3_600_000,
+    "assignments": 24,
+}
 BoardTaskStatus = Literal["open", "in_progress", "blocked", "review", "done", "cancelled"]
 BoardCompletionKind = Literal["pending", "complete", "partial", "cancelled"]
 ScheduleKind = Literal["once", "cron"]
@@ -119,6 +143,24 @@ class ArtifactRegistrationError(RuntimeError):
 
 class CoworkAttachmentError(RuntimeError):
     pass
+
+
+class TeamEventIntegrityError(RuntimeError):
+    """Team event sequence、parent linkage 或 hash chain 已损坏。"""
+
+
+class TeamBudgetExceededError(RuntimeError):
+    """Team 的跨 run 累计预算已经耗尽；不会自动扩大或重试。"""
+
+    def __init__(self, dimension: TeamBudgetDimension, *, used: int, limit: int) -> None:
+        self.dimension = dimension
+        self.used = used
+        self.limit = limit
+        super().__init__(f"Team {dimension} 预算已用/预留 {used}，上限 {limit}")
+
+
+class TeamUnsafeReplayError(RuntimeError):
+    """Worker 写工具在崩溃点结果未知，必须交回 Lead，不能盲目重放。"""
 
 
 @dataclass(frozen=True)
@@ -191,6 +233,195 @@ class PinnedMemoryError(ValueError):
 
 
 @dataclass(frozen=True)
+class OwnerMemoryPolicy:
+    save_enabled: bool = True
+    recall_enabled: bool = True
+    standing_rules: str = ""
+    revision: int = 0
+
+
+@dataclass(frozen=True)
+class ConversationMemoryPolicy:
+    conversation_id: UUID
+    save_mode: MemoryPolicyMode = "inherit"
+    recall_mode: MemoryPolicyMode = "inherit"
+    revision: int = 0
+
+
+@dataclass(frozen=True)
+class MemoryPolicySnapshot:
+    """一次已通过 save gate 的控制面版本，用于 SQLite 写事务内 CAS。"""
+
+    owner_revision: int
+    conversation_id: UUID | None
+    conversation_revision: int | None
+
+
+class MemoryPolicyConflictError(RuntimeError):
+    """Memory policy 在预检与落库之间漂移或已经关闭。"""
+
+    def __init__(self, reason: str = "memory_policy_revision_conflict") -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+@dataclass(frozen=True)
+class CoworkMemoryMutation:
+    """SQLite 原子 Memory mutation 的完整返回值。"""
+
+    applied: bool
+    current_changed: bool
+    memory: CoworkMemoryRecord | None
+    previous: CoworkMemoryRecord | None = None
+
+
+def _memory_job_result_reason(value: object, *, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"memory job result {field} 必须是字符串或 null")
+    normalized = value.strip()
+    if len(normalized) > MEMORY_JOB_RESULT_REASON_MAX_CHARS:
+        raise ValueError(
+            f"memory job result {field} 不能超过 {MEMORY_JOB_RESULT_REASON_MAX_CHARS} 个字符"
+        )
+    return normalized or None
+
+
+def _memory_job_result_uuid(value: object, *, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"memory job result {field} 必须是 UUID 字符串或 null")
+    try:
+        return str(UUID(value))
+    except ValueError as error:
+        raise ValueError(f"memory job result {field} 不是合法 UUID") from error
+
+
+def normalize_memory_job_result(value: Mapping[str, Any]) -> dict[str, Any]:
+    """校验并规范化可持久化的自动记忆审计结果。
+
+    这是 Store 最终边界使用的严格 allowlist。模型候选的 ``fact``、原始 ``content``、
+    confidence 或任意额外字段都会被拒绝，而不是“序列化时顺便带进去”。
+    """
+
+    if not isinstance(value, Mapping):
+        raise ValueError("memory job result 必须是对象")
+
+    allowed_envelope = {
+        "schema_version",
+        "status",
+        "skipped_reason",
+        "operations",
+        "truncated_operations",
+    }
+    extras = set(value) - allowed_envelope
+    if extras:
+        raise ValueError(f"memory job result 包含未允许字段: {sorted(extras)}")
+    if value.get("schema_version") != MEMORY_JOB_RESULT_SCHEMA:
+        raise ValueError("memory job result schema_version 无效")
+    status = value.get("status")
+    if status not in {"completed", "skipped"}:
+        raise ValueError("memory job result status 无效")
+    skipped_reason = _memory_job_result_reason(value.get("skipped_reason"), field="skipped_reason")
+    if status == "skipped" and skipped_reason is None:
+        raise ValueError("skipped memory job result 必须提供 skipped_reason")
+    raw_operations = value.get("operations")
+    if not isinstance(raw_operations, list):
+        raise ValueError("memory job result operations 必须是数组")
+    if len(raw_operations) > MEMORY_JOB_RESULT_MAX_OPERATIONS:
+        raise ValueError(f"memory job result operations 最多 {MEMORY_JOB_RESULT_MAX_OPERATIONS} 条")
+    raw_truncated = value.get("truncated_operations", 0)
+    if (
+        isinstance(raw_truncated, bool)
+        or not isinstance(raw_truncated, int)
+        or not 0 <= raw_truncated <= 1_000_000
+    ):
+        raise ValueError("memory job result truncated_operations 无效")
+
+    allowed_operation = {
+        "operation",
+        "requested_operation",
+        "status",
+        "category",
+        "scope",
+        "reason",
+        "skipped_reason",
+        "target_memory_id",
+        "memory_id",
+    }
+    normalized_operations: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_operations):
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"memory job result operations[{index}] 必须是对象")
+        extras = set(raw) - allowed_operation
+        if extras:
+            raise ValueError(
+                f"memory job result operations[{index}] 包含未允许字段: {sorted(extras)}"
+            )
+        operation = raw.get("operation")
+        if operation not in {"ADD", "UPDATE", "DELETE", "NOOP", "SKIP"}:
+            raise ValueError(f"memory job result operations[{index}].operation 无效")
+        requested = raw.get("requested_operation")
+        if requested is not None and requested not in {"ADD", "UPDATE", "DELETE", "NOOP"}:
+            raise ValueError(f"memory job result operations[{index}].requested_operation 无效")
+        operation_status = raw.get("status")
+        if operation_status not in {"applied", "skipped", "unchanged", "blocked"}:
+            raise ValueError(f"memory job result operations[{index}].status 无效")
+        category = raw.get("category")
+        if category not in MEMORY_CATEGORIES:
+            raise ValueError(f"memory job result operations[{index}].category 无效")
+        scope = raw.get("scope")
+        if scope not in {"global", "workspace", "conversation"}:
+            raise ValueError(f"memory job result operations[{index}].scope 无效")
+        operation_skipped_reason = _memory_job_result_reason(
+            raw.get("skipped_reason"), field=f"operations[{index}].skipped_reason"
+        )
+        if operation_status == "skipped" and operation_skipped_reason is None:
+            raise ValueError(
+                f"memory job result operations[{index}] skipped 时必须提供 skipped_reason"
+            )
+        normalized_operations.append(
+            {
+                "operation": operation,
+                "requested_operation": requested,
+                "status": operation_status,
+                "category": category,
+                "scope": scope,
+                "reason": _memory_job_result_reason(
+                    raw.get("reason"), field=f"operations[{index}].reason"
+                ),
+                "skipped_reason": operation_skipped_reason,
+                "target_memory_id": _memory_job_result_uuid(
+                    raw.get("target_memory_id"),
+                    field=f"operations[{index}].target_memory_id",
+                ),
+                "memory_id": _memory_job_result_uuid(
+                    raw.get("memory_id"), field=f"operations[{index}].memory_id"
+                ),
+            }
+        )
+    normalized: dict[str, Any] = {
+        "schema_version": MEMORY_JOB_RESULT_SCHEMA,
+        "status": status,
+        "skipped_reason": skipped_reason,
+        "operations": normalized_operations,
+        "truncated_operations": raw_truncated,
+    }
+    encoded = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) > MEMORY_JOB_RESULT_MAX_BYTES:
+        raise ValueError(f"memory job result 不能超过 {MEMORY_JOB_RESULT_MAX_BYTES} bytes")
+    return normalized
+
+
+@dataclass(frozen=True)
 class MemoryExtractionJob:
     """一次待提炼的对话来源。
 
@@ -208,6 +439,7 @@ class MemoryExtractionJob:
     attempts: int
     error: str | None
     created_at: datetime
+    result: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -411,9 +643,13 @@ class SteeringRecord:
     run_id: UUID
     conversation_id: UUID
     content: str
-    status: str
+    source: SteeringSource
+    status: QueuedMessageStatus
     created_at: datetime
     consumed_at: datetime | None
+    requested_delivery: QueuedMessageDelivery = "steer"
+    delivery: QueuedMessageDelivery = "steer"
+    cancelled_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -442,6 +678,13 @@ class TeamRecord:
     proposal_call_id: str
     status: TeamStatus
     note: str
+    # 只有 propose_team 的不可豁免人工审批能够铸造这份委派边界。Board 写任务必须
+    # 证明自己是该边界的子集；普通 Lead 的 filesystem.write grant 本身不能替代委派。
+    write_delegation_scope: list[dict[str, str]]
+    write_delegation_receipt: dict[str, Any] | None
+    pause_reason: str | None
+    budget_limits: dict[str, int]
+    budget_usage: dict[str, int]
     created_at: datetime
     updated_at: datetime
 
@@ -479,6 +722,9 @@ class BoardTaskRecord:
     description: str
     acceptance_criteria: str
     resource_scope: list[dict[str, str]]
+    # 写任务在创建时由 Team 的人工审批 receipt 派生，分配时重新核验 scope、grant
+    # identity 与 receipt hash。只读任务保持为 None，不增加审批或交互。
+    scope_receipt: dict[str, Any] | None
     status: BoardTaskStatus
     assignee_worker_id: UUID | None
     assignment_call_id: str | None
@@ -489,6 +735,114 @@ class BoardTaskRecord:
     last_rejection_comment: str | None
     last_error: str | None
     created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class TeamEventRecord:
+    """Team/Board 关键变更的不可变审计记录。sequence 与 hash chain 都按 Team 隔离。"""
+
+    id: UUID
+    team_id: UUID
+    sequence: int
+    event_type: str
+    actor: str
+    cause: str
+    parent_event_id: UUID | None
+    payload: dict[str, Any]
+    prev_hash: str
+    hash: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class TeamEventVerification:
+    team_id: UUID
+    valid: bool
+    event_count: int
+    head_sequence: int
+    head_hash: str
+    verified_at: datetime
+
+
+@dataclass(frozen=True)
+class TeamEventCursorRecord:
+    team_id: UUID
+    consumer: str
+    last_sequence: int
+    last_event_hash: str
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class TeamWakeDeliveryRecord:
+    """Team event 的持久 feed/outbox 项；delivery id 是下游幂等键。"""
+
+    id: UUID
+    team_id: UUID
+    event_id: UUID
+    event_sequence: int
+    event_hash: str
+    event_type: str
+    target_kind: TeamWakeTargetKind
+    target_id: str | None
+    payload: dict[str, Any]
+    status: TeamWakeDeliveryStatus
+    attempt_count: int
+    claim_owner: str | None
+    claim_until: datetime | None
+    validation_outcome: Literal["deliver", "suppress"] | None
+    validated_at: datetime | None
+    delivery_receipt: str | None
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
+    delivered_at: datetime | None
+
+
+@dataclass(frozen=True)
+class TeamProjectionSummaryRecord:
+    """从事件重放得到的独立 projection；暂不替换现有 Team/Board 热表。"""
+
+    team_id: UUID
+    watermark: int
+    head_hash: str
+    summary: dict[str, Any]
+    rebuilt_at: datetime
+
+
+@dataclass(frozen=True)
+class TeamBudgetReservationRecord:
+    id: UUID
+    team_id: UUID
+    task_id: UUID
+    assignment_call_id: str
+    status: TeamBudgetReservationStatus
+    reserved: dict[str, int]
+    used: dict[str, int]
+    created_at: datetime
+    updated_at: datetime
+    settled_at: datetime | None
+
+
+@dataclass(frozen=True)
+class TeamWorkerToolAttemptRecord:
+    id: UUID
+    team_id: UUID
+    session_id: UUID
+    task_id: UUID
+    tool_call_id: str
+    tool_name: str
+    effect: str
+    retry_safe: bool
+    status: TeamToolAttemptStatus
+    arguments_sha256: str
+    attempt_count: int
+    result: dict[str, Any] | None
+    effect_ref: str | None
+    authorization_receipt: dict[str, Any] | None
+    started_at: datetime
+    finished_at: datetime | None
     updated_at: datetime
 
 

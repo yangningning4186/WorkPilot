@@ -17,12 +17,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import UUID
 
+from app.core.config import Settings, get_settings
 from app.core.db import DbSession as AsyncSession
+from app.cowork.memory_policy import (
+    EffectiveMemoryPolicy,
+    MemoryPolicyDeniedError,
+    get_effective_memory_policy,
+    memory_save_policy_snapshot,
+)
 from app.cowork.permissions import list_session_roots
 from app.cowork_contracts import (
     CoworkMemoryRecord as CoworkMemoryRecord,
@@ -36,6 +44,7 @@ from app.cowork_contracts import (
 from app.cowork_contracts import (
     MemoryNotFoundError as MemoryNotFoundError,
 )
+from app.cowork_contracts import MemoryPolicyConflictError
 from app.cowork_contracts import (
     MemoryScope as MemoryScope,
 )
@@ -108,6 +117,34 @@ async def default_workspace_path(session: AsyncSession, *, conversation_id: UUID
     return roots[0].canonical_path if roots else None
 
 
+async def require_visible_memory(
+    session: AsyncSession,
+    *,
+    conversation_id: UUID,
+    memory_id: UUID,
+    require_active: bool = True,
+) -> CoworkMemoryRecord:
+    """按当前会话的作用域边界解析一条记忆。
+
+    ID 只是定位符，不是授权。不存在和不可见使用同一种错误，避免调用方借错误差异探测
+    其他会话或目录的记忆。控制面若要管理所有记忆，应显式调用 ``get_curated_memory``，
+    不能复用模型工具的这个入口。
+    """
+
+    record = await get_memory(session, memory_id=memory_id)
+    if record is None or (require_active and not record.active):
+        raise MemoryNotFoundError(str(memory_id))
+    if record.scope == "global":
+        return record
+    if record.scope == "conversation" and record.conversation_id == conversation_id:
+        return record
+    if record.scope == "workspace":
+        roots = await list_session_roots(session, conversation_id=conversation_id)
+        if record.workspace_path in {root.canonical_path for root in roots}:
+            return record
+    raise MemoryNotFoundError(str(memory_id))
+
+
 async def remember(
     session: AsyncSession,
     *,
@@ -117,6 +154,8 @@ async def remember(
     key: str | None = None,
     workspace_path: str | None = None,
     source: Literal["agent", "user"] = "agent",
+    settings: Settings | None = None,
+    effective_policy: EffectiveMemoryPolicy | None = None,
 ) -> tuple[CoworkMemoryRecord, CoworkMemoryRecord | None]:
     """写入一条记忆；带 key 时同作用域内更新而不是再堆一条。
 
@@ -129,15 +168,23 @@ async def remember(
     bound_conversation, bound_workspace = resolve_binding(
         scope, conversation_id=conversation_id, workspace_path=workspace_path
     )
-    store = cowork_store()
-    return await store.remember_cowork_memory(
-        scope=scope,
-        conversation_id=bound_conversation,
-        workspace_path=bound_workspace,
-        key=normalized_key,
-        content=normalized,
-        source=source,
+    policy = effective_policy or await get_effective_memory_policy(
+        settings or get_settings(), conversation_id=conversation_id
     )
+    snapshot = memory_save_policy_snapshot(policy)
+    store = cowork_store()
+    try:
+        return await store.remember_cowork_memory(
+            scope=scope,
+            conversation_id=bound_conversation,
+            workspace_path=bound_workspace,
+            key=normalized_key,
+            content=normalized,
+            source=source,
+            policy_snapshot=snapshot,
+        )
+    except MemoryPolicyConflictError as error:
+        raise MemoryPolicyDeniedError(error.reason) from error
 
 
 async def update_memory(
@@ -146,6 +193,10 @@ async def update_memory(
     memory_id: UUID,
     content: str | None = None,
     restore: bool = False,
+    actor: Literal["model", "manual"] = "manual",
+    conversation_id: UUID | None = None,
+    settings: Settings | None = None,
+    effective_policy: EffectiveMemoryPolicy | None = None,
 ) -> tuple[CoworkMemoryRecord, CoworkMemoryRecord]:
     """改写或恢复一条记忆，返回 (新记录, 旧记录)。
 
@@ -154,11 +205,29 @@ async def update_memory(
     """
 
     store = cowork_store()
-    return await store.update_cowork_memory(
-        memory_id=memory_id,
-        content=None if content is None else _normalize_content(content),
-        restore=restore,
+    previous = await store.get_cowork_memory(memory_id=memory_id)
+    # 模型只能修正当前上下文中注入过的 active 对象。除了让工具入口先做 scope 授权，
+    # 这里也在真正写入前重查 active，封住授权检查与落库之间被另一并发操作失效的窗口。
+    if previous is None or (actor == "model" and not previous.active):
+        raise MemoryNotFoundError(str(memory_id))
+    normalized = None if content is None else _normalize_content(content)
+    policy_conversation_id = conversation_id
+    if policy_conversation_id is None and previous.scope == "conversation":
+        policy_conversation_id = previous.conversation_id
+    policy = effective_policy or await get_effective_memory_policy(
+        settings or get_settings(), conversation_id=policy_conversation_id
     )
+    snapshot = memory_save_policy_snapshot(policy)
+    try:
+        return await store.update_cowork_memory(
+            memory_id=memory_id,
+            content=normalized,
+            restore=restore,
+            source="agent" if actor == "model" else "user",
+            policy_snapshot=snapshot,
+        )
+    except MemoryPolicyConflictError as error:
+        raise MemoryPolicyDeniedError(error.reason) from error
 
 
 async def forget_memory(session: AsyncSession, *, memory_id: UUID) -> CoworkMemoryRecord | None:
@@ -198,18 +267,42 @@ async def list_memories(
     )
 
 
+async def list_visible_memories_for_context(
+    *,
+    conversation_id: UUID,
+    workspace_paths: Sequence[str],
+    limit: int = 200,
+) -> list[CoworkMemoryRecord]:
+    """无需 HTTP/DB session 的可见记忆入口，供后台抽取作业复用同一作用域规则。"""
+
+    if not 1 <= limit <= 500:
+        raise MemoryScopeError("记忆条数上限必须位于 1 到 500")
+    # generic listing 也服务历史/撤销面板，不能偷偷改变它的语义；后台分类在这个显式
+    # active-only 入口过滤。先取防御性上限，避免最前面的历史版本吃掉 recent_limit。
+    records = await cowork_store().list_cowork_memories(
+        conversation_id=conversation_id,
+        workspace_paths=list(workspace_paths),
+        include_forgotten=False,
+        limit=500,
+    )
+    return [item for item in records if item.active][:limit]
+
+
 async def load_visible_memories(
     session: AsyncSession, *, conversation_id: UUID, limit: int = 200
 ) -> list[CoworkMemoryRecord]:
     """runtime 用的便捷入口：自己解析当前会话的授权目录再查。"""
 
+    if not 1 <= limit <= 500:
+        raise MemoryScopeError("记忆条数上限必须位于 1 到 500")
     roots = await list_session_roots(session, conversation_id=conversation_id)
-    return await list_memories(
+    records = await list_memories(
         session,
         conversation_id=conversation_id,
         workspace_paths=[root.canonical_path for root in roots],
-        limit=limit,
+        limit=500,
     )
+    return [item for item in records if item.active][:limit]
 
 
 def render_memory_block(
@@ -221,21 +314,23 @@ def render_memory_block(
     """把记忆钉进 system prompt。
 
     单条超长就截断并标注，让模型用 `memory_read` 取全文——全量注入会让一条几千字的
-    记忆吃掉整个上下文预算。总长超限时丢最久没更新的：最近更新过的更可能仍然相关。
+    记忆吃掉整个上下文预算。总长超限时保留最近的展开内容，并用一条有界索引明确还有
+    active 记忆未展开；不能因为预算截断就让模型误以为其余记忆不存在。
     """
 
-    active = [item for item in memories if item.forgotten_at is None]
+    active = sorted(
+        (item for item in memories if item.active),
+        key=lambda item: (item.updated_at, item.id.hex),
+        reverse=True,
+    )
     if not active or max_chars <= 0:
         return ""
     header = (
         "<known_memories>\n"
-        "这些是你在以往会话中记下的长期事实，可以直接当作已知前提使用。\n"
-        "发现某条已经过时就用 memory_update 改写、用 memory_forget retire，"
-        "不要在旁边再记一条新的。\n"
+        "长期事实，可作已知前提；过时用 memory_update/memory_forget，勿重复新增。\n"
     )
     footer = "</known_memories>"
-    lines: list[str] = []
-    used = len(header) + len(footer)
+    expanded: list[tuple[CoworkMemoryRecord, str]] = []
     for item in active:
         body = item.content
         truncated = len(body) > preview_chars
@@ -245,13 +340,51 @@ def render_memory_block(
                 + f"…（已截断，用 memory_read 取全文，共 {len(item.content)} 字）"
             )
         line = f"[{item.scope}] [#{item.id}] {body}"
-        if used + len(line) + 1 > max_chars:
+        candidate = header + "\n".join([*(line for _, line in expanded), line]) + "\n" + footer
+        if len(candidate) > max_chars:
             break
-        lines.append(line)
-        used += len(line) + 1
+        expanded.append((item, line))
+
+    omitted = active[len(expanded) :]
+    index = ""
+    while omitted:
+        # k 条展开内容后再加一条 index，需要 k 个行间换行和 footer 前的一个换行。
+        available = (
+            max_chars
+            - len(header)
+            - len(footer)
+            - 1
+            - sum(len(line) for _, line in expanded)
+            - len(expanded)
+        )
+        index = _render_memory_overflow_index(omitted, max_chars=available)
+        if index:
+            break
+        if not expanded:
+            return ""
+        restored, _ = expanded.pop()
+        omitted.insert(0, restored)
+
+    lines = [line for _, line in expanded]
+    if index:
+        lines.append(index)
     if not lines:
         return ""
     return header + "\n".join(lines) + "\n" + footer
+
+
+def _render_memory_overflow_index(omitted: list[CoworkMemoryRecord], *, max_chars: int) -> str:
+    """在一行里放尽可能多的完整 ID，并明确还有多少 ID 因预算未列出。"""
+
+    prefix = f"省略{len(omitted)}条（memory_read）："
+    tokens = [f"[#{item.id}]" for item in omitted]
+    for count in range(len(tokens), 0, -1):
+        remaining = len(tokens) - count
+        suffix = "" if remaining == 0 else f" …另{remaining}条 ID 未展开"
+        line = prefix + " ".join(tokens[:count]) + suffix
+        if len(line) <= max_chars:
+            return line
+    return ""
 
 
 def memory_payload(record: CoworkMemoryRecord) -> dict[str, Any]:
@@ -347,8 +480,33 @@ async def get_active_successor(memory_id: UUID) -> CoworkMemoryRecord | None:
     return None if current is None or not current.active else current
 
 
-async def set_memory_pinned(*, memory_id: UUID, pinned: bool) -> CoworkMemoryRecord:
-    record = await _require_store().set_cowork_memory_pinned(memory_id=memory_id, pinned=pinned)
+async def set_memory_pinned(
+    *,
+    memory_id: UUID,
+    pinned: bool,
+    conversation_id: UUID | None = None,
+    settings: Settings | None = None,
+    effective_policy: EffectiveMemoryPolicy | None = None,
+) -> CoworkMemoryRecord:
+    store = _require_store()
+    current = await store.get_cowork_memory(memory_id=memory_id)
+    if current is None or not current.active:
+        raise MemoryNotFoundError(str(memory_id))
+    policy_conversation_id = conversation_id
+    if policy_conversation_id is None and current.scope == "conversation":
+        policy_conversation_id = current.conversation_id
+    policy = effective_policy or await get_effective_memory_policy(
+        settings or get_settings(), conversation_id=policy_conversation_id
+    )
+    snapshot = memory_save_policy_snapshot(policy)
+    try:
+        record = await store.set_cowork_memory_pinned(
+            memory_id=memory_id,
+            pinned=pinned,
+            policy_snapshot=snapshot,
+        )
+    except MemoryPolicyConflictError as error:
+        raise MemoryPolicyDeniedError(error.reason) from error
     if record is None:
         raise MemoryNotFoundError(str(memory_id))
     return cast("CoworkMemoryRecord", record)
@@ -370,6 +528,13 @@ async def apply_memory_operation(
     run_id: UUID | None = None,
     target_id: UUID | None = None,
     pinned: bool | None = None,
+    scope: MemoryScope = "global",
+    conversation_id: UUID | None = None,
+    workspace_path: str | None = None,
+    key: str | None = None,
+    settings: Settings | None = None,
+    effective_policy: EffectiveMemoryPolicy | None = None,
+    allow_policy_bypass: bool = False,
 ) -> MemoryWrite:
     """把一次记忆决策落进存储。
 
@@ -381,59 +546,57 @@ async def apply_memory_operation(
     """
 
     store = _require_store()
-    if operation == "NOOP":
-        if target_id is not None:
-            await store.touch_cowork_memories(memory_ids=[target_id])
-            return MemoryWrite(True, False, await get_curated_memory(target_id))
-        return MemoryWrite(False, False, None)
-
     target = None if target_id is None else await get_curated_memory(target_id)
-    if operation in {"UPDATE", "DELETE"}:
-        if target is None:
-            raise MemoryNotFoundError(str(target_id))
-        if target.pinned:
-            raise PinnedMemoryError("置顶记忆不能被自动改写或失效")
+    policy_conversation_id = conversation_id
+    if policy_conversation_id is None and target is not None and target.scope == "conversation":
+        policy_conversation_id = target.conversation_id
 
-    if operation == "DELETE":
-        assert target is not None
-        if target.valid_from is not None and valid_from < target.valid_from:
-            # 迟到的删除不能把一条更新的事实抹掉。
-            return MemoryWrite(False, False, target)
-        await store.supersede_cowork_memory(
-            memory_id=target.id, successor_id=None, invalid_at=valid_from
+    if allow_policy_bypass:
+        if operation != "DELETE" or actor != "manual":
+            raise ValueError("Memory policy bypass 只允许 owner/manual DELETE 隐私清理")
+        snapshot = None
+    else:
+        policy = effective_policy or await get_effective_memory_policy(
+            settings or get_settings(), conversation_id=policy_conversation_id
         )
-        return MemoryWrite(True, True, await get_curated_memory(target.id))
+        snapshot = memory_save_policy_snapshot(policy)
 
-    # ADD / UPDATE 都要写一条新记忆。
-    stale = target is not None and target.valid_from is not None and valid_from < target.valid_from
-    created, _ = await store.remember_cowork_memory(
-        scope="global",
-        conversation_id=None,
-        workspace_path=None,
-        key=None,
-        content=fact,
-        source="agent" if actor == "model" else "user",
-        category=category,
-        confidence=confidence,
-        pinned=bool(pinned),
-        valid_from=valid_from,
-        source_message_id=source_message_id,
-        run_id=run_id,
-    )
-    if stale:
-        assert target is not None
-        # 迟到的旧事实直接以"已失效"的形态入库，接替者就是当前那条。
-        await store.supersede_cowork_memory(
-            memory_id=created.id,
-            successor_id=target.id,
-            invalid_at=cast(datetime, target.valid_from),
+    if target is None:
+        if scope == "global":
+            bound_conversation, bound_workspace = None, None
+        elif scope == "conversation":
+            if conversation_id is None:
+                raise MemoryScopeError("conversation 记忆必须绑定来源会话")
+            bound_conversation, bound_workspace = conversation_id, None
+        elif scope == "workspace":
+            if not workspace_path:
+                raise MemoryScopeError("workspace 记忆必须绑定已授权目录")
+            bound_conversation, bound_workspace = None, workspace_path
+        else:  # pragma: no cover - MemoryScope 已经由静态类型收窄
+            raise MemoryScopeError(f"未知记忆作用域: {scope}")
+    else:
+        bound_conversation, bound_workspace = target.conversation_id, target.workspace_path
+    try:
+        mutation = await store.apply_cowork_memory_operation(
+            operation=operation,
+            category=category,
+            fact=fact,
+            confidence=confidence,
+            valid_from=valid_from,
+            source="agent" if actor == "model" else "user",
+            source_message_id=source_message_id,
+            run_id=run_id,
+            target_id=target_id,
+            pinned=pinned,
+            scope=target.scope if target is not None else scope,
+            conversation_id=bound_conversation,
+            workspace_path=bound_workspace,
+            key=_normalize_key(key),
+            policy_snapshot=snapshot,
         )
-        return MemoryWrite(True, False, await get_curated_memory(created.id))
-    if target is not None:
-        await store.supersede_cowork_memory(
-            memory_id=target.id, successor_id=created.id, invalid_at=valid_from
-        )
-    return MemoryWrite(True, True, await get_curated_memory(created.id))
+    except MemoryPolicyConflictError as error:
+        raise MemoryPolicyDeniedError(error.reason) from error
+    return MemoryWrite(mutation.applied, mutation.current_changed, mutation.memory)
 
 
 # ---- 抽取作业 ------------------------------------------------------------------
@@ -470,8 +633,21 @@ async def claim_memory_job(
     )
 
 
-async def complete_memory_job(*, job_id: UUID, worker_id: str) -> bool:
-    return bool(await _require_store().complete_memory_job(job_id=job_id, worker_id=worker_id))
+async def get_memory_job(*, job_id: UUID) -> MemoryExtractionJob | None:
+    return cast(
+        "MemoryExtractionJob | None",
+        await _require_store().get_memory_job(job_id=job_id),
+    )
+
+
+async def complete_memory_job(*, job_id: UUID, worker_id: str, result: dict[str, Any]) -> bool:
+    return bool(
+        await _require_store().complete_memory_job(
+            job_id=job_id,
+            worker_id=worker_id,
+            result=result,
+        )
+    )
 
 
 async def retry_or_fail_memory_job(

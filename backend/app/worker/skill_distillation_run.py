@@ -20,8 +20,12 @@ from app.cowork.skills.candidate_store import (
     upsert_skill_candidate,
 )
 from app.cowork.skills.distillation import DistilledSkill, distill_skill_candidate
-from app.cowork.skills.lifecycle import install_auto_distilled_skill
+from app.cowork.skills.lifecycle import (
+    AUTO_DISTILLED_PROVENANCE_PURPOSE,
+    install_auto_distilled_skill,
+)
 from app.cowork_store.routing import cowork_store
+from app.security.secret_store import LocalSecretStore
 
 logger = structlog.get_logger(__name__)
 
@@ -75,24 +79,41 @@ async def skill_distillation_job(ctx: dict[str, Any], run_id_raw: str) -> None:
             await gateway.aclose()
 
         if distilled is not None:
-            await asyncio.to_thread(_record_and_gate, settings, run_id, distilled)
+            await asyncio.to_thread(
+                _record_and_gate,
+                settings,
+                run_id,
+                distilled,
+                review_required_tools=source.review_required_tools,
+            )
         if not await asyncio.to_thread(
             complete_skill_job, root, run_id=run_id, worker_id=worker_id
         ):
             raise RuntimeError("Skill 蒸馏作业租约已丢失")
     except Exception as error:
-        logger.exception("Skill 自动蒸馏失败", run_id=str(run_id))
+        # 来源正文可能进入 provider 异常；日志与失败 tombstone 都只保留异常类型。
+        logger.error(
+            "Skill 自动蒸馏失败",
+            run_id=str(run_id),
+            error_type=type(error).__name__,
+        )
         await asyncio.to_thread(
             retry_or_fail_skill_job,
             root,
             run_id=run_id,
             worker_id=worker_id,
-            error=str(error),
+            error=type(error).__name__,
             max_attempts=settings.skill_distillation_job_max_attempts,
         )
 
 
-def _record_and_gate(settings: Settings, run_id: UUID, distilled: DistilledSkill) -> None:
+def _record_and_gate(
+    settings: Settings,
+    run_id: UUID,
+    distilled: DistilledSkill,
+    *,
+    review_required_tools: tuple[str, ...],
+) -> None:
     """落一条证据，再跑确定性晋升门禁。
 
     门禁不是模型自己决定的：证据条数和置信度都由服务端比对配置阈值。
@@ -110,6 +131,18 @@ def _record_and_gate(settings: Settings, run_id: UUID, distilled: DistilledSkill
         confidence=distilled.confidence,
     )
     if candidate.status != "collecting":
+        return
+    referenced_review_tools = sorted(set(distilled.tools) & set(review_required_tools))
+    if referenced_review_tools:
+        set_candidate_status(
+            root,
+            capability_key=candidate.capability_key,
+            status="needs_review",
+            review_reason=(
+                "流程引用了不能自动固化的副作用、动态授权或持久控制面工具："
+                + "、".join(referenced_review_tools)
+            ),
+        )
         return
     if candidate.evidence_count < settings.skill_promotion_min_evidence:
         return
@@ -133,6 +166,9 @@ def _record_and_gate(settings: Settings, run_id: UUID, distilled: DistilledSkill
             capability_key=candidate.capability_key,
             skill_md=candidate.skill_md,
             max_bytes=settings.cowork_skill_max_bytes,
+            provenance_signing_key=LocalSecretStore(
+                settings.secret_store_key_path
+            ).derive_signing_key(AUTO_DISTILLED_PROVENANCE_PURPOSE),
         )
     except FileExistsError as error:
         set_candidate_status(

@@ -170,6 +170,10 @@ export function applyEnvelope(state: RunState, envelope: StreamEnvelope): RunSta
       next.phase = "executing";
       return next;
     }
+    case "tool.prepare": {
+      next.phase = "executing";
+      return next;
+    }
     case "tool.start": {
       const data = envelope.data as import("./run-protocol").ToolEventPayload;
       next.agentPlan = state.agentPlan.map((step) =>

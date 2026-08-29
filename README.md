@@ -138,4 +138,5 @@ macOS、Windows 和 Linux 安装包需要分别在对应原生平台构建。
 | [办公文件能力](docs/13-办公工作台与文档编辑.md) | 格式 Skill、工作空间、Shell 与 Artifact |
 | [本地启动指南](docs/17-本地启动指南.md) | 初始化、启动、退出和故障排查 |
 | [评测与回放层](docs/18-评测与回放层.md) | 回归门禁、事件回放与模型 cassette |
+| [Harness 对齐差距](docs/19-Agent-Harness与PI对齐差距.md) | 与 Pi agent harness 的结构性差距与收敛动作 |
 | [架构决策记录](docs/adr/) | 关键技术决策及其约束 |

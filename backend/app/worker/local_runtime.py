@@ -20,8 +20,10 @@ from app.worker.cowork_run import cowork_run
 from app.worker.maintenance import (
     cost_sweeper_tick,
     memory_dispatch_tick,
+    next_run_dispatch_tick,
     scheduler_dispatch_tick,
     skill_distillation_dispatch_tick,
+    team_wake_dispatch_tick,
     watchdog_tick,
 )
 from app.worker.memory_run import memory_extraction_job
@@ -79,6 +81,14 @@ class EmbeddedWorkerRuntime:
                 ),
                 asyncio.create_task(
                     runtime._periodic(scheduler_dispatch_tick, 15.0), name="embedded-scheduler"
+                ),
+                asyncio.create_task(
+                    runtime._periodic(team_wake_dispatch_tick, 1.0),
+                    name="embedded-team-wake",
+                ),
+                asyncio.create_task(
+                    runtime._periodic(next_run_dispatch_tick, 1.0),
+                    name="embedded-next-run",
                 ),
                 asyncio.create_task(
                     runtime._periodic(cost_sweeper_tick, 300.0), name="embedded-cost-sweeper"

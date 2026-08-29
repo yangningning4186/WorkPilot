@@ -78,13 +78,26 @@ def decrypt_event(encrypted: str, encrypt_key: str) -> dict[str, Any]:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
     key = hashlib.sha256(encrypt_key.encode("utf-8")).digest()
-    raw = base64.b64decode(encrypted)
+    try:
+        raw = base64.b64decode(encrypted, validate=True)
+    except (ValueError, TypeError) as error:
+        raise FeishuError("事件密文不是合法 base64") from error
+    if len(raw) < 32 or len(raw) % 16 != 0:
+        raise FeishuError("事件密文长度无效")
     iv, payload = raw[:16], raw[16:]
-    decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
-    plain = decryptor.update(payload) + decryptor.finalize()
+    try:
+        decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+        plain = decryptor.update(payload) + decryptor.finalize()
+    except ValueError as error:
+        raise FeishuError("事件密文无法解密") from error
     # PKCS#7：最后一个字节就是填充长度。
-    plain = plain[: -plain[-1]]
-    parsed = json.loads(plain.decode("utf-8"))
+    padding = plain[-1]
+    if padding < 1 or padding > 16 or plain[-padding:] != bytes([padding]) * padding:
+        raise FeishuError("事件密文填充无效")
+    try:
+        parsed = json.loads(plain[:-padding].decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
+        raise FeishuError("事件密文内容无效") from error
     if not isinstance(parsed, dict):
         raise FeishuError("事件密文解开后不是 JSON object")
     return parsed

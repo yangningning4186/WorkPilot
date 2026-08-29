@@ -25,6 +25,7 @@ from app.cowork.permissions import (
     ensure_default_session_root,
     list_session_roots,
 )
+from app.cowork.provider_profiles import ensure_default_provider_binding
 from app.cowork.schedules import (
     ScheduleError,
     ScheduleNotFoundError,
@@ -109,6 +110,10 @@ async def post_automation(
             session,
             conversation_id=request.conversation_id,
             title=request.title if request.conversation_id is None else None,
+        )
+        await ensure_default_provider_binding(
+            conversation_id=conversation_id,
+            settings=settings,
         )
         workspace: SessionRootRecord | None
         if request.workspace_path is not None:

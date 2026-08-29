@@ -1,6 +1,12 @@
 /** 后端 HTTP 客户端。字段保持 snake_case，与后端契约一致。 */
 
-import type { CitationPayload, ReadingLocation, StreamEnvelope } from "./run-protocol";
+import type {
+  CitationPayload,
+  QueuedMessageDelivery,
+  QueuedMessageResponse,
+  ReadingLocation,
+  StreamEnvelope,
+} from "./run-protocol";
 import { getDesktopContext } from "./desktop";
 
 // 默认走 Next.js 同源 rewrite，浏览器不再直接跨域访问后端。
@@ -123,6 +129,16 @@ export interface ConversationMessageListResponse {
   items: ConversationMessage[];
   total: number;
 }
+
+export interface ConversationLaneNavigation {
+  lane: string;
+  previous_head_entry_id: string | null;
+  current_head_entry_id: string | null;
+  abandoned_lane: string | null;
+  branch_summary_entry_id: string | null;
+}
+
+export type ConversationForkPosition = "before" | "after";
 
 export interface ConversationContextUsage {
   used_tokens: number;
@@ -295,6 +311,35 @@ export function fetchConversationMessages(
   );
 }
 
+export function forkConversation(
+  conversationId: string,
+  messageId: string,
+  position: ConversationForkPosition = "after",
+): Promise<ConversationSummary> {
+  return request<ConversationSummary>(`/api/v1/conversations/${conversationId}/fork`, {
+    method: "POST",
+    body: JSON.stringify({ message_id: messageId, position }),
+  });
+}
+
+export function navigateConversationLane(
+  conversationId: string,
+  targetEntryId: string,
+  position: ConversationForkPosition = "after",
+): Promise<ConversationLaneNavigation> {
+  return request<ConversationLaneNavigation>(
+    `/api/v1/conversations/${conversationId}/lanes/main/navigate`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        target_entry_id: targetEntryId,
+        position,
+        summarize: true,
+      }),
+    },
+  );
+}
+
 export function fetchConversationContextUsage(
   conversationId: string,
 ): Promise<ConversationContextUsage> {
@@ -312,6 +357,23 @@ export function steerCoworkRun(runId: string, message: string): Promise<RunStatu
   return request<RunStatusResponse>(`/api/v1/runs/${runId}/steering`, {
     method: "POST",
     body: JSON.stringify({ message }),
+  });
+}
+
+export function queueCoworkMessage(
+  runId: string,
+  message: string,
+  delivery: QueuedMessageDelivery,
+): Promise<QueuedMessageResponse> {
+  return request<QueuedMessageResponse>(`/api/v1/runs/${runId}/queued-messages`, {
+    method: "POST",
+    body: JSON.stringify({ message, delivery }),
+  });
+}
+
+export function cancelQueuedCoworkMessage(runId: string, messageId: string): Promise<void> {
+  return requestVoid(`/api/v1/runs/${runId}/queued-messages/${messageId}`, {
+    method: "DELETE",
   });
 }
 
@@ -587,6 +649,16 @@ export function forgetCoworkMemory(memoryId: string): Promise<void> {
   return requestVoid(`/api/v1/cowork/memories/${memoryId}`, { method: "DELETE" });
 }
 
+export function undoCoworkMemoryUpdate(
+  memoryId: string,
+  previousMemoryId: string,
+): Promise<CoworkMemory> {
+  return request<CoworkMemory>(`/api/v1/cowork/memories/${memoryId}/undo-update`, {
+    method: "POST",
+    body: JSON.stringify({ previous_memory_id: previousMemoryId }),
+  });
+}
+
 export interface ArtifactPreviewPayload {
   blob: Blob;
   mode: "quicklook" | "libreoffice" | "native-pdf" | "structure" | "text" | "unknown";
@@ -737,8 +809,15 @@ export interface SkillsStatusResponse {
   builtin_path: string;
   /** 当前会话已授权工作区里的 project Skill 目录。 */
   project_paths: string[];
+  /** 传入 conversation_id 时由后端回显；未选择会话时为 null。 */
+  conversation_id: string | null;
+  /** 仅对当前会话生效的 deny 集合，不改变 Skill 的全局启用状态。 */
+  muted_names: string[];
   snapshot_sha256: string;
+  /** 已应用当前会话静音策略、实际会注入运行时的 Skill。 */
   skills: SkillSummary[];
+  /** 应用会话静音前的有效目录，用于展示和恢复本会话 Skill。 */
+  available_skills: SkillSummary[];
   errors: string[];
   /** 被同名用户 Skill 盖住的出厂 Skill 名字。 */
   shadowed: string[];
@@ -862,6 +941,17 @@ export function fetchSkillsStatus(conversationId?: string): Promise<SkillsStatus
     ? ""
     : `?conversation_id=${encodeURIComponent(conversationId)}`;
   return request<SkillsStatusResponse>(`/api/v1/integrations/skills${query}`);
+}
+
+export function setSessionSkillMuted(
+  conversationId: string,
+  skillName: string,
+  muted: boolean,
+): Promise<SkillsStatusResponse> {
+  return request<SkillsStatusResponse>(
+    `/api/v1/integrations/skills/session/${encodeURIComponent(conversationId)}/${encodeURIComponent(skillName)}`,
+    { method: "PUT", body: JSON.stringify({ muted }) },
+  );
 }
 
 export function fetchSkillCandidates(): Promise<SkillCandidatesResponse> {

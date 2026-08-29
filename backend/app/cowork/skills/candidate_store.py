@@ -33,15 +33,42 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
+from app.cowork.memory_extraction import model_memory_write_skip_reason
+from app.cowork.redaction import redact_persisted_tool_value
+
 SkillCandidateStatus = Literal["collecting", "promoted", "needs_review", "rejected"]
 
 _QUEUE_DIR = ".queue"
 _CAPABILITY_KEY = re.compile(r"^[a-z0-9][a-z0-9-]{1,47}$")
 _MAX_META_BYTES = 64 * 1024
+_FAILED_JOB_RETENTION = timedelta(days=7)
+_MAX_FAILED_JOB_SWEEP = 1_000
+_PII_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?<![\w.+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}(?![\w.-])",
+        r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)",
+        r"(?<!\d)\d{6}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])"
+        r"(?:0[1-9]|[12]\d|3[01])\d{3}[0-9Xx](?!\d)",
+        r"(?<!\d)(?:\d[ -]?){15,18}(?!\d)",
+        r"\b(?:social\s+security|national\s+id|passport|身份证|护照|社保号)\b",
+    )
+)
 
 
 class SkillCandidateStoreError(ValueError):
     pass
+
+
+def skill_persistence_skip_reason(text: str) -> str | None:
+    """确定性阻止凭据、高敏事实与直接身份信息进入自动 Skill 持久层。"""
+
+    reason = model_memory_write_skip_reason(text)
+    if reason is not None:
+        return reason
+    if any(pattern.search(text) is not None for pattern in _PII_PATTERNS):
+        return "direct_personal_identifier"
+    return None
 
 
 @dataclass(frozen=True)
@@ -97,6 +124,7 @@ class SkillDistillationJob:
     attempts: int
     available_at: datetime
     error: str | None = None
+    review_required_tools: tuple[str, ...] = ()
 
 
 def _now() -> datetime:
@@ -165,21 +193,39 @@ def schedule_skill_distillation(
     goal: str,
     final_message: str,
     successful_tools: list[str],
+    review_required_tools: list[str] | None = None,
 ) -> SkillDistillationJob | None:
     """按 run 幂等入队。已存在（含已在跑）时返回既有作业，不重置重试计数。"""
 
     queue = _queue_dir(_root(root))
+    _purge_expired_failed_jobs(queue)
     path = queue / f"{run_id}.json"
     existing = _read_json(path)
     if existing is not None:
-        return _job(run_id, existing)
+        existing_job = _job(run_id, existing)
+        source_reason = skill_persistence_skip_reason(
+            f"{existing_job.goal}\n{existing_job.final_message}"
+        )
+        if source_reason is not None:
+            _reject_source_job(queue, path=path, run_id=run_id, reason=source_reason)
+            return None
+        return existing_job
     if (queue / f"{run_id}.failed.json").exists():
+        return None
+    source_reason = skill_persistence_skip_reason(f"{goal}\n{final_message}")
+    if source_reason is not None:
+        _reject_source_job(queue, path=path, run_id=run_id, reason=source_reason)
         return None
     payload = {
         "run_id": str(run_id),
         "goal": goal[:4_000],
         "final_message": final_message[:4_000],
         "successful_tools": successful_tools,
+        # None 代表旧调用方没有提供运行时工具契约，必须 fail closed；显式空列表才表示
+        # registry 已证明本次只使用了可自动晋升的只读工具。
+        "review_required_tools": (
+            successful_tools if review_required_tools is None else review_required_tools
+        ),
         "attempts": 0,
         "available_at": _now().isoformat(),
         "error": None,
@@ -190,15 +236,45 @@ def schedule_skill_distillation(
 
 def _job(run_id: UUID, payload: dict[str, Any]) -> SkillDistillationJob:
     tools = payload.get("successful_tools")
+    successful = [str(item) for item in tools] if isinstance(tools, list) else []
+    review_tools = payload.get("review_required_tools")
+    # 升级前落盘的作业没有风险快照。不能把“未知”解释成安全；它们继续蒸馏，但只进入
+    # needs_review，不会因升级恰好越过自动晋升门槛。
+    review_required = (
+        [str(item) for item in review_tools] if isinstance(review_tools, list) else successful
+    )
     return SkillDistillationJob(
         run_id=run_id,
         goal=str(payload.get("goal") or ""),
         final_message=str(payload.get("final_message") or ""),
-        successful_tools=[str(item) for item in tools] if isinstance(tools, list) else [],
+        successful_tools=successful,
         attempts=int(payload.get("attempts") or 0),
         available_at=_parse_time(payload.get("available_at"), field="available_at"),
         error=payload.get("error") if isinstance(payload.get("error"), str) else None,
+        review_required_tools=tuple(dict.fromkeys(review_required)),
     )
+
+
+def _reject_source_job(queue: Path, *, path: Path, run_id: UUID, reason: str) -> None:
+    """把旧版或新入队的高敏来源替换成不含正文的固定 tombstone。"""
+
+    now = _now().isoformat()
+    rejected = {
+        "run_id": str(run_id),
+        "goal": "",
+        "final_message": "",
+        "successful_tools": [],
+        "review_required_tools": [],
+        "attempts": 0,
+        "available_at": now,
+        "error": f"source_rejected:{reason}",
+        "failed_at": now,
+    }
+    _atomic_write(
+        queue / f"{run_id}.failed.json",
+        json.dumps(rejected, ensure_ascii=False, indent=2),
+    )
+    path.unlink(missing_ok=True)
 
 
 def claim_skill_job(
@@ -223,6 +299,10 @@ def claim_skill_job(
     if payload is None:
         return None
     job = _job(run_id, payload)
+    source_reason = skill_persistence_skip_reason(f"{job.goal}\n{job.final_message}")
+    if source_reason is not None:
+        _reject_source_job(queue, path=path, run_id=run_id, reason=source_reason)
+        return None
     now = _now()
     if job.attempts >= max_attempts or job.available_at > now:
         return None
@@ -294,8 +374,16 @@ def retry_or_fail_skill_job(
         lock.unlink(missing_ok=True)
         return
     attempts = int(payload.get("attempts") or 0)
-    payload["error"] = error[:2_000]
+    redacted_error = str(redact_persisted_tool_value(error))[:160]
+    if skill_persistence_skip_reason(redacted_error) is not None:
+        redacted_error = "skill_distillation_failed"
+    payload["error"] = redacted_error
     if attempts >= max_attempts:
+        # 失败留档只保留调度元数据；运行正文与工具名不再有重试用途。
+        payload["goal"] = ""
+        payload["final_message"] = ""
+        payload["successful_tools"] = []
+        payload["review_required_tools"] = []
         payload["failed_at"] = _now().isoformat()
         _atomic_write(
             queue / f"{run_id}.failed.json",
@@ -317,6 +405,7 @@ def list_dispatchable_skill_jobs(
     queue = _queue_dir(_root(root))
     if not queue.is_dir():
         return []
+    _purge_expired_failed_jobs(queue)
     now = _now()
     found: list[tuple[datetime, UUID, int]] = []
     for path in sorted(queue.glob("*.json")):
@@ -333,6 +422,10 @@ def list_dispatchable_skill_jobs(
             job = _job(run_id, payload)
         except SkillCandidateStoreError:
             continue
+        source_reason = skill_persistence_skip_reason(f"{job.goal}\n{job.final_message}")
+        if source_reason is not None:
+            _reject_source_job(queue, path=path, run_id=run_id, reason=source_reason)
+            continue
         if job.attempts >= max_attempts or job.available_at > now:
             continue
         held = _read_json(queue / f"{run_id}.lock")
@@ -346,6 +439,26 @@ def list_dispatchable_skill_jobs(
         found.append((job.available_at, run_id, job.attempts))
     found.sort(key=lambda item: (item[0], item[1].hex))
     return [(run_id, attempts) for _, run_id, attempts in found[:limit]]
+
+
+def _purge_expired_failed_jobs(queue: Path) -> None:
+    """有界清理失败 tombstone；不跟随链接，也不因坏文件扩大删除范围。"""
+
+    if not queue.is_dir() or queue.is_symlink():
+        return
+    cutoff = _now() - _FAILED_JOB_RETENTION
+    for index, path in enumerate(sorted(queue.glob("*.failed.json"))):
+        if index >= _MAX_FAILED_JOB_SWEEP or path.is_symlink() or not path.is_file():
+            continue
+        payload = _read_json(path)
+        if payload is None:
+            continue
+        try:
+            failed_at = _parse_time(payload.get("failed_at"), field="failed_at")
+        except SkillCandidateStoreError:
+            continue
+        if failed_at < cutoff:
+            path.unlink(missing_ok=True)
 
 
 # ---- 候选 -------------------------------------------------------------------
@@ -368,6 +481,9 @@ def upsert_skill_candidate(
     背后把它换掉；但证据仍然累加，用户在界面上看得到这个能力又被用了几次。
     """
 
+    privacy_reason = skill_persistence_skip_reason(f"{description}\n{skill_md}")
+    if privacy_reason is not None:
+        raise SkillCandidateStoreError(f"Skill 候选包含禁止持久化的信息: {privacy_reason}")
     resolved = _root(root)
     target = _candidate_dir(resolved, capability_key)
     now = _now()
