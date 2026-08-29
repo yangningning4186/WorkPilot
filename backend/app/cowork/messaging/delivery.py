@@ -9,17 +9,48 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import structlog
 
 from app.core.config import Settings
 from app.core.db import DbSession as AsyncSession
-from app.cowork.connectors import get_connector_account, list_connector_accounts
+from app.cowork.connectors import (
+    ConnectorAccountRecord,
+    get_connector_account,
+    list_connector_accounts,
+)
 from app.cowork.messaging import feishu
 from app.cowork.messaging.routing import deliver_item, resolve_inbox_for_conversation
 from app.cowork_contracts import InboxRecord
 from app.security.secret_store import LocalSecretStore
 
 logger = structlog.get_logger(__name__)
+
+
+def resolve_feishu_account(
+    settings: Settings, *, connector_account_id: UUID | None
+) -> ConnectorAccountRecord | None:
+    """解析一次消息绑定实际使用的飞书账户。
+
+    指定账户以后绝不静默回退：账户被删、禁用或类型不符都应该让投递失败。否则卡片可能
+    被另一个机器人发出去，而回调授权又按另一套身份判断，用户看到的是同一张卡片，系统
+    实际信任的却不是同一个账户。未指定时才使用稳定排序后的第一个可用飞书账户。
+    """
+
+    if connector_account_id is not None:
+        account = get_connector_account(settings, connector_account_id)
+        if account is None or account.kind != "feishu" or not account.enabled:
+            return None
+        return account
+    return next(
+        (
+            candidate
+            for candidate in list_connector_accounts(settings)
+            if candidate.kind == "feishu" and candidate.enabled
+        ),
+        None,
+    )
 
 
 async def mirror_inbox_item(
@@ -31,20 +62,9 @@ async def mirror_inbox_item(
         )
         if binding is None or binding.platform != "feishu":
             return None
-        account = None
-        if binding.connector_account_id is not None:
-            account = get_connector_account(settings, binding.connector_account_id)
-        if account is None:
-            # 绑定没指定账户时退回"第一个可用的飞书账户"。指定优先，因为多个账户
-            # 往往对应不同的机器人身份，发错身份比发不出去更让人困惑。
-            account = next(
-                (
-                    candidate
-                    for candidate in list_connector_accounts(settings)
-                    if candidate.kind == "feishu" and candidate.enabled
-                ),
-                None,
-            )
+        account = resolve_feishu_account(
+            settings, connector_account_id=binding.connector_account_id
+        )
         if account is None:
             logger.warning("消息投递失败：没有可用的飞书连接器", item_id=str(item.id))
             return None

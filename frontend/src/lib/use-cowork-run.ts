@@ -303,6 +303,18 @@ export function applyCoworkEvent(state: CoworkRunView, envelope: StreamEnvelope)
         steps: upsertStep(state.steps, data, status, data.summary ?? null),
       };
     }
+    case "tool.prepare": {
+      const data = envelope.data as import("./run-protocol").ToolPreparePayload;
+      const label = data.tool ?? "工具调用";
+      const received = data.arguments_received_chars > 0
+        ? `，已接收 ${data.arguments_received_chars.toLocaleString("zh-CN")} 字符参数`
+        : "";
+      return {
+        ...next,
+        phase: "executing",
+        progressSummary: `正在准备 ${label}${received}`,
+      };
+    }
     case "tool.start": {
       const data = envelope.data as ToolEventPayload;
       return {
@@ -435,8 +447,8 @@ export function applyCoworkEvent(state: CoworkRunView, envelope: StreamEnvelope)
       const data = envelope.data as MemorySavedPayload;
       const seen = state.memoryWrites.find((item) => item.memory.id === data.memory.id);
       if (seen === undefined) return { ...next, memoryWrites: [...state.memoryWrites, data] };
-      // 同一条被改了第二次：保留最早那次的 previous_content，撤销才回得到原点。
-      const merged = { ...data, previous_content: seen.previous_content };
+      // 同一条被改了第二次：保留最早版本引用；旧正文只在服务端按需读取。
+      const merged = { ...data, previous_memory_id: seen.previous_memory_id };
       return {
         ...next,
         memoryWrites: state.memoryWrites.map((item) =>

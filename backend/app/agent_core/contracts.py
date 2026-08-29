@@ -11,6 +11,8 @@ from datetime import datetime
 from typing import Any, Literal, TypedDict
 from uuid import UUID
 
+from app.run_events import RunEventType
+
 # answer / literature_review 已退役，保留取值只为读得出历史行，见 schemas/runs.py。
 WorkflowType = Literal["answer", "literature_review", "cowork"]
 RunTrigger = Literal["manual", "schedule", "catchup"]
@@ -32,7 +34,7 @@ class BudgetState(TypedDict):
 class RunEvent:
     run_id: UUID
     seq: int
-    type: str
+    type: RunEventType
     payload: dict[str, Any]
     created_at: datetime
 

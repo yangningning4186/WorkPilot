@@ -60,7 +60,7 @@ def register_rag_tools(registry: CoworkToolRegistry, rag: RagService) -> None:
             item["kind"] = "knowledge"
             evidence.append(item)
         return CoworkToolResult(
-            output={
+            content={
                 "query": args.query,
                 "retrieved_chunks": bundle.retrieved_chunks,
                 "backend": bundle.backend,

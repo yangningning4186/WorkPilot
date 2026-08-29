@@ -27,6 +27,7 @@ import hashlib
 import json
 import threading
 from collections import OrderedDict
+from dataclasses import asdict
 from time import monotonic
 from typing import Protocol
 
@@ -48,6 +49,7 @@ def completion_cache_key(
     max_tokens: int | None,
     temperature: float,
     request_fingerprint: str = "",
+    session_id: str | None = None,
 ) -> str:
     """把决定输出的全部输入摊平成一个 sha256。
 
@@ -64,6 +66,8 @@ def completion_cache_key(
         "provider": provider,
         "model": model,
         "request": request_fingerprint,
+        # 旁路调用可显式要求独立命名空间；不传时保留跨会话的精确内容复用。
+        "session": session_id,
         "max_tokens": max_tokens,
         # 浮点直接进 JSON 会有 0.1 vs 0.1000000001 的表示差异, 定死小数位。
         "temperature": f"{temperature:.4f}",
@@ -71,6 +75,7 @@ def completion_cache_key(
             [
                 item.role,
                 item.content,
+                [asdict(block) for block in item.content_blocks],
                 [attachment.sha256 for attachment in item.attachments],
             ]
             for item in messages

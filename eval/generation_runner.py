@@ -1,8 +1,8 @@
 """在冻结的文件型 KB corpus 上运行 grounded-generation v2。
 
 链路只有一条：``search_index``（生产 LocalKbService 使用的实现）→ 冻结证据窗口 →
-ModelGateway → 确定性引用/约束/gold 对齐 scorer。没有 PostgreSQL、没有 oracle evidence，
-也没有整批 token 熔断；支持省略 ``max_tokens`` 的 provider 不会收到客户端输出上限。
+ModelGateway → 确定性引用/约束/gold 对齐 scorer。没有 PostgreSQL、没有 oracle evidence。
+整批模型调用会在 dispatch 前保守预留 token/call，并受总墙钟 deadline 约束。
 """
 
 from __future__ import annotations
@@ -48,10 +48,19 @@ from eval.generation_suite import (
 )
 from eval.kb_retrieval_runner import IndexCatalog, IndexedNode, load_catalog
 from eval.report_metrics import KIND_GENERATION, METRICS
-from workpilot_ai.gateway import ModelGateway
+from eval.resource_limits import (
+    EvaluationBudget,
+    EvaluationLimitExceeded,
+    EvaluationLimits,
+)
+from workpilot_ai.gateway import ModelGateway, request_character_count
+from workpilot_ai.pricing import estimate_tokens
 from workpilot_ai.types import CompletionResult, Message
 
 REPORT_VERSION = 2
+DEFAULT_MAX_TOTAL_TOKENS = 1_500_000
+DEFAULT_MAX_MODEL_CALLS = 150
+DEFAULT_MAX_WALL_SECONDS = 5_000.0
 REFUSAL_TEXT = "无法根据提供的证据回答。"
 _CITATION = re.compile(r"\[(S[1-9]\d*)\]")
 _CITATION_LIKE = re.compile(r"\[([^\]]*S[^\]]*)\]")
@@ -273,6 +282,9 @@ async def run_generation(
     require_clean_git: bool = True,
     gateway: ModelGateway | None = None,
     item_ids: frozenset[str] | None = None,
+    max_total_tokens: int = DEFAULT_MAX_TOTAL_TOKENS,
+    max_model_calls: int = DEFAULT_MAX_MODEL_CALLS,
+    max_wall_seconds: float = DEFAULT_MAX_WALL_SECONDS,
 ) -> GenerationRunResult:
     suite = load_generation_suite(suite_path)
     if not allow_model_send or not authorization_note.strip():
@@ -285,6 +297,12 @@ async def run_generation(
         raise ValueError("concurrency 必须位于 [1, 16]")
     if retry_attempts < 1 or retry_attempts > 5:
         raise ValueError("retry_attempts 必须位于 [1, 5]")
+    limits = EvaluationLimits(
+        max_total_tokens=max_total_tokens,
+        max_model_calls=max_model_calls,
+        max_wall_seconds=max_wall_seconds,
+    )
+    budget = EvaluationBudget(limits)
     selected_items = (
         suite.items
         if not item_ids
@@ -314,19 +332,41 @@ async def run_generation(
     own_gateway = gateway is None
     active_gateway = gateway or build_model_gateway(settings, mode="evaluation")
     try:
-        observations = await _evaluate_all(
-            selected_items,
-            catalog=catalog,
-            settings=settings,
-            gateway=active_gateway,
-            top_k=top_k,
-            max_evidence_chars=max_evidence_chars,
-            concurrency=concurrency,
-            retry_attempts=retry_attempts,
-        )
+        try:
+            remaining_wall = budget.remaining_wall_seconds()
+            if remaining_wall <= 0:
+                raise EvaluationLimitExceeded(
+                    "wall_seconds",
+                    used=round(budget.elapsed_seconds(), 3),
+                    limit=limits.max_wall_seconds,
+                )
+            observations = await asyncio.wait_for(
+                _evaluate_all(
+                    selected_items,
+                    catalog=catalog,
+                    settings=settings,
+                    gateway=active_gateway,
+                    top_k=top_k,
+                    max_evidence_chars=max_evidence_chars,
+                    concurrency=concurrency,
+                    retry_attempts=retry_attempts,
+                    budget=budget,
+                ),
+                timeout=remaining_wall,
+            )
+        except TimeoutError as error:
+            raise EvaluationLimitExceeded(
+                "wall_seconds",
+                used=round(budget.elapsed_seconds(), 3),
+                limit=limits.max_wall_seconds,
+            ) from error
     finally:
         if own_gateway:
             await active_gateway.aclose()
+
+    budget_usage = await budget.snapshot()
+    if budget_usage["reserved_tokens"] != 0:
+        raise RuntimeError("generation evaluation ended with unsettled token reservations")
 
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     package = output_root / f"{timestamp}-{_slug(label)}"
@@ -361,6 +401,7 @@ async def run_generation(
         "model_timeout_s": settings.evaluation_generation_timeout_s,
         "routing_fingerprint": hashlib.sha256(routing_path.read_bytes()).hexdigest(),
         "selection": "all" if not item_ids else sorted(item_ids),
+        "evaluation_limits": limits.to_dict(),
     }
     config_hash = _json_hash(config)
     report: dict[str, Any] = {
@@ -385,6 +426,12 @@ async def run_generation(
             "approved": True,
             "note_fingerprint": hashlib.sha256(authorization_note.strip().encode()).hexdigest(),
             "data_scope": f"{len(selected_items)} dev questions and truncated local-KB evidence",
+        },
+        "resource_limits": {
+            "limits": limits.to_dict(),
+            "usage": budget_usage,
+            "cost_usd": None,
+            "cost_limit": "not_enforced_without_reliable_pricing",
         },
         "config": config,
         "config_hash": config_hash,
@@ -420,6 +467,7 @@ async def _evaluate_all(
     max_evidence_chars: int,
     concurrency: int,
     retry_attempts: int,
+    budget: EvaluationBudget,
 ) -> list[dict[str, Any]]:
     semaphore = asyncio.Semaphore(concurrency)
 
@@ -433,6 +481,7 @@ async def _evaluate_all(
                 top_k=top_k,
                 max_evidence_chars=max_evidence_chars,
                 retry_attempts=retry_attempts,
+                budget=budget,
             )
 
     return list(await asyncio.gather(*(evaluate(item) for item in items)))
@@ -447,6 +496,7 @@ async def _evaluate_item(
     top_k: int,
     max_evidence_chars: int,
     retry_attempts: int,
+    budget: EvaluationBudget,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     attempts = 0
@@ -468,22 +518,61 @@ async def _evaluate_item(
         selected = _select_evidence(hits, by_id=by_id, max_chars=max_evidence_chars)
         result: CompletionResult | None = None
         for attempts in range(1, retry_attempts + 1):
+            messages = [
+                Message(role="system", content=SYSTEM_PROMPT),
+                Message(role="user", content=_user_prompt(item, selected)),
+            ]
+            projected_tokens = (
+                estimate_tokens(
+                    request_character_count(messages),
+                    chars_per_token=1.0,
+                )
+                + 8_192
+            )
+            projected_tokens = max(
+                projected_tokens,
+                gateway.prompt_budget(
+                    "evaluation_generation", max_tokens=8_192
+                ).context_window_tokens,
+            )
+            reservation = await budget.reserve_model_call(projected_tokens=projected_tokens)
+            settled = False
             try:
                 result = await gateway.complete(
-                    [
-                        Message(role="system", content=SYSTEM_PROMPT),
-                        Message(role="user", content=_user_prompt(item, selected)),
-                    ],
+                    messages,
                     task_type="evaluation_generation",
                     # 只用于网关上下文预留与用量估算；该 task type 在支持省略的
                     # provider 上不下发 max_tokens，避免 reasoning 吃完客户端额度。
                     max_tokens=8_192,
                     temperature=0.0,
                 )
+                measured_tokens = result.usage.input_tokens + result.usage.output_tokens
+                await budget.settle_model_call(
+                    reservation,
+                    actual_tokens=measured_tokens if measured_tokens > 0 else None,
+                )
+                settled = True
+                if measured_tokens <= 0:
+                    raise EvaluationLimitExceeded(
+                        "model_usage_missing",
+                        used=0,
+                        limit=reservation.projected_tokens,
+                    )
                 if not result.text.strip():
                     raise RuntimeError("模型返回空答案")
                 break
+            except EvaluationLimitExceeded:
+                raise
+            except asyncio.CancelledError:
+                if not settled:
+                    await asyncio.shield(budget.settle_model_call(reservation, actual_tokens=None))
+                raise
             except Exception:
+                # The provider may have accepted the request before failing or
+                # cancellation.  Charge the conservative reservation and never
+                # turn unknown usage into zero.
+                if not settled:
+                    await asyncio.shield(budget.settle_model_call(reservation, actual_tokens=None))
                 if attempts >= retry_attempts:
                     raise
         assert result is not None
@@ -545,6 +634,8 @@ async def _evaluate_item(
             "attempts": attempts,
             "error": None,
         }
+    except EvaluationLimitExceeded:
+        raise
     except Exception as error:
         return {
             "item_id": item.item_id,
@@ -808,7 +899,13 @@ def _render_markdown(report: dict[str, Any]) -> str:
         f"- Model: `{report['config']['chat_model']}`",
         f"- KB: `{report['config']['kb_slug']}:{report['config']['kb_version_id']}`",
         f"- Completed: {metrics['completed_count']}/{metrics['item_count']}",
-        "- Token fuse: disabled; provider max_tokens omitted",
+        (
+            "- Resource fuses: "
+            f"{report['resource_limits']['usage']['total_tokens']}/"
+            f"{report['resource_limits']['limits']['max_total_tokens']} tokens, "
+            f"{report['resource_limits']['usage']['model_calls']}/"
+            f"{report['resource_limits']['limits']['max_model_calls']} model calls"
+        ),
         "",
         "| Metric | Value |",
         "| --- | ---: |",
@@ -842,6 +939,9 @@ def _parse_args() -> argparse.Namespace:
     run.add_argument("--max-evidence-chars", type=int, default=12_000)
     run.add_argument("--concurrency", type=int, default=3)
     run.add_argument("--retry-attempts", type=int, default=2)
+    run.add_argument("--max-total-tokens", type=int, default=DEFAULT_MAX_TOTAL_TOKENS)
+    run.add_argument("--max-model-calls", type=int, default=DEFAULT_MAX_MODEL_CALLS)
+    run.add_argument("--max-wall-seconds", type=float, default=DEFAULT_MAX_WALL_SECONDS)
     run.add_argument("--item-id", action="append", default=[], help="定点 smoke；可重复")
     run.add_argument("--allow-dirty", action="store_true", help="仅工程 smoke，产物不得晋升")
     return parser.parse_args()
@@ -873,6 +973,9 @@ async def _main() -> None:
         retry_attempts=args.retry_attempts,
         require_clean_git=not args.allow_dirty,
         item_ids=frozenset(args.item_id) or None,
+        max_total_tokens=args.max_total_tokens,
+        max_model_calls=args.max_model_calls,
+        max_wall_seconds=args.max_wall_seconds,
     )
     print(result.report_path)
     print(json.dumps(result.report["metrics"], ensure_ascii=False, indent=2))

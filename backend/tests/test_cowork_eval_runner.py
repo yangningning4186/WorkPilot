@@ -17,6 +17,7 @@ from eval.cowork_runner import (
     _evaluation_settings,
     _fixture_work_mode,
     _metric_slice,
+    build_fixture_registry,
     evaluate_assertion,
     materialize_case,
     rescore_report,
@@ -25,6 +26,7 @@ from eval.cowork_runner import (
     score_observation,
 )
 from eval.cowork_task_suite import DEFAULT_SUITE, load_suite
+from eval.resource_limits import EvaluationLimitExceeded
 from workpilot_ai.gateway import ModelGateway
 from workpilot_ai.types import (
     CompletionResult,
@@ -123,13 +125,26 @@ def test_materialize_and_score_workspace_case(tmp_path: Path) -> None:
         "artifacts": [],
         "after_files": materialized.before_files,
     }
-
     score = score_observation(item, observation, materialized=materialized)
 
     assert score["task_success"] is True
     assert score["tool_selection"]["passed"] is True
     assert score["step_efficiency"] == 1.0
 
+
+def test_skill_pairing_mode_changes_the_real_fixture_registry(tmp_path: Path) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = suite["items"][0]
+    materialized = materialize_case(suite, item, case_root=tmp_path / "skill-mode")
+    skill_root = Path(__file__).resolve().parents[2] / "eval/fixtures/skills"
+    settings = get_settings().model_copy(update={"cowork_skills_path": skill_root})
+
+    enabled = build_fixture_registry(materialized, settings=settings, skills_mode="enabled")
+    disabled = build_fixture_registry(materialized, settings=settings, skills_mode="disabled")
+
+    assert "load_skill" in enabled.names()
+    assert "load_skill" not in disabled.names()
+    assert "incident-handoff" in enabled.runtime_snapshot()["skills"]["names"]
 
 async def test_fixture_rag_returns_only_evidence_contract() -> None:
     suite = load_suite(DEFAULT_SUITE)
@@ -831,3 +846,50 @@ async def test_run_suite_starts_and_isolates_records_in_its_own_package(
     assert replay_report["model_io"]["mode"] == "cassette_replay"
     assert replay_report["model_io"]["real_model_dispatches"] == 0
     assert replay_report["items"][0]["score"] == report["items"][0]["score"]
+
+
+@pytest.mark.integration
+async def test_run_suite_writes_terminal_failure_receipt_on_hard_fuse(tmp_path: Path) -> None:
+    suite = load_suite(DEFAULT_SUITE)
+    item = suite["items"][0]
+    gateway = ModelGateway(
+        ScriptedCoworkProvider(
+            [
+                _tool("search", "search_files", {"path": ".", "query": "Atlas"}),
+                _tool("read", "read_file", {"path": "notes/project.md"}),
+            ]
+        ),
+        embedding_dimensions=16,
+        default_context_window_tokens=128_000,
+    )
+    package = tmp_path / "fused-package"
+
+    with pytest.raises(EvaluationLimitExceeded, match="per_run_budget"):
+        await run_suite(
+            suite_path=DEFAULT_SUITE,
+            items=[item],
+            package=package,
+            label="fuse-receipt",
+            authorization_note="脚本化 provider，不出网",
+            test_access_note=None,
+            settings=get_settings(),
+            gateway=gateway,
+            max_total_tokens=1_000_000,
+            max_model_calls=1,
+            max_wall_seconds=60,
+        )
+
+    manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["terminal_status"] == "failed"
+    assert manifest["failure"] == {
+        "type": "EvaluationLimitExceeded",
+        "recorded_item_count": 1,
+        "completed_item_count": 0,
+        "expected_item_count": 1,
+        "code": "resource_limit_exceeded",
+        "dimension": "per_run_budget",
+        "used": 1,
+        "limit": 1,
+    }
+    assert manifest["resource_limits"]["usage"]["reserved_tokens"] == 0
+    assert manifest["resource_limits"]["usage"]["status"] == "limit_exceeded"

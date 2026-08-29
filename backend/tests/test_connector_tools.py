@@ -6,6 +6,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from app.agent_core.tools import MissingIdentitiesError
 from app.core.config import get_settings
 from app.cowork.browser_tools import register_browser_tools
 from app.cowork.connector_descriptors import (
@@ -504,16 +505,12 @@ def test_tool_catalog_order_does_not_depend_on_retained_set_iteration_order() ->
     assert set(retained) <= set(forward)
 
 
-def test_runtime_snapshot_ignores_activated_tools_missing_from_new_registry() -> None:
+def test_runtime_snapshot_rejects_activated_tools_missing_from_new_registry() -> None:
     registry = build_default_cowork_registry()
-    registry.restore_runtime_snapshot(
-        {"tool_registry": {"activated_tools": ["read_text_file", "removed_extension"]}}
-    )
-
-    snapshot = registry.runtime_snapshot()
-
-    assert "read_text_file" in snapshot["tool_registry"]["activated_tools"]
-    assert "removed_extension" not in snapshot["tool_registry"]["activated_tools"]
+    with pytest.raises(MissingIdentitiesError, match="removed_extension"):
+        registry.restore_runtime_snapshot(
+            {"tool_registry": {"activated_tools": ["read_text_file", "removed_extension"]}}
+        )
 
 
 @pytest.mark.parametrize(

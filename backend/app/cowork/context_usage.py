@@ -28,6 +28,7 @@ from app.cowork.runtime import (
     COWORK_COMPACTION_PROMPTS,
     _deferred_tools_block,
     _ephemeral_context,
+    _load_branch_checkpoint,
     _scoped_allowed_tools,
     _system_prompt,
 )
@@ -50,6 +51,7 @@ def _context_registry(
     *,
     rag: RagService,
     project_roots: tuple[Path, ...] = (),
+    muted_skill_names: frozenset[str] = frozenset(),
 ) -> CoworkToolRegistry:
     """缓存只读上下文估算使用的工具 schema；Skill 文件变化时自动失效。
 
@@ -87,12 +89,18 @@ def _context_registry(
         skill_revision,
         builtin_revision,
         project_revision,
+        tuple(sorted(muted_skill_names)),
         tuple(sorted(connector_kinds)),
     )
     if _CONTEXT_REGISTRY_CACHE is not None and _CONTEXT_REGISTRY_CACHE[0] == key:
         return _CONTEXT_REGISTRY_CACHE[1]
     registry = build_default_cowork_registry()
-    register_skill_tools(registry, settings, project_roots=project_roots)
+    register_skill_tools(
+        registry,
+        settings,
+        project_roots=project_roots,
+        muted_skill_names=muted_skill_names,
+    )
     register_browser_tools(registry)
     register_connector_tools(registry, enabled_kinds=connector_kinds)
     register_scheduler_tools(registry)
@@ -120,6 +128,7 @@ async def get_cowork_context_usage(
     rag: RagService,
 ) -> dict[str, Any]:
     store = cowork_store()
+    muted_skill_names = await store.list_conversation_skill_mutes(conversation_id=conversation_id)
     local_metadata = (
         []
         if store is None
@@ -151,9 +160,19 @@ async def get_cowork_context_usage(
     }
 
     local_run = await store.get_latest_run(conversation_id=conversation_id)
-    local_checkpoint = (
-        None if local_run is None else await store.load_latest_checkpoint(run_id=local_run.id)
-    )
+    active_statuses = {"initializing", "queued", "executing", "waiting_human", "sleeping"}
+    if local_run is not None and local_run.status in active_statuses:
+        local_checkpoint = await store.load_latest_checkpoint(run_id=local_run.id)
+    else:
+        local_checkpoint = await _load_branch_checkpoint(
+            conversation_id=conversation_id,
+            exclude_run_id=None,
+        )
+        if local_checkpoint is not None:
+            local_run = await store.get_run(local_checkpoint.run_id)
+        elif local_run is not None:
+            # Legacy sessions have no checkpoint_ref entries; preserve their linear projection.
+            local_checkpoint = await store.load_latest_checkpoint(run_id=local_run.id)
     latest: dict[str, Any] | Any | None = (
         None
         if local_run is None
@@ -253,7 +272,12 @@ async def get_cowork_context_usage(
 
     session_roots = await list_session_roots(session, conversation_id=conversation_id)
     project_roots = tuple(Path(item.canonical_path) for item in session_roots)
-    registry = _context_registry(settings, rag=rag, project_roots=project_roots)
+    registry = _context_registry(
+        settings,
+        rag=rag,
+        project_roots=project_roots,
+        muted_skill_names=muted_skill_names,
+    )
     registry.restore_runtime_snapshot(runtime_snapshot)
     scope_state = cast(
         "Any",

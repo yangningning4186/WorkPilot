@@ -12,6 +12,7 @@ from app.cowork.provider_probe import probe_provider_profile
 from app.cowork.provider_profiles import (
     ProviderNameTakenError,
     create_provider_profile,
+    default_provider_profile,
     delete_provider_profile,
     get_provider_profile,
     list_provider_profiles,
@@ -49,6 +50,9 @@ def _store(settings: Settings) -> LocalSecretStore:
 @router.get("", response_model=ProviderProfileListResponse)
 def get_providers(settings: RuntimeSettings) -> ProviderProfileListResponse:
     items = list_provider_profiles(settings)
+    default = default_provider_profile(settings, profiles=items)
+    if default is not None:
+        items.sort(key=lambda item: item.id != default.id)
     return ProviderProfileListResponse(items=[_response(item.public()) for item in items])
 
 

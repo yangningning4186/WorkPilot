@@ -4,14 +4,26 @@ import httpx
 import pytest
 
 from tests.fakes import DeterministicProvider
+from workpilot_ai.cache import InProcessCompletionCache
+from workpilot_ai.errors import ProviderRetryableError
 from workpilot_ai.gateway import EmbeddingDimensionError, EmbeddingIdentityError, ModelGateway
+from workpilot_ai.overflow import is_context_overflow_response
 from workpilot_ai.providers.openai_compatible import (
     OpenAICompatibleProvider,
     ProviderContextOverflowError,
     ProviderResponseError,
     ProviderTimeoutError,
 )
-from workpilot_ai.types import Message, ToolCall, ToolDefinition
+from workpilot_ai.types import CompletionResult, Message, ToolCall, ToolDefinition, Usage
+from workpilot_telemetry.records import AuditRecord
+
+
+class _RecordingAuditSink:
+    def __init__(self) -> None:
+        self.records: list[AuditRecord] = []
+
+    async def record(self, call: AuditRecord) -> None:
+        self.records.append(call)
 
 
 async def test_gateway_exposes_complete_stream_and_embed() -> None:
@@ -41,6 +53,343 @@ async def test_gateway_rejects_unexpected_embedding_identity() -> None:
 
     with pytest.raises(EmbeddingIdentityError):
         await gateway.embed(["hello"])
+
+
+@pytest.mark.parametrize(
+    ("task_type", "cause"),
+    [
+        ("cowork_decision", "primary"),
+        ("cowork_compaction", "compaction"),
+        ("conversation_title", "hook"),
+        ("memory_op", "hook"),
+        ("skill_distillation", "hook"),
+    ],
+)
+async def test_gateway_attributes_sidecar_usage_to_an_explicit_cause(
+    task_type: str,
+    cause: str,
+) -> None:
+    sink = _RecordingAuditSink()
+    gateway = ModelGateway(
+        DeterministicProvider(4),
+        embedding_dimensions=4,
+        audit_sink=sink,
+    )
+
+    await gateway.complete([Message(role="user", content="hello")], task_type=task_type)
+
+    assert len(sink.records) == 1
+    assert sink.records[0].task_type == task_type
+    assert sink.records[0].cause == cause
+
+
+async def test_gateway_retries_retryable_response_before_fallback_and_honors_retry_after() -> None:
+    calls = 0
+    delays: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return httpx.Response(503, text="temporarily unavailable", headers={"Retry-After": "1.25"})
+        return httpx.Response(
+            200,
+            json={
+                "model": "served-chat",
+                "choices": [{"message": {"content": "recovered"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+            },
+        )
+
+    async def record_delay(delay: float) -> None:
+        delays.append(delay)
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="chat",
+        embedding_model="embed",
+        client=client,
+    )
+    gateway = ModelGateway(
+        provider,
+        embedding_dimensions=2,
+        provider_max_retries=2,
+        retry_sleep=record_delay,
+    )
+
+    result = await gateway.complete([Message(role="user", content="hello")])
+    await client.aclose()
+
+    assert result.text == "recovered"
+    assert calls == 3
+    assert delays == [1.25, 1.25]
+
+
+async def test_gateway_retries_premature_stream_eof_on_the_same_endpoint() -> None:
+    calls = 0
+    delays: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # A clean HTTP EOF is not proof that the provider completed the turn.
+            return httpx.Response(
+                200,
+                text=(
+                    'data: {"model":"served-chat","choices":'
+                    '[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+                ),
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"model":"served-chat","choices":'
+                '[{"index":0,"delta":{"content":"recovered"},'
+                '"finish_reason":"stop"}],"usage":'
+                '{"prompt_tokens":5,"completion_tokens":2}}\n\n'
+                "data: [DONE]\n\n"
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    async def record_delay(delay: float) -> None:
+        delays.append(delay)
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="chat",
+        embedding_model="embed",
+        client=client,
+    )
+    gateway = ModelGateway(
+        provider,
+        embedding_dimensions=2,
+        provider_max_retries=1,
+        provider_retry_base_delay_s=0,
+        retry_sleep=record_delay,
+    )
+    tools = [ToolDefinition(name="inspect", description="检查", parameters={"type": "object"})]
+
+    chunks = [
+        chunk
+        async for chunk in gateway.stream_with_tools(
+            [Message(role="user", content="hello")],
+            tools=tools,
+            task_type="cowork_decision",
+        )
+    ]
+    await client.aclose()
+
+    assert calls == 2
+    assert delays == [0]
+    assert "".join(chunk.text_delta for chunk in chunks) == "recovered"
+    assert chunks[-1].result is not None
+    assert chunks[-1].result.text == "recovered"
+
+
+async def test_gateway_does_not_retry_quota_exhaustion_429() -> None:
+    calls = 0
+    delays: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            429,
+            json={"error": {"code": "insufficient_quota", "message": "quota exhausted"}},
+            headers={"Retry-After": "5"},
+        )
+
+    async def record_delay(delay: float) -> None:
+        delays.append(delay)
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="chat",
+        embedding_model="embed",
+        client=client,
+    )
+    gateway = ModelGateway(
+        provider,
+        embedding_dimensions=2,
+        provider_max_retries=3,
+        retry_sleep=record_delay,
+    )
+
+    with pytest.raises(ProviderResponseError) as caught:
+        await gateway.complete([Message(role="user", content="hello")])
+    await client.aclose()
+
+    assert not isinstance(caught.value, ProviderRetryableError)
+    assert calls == 1
+    assert delays == []
+
+
+async def test_gateway_retries_midstream_transport_failure_on_same_endpoint() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.RemoteProtocolError("HTTP/2 request did not get a response")
+        return httpx.Response(
+            200,
+            json={
+                "model": "served-chat",
+                "choices": [{"message": {"content": "recovered"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    gateway = ModelGateway(
+        OpenAICompatibleProvider(
+            base_url="http://unused.test/v1",
+            api_key="secret",
+            chat_model="chat",
+            embedding_model="embed",
+            client=client,
+        ),
+        embedding_dimensions=2,
+        provider_max_retries=1,
+        provider_retry_base_delay_s=0,
+    )
+
+    result = await gateway.complete([Message(role="user", content="hello")])
+    await client.aclose()
+
+    assert result.text == "recovered"
+    assert calls == 2
+
+
+def test_overflow_patterns_exclude_bedrock_throttling_and_quota() -> None:
+    assert is_context_overflow_response(
+        status_code=400,
+        body="input length 131073 exceeds maximum sequence length 131072",
+    )
+    assert not is_context_overflow_response(
+        status_code=400,
+        body="ThrottlingException: Too many tokens per minute",
+    )
+    assert not is_context_overflow_response(
+        status_code=400,
+        body="insufficient_quota: too many tokens requested for account credit balance",
+    )
+
+
+@pytest.mark.parametrize(
+    "completion",
+    [
+        CompletionResult(
+            text="plausible but invalid",
+            model="zai",
+            provider="zai",
+            usage=Usage(input_tokens=2_049, output_tokens=4),
+        ),
+        CompletionResult(
+            text="",
+            model="mimo",
+            provider="mimo",
+            usage=Usage(input_tokens=2_048, output_tokens=0),
+            stop_reason="length",
+        ),
+    ],
+)
+async def test_gateway_rejects_silent_context_overflow(completion: CompletionResult) -> None:
+    class SilentOverflowProvider(DeterministicProvider):
+        async def complete(
+            self,
+            messages: list[Message],
+            *,
+            max_tokens: int,
+            temperature: float,
+        ) -> CompletionResult:
+            del messages, max_tokens, temperature
+            return completion
+
+    gateway = ModelGateway(
+        SilentOverflowProvider(2),
+        embedding_dimensions=2,
+        default_context_window_tokens=2_048,
+    )
+
+    with pytest.raises(ProviderContextOverflowError, match="静默截断输入"):
+        await gateway.complete(
+            [Message(role="user", content="small preflight prompt")],
+            max_tokens=128,
+        )
+
+
+async def test_cache_retention_none_bypasses_exact_and_provider_prompt_caches() -> None:
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "model": "served-chat",
+                "choices": [{"message": {"content": "answer"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="http://model.test/v1", transport=httpx.MockTransport(handler)
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://unused.test/v1",
+        api_key="secret",
+        chat_model="chat",
+        embedding_model="embed",
+        prompt_cache_key_supported=True,
+        client=client,
+    )
+    gateway = ModelGateway(
+        provider,
+        embedding_dimensions=2,
+        completion_cache=InProcessCompletionCache(),
+    )
+    messages = [Message(role="user", content="same")]
+
+    await gateway.complete(messages)
+    await gateway.complete(messages)
+    await gateway.complete(
+        messages,
+        cache_retention="none",
+        session_id="side-call:unique",
+    )
+    tools = [ToolDefinition(name="inspect", description="检查", parameters={"type": "object"})]
+    await gateway.complete_with_tools(messages, tools=tools)
+    await gateway.complete_with_tools(
+        messages,
+        tools=tools,
+        cache_retention="none",
+        session_id="side-tool-call:unique",
+    )
+    await client.aclose()
+
+    # 第二次普通 complete 命中进程内精确缓存，none 则一定重新发请求。
+    assert len(payloads) == 4
+    assert "prompt_cache_key" in payloads[-2]
+    assert "prompt_cache_key" not in payloads[-1]
 
 
 async def test_openai_compatible_provider_maps_wire_format() -> None:
@@ -524,7 +873,7 @@ async def test_openai_compatible_provider_translates_empty_read_timeout() -> Non
 
 
 @pytest.mark.asyncio
-async def test_null_content_raises_instead_of_becoming_the_string_none() -> None:
+async def test_null_content_with_length_is_preserved_as_truncated_completion() -> None:
     """reasoning 模型推理耗尽 max_tokens 时回 content=null。
 
     此前实现是 str(content)，会得到字符串 "None" 并当作正常回答返回，
@@ -559,8 +908,9 @@ async def test_null_content_raises_instead_of_becoming_the_string_none() -> None
         client=client,
     )
 
-    with pytest.raises(ProviderResponseError, match="空 content"):
-        await provider.complete(
-            [Message(role="user", content="question")], max_tokens=500, temperature=0.0
-        )
+    result = await provider.complete(
+        [Message(role="user", content="question")], max_tokens=500, temperature=0.0
+    )
+    assert result.text == ""
+    assert result.stop_reason == "length"
     await client.aclose()

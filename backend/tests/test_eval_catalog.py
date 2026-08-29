@@ -267,7 +267,11 @@ def test_repository_catalog_is_ready() -> None:
 
     assert report.healthy is True
     assert report.status == "ready"
-    assert [resource.health for resource in report.resources] == ["ready"] * 6
+    assert [resource.health for resource in report.resources] == ["ready"] * 8
+    contract = next(
+        resource for resource in report.resources if resource.resource_id == "agent-teams-contract"
+    )
+    assert contract.resource_type == "contract"
     rebuilds = [issue for issue in report.issues if issue.code == "baseline_rebuild_required"]
     assert rebuilds == []
 
@@ -281,8 +285,8 @@ def test_cli_json_distinguishes_ready_and_warning(capsys: pytest.CaptureFixture[
     assert output["summary"] == {
         "error_count": 0,
         "invalid": 0,
-        "ready": 6,
-        "resource_count": 6,
+        "ready": 8,
+        "resource_count": 8,
         "warning_count": 0,
         "warnings": 0,
     }
@@ -407,6 +411,35 @@ def test_ids_are_unique_across_tracks_and_replays(tmp_path: Path) -> None:
     assert report.healthy is False
     assert "resource_id_duplicate" in _codes(report)
     assert all(resource.health == "invalid" for resource in report.resources)
+
+
+def test_contract_suite_count_and_mode_are_fail_closed(tmp_path: Path) -> None:
+    catalog = json.loads(DEFAULT_CATALOG.read_text(encoding="utf-8"))
+    catalog["contract_suites"][0]["case_count"] = 5
+    path = tmp_path / "catalog.json"
+    _write_json(path, catalog)
+
+    report = doctor_catalog(path, repo_root=REPO_ROOT)
+
+    assert report.healthy is False
+    assert "contract_suite_mismatch" in _codes(report)
+
+
+def test_generic_deterministic_contract_target_and_count_are_fail_closed(
+    tmp_path: Path,
+) -> None:
+    catalog = json.loads(DEFAULT_CATALOG.read_text(encoding="utf-8"))
+    generic = next(
+        item for item in catalog["contract_suites"] if item["id"] == "control-plane-contract"
+    )
+    generic["case_count"] = 9
+    path = tmp_path / "catalog.json"
+    _write_json(path, catalog)
+
+    report = doctor_catalog(path, repo_root=REPO_ROOT)
+
+    assert report.healthy is False
+    assert "contract_suite_mismatch" in _codes(report)
 
 
 @pytest.mark.parametrize("path", ["../outside.json", "/tmp/outside.json"])

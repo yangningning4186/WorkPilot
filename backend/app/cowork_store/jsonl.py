@@ -67,6 +67,14 @@ class JsonlMessage:
         )
 
 
+class JsonlConversationCorruptionError(ValueError):
+    def __init__(self, path: Path, line_no: int, reason: str) -> None:
+        self.path = path
+        self.line_no = line_no
+        self.reason = reason
+        super().__init__(f"JSONL conversation corrupted at {path.name}:{line_no}: {reason}")
+
+
 class JsonlConversationStore:
     def __init__(self, root: Path) -> None:
         self.root = root.expanduser()
@@ -120,13 +128,26 @@ class JsonlConversationStore:
             return []
         messages: dict[UUID, JsonlMessage] = {}
         with path.open("rb") as stream:
-            for raw_line in stream:
+            lines = stream.readlines()
+            for index, raw_line in enumerate(lines):
+                line_no = index + 1
                 try:
                     item = json.loads(raw_line)
+                except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                    # O_APPEND + one-record-at-a-time writes can only leave a syntactically
+                    # truncated final record.  A newline-terminated or middle-line syntax
+                    # error is durable corruption and must never erase later history silently.
+                    if index == len(lines) - 1 and not raw_line.endswith(b"\n"):
+                        continue
+                    raise JsonlConversationCorruptionError(path, line_no, "invalid_json") from error
+                if not isinstance(item, dict):
+                    raise JsonlConversationCorruptionError(path, line_no, "record_not_object")
+                try:
                     message = self._decode(item)
-                except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-                    # 进程在 write 中途被 kill 时只可能损坏最后一行；已有完整记录仍可恢复。
-                    continue
+                except (KeyError, TypeError, ValueError) as error:
+                    raise JsonlConversationCorruptionError(
+                        path, line_no, "invalid_record_shape"
+                    ) from error
                 # 同一 record_id 的后续行是状态修订（streaming -> completed）；
                 # append-only 文件不原地覆写，读取时以最后一条完整记录为准。
                 messages[message.record_id] = message
@@ -166,17 +187,41 @@ class JsonlConversationStore:
 
     @staticmethod
     def _decode(item: dict[str, Any]) -> JsonlMessage:
+        seq = item["seq"]
+        role = item["role"]
+        status = item.get("status", "completed")
+        content = item.get("content", "")
+        created_at = item["created_at"]
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
+            raise ValueError("seq 必须是正整数")
+        if role not in {"system", "user", "assistant", "tool"}:
+            raise ValueError("role 不在封闭集合中")
+        if status not in {"streaming", "completed", "failed", "cancelled"}:
+            raise ValueError("status 不在封闭集合中")
+        if not isinstance(content, str):
+            raise TypeError("content 必须是字符串")
+        if not isinstance(created_at, str) or not created_at:
+            raise ValueError("created_at 必须是非空字符串")
+        tool_call_id = item.get("tool_call_id")
+        if tool_call_id is not None and not isinstance(tool_call_id, str):
+            raise TypeError("tool_call_id 必须是字符串或 null")
+        tuple_fields: dict[str, tuple[dict[str, Any], ...]] = {}
+        for field_name in ("tool_calls", "attachments", "citations"):
+            raw = item.get(field_name) or []
+            if not isinstance(raw, list) or any(not isinstance(value, dict) for value in raw):
+                raise TypeError(f"{field_name} 必须是对象数组")
+            tuple_fields[field_name] = tuple(raw)
         return JsonlMessage(
             record_id=UUID(str(item["record_id"])),
             conversation_id=UUID(str(item["conversation_id"])),
-            seq=int(item["seq"]),
-            role=item["role"],
-            content=str(item.get("content", "")),
-            status=item.get("status", "completed"),
+            seq=seq,
+            role=role,
+            content=content,
+            status=status,
             run_id=None if item.get("run_id") is None else UUID(str(item["run_id"])),
-            tool_call_id=item.get("tool_call_id"),
-            tool_calls=tuple(item.get("tool_calls") or ()),
-            attachments=tuple(item.get("attachments") or ()),
-            citations=tuple(item.get("citations") or ()),
-            created_at=str(item["created_at"]),
+            tool_call_id=tool_call_id,
+            tool_calls=tuple_fields["tool_calls"],
+            attachments=tuple_fields["attachments"],
+            citations=tuple_fields["citations"],
+            created_at=created_at,
         )

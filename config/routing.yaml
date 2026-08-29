@@ -5,6 +5,7 @@
 #
 # 改这个文件不需要改代码——帕累托实验（§4 的 C1–C8）就是靠改 routes 切配置的。
 version: 1
+model_catalog: model-catalog.json
 
 defaults:
   timeout_s: 30
@@ -18,7 +19,7 @@ tiers:
       api_key: ${CLUSTER_API_KEY}
       model: ${TIER_LIGHT_MODEL}
       enable_thinking: ${TIER_LIGHT_ENABLE_THINKING}
-      context_window_tokens: ${TIER_LIGHT_CONTEXT_WINDOW_TOKENS}
+      context_window_tokens: auto
     # fallback 不传递：每档写全自己的链路，别指望接上 main 的那一串。
     fallback: [main, heavy, external]
 
@@ -30,7 +31,7 @@ tiers:
       api_key: ${CLUSTER_API_KEY}
       model: ${TIER_MAIN_MODEL}
       enable_thinking: ${TIER_MAIN_ENABLE_THINKING}
-      context_window_tokens: ${TIER_MAIN_CONTEXT_WINDOW_TOKENS}
+      context_window_tokens: auto
     fallback: [heavy, external]
 
   # 规划、反思、判分：这些环节错了会级联放大，省钱最不划算。
@@ -41,7 +42,7 @@ tiers:
       api_key: ${CLUSTER_API_KEY}
       model: ${TIER_HEAVY_MODEL}
       enable_thinking: ${TIER_HEAVY_ENABLE_THINKING}
-      context_window_tokens: ${TIER_HEAVY_CONTEXT_WINDOW_TOKENS}
+      context_window_tokens: auto
     fallback: [main, external]
 
   # 商用 API：对照基线 + 集群整体不可用时的兜底。它自己不再 fallback。
@@ -61,6 +62,11 @@ routes:
   cowork_decision:
     tier: main
     # 所有可用 fallback 都继承这个任务级超时；唯一来源是 Settings，避免这里再写一份 120。
+    timeout_s: ${COWORK_MODEL_TIMEOUT_S}
+  # 自动审批 reviewer 的误放行代价远高于一次普通分类错误；保持 main，并由
+  # deterministic policy、签名证据和熔断器共同收窄，而不是拿更小模型省这一次调用。
+  cowork_semantic_approval:
+    tier: main
     timeout_s: ${COWORK_MODEL_TIMEOUT_S}
 
   # —— 只读子 Agent（explore）：调查轮与收尾轮分开登记，因为它们是两类活。
@@ -107,14 +113,13 @@ routes:
 # 置信度驱动的动态升档（§3）：起始档跑完、确定性检查不达标时换这一档重做。
 # 与 fallback 不同——fallback 处理"调用失败"，升档处理"调用成功但结果不可信"。
 #
-# 目标 == 上面 routes 里的起始档 = **已登记但未启用**。要启用就把 routes 里
-# 对应那行改成更低的档（例如 evidence_sufficiency: light），一处改动即刻生效。
-#
-# 现在刻意都是未启用状态：把主答路径的证据门控换到 4B 上是一次会改变线上答案的
-# 变更，必须先有对照数据（§3 要测的是升档率、质量增益、相比全走 main 的净省），
-# 不能顺手翻过去。light 曾因部署参数只有 8192 而让长证据直接超上下文；当前已修正
-# 为 32768，但分档仍必须服从每个 endpoint 声明的真实 context_window_tokens。
-escalation: {}
+# 目标 == 起始档表示登记但未启用；目标严格更高才生效。当前只启用 Cowork 的窄触发：
+# 第一次引用 repair 后仍未通过本地引用账本校验，才从 main 升到 heavy 重做一轮。
+# 普通回答不升档，provider 失败仍使用 fallback。
+escalation:
+  # Normal turns remain on main.  Only a citation-repair draft that still fails the local
+  # evidence validator is rerun on heavy; provider failures continue to use fallback instead.
+  cowork_decision: heavy
 
 # 未登记的 task_type 落到甜点档，并靠 llm_calls 的审计发现遗漏。
 default_route: main

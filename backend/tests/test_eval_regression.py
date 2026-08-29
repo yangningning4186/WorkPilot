@@ -274,7 +274,9 @@ def test_suite_fingerprint_and_case_set_must_match(tmp_path: Path) -> None:
         )
 
 
-def test_optional_metric_cannot_disappear_from_only_one_arm(tmp_path: Path) -> None:
+def test_optional_response_contingent_metric_uses_intersection_and_audits_drift(
+    tmp_path: Path,
+) -> None:
     reading = {
         "read_before_claim": {"passed": 1, "total": 1},
         "quote_verifiability": {"passed": 1, "total": 1},
@@ -288,11 +290,53 @@ def test_optional_metric_cannot_disappear_from_only_one_arm(tmp_path: Path) -> N
     candidate_item["category"] = "reading"
     candidate_report = _cowork_report([candidate_item], label="candidate")
 
+    outcome = evaluate_regression(
+        load_normalized_report(_snapshot(tmp_path, baseline_report)),
+        load_normalized_report(_write(tmp_path, "candidate", candidate_report)),
+        load_policy(POLICY),
+    )
+
+    quote = next(item for item in outcome.metrics if item["metric"] == "quote_verifiability")
+    assert quote["status"] == "not_applicable"
+    assert quote["baseline_eligible_count"] == 1
+    assert quote["candidate_eligible_count"] == 0
+    assert quote["eligibility_drift_case_ids"] == ["a"]
+
+
+def test_required_metric_still_refuses_eligibility_drift(tmp_path: Path) -> None:
+    reading = {
+        "read_before_claim": {"passed": 1, "total": 1},
+        "quote_verifiability": {"passed": 1, "total": 1},
+        "locator_accuracy": {"passed": 1, "total": 1},
+    }
+    policy_payload = json.loads(POLICY.read_text(encoding="utf-8"))
+    quote_rule = next(
+        item for item in policy_payload["metrics"] if item["name"] == "quote_verifiability"
+    )
+    quote_rule["required"] = True
+    required_policy_path = _write(tmp_path, "required-policy", policy_payload)
+    required_policy = load_policy(required_policy_path)
+    baseline_source = load_normalized_report(
+        _write(
+            tmp_path,
+            "required-baseline-source",
+            _cowork_report([_cowork_item("a", reading=reading)], label="baseline"),
+        )
+    )
+    baseline_path = _write(
+        tmp_path,
+        "required-baseline",
+        build_baseline(baseline_source, required_policy),
+    )
+    candidate_item = _cowork_item("a")
+    candidate_item["category"] = "reading"
+    candidate_report = _cowork_report([candidate_item], label="candidate")
+
     with pytest.raises(RegressionRefused, match="适用样本发生漂移"):
         evaluate_regression(
-            load_normalized_report(_snapshot(tmp_path, baseline_report)),
-            load_normalized_report(_write(tmp_path, "candidate", candidate_report)),
-            load_policy(POLICY),
+            load_normalized_report(baseline_path),
+            load_normalized_report(_write(tmp_path, "candidate-required", candidate_report)),
+            required_policy,
         )
 
 

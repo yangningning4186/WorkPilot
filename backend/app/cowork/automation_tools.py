@@ -149,7 +149,7 @@ def register_scheduler_tools(registry: CoworkToolRegistry) -> None:
     async def list_handler(context: CoworkToolContext, _: BaseModel) -> CoworkToolResult:
         values = await list_schedules(context.session)
         return CoworkToolResult(
-            output={"schedules": [_schedule_view_json(view) for view in values]}
+            content={"schedules": [_schedule_view_json(view) for view in values]}
         )
 
     async def create_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
@@ -187,13 +187,14 @@ def register_scheduler_tools(registry: CoworkToolRegistry) -> None:
                         fields=tuple(item.target),
                     )
                 ),
+                scope="schedule",
                 schedule_id=created.id,
                 created_by="schedule",
             )
             for item in args.standing_approvals
         ]
         return CoworkToolResult(
-            output={
+            content={
                 "schedule": _schedule_json(created),
                 "unattended": True,
                 "standing_approvals": [
@@ -215,7 +216,7 @@ def register_scheduler_tools(registry: CoworkToolRegistry) -> None:
             if not await delete_schedule(context.session, schedule_id=args.schedule_id):
                 raise LookupError("计划不存在")
             return CoworkToolResult(
-                output={"schedule_id": str(args.schedule_id), "deleted": True},
+                content={"schedule_id": str(args.schedule_id), "deleted": True},
                 effect_ref=f"schedule:{args.schedule_id}:deleted",
             )
         updated = await update_schedule(
@@ -224,7 +225,7 @@ def register_scheduler_tools(registry: CoworkToolRegistry) -> None:
             changes={"enabled": args.action == "resume"},
         )
         return CoworkToolResult(
-            output={"schedule": _schedule_json(updated)},
+            content={"schedule": _schedule_json(updated)},
             effect_ref=f"schedule:{updated.id}:{args.action}",
         )
 
@@ -274,6 +275,9 @@ def register_scheduler_tools(registry: CoworkToolRegistry) -> None:
                 parallel_safe=False,
                 handler=handler,
                 approval_required=True,
+                # Schedule 会在当前会话结束后继续运行并携带 standing approvals；创建、
+                # 暂停、恢复和删除都必须由人逐次确认，auto 与常驻规则不能放行。
+                approval_can_be_waived=False,
                 approval_target_fields=target_fields,
             ),
             group="自动化",

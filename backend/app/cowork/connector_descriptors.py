@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 type ConnectorKind = str
 
@@ -32,6 +33,10 @@ class ConnectorDescriptor:
     auth_types: tuple[ConnectorAuthType, ...] = ("oauth2", "token")
     auth_style: ConnectorAuthStyle = "bearer"
     default_scopes: tuple[str, ...] = ()
+    # OAuth access tokens are audience-bound credentials.  They may only be reused for
+    # an MCP endpoint when the connector implementation explicitly declares that endpoint's
+    # origin here.  An empty tuple is an intentional deny-by-default, not "any origin".
+    mcp_allowed_origins: tuple[str, ...] = ()
     capabilities: tuple[str, ...] = ("openapi",)
     request_headers: tuple[tuple[str, str], ...] = ()
     tool_registrars: tuple[str, ...] = ()
@@ -144,6 +149,43 @@ def connector_kinds() -> frozenset[str]:
     return frozenset(CONNECTOR_DESCRIPTORS)
 
 
+def connector_allows_mcp_url(descriptor: ConnectorDescriptor, url: str) -> bool:
+    """Return whether ``url`` has an explicitly declared MCP origin.
+
+    Descriptor entries must be origins rather than URL prefixes.  Any malformed declaration
+    fails the whole check closed so a typo cannot silently widen credential forwarding.
+    """
+
+    if not descriptor.mcp_allowed_origins:
+        return False
+    try:
+        requested = _normalized_origin(url, declaration=False)
+        allowed = {
+            _normalized_origin(value, declaration=True) for value in descriptor.mcp_allowed_origins
+        }
+    except (UnicodeError, ValueError):
+        return False
+    return requested in allowed
+
+
+def _normalized_origin(value: str, *, declaration: bool) -> tuple[str, str, int]:
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme.casefold() not in {"http", "https"}
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        raise ValueError("invalid origin")
+    if declaration and (parsed.path not in {"", "/"} or parsed.query):
+        raise ValueError("MCP origin declaration must not contain a path or query")
+    scheme = parsed.scheme.casefold()
+    hostname = parsed.hostname.encode("idna").decode("ascii").casefold()
+    port = parsed.port or (443 if scheme == "https" else 80)
+    return scheme, hostname, port
+
+
 def get_connector_descriptor(kind: str) -> ConnectorDescriptor:
     try:
         return CONNECTOR_DESCRIPTORS[kind]
@@ -158,6 +200,7 @@ def list_connector_descriptors() -> tuple[ConnectorDescriptor, ...]:
 __all__ = [
     "CONNECTOR_DESCRIPTORS",
     "ConnectorDescriptor",
+    "connector_allows_mcp_url",
     "connector_kinds",
     "get_connector_descriptor",
     "list_connector_descriptors",

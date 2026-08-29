@@ -82,6 +82,48 @@ class ConversationMessageListResponse(BaseModel):
     total: int
 
 
+class ConversationForkRequest(BaseModel):
+    message_id: UUID
+    position: Literal["before", "after"] = "after"
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class SessionEntryResponse(BaseModel):
+    id: str
+    parent_id: str | None
+    seq: int
+    kind: Literal[
+        "message",
+        "model_change",
+        "thinking_level_change",
+        "active_tools_change",
+        "compaction",
+        "branch_summary",
+        "custom",
+    ]
+    payload: dict[str, Any]
+    created_at: datetime
+
+
+class SessionEntryListResponse(BaseModel):
+    items: list[SessionEntryResponse]
+    total: int
+
+
+class ConversationLaneNavigateRequest(BaseModel):
+    target_entry_id: str = Field(min_length=1, max_length=100)
+    position: Literal["before", "after"] = "after"
+    summarize: bool = True
+
+
+class ConversationLaneNavigateResponse(BaseModel):
+    lane: str
+    previous_head_entry_id: str | None
+    current_head_entry_id: str | None
+    abandoned_lane: str | None
+    branch_summary_entry_id: str | None
+
+
 class ConversationContextBreakdown(BaseModel):
     system: int
     tools: int

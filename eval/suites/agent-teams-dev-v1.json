@@ -1,10 +1,10 @@
 {
   "schema_version": "cowork-task-suite.v1",
   "name": "agent-teams-dev",
-  "version": "1.0",
+  "version": "1.1",
   "origin": "synthetic",
   "review_status": "pending_human_review",
-  "description": "Agent Teams 候选行为集：验证明确的并行团队请求必须先 propose_team 并进入 HITL，以及用户明确要求 Lead 独立完成时不得静默扩编。",
+  "description": "Agent Teams 候选行为集：模型题验证组队 HITL 与明确 opt-out；deterministic contract 固定写委派 scope receipt、越权/篡改拒绝、返工预算和崩溃恢复边界。",
   "coverage_contract": {
     "items": 2,
     "splits": {
@@ -14,6 +14,59 @@
       "agent_team": 2
     },
     "id_prefix": "agent-teams-"
+  },
+  "deterministic_contract": {
+    "schema_version": "agent-team-contract.v1",
+    "mode": "pytest_no_model_io",
+    "case_count": 4,
+    "categories": {
+      "scope_authorization": 1,
+      "retry": 1,
+      "budget": 1,
+      "recovery": 1
+    },
+    "cases": [
+      {
+        "id": "agent-teams-contract-scope-001",
+        "category": "scope_authorization",
+        "test": "backend/tests/test_cowork_teams.py::test_write_scope_is_bound_to_non_waivable_team_approval_receipt",
+        "invariants": [
+          "write delegation receipt 只能由 propose_team 的不可豁免 user approval evidence 铸造",
+          "read_only task 不产生 scope receipt 或额外审批",
+          "read_write task 必须是已批准 delegation scope 的子集",
+          "scope 被篡改时 assign 在 Worker 启动前 fail closed",
+          "写 grant 被撤销并替换后旧 receipt 不得复用"
+        ]
+      },
+      {
+        "id": "agent-teams-contract-retry-001",
+        "category": "retry",
+        "test": "backend/tests/test_cowork_teams.py::test_lead_uses_board_and_worker_gets_only_assignment_envelope_and_scope",
+        "invariants": [
+          "Lead 拒绝验收后 task 回到 open",
+          "重试 envelope 保留上次报告与 review feedback",
+          "只有 Lead 验收后 task 才进入 done"
+        ]
+      },
+      {
+        "id": "agent-teams-contract-budget-001",
+        "category": "budget",
+        "test": "backend/tests/test_cowork_teams.py::test_worker_limits_expand_for_wider_retried_tasks",
+        "invariants": [
+          "worker rounds/tool/token budget 只按任务可见复杂度扩容",
+          "扩容保持硬上限且不扩大资源 scope"
+        ]
+      },
+      {
+        "id": "agent-teams-contract-recovery-001",
+        "category": "recovery",
+        "test": "backend/tests/test_cowork_teams.py::test_board_assignment_resumes_persisted_worker_state_after_process_restart",
+        "invariants": [
+          "同 assignment_call_id 在新 registry/gateway 上接续持久 Worker state",
+          "恢复不会重复初始化 assignment 或增加 attempt_count"
+        ]
+      }
+    ]
   },
   "fixtures": {
     "agent-team-workspace": {

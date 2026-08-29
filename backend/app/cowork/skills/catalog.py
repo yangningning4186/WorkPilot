@@ -9,9 +9,10 @@ prompt。builtin 随代码发布、只读，user 层是 ``cowork_skills_path``�
 出厂技能再改"成为一次普通安装，而不需要另造一套编辑机制；被覆盖这件事会出现在
 ``catalog.errors`` 旁边的 ``shadowed`` 里，因为静默覆盖会让人以为自己在改出厂那份。
 
-**停用 builtin 的标记落在 user 层**（``<user_root>/.builtin-disabled/<name>``），
-不落在 builtin 目录里：那个目录随应用一起发布，写进去的标记会在下次升级时被抹掉，
-而且它在只读安装位上根本写不了。理由与 03 §4.2 引的 OpenWorker 那条一致。
+**名称级停用标记落在 user 层**（``<user_root>/.builtin-disabled/<name>``）。目录名为兼容
+旧版本保留，但语义不是“只停 builtin”：一个名字一旦被停用，builtin/user/project 三层都
+不得以同名 fallback 重新出现。否则停掉用户 fork 后出厂版本会悄悄复活，项目层也能绕过
+用户的全局关闭决定。
 """
 
 from __future__ import annotations
@@ -163,22 +164,42 @@ def load_skill_file(path: Path, *, max_bytes: int, origin: SkillOrigin = "user")
     return _load_one(path, max_bytes=max_bytes, origin=origin)
 
 
-def builtin_disabled_names(user_root: Path) -> frozenset[str]:
-    """读取用户停用了哪些出厂技能。
+def disabled_skill_names(user_root: Path) -> frozenset[str]:
+    """读取名称级 denylist，并兼容旧版 user ``.disabled`` 标记。
 
     一个名字一个空文件——和证据目录（03 §4.3）同一个套路：判定是 ``exists``，
     写入是 ``O_CREAT|O_EXCL``，天然幂等，不需要读-改-写，所以两处同时切换开关
     也不会互相盖掉。换成一个 JSON 数组就得处理并发覆盖。
     """
 
-    marker_root = user_root.expanduser() / BUILTIN_DISABLED_DIRNAME
-    if not marker_root.is_dir() or marker_root.is_symlink():
-        return frozenset()
-    return frozenset(
-        entry.name
-        for entry in marker_root.iterdir()
-        if entry.is_file() and not entry.is_symlink() and _SKILL_NAME.fullmatch(entry.name)
-    )
+    resolved = user_root.expanduser()
+    disabled: set[str] = set()
+    marker_root = resolved / BUILTIN_DISABLED_DIRNAME
+    if not marker_root.is_symlink() and marker_root.is_dir():
+        disabled.update(
+            entry.name
+            for entry in marker_root.iterdir()
+            if not entry.is_symlink() and entry.is_file() and _SKILL_NAME.fullmatch(entry.name)
+        )
+    # 旧版本把 user fork 的开关写在技能目录内。把它提升为名称级 deny，避免升级后同名
+    # builtin/project 意外复活；下一次显式 enable 会同时清掉两类标记。
+    if not resolved.is_symlink() and resolved.is_dir():
+        disabled.update(
+            entry.name
+            for entry in resolved.iterdir()
+            if not entry.is_symlink()
+            and entry.is_dir()
+            and _SKILL_NAME.fullmatch(entry.name)
+            and not (entry / ".disabled").is_symlink()
+            and (entry / ".disabled").is_file()
+        )
+    return frozenset(disabled)
+
+
+def builtin_disabled_names(user_root: Path) -> frozenset[str]:
+    """旧名称兼容；停用语义现在覆盖所有 Skill origin。"""
+
+    return disabled_skill_names(user_root)
 
 
 def _scan_root(
@@ -229,6 +250,7 @@ def load_skill_catalog(
     max_bytes: int,
     builtin_root: Path | None = BUILTIN_SKILLS_ROOT,
     project_roots: tuple[Path, ...] = (),
+    muted_names: frozenset[str] = frozenset(),
 ) -> SkillCatalog:
     """合并三层目录；已授权 workspace 的顺序决定 project 同名冲突的优先级。
 
@@ -247,7 +269,7 @@ def load_skill_catalog(
             builtin_root, origin="builtin", max_files=max_files, max_bytes=max_bytes
         )
         # 停用标记读的是**用户层**的目录，见模块 docstring。
-        disabled = builtin_disabled_names(root)
+        disabled = disabled_skill_names(root)
         for skill in builtin_skills:
             if skill.name in disabled:
                 continue
@@ -277,6 +299,14 @@ def load_skill_catalog(
                 shadowed.add(skill.name)
             effective[skill.name] = skill
             project_names.add(skill.name)
+    # 最后统一过滤，而不是只在 builtin 合并阶段过滤：同名 user/project 也不能绕过
+    # 用户做出的名称级关闭决定。
+    invalid_mutes = sorted(name for name in muted_names if _SKILL_NAME.fullmatch(name) is None)
+    if invalid_mutes:
+        raise SkillCatalogError("会话 Skill mute 包含非法名称")
+    denied = disabled_skill_names(root) | muted_names
+    for name in denied:
+        effective.pop(name, None)
     skills = sorted(effective.values(), key=lambda item: item.name)
     payload = json.dumps(
         [skill.summary() for skill in skills],

@@ -29,6 +29,7 @@ from app.agent_core.errors import RunNotFoundError as RunNotFoundError
 from app.core.db import DbSession as AsyncSession
 from app.cowork_store.jsonl import JsonlMessage
 from app.cowork_store.routing import cowork_store
+from app.run_events import RunEventDraft
 
 # 内联进 SQL 的常量白名单, 不接受外部输入。
 _TERMINAL_SQL = "(" + ", ".join(f"'{status}'" for status in sorted(TERMINAL_RUN_STATUSES)) + ")"
@@ -85,6 +86,7 @@ async def create_run(
     unattended: bool = False,
     run_trigger: Literal["manual", "schedule", "catchup"] = "manual",
     initializing: bool = False,
+    source_wake_id: UUID | None = None,
 ) -> RunRecord:
     if not goal.strip():
         raise ValueError("run 目标不能为空")
@@ -113,6 +115,7 @@ async def create_run(
         unattended=unattended,
         run_trigger=run_trigger,
         initializing=initializing,
+        source_wake_id=source_wake_id,
     )
 
 
@@ -134,7 +137,7 @@ async def append_events(
     session: AsyncSession,
     *,
     run_id: UUID,
-    events: Sequence[tuple[str, dict[str, Any]]],
+    events: Sequence[RunEventDraft],
 ) -> list[RunEvent]:
     """原子发号并落库。
 
@@ -250,7 +253,7 @@ async def finish_run_with_events(
     *,
     run_id: UUID,
     status: str,
-    events: Sequence[tuple[str, dict[str, Any]]],
+    events: Sequence[RunEventDraft],
     worker_id: str | None = None,
     error: str | None = None,
     used_tokens: int = 0,
@@ -426,6 +429,7 @@ async def append_message(
     status: str = "completed",
     run_id: UUID | None = None,
     trace_id: str | None = None,
+    citations: Sequence[dict[str, Any]] = (),
 ) -> UUID:
     """在对话末尾追加消息, seq 由数据库同事务计算。"""
 
@@ -450,7 +454,14 @@ async def append_message(
             content=content,
             status=status,  # type: ignore[arg-type]
             run_id=run_id,
+            citations=tuple(citations),
         )
+    )
+    await store.append_session_entry(
+        conversation_id=conversation_id,
+        kind="message",
+        payload={"record_id": str(message_id), "role": role, "seq": seq},
+        entry_id=f"message:{message_id}",
     )
     return message_id
 

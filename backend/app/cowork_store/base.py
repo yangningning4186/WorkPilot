@@ -10,6 +10,12 @@ from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from app.agent_core.contracts import InvocationLease, RunEvent, RunRecord, WorkflowType
+from app.agent_core.session_entries import SessionEntry, SessionEntryKind
+from app.agent_core.session_records import (
+    SessionRecord,
+    SessionRecordKind,
+    SessionRecordPhase,
+)
 from app.cowork_contracts import (
     AccessMode,
     AnnotationColor,
@@ -23,27 +29,43 @@ from app.cowork_contracts import (
     Capability,
     CapabilityGrantRecord,
     ChannelSubscriptionRecord,
+    ConversationMemoryPolicy,
     CoworkAttachmentRecord,
+    CoworkMemoryMutation,
     CoworkMemoryRecord,
     InboxBindingRecord,
     InboxRecord,
     InteractionKind,
     MemoryCategory,
     MemoryExtractionJob,
+    MemoryPolicyMode,
+    MemoryPolicySnapshot,
     MemoryScope,
+    OwnerMemoryPolicy,
     PathAuthorization,
+    QueuedMessageDelivery,
     ReadingAnnotationRecord,
     ScheduleKind,
     ScheduleRecord,
     ScheduleView,
     SessionRootRecord,
     SteeringRecord,
+    SteeringSource,
+    TeamBudgetDimension,
+    TeamBudgetReservationRecord,
+    TeamEventCursorRecord,
+    TeamEventRecord,
+    TeamEventVerification,
+    TeamProjectionSummaryRecord,
     TeamRecord,
+    TeamWakeDeliveryRecord,
     TeamWorkerRecord,
     TeamWorkerSessionRecord,
+    TeamWorkerToolAttemptRecord,
     ThreadSessionRecord,
     UnroutedRecord,
 )
+from app.run_events import RunEventDraft
 
 
 @dataclass(frozen=True)
@@ -52,6 +74,16 @@ class StoredCheckpoint:
     checkpoint_id: str
     parent_id: str | None
     state: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SessionLaneNavigation:
+    conversation_id: UUID
+    lane: str
+    previous_head_entry_id: str | None
+    current_head_entry_id: str | None
+    abandoned_lane: str | None
+    branch_summary_entry_id: str | None
 
 
 class CoworkStore(Protocol):
@@ -117,7 +149,68 @@ class CoworkStore(Protocol):
         persona_name: str,
     ) -> bool: ...
 
+    async def append_session_entry(
+        self,
+        *,
+        conversation_id: UUID,
+        kind: SessionEntryKind,
+        payload: dict[str, Any],
+        entry_id: str | None = None,
+        parent_id: str | None = None,
+        lane: str = "main",
+    ) -> SessionEntry: ...
+
+    async def list_session_entries(
+        self,
+        *,
+        conversation_id: UUID,
+        lane: str | None = None,
+        limit: int = 1000,
+    ) -> list[SessionEntry]: ...
+
+    async def move_session_lane(
+        self,
+        *,
+        conversation_id: UUID,
+        lane: str,
+        entry_id: str | None,
+    ) -> bool: ...
+
+    async def navigate_session_lane(
+        self,
+        *,
+        conversation_id: UUID,
+        lane: str,
+        target_entry_id: str | None,
+        expected_head_entry_id: str | None,
+        abandoned_lane: str,
+        branch_summary_payload: dict[str, Any] | None = None,
+    ) -> SessionLaneNavigation: ...
+
+    async def append_session_record(
+        self,
+        *,
+        run_id: UUID,
+        kind: SessionRecordKind,
+        operation_id: str,
+        phase: SessionRecordPhase,
+        payload: dict[str, Any],
+        record_id: str | None = None,
+    ) -> SessionRecord: ...
+
+    async def list_session_records(self, *, run_id: UUID) -> list[SessionRecord]: ...
+
     async def delete_conversation(self, *, conversation_id: UUID) -> bool: ...
+
+    async def list_conversation_skill_mutes(self, *, conversation_id: UUID) -> frozenset[str]: ...
+
+    async def set_conversation_skill_muted(
+        self,
+        *,
+        conversation_id: UUID,
+        skill_name: str,
+        muted: bool,
+    ) -> frozenset[str]: ...
 
     async def create_run(
         self,
@@ -134,6 +227,7 @@ class CoworkStore(Protocol):
         unattended: bool = False,
         run_trigger: Literal["manual", "schedule", "catchup"] = "manual",
         initializing: bool = False,
+        source_wake_id: UUID | None = None,
     ) -> RunRecord: ...
 
     async def initialize_run(
@@ -142,7 +236,7 @@ class CoworkStore(Protocol):
         run_id: UUID,
         state: dict[str, Any],
         checkpoint_id: str,
-        events: Sequence[tuple[str, dict[str, Any]]],
+        events: Sequence[RunEventDraft],
     ) -> tuple[RunRecord, StoredCheckpoint, list[RunEvent]]: ...
 
     async def get_run(self, run_id: UUID) -> RunRecord | None: ...
@@ -162,7 +256,7 @@ class CoworkStore(Protocol):
     async def renew_run_lease(self, *, run_id: UUID, worker_id: str, lease_s: int) -> bool: ...
 
     async def append_events(
-        self, *, run_id: UUID, events: Sequence[tuple[str, dict[str, Any]]]
+        self, *, run_id: UUID, events: Sequence[RunEventDraft]
     ) -> list[RunEvent]: ...
 
     async def list_events(
@@ -191,7 +285,8 @@ class CoworkStore(Protocol):
         checkpoint_id: str,
         used_tokens: int,
         used_calls: int,
-        events: Sequence[tuple[str, dict[str, Any]]],
+        events: Sequence[RunEventDraft],
+        run_config: dict[str, Any] | None = None,
         worker_id: str | None = None,
         transition_to: Literal["queued", "waiting_human", "sleeping"] | None = None,
         wake_at: datetime | None = None,
@@ -199,7 +294,16 @@ class CoworkStore(Protocol):
 
     async def load_latest_checkpoint(self, *, run_id: UUID) -> StoredCheckpoint | None: ...
 
+    async def load_checkpoint(
+        self,
+        *,
+        run_id: UUID,
+        checkpoint_id: str,
+    ) -> StoredCheckpoint | None: ...
+
     async def load_previous_checkpoint(self, *, run_id: UUID) -> StoredCheckpoint | None: ...
+
+    async def load_run_config(self, *, run_id: UUID) -> dict[str, Any] | None: ...
 
     async def acquire_invocation(
         self,
@@ -224,6 +328,8 @@ class CoworkStore(Protocol):
     ) -> None: ...
 
     async def fail_invocation(self, *, key: str, worker_id: str, error: str) -> None: ...
+
+    async def mark_invocation_outcome_unknown(self, *, key: str, worker_id: str) -> None: ...
 
     async def claim_due_schedules(self, *, now_iso: str, limit: int = 50) -> list[UUID]: ...
 
@@ -287,6 +393,17 @@ class CoworkStore(Protocol):
     async def set_inbox_delivery_ref(self, *, item_id: UUID, delivery_ref: str) -> None: ...
 
     async def get_inbox_item_by_id(self, *, item_id: UUID) -> InboxRecord | None: ...
+
+    async def claim_messaging_event(
+        self,
+        *,
+        event_key: str,
+        platform: str,
+        event_type: str,
+        retention_days: int,
+    ) -> bool: ...
+
+    async def complete_messaging_event(self, *, event_key: str) -> bool: ...
 
     async def create_channel_subscription(
         self,
@@ -355,9 +472,20 @@ class CoworkStore(Protocol):
 
     async def delete_reading_annotation(self, *, annotation_id: UUID) -> bool: ...
 
-    async def set_workspace_trust(self, *, canonical_path: str, trusted: bool) -> bool: ...
+    async def set_workspace_trust(
+        self,
+        *,
+        canonical_path: str,
+        trusted: bool,
+        policy_sha256: str | None,
+    ) -> bool: ...
 
-    async def is_workspace_trusted(self, *, canonical_path: str) -> bool: ...
+    async def is_workspace_trusted(
+        self,
+        *,
+        canonical_path: str,
+        policy_sha256: str,
+    ) -> bool: ...
 
     async def list_workspace_trust(self) -> list[str]: ...
 
@@ -440,10 +568,50 @@ class CoworkStore(Protocol):
 
     # Inbox / steering
     async def enqueue_steering(
-        self, *, run_id: UUID, conversation_id: UUID, content: str
+        self,
+        *,
+        run_id: UUID,
+        conversation_id: UUID,
+        content: str,
+        source: SteeringSource = "unknown",
+        source_wake_id: UUID | None = None,
+    ) -> SteeringRecord: ...
+
+    async def enqueue_queued_message(
+        self,
+        *,
+        run_id: UUID,
+        conversation_id: UUID,
+        content: str,
+        source: SteeringSource,
+        delivery: QueuedMessageDelivery,
+        source_wake_id: UUID | None = None,
     ) -> SteeringRecord: ...
 
     async def consume_pending_steering(self, *, run_id: UUID) -> list[SteeringRecord]: ...
+
+    async def claim_follow_up_or_seal(
+        self,
+        *,
+        run_id: UUID,
+        worker_id: str,
+    ) -> list[SteeringRecord]: ...
+
+    async def cancel_queued_message(
+        self,
+        *,
+        message_id: UUID,
+        conversation_id: UUID,
+    ) -> bool: ...
+
+    async def list_ready_next_run_messages(self, *, limit: int = 100) -> list[SteeringRecord]: ...
+
+    async def consume_ready_next_run_message(
+        self,
+        *,
+        message_id: UUID,
+        launched_run_id: UUID,
+    ) -> bool: ...
 
     async def create_inbox_item(
         self,
@@ -476,11 +644,27 @@ class CoworkStore(Protocol):
         proposal_call_id: str,
         note: str,
         members: Sequence[dict[str, Any]],
+        write_delegation_scope: Sequence[dict[str, str]] = (),
+        write_delegation_receipt: dict[str, Any] | None = None,
+        budget_limits: dict[str, int] | None = None,
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> tuple[TeamRecord, list[TeamWorkerRecord]]: ...
 
     async def get_team_for_lead(self, *, lead_conversation_id: UUID) -> TeamRecord | None: ...
 
     async def list_team_workers(self, *, team_id: UUID) -> list[TeamWorkerRecord]: ...
+
+    async def manage_team(
+        self,
+        *,
+        lead_conversation_id: UUID,
+        action: Literal["pause", "resume", "archive", "revoke_write_delegation"],
+        budget_limits: dict[str, int] | None = None,
+        reason: str,
+        event_actor: str,
+        event_cause: str,
+    ) -> TeamRecord: ...
 
     async def create_board_task(
         self,
@@ -490,6 +674,9 @@ class CoworkStore(Protocol):
         description: str,
         acceptance_criteria: str,
         resource_scope: Sequence[dict[str, str]],
+        scope_receipt: dict[str, Any] | None = None,
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> BoardTaskRecord: ...
 
     async def list_board_tasks(
@@ -507,7 +694,52 @@ class CoworkStore(Protocol):
         task_id: UUID,
         worker_name: str,
         assignment_call_id: str,
+        source_run_id: UUID | None = None,
+        budget_reservation: dict[str, int] | None = None,
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> tuple[BoardTaskRecord, TeamWorkerRecord, TeamWorkerSessionRecord]: ...
+
+    async def validate_team_worker_execution(
+        self, *, session_id: UUID, task_id: UUID
+    ) -> tuple[TeamRecord, BoardTaskRecord, TeamWorkerRecord, TeamWorkerSessionRecord]: ...
+
+    async def charge_team_budget(
+        self,
+        *,
+        session_id: UUID,
+        task_id: UUID,
+        dimension: TeamBudgetDimension,
+        amount: int,
+        event_actor: str,
+        event_cause: str,
+    ) -> TeamBudgetReservationRecord: ...
+
+    async def begin_team_worker_tool_attempt(
+        self,
+        *,
+        session_id: UUID,
+        task_id: UUID,
+        tool_call_id: str,
+        tool_name: str,
+        effect: str,
+        retry_safe: bool,
+        arguments_sha256: str,
+        event_actor: str,
+        event_cause: str,
+    ) -> TeamWorkerToolAttemptRecord: ...
+
+    async def finish_team_worker_tool_attempt(
+        self,
+        *,
+        attempt_id: UUID,
+        status: Literal["succeeded", "failed"],
+        result: dict[str, Any],
+        effect_ref: str | None,
+        authorization_receipt: dict[str, Any] | None,
+        event_actor: str,
+        event_cause: str,
+    ) -> TeamWorkerToolAttemptRecord: ...
 
     async def save_team_worker_session(
         self,
@@ -515,6 +747,8 @@ class CoworkStore(Protocol):
         session_id: UUID,
         task_id: UUID,
         state: dict[str, Any],
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> TeamWorkerSessionRecord: ...
 
     async def complete_board_task(
@@ -524,6 +758,8 @@ class CoworkStore(Protocol):
         task_id: UUID,
         state: dict[str, Any],
         worker_report: str,
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> BoardTaskRecord: ...
 
     async def fail_board_task(
@@ -533,6 +769,8 @@ class CoworkStore(Protocol):
         task_id: UUID,
         state: dict[str, Any],
         error: str,
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> BoardTaskRecord: ...
 
     async def review_board_task(
@@ -542,6 +780,9 @@ class CoworkStore(Protocol):
         task_id: UUID,
         accepted: bool,
         feedback: str,
+        source_run_id: UUID | None = None,
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> BoardTaskRecord: ...
 
     async def resolve_board_task(
@@ -551,7 +792,58 @@ class CoworkStore(Protocol):
         task_id: UUID,
         resolution: Literal["accept_partial", "cancel"],
         reason: str,
+        event_actor: str = "system:store",
+        event_cause: str | None = None,
     ) -> BoardTaskRecord: ...
+
+    async def list_team_events(
+        self, *, team_id: UUID, after_sequence: int = 0, limit: int = 200
+    ) -> list[TeamEventRecord]: ...
+
+    async def verify_team_event_log(self, *, team_id: UUID) -> TeamEventVerification: ...
+
+    async def replay_team_event_projection(
+        self, *, team_id: UUID
+    ) -> TeamProjectionSummaryRecord: ...
+
+    async def rebuild_team_event_projection(
+        self, *, team_id: UUID
+    ) -> TeamProjectionSummaryRecord: ...
+
+    async def get_team_event_cursor(
+        self, *, team_id: UUID, consumer: str
+    ) -> TeamEventCursorRecord | None: ...
+
+    async def advance_team_event_cursor(
+        self,
+        *,
+        team_id: UUID,
+        consumer: str,
+        expected_sequence: int,
+        event_sequence: int,
+        event_hash: str,
+    ) -> TeamEventCursorRecord: ...
+
+    async def claim_team_wake_deliveries(
+        self,
+        *,
+        consumer: str,
+        claim_owner: str,
+        limit: int = 20,
+        lease_seconds: int = 30,
+    ) -> list[TeamWakeDeliveryRecord]: ...
+
+    async def validate_team_wake_delivery(
+        self, *, delivery_id: UUID, claim_owner: str
+    ) -> Literal["deliver", "suppress"]: ...
+
+    async def ack_team_wake_delivery(
+        self, *, delivery_id: UUID, consumer: str, claim_owner: str, delivery_receipt: str
+    ) -> TeamWakeDeliveryRecord: ...
+
+    async def release_team_wake_delivery(
+        self, *, delivery_id: UUID, claim_owner: str, error: str
+    ) -> TeamWakeDeliveryRecord: ...
 
     # 长期记忆
     async def remember_cowork_memory(
@@ -569,11 +861,38 @@ class CoworkStore(Protocol):
         valid_from: datetime | None = None,
         source_message_id: UUID | None = None,
         run_id: UUID | None = None,
+        policy_snapshot: MemoryPolicySnapshot,
     ) -> tuple[CoworkMemoryRecord, CoworkMemoryRecord | None]: ...
 
     async def update_cowork_memory(
-        self, *, memory_id: UUID, content: str | None, restore: bool
+        self,
+        *,
+        memory_id: UUID,
+        content: str | None,
+        restore: bool,
+        source: Literal["agent", "user"],
+        policy_snapshot: MemoryPolicySnapshot,
     ) -> tuple[CoworkMemoryRecord, CoworkMemoryRecord]: ...
+
+    async def apply_cowork_memory_operation(
+        self,
+        *,
+        operation: Literal["ADD", "UPDATE", "DELETE", "NOOP"],
+        category: MemoryCategory,
+        fact: str,
+        confidence: float,
+        valid_from: datetime,
+        source: Literal["agent", "user"],
+        source_message_id: UUID | None,
+        run_id: UUID | None,
+        target_id: UUID | None,
+        pinned: bool | None,
+        scope: MemoryScope,
+        conversation_id: UUID | None,
+        workspace_path: str | None,
+        key: str | None,
+        policy_snapshot: MemoryPolicySnapshot | None,
+    ) -> CoworkMemoryMutation: ...
 
     async def forget_cowork_memory(self, *, memory_id: UUID) -> CoworkMemoryRecord | None: ...
 
@@ -593,7 +912,11 @@ class CoworkStore(Protocol):
     ) -> CoworkMemoryRecord | None: ...
 
     async def set_cowork_memory_pinned(
-        self, *, memory_id: UUID, pinned: bool
+        self,
+        *,
+        memory_id: UUID,
+        pinned: bool,
+        policy_snapshot: MemoryPolicySnapshot,
     ) -> CoworkMemoryRecord | None: ...
 
     async def touch_cowork_memories(self, *, memory_ids: list[UUID]) -> None: ...
@@ -601,6 +924,30 @@ class CoworkStore(Protocol):
     async def list_cowork_memories_by_validity(
         self, *, active: bool, limit: int
     ) -> list[CoworkMemoryRecord]: ...
+
+    async def get_owner_memory_policy(self) -> OwnerMemoryPolicy: ...
+
+    async def upsert_owner_memory_policy(
+        self,
+        *,
+        save_enabled: bool,
+        recall_enabled: bool,
+        standing_rules: str,
+        expected_revision: int,
+    ) -> OwnerMemoryPolicy: ...
+
+    async def get_conversation_memory_policy(
+        self, *, conversation_id: UUID
+    ) -> ConversationMemoryPolicy: ...
+
+    async def upsert_conversation_memory_policy(
+        self,
+        *,
+        conversation_id: UUID,
+        save_mode: MemoryPolicyMode,
+        recall_mode: MemoryPolicyMode,
+        expected_revision: int,
+    ) -> ConversationMemoryPolicy: ...
 
     # 记忆抽取作业
     async def schedule_memory_extraction(
@@ -617,7 +964,11 @@ class CoworkStore(Protocol):
         self, *, job_id: UUID, worker_id: str, lease_s: int, max_attempts: int
     ) -> MemoryExtractionJob | None: ...
 
-    async def complete_memory_job(self, *, job_id: UUID, worker_id: str) -> bool: ...
+    async def get_memory_job(self, *, job_id: UUID) -> MemoryExtractionJob | None: ...
+
+    async def complete_memory_job(
+        self, *, job_id: UUID, worker_id: str, result: dict[str, Any]
+    ) -> bool: ...
 
     async def retry_or_fail_memory_job(
         self,
@@ -732,7 +1083,7 @@ class CoworkStore(Protocol):
         *,
         run_id: UUID,
         status: str,
-        events: Sequence[tuple[str, dict[str, Any]]],
+        events: Sequence[RunEventDraft],
         worker_id: str | None = None,
         error: str | None = None,
         used_tokens: int = 0,

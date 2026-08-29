@@ -8,20 +8,45 @@ Persona 不注册工具、不授予 capability，也不创建审批规则。它�
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 from app.core.config import Settings
-from app.cowork.connector_descriptors import connector_kinds
+from app.cowork.connector_descriptors import connector_kinds, get_connector_descriptor
 from app.cowork_contracts import ApprovalMode, CoworkWorkMode
 
 PersonaOrigin = Literal["builtin", "user", "project"]
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _TOOL_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}\*?$")
 PROJECT_PERSONAS_RELATIVE = Path(".workpilot") / "personas"
+PERSONA_SNAPSHOT_SCHEMA: Literal["workpilot.persona-snapshot.v1"] = "workpilot.persona-snapshot.v1"
+PERSONA_RESELECTION_REQUIRED = "Persona 定义已变化、缺失或来源不再授权；请重新选择 Persona 后重试"
+
+
+class PersonaConnectorCapability(TypedDict):
+    kind: str
+    capabilities: list[str]
+
+
+class PersonaCapabilitySummary(TypedDict):
+    default_approval_mode: ApprovalMode
+    recommended_work_mode: CoworkWorkMode
+    recommended_connectors: list[PersonaConnectorCapability]
+
+
+class PersonaSnapshot(TypedDict):
+    schema_version: Literal["workpilot.persona-snapshot.v1"]
+    name: str
+    origin: PersonaOrigin
+    source_identity: str
+    sha256: str
+    tool_patterns: list[str]
+    capability_summary: PersonaCapabilitySummary
 
 
 @dataclass(frozen=True)
@@ -241,6 +266,94 @@ def tool_name_matches(pattern: str, tool_name: str) -> bool:
     return tool_name.startswith(pattern[:-1]) if pattern.endswith("*") else tool_name == pattern
 
 
+def snapshot_persona(
+    persona: PersonaDefinition,
+    settings: Settings,
+    *,
+    project_roots: tuple[Path, ...] = (),
+) -> PersonaSnapshot:
+    """Build the canonical, checkpoint-safe identity of a selected Persona.
+
+    The digest covers every field that can change model behavior or the visible capability
+    surface, while ``source_identity`` binds project Personas to the exact authorized root that
+    supplied them.  It contains no Persona body, credential, or connector account data.
+    """
+
+    source_identity = _persona_source_identity(
+        persona,
+        settings,
+        project_roots=project_roots,
+    )
+    connector_summary: list[PersonaConnectorCapability] = [
+        {
+            "kind": kind,
+            "capabilities": list(get_connector_descriptor(kind).capabilities),
+        }
+        for kind in persona.recommended_connectors
+    ]
+    capability_summary: PersonaCapabilitySummary = {
+        "default_approval_mode": persona.default_approval_mode,
+        "recommended_work_mode": persona.recommended_work_mode,
+        "recommended_connectors": connector_summary,
+    }
+    semantic_payload = {
+        "name": persona.name,
+        "label": persona.label,
+        "description": persona.description,
+        "system_block": persona.system_block,
+        "tool_patterns": list(persona.tool_patterns),
+        "origin": persona.origin,
+        "source_identity": source_identity,
+        "capability_summary": capability_summary,
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            semantic_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "schema_version": PERSONA_SNAPSHOT_SCHEMA,
+        "name": persona.name,
+        "origin": persona.origin,
+        "source_identity": source_identity,
+        "sha256": digest,
+        "tool_patterns": list(persona.tool_patterns),
+        "capability_summary": capability_summary,
+    }
+
+
+def _persona_source_identity(
+    persona: PersonaDefinition,
+    settings: Settings,
+    *,
+    project_roots: tuple[Path, ...],
+) -> str:
+    if persona.origin == "builtin":
+        if persona.source_path is not None:
+            raise ValueError(PERSONA_RESELECTION_REQUIRED)
+        return f"builtin:{persona.name}"
+
+    if persona.source_path is None:
+        raise ValueError(PERSONA_RESELECTION_REQUIRED)
+    source = persona.source_path.expanduser().resolve()
+    expected_relative = Path(f"{persona.name}.toml")
+    if persona.origin == "user":
+        root = (settings.cowork_data_path.expanduser() / "personas").resolve()
+        if source != root / expected_relative:
+            raise ValueError(PERSONA_RESELECTION_REQUIRED)
+        return f"user:{root}:{expected_relative.as_posix()}"
+
+    for raw_root in project_roots:
+        root = raw_root.expanduser().resolve()
+        relative = PROJECT_PERSONAS_RELATIVE / expected_relative
+        if source == root / relative:
+            return f"project:{root}:{relative.as_posix()}"
+    raise ValueError(PERSONA_RESELECTION_REQUIRED)
+
+
 def approval_mode_for_persona_change(
     *,
     current_name: str,
@@ -253,10 +366,13 @@ def approval_mode_for_persona_change(
 
 
 __all__ = [
+    "PERSONA_RESELECTION_REQUIRED",
     "PROJECT_PERSONAS_RELATIVE",
     "PersonaCatalog",
     "PersonaDefinition",
+    "PersonaSnapshot",
     "approval_mode_for_persona_change",
     "load_persona_catalog",
+    "snapshot_persona",
     "tool_name_matches",
 ]

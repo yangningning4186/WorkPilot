@@ -1,11 +1,15 @@
 import base64
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from workpilot_ai.providers.anthropic import _anthropic_messages
-from workpilot_ai.providers.gemini import _gemini_contents
-from workpilot_ai.providers.openai_compatible import OpenAICompatibleProvider
+from workpilot_ai.providers.anthropic import _anthropic_messages, _anthropic_stop_reason
+from workpilot_ai.providers.gemini import _gemini_contents, _gemini_stop_reason
+from workpilot_ai.providers.openai_compatible import (
+    OpenAICompatibleProvider,
+    _openai_stop_reason,
+)
 from workpilot_ai.types import Message, MessageAttachment
 
 
@@ -58,3 +62,17 @@ async def test_anthropic_and_gemini_keep_native_pdf(tmp_path: Path) -> None:
     parts = gemini[0]["parts"]
     assert parts[1]["inlineData"]["mimeType"] == "image/png"
     assert parts[2]["inlineData"]["mimeType"] == "application/pdf"
+
+
+@pytest.mark.parametrize(
+    ("normalize", "native_reason"),
+    [
+        (_anthropic_stop_reason, "max_tokens"),
+        (_openai_stop_reason, "length"),
+        (_gemini_stop_reason, "MAX_TOKENS"),
+    ],
+)
+def test_provider_adapters_preserve_output_limit_as_length(
+    normalize: Callable[..., str], native_reason: str
+) -> None:
+    assert normalize(native_reason, has_tool_calls=True) == "length"

@@ -162,6 +162,10 @@ class MemoryPatch(BaseModel):
         return self
 
 
+class MemoryUndo(BaseModel):
+    previous_memory_id: UUID
+
+
 class MemoryResponse(BaseModel):
     id: UUID
     scope: MemoryScope

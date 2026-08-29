@@ -7,6 +7,7 @@ import structlog
 
 from app.core.db import SessionFactory
 from app.core.run_bus import RunBus
+from app.run_events import MessageStreamEventType, RunEventDraft, RunEventType
 from app.runstore.runs import RunEvent, append_events
 
 logger = structlog.get_logger(__name__)
@@ -36,7 +37,7 @@ class RunEventEmitter:
         self._flush_chars = flush_chars
         # 正文和 reasoning 都要批量，但不能混成同一种事件。用一条
         # 有序队列保留两路偶尔交错时的真实顺序，相邻同类增量再合并。
-        self._pending: list[tuple[str, str]] = []
+        self._pending: list[tuple[MessageStreamEventType, str]] = []
         self._pending_chars = 0
         self._lock = asyncio.Lock()
         self._timer_task: asyncio.Task[None] | None = None
@@ -47,7 +48,7 @@ class RunEventEmitter:
     async def reasoning(self, text: str) -> None:
         await self._buffer("message.reasoning", text)
 
-    async def _buffer(self, event_type: str, text: str) -> None:
+    async def _buffer(self, event_type: MessageStreamEventType, text: str) -> None:
         if not text:
             return
         async with self._lock:
@@ -63,7 +64,7 @@ class RunEventEmitter:
         if flush_now:
             await self.flush()
 
-    async def emit(self, event_type: str, payload: dict[str, Any]) -> list[RunEvent]:
+    async def emit(self, event_type: RunEventType, payload: dict[str, Any]) -> list[RunEvent]:
         """写一个结构化事件。
 
         先 flush 待发 delta, 否则 message.done 会排在它总结的正文前面, 前端按 seq
@@ -114,14 +115,14 @@ class RunEventEmitter:
         if task is not None and task is not asyncio.current_task():
             task.cancel()
 
-    def _pending_events(self) -> list[tuple[str, dict[str, Any]]]:
+    def _pending_events(self) -> list[RunEventDraft]:
         return [(event_type, {"text": text}) for event_type, text in self._pending]
 
     def _clear_pending_locked(self) -> None:
         self._pending.clear()
         self._pending_chars = 0
 
-    async def _write(self, events: list[tuple[str, dict[str, Any]]]) -> list[RunEvent]:
+    async def _write(self, events: list[RunEventDraft]) -> list[RunEvent]:
         async with self._session_factory() as session:
             written = await append_events(session, run_id=self._run_id, events=events)
             await session.commit()

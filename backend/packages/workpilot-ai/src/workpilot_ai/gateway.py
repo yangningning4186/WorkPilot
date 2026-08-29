@@ -1,8 +1,10 @@
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass, replace
 from decimal import Decimal
+from functools import partial
 from time import monotonic
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 from uuid import UUID
 
 import structlog
@@ -14,11 +16,14 @@ from workpilot_ai.errors import (
     ModelContextOverflowError as ModelContextOverflowError,
 )
 from workpilot_ai.errors import (
+    ProviderContextOverflowError,
     ProviderNotDispatchedError,
     ProviderResponseError,
+    ProviderRetryableError,
     ProviderRouteTimeoutError,
     ProviderTimeoutError,
 )
+from workpilot_ai.overflow import silent_context_overflow
 from workpilot_ai.pricing import GatewayPricing, ModelPricing, estimate_tokens, is_measured
 from workpilot_ai.prompt_cache import prompt_cache_key
 from workpilot_ai.providers.openai_compatible import OpenAICompatibleProvider
@@ -32,8 +37,10 @@ from workpilot_ai.types import (
     AuditRecord,
     AuditSink,
     BudgetGuard,
+    CacheRetention,
     CompletionChunk,
     CompletionResult,
+    CompletionStopReason,
     EmbeddingResult,
     Message,
     ModelProvider,
@@ -43,8 +50,25 @@ from workpilot_ai.types import (
     ToolDefinition,
     Usage,
 )
+from workpilot_telemetry.spans import current_agent_span_id
 
 logger = structlog.get_logger(__name__)
+
+
+def _usage_cause(
+    task_type: str,
+) -> Literal["primary", "compaction", "hook", "adjustment"]:
+    if task_type == "cowork_compaction":
+        return "compaction"
+    if task_type in {
+        "conversation_title",
+        "memory_op",
+        "skill_distillation",
+        "cowork_semantic_approval",
+    }:
+        return "hook"
+    return "primary"
+
 
 _CHAT_REQUEST_OVERHEAD_TOKENS = 4
 _CHAT_MESSAGE_OVERHEAD_TOKENS = 8
@@ -84,6 +108,8 @@ def request_character_count(
     total = 0
     for message in messages:
         total += len(message.content)
+        for block in message.content_blocks:
+            total += sum(len(str(value)) for value in vars(block).values())
         for attachment in message.attachments:
             # 图片由 provider 作为视觉 token 计费；PDF/文本的提取正文按实际字符
             # 进入保守预算。固定开销覆盖图片编码与文档容器。
@@ -292,6 +318,10 @@ class ModelGateway:
         provider_prompt_cache_enabled: bool = True,
         default_context_window_tokens: int = 32_768,
         context_safety_tokens: int = 512,
+        provider_max_retries: int = 2,
+        provider_retry_base_delay_s: float = 0.5,
+        provider_retry_max_delay_s: float = 8.0,
+        retry_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._chat_provider = provider
         self._pool = pool
@@ -301,6 +331,16 @@ class ModelGateway:
         self._provider_prompt_cache_enabled = provider_prompt_cache_enabled
         self._default_context_window_tokens = default_context_window_tokens
         self._context_safety_tokens = context_safety_tokens
+        if provider_max_retries < 0:
+            raise ValueError("provider_max_retries 不能为负")
+        if provider_retry_base_delay_s < 0 or provider_retry_max_delay_s < 0:
+            raise ValueError("provider retry delay 不能为负")
+        if provider_retry_base_delay_s > provider_retry_max_delay_s:
+            raise ValueError("provider retry base delay 不能大于 max delay")
+        self._provider_max_retries = provider_max_retries
+        self._provider_retry_base_delay_s = provider_retry_base_delay_s
+        self._provider_retry_max_delay_s = provider_retry_max_delay_s
+        self._retry_sleep = retry_sleep
         self._embedding_provider = embedding_provider or provider
         # 流式接口只吐文本, 拿不到响应里的 model 字段; 但"这条答案是谁生成的"必须能记录
         # (评测要报 actual_models), 所以在网关层暴露配置身份。
@@ -325,6 +365,8 @@ class ModelGateway:
         max_tokens: int = 1024,
         temperature: float = 0.0,
         tier_override: Tier | None = None,
+        cache_retention: CacheRetention = "default",
+        session_id: str | None = None,
     ) -> CompletionResult:
         return await self._complete(
             messages,
@@ -334,6 +376,8 @@ class ModelGateway:
             tier_override=tier_override,
             tools=None,
             parallel_tool_calls=False,
+            cache_retention=cache_retention,
+            session_id=session_id,
         )
 
     async def complete_with_tools(
@@ -346,6 +390,8 @@ class ModelGateway:
         max_tokens: int = 1024,
         temperature: float = 0.0,
         tier_override: Tier | None = None,
+        cache_retention: CacheRetention = "default",
+        session_id: str | None = None,
     ) -> CompletionResult:
         if not tools:
             raise ValueError("原生 tool-calling 至少需要一个工具")
@@ -357,6 +403,8 @@ class ModelGateway:
             tier_override=tier_override,
             tools=tools,
             parallel_tool_calls=parallel_tool_calls,
+            cache_retention=cache_retention,
+            session_id=session_id,
         )
 
     async def _complete(
@@ -369,11 +417,18 @@ class ModelGateway:
         tier_override: Tier | None,
         tools: list[ToolDefinition] | None,
         parallel_tool_calls: bool,
+        cache_retention: CacheRetention,
+        session_id: str | None,
     ) -> CompletionResult:
+        if cache_retention not in {"default", "none"}:
+            raise ValueError("cache_retention 只能是 default 或 none")
+        if session_id is not None and not session_id.strip():
+            raise ValueError("session_id 不能为空白")
         attempts = self._chain(task_type, tier_override=tier_override)
         cacheable = (
             tools is None
             and self._cache is not None
+            and cache_retention != "none"
             and is_cacheable(temperature=temperature, mode=self._mode)
         )
         route_attempts = 0
@@ -418,6 +473,7 @@ class ModelGateway:
                 if (
                     self._provider_prompt_cache_enabled
                     and self._mode != "evaluation"
+                    and cache_retention != "none"
                     and callable(prompt_candidate)
                 ):
                     prompt_cache_method = cast(
@@ -437,6 +493,7 @@ class ModelGateway:
                     # 用 getattr 是为了不逼所有测试假 provider 都实现它；
                     # 缺这个属性的假 provider 本来也不会改变请求参数。
                     request_fingerprint=getattr(provider, "request_fingerprint", ""),
+                    session_id=session_id,
                 )
                 started = monotonic()
                 hit = await self._cache.get(cache_key)
@@ -454,6 +511,7 @@ class ModelGateway:
                         cost_usd=Decimal(0),
                         cache_hit=True,
                         was_fallback=index > 0,
+                        stop_reason=hit.stop_reason,
                     )
                     return hit
 
@@ -465,35 +523,61 @@ class ModelGateway:
             reservation = await self._reserve(pricing, estimated_usage)
             started = monotonic()
             route_attempts += 1
-            try:
+
+            async def invoke(
+                active_provider: ModelProvider,
+                active_wire_max_tokens: int | None,
+                active_prompt_cache_method: object,
+                active_tool_method: object,
+            ) -> CompletionResult:
                 if tools is None:
-                    result = await provider.complete(
-                        messages, max_tokens=wire_max_tokens, temperature=temperature
+                    return await active_provider.complete(
+                        messages, max_tokens=active_wire_max_tokens, temperature=temperature
                     )
-                elif prompt_cache_method is not None:
-                    result = await prompt_cache_method(
+                if callable(active_prompt_cache_method):
+                    prompt_method = cast(
+                        "PromptCachingToolCallingProvider", active_provider
+                    ).complete_with_tools_prompt_cache
+                    return await prompt_method(
                         messages,
                         tools=tools,
                         parallel_tool_calls=parallel_tool_calls,
-                        max_tokens=wire_max_tokens,
+                        max_tokens=active_wire_max_tokens,
                         temperature=temperature,
                         prompt_cache_key=prompt_cache_key(
-                            provider=provider.name,
-                            model=provider.chat_model,
+                            provider=active_provider.name,
+                            model=active_provider.chat_model,
                             task_type=task_type,
                             messages=messages,
                             tools=tools,
                         ),
                     )
-                else:
-                    assert tool_method is not None
-                    result = await tool_method(
-                        messages,
-                        tools=tools,
-                        parallel_tool_calls=parallel_tool_calls,
-                        max_tokens=wire_max_tokens,
-                        temperature=temperature,
+                if not callable(active_tool_method):
+                    raise NativeToolCallingUnsupportedError(
+                        f"provider {active_provider.name} 不支持原生 tool-calling"
                     )
+                method = cast("ToolCallingProvider", active_provider).complete_with_tools
+                return await method(
+                    messages,
+                    tools=tools,
+                    parallel_tool_calls=parallel_tool_calls,
+                    max_tokens=active_wire_max_tokens,
+                    temperature=temperature,
+                )
+
+            try:
+                result = await self._with_provider_retries(
+                    partial(
+                        invoke,
+                        provider,
+                        wire_max_tokens,
+                        prompt_cache_method,
+                        tool_method,
+                    ),
+                    task_type=task_type,
+                    tier=tier,
+                    provider=provider,
+                )
             except ProviderNotDispatchedError:
                 route_only_timed_out = False
                 await reservation.release()
@@ -537,6 +621,40 @@ class ModelGateway:
                     raise
                 self._log_fallback(task_type, tier, attempts[index + 1][0], dispatched=True)
                 continue
+            overflow_reason = silent_context_overflow(
+                result,
+                context_window_tokens=prompt_budget.context_window_tokens,
+            )
+            if overflow_reason is not None:
+                charged = await self._settle(reservation, pricing, result.usage)
+                await self._audit(
+                    task_type=task_type,
+                    tier=tier,
+                    model=result.model,
+                    provider=provider,
+                    usage=result.usage,
+                    started=started,
+                    success=False,
+                    cost_usd=charged,
+                    was_fallback=index > 0,
+                    stop_reason=result.stop_reason,
+                )
+                overflow_error = ProviderContextOverflowError(
+                    f"模型服务静默截断输入：{overflow_reason}"
+                )
+                if is_last:
+                    raise overflow_error
+                self._log_context_fallback(
+                    prompt_budget,
+                    attempts[index + 1][0],
+                    messages=messages,
+                    tools=tools,
+                )
+                continue
+            result = replace(
+                result,
+                model_identity=f"{provider.name}/{provider.chat_model}",
+            )
             charged = await self._settle(reservation, pricing, result.usage)
             await self._audit(
                 task_type=task_type,
@@ -548,6 +666,7 @@ class ModelGateway:
                 success=True,
                 cost_usd=charged,
                 was_fallback=index > 0,
+                stop_reason=result.stop_reason,
             )
             if cache_key is not None and self._cache is not None:
                 # 只写成功结果: 一次抖动被钉住 24 小时比不缓存糟得多。
@@ -651,48 +770,91 @@ class ModelGateway:
             result: CompletionResult | None = None
             dispatched = True
             failure: Exception | None = None
-            try:
-                if callable(stream_candidate):
-                    provider_stream = cast(
-                        "StreamingToolCallingProvider", provider
-                    ).stream_with_tools(
-                        messages,
-                        tools=tools,
-                        parallel_tool_calls=parallel_tool_calls,
-                        max_tokens=wire_max_tokens,
-                        temperature=temperature,
-                    )
-                    async for chunk in provider_stream:
-                        if chunk.result is not None:
-                            result = chunk.result
-                            continue
-                        if chunk.text_delta or chunk.reasoning_delta:
-                            emitted = True
-                            yield chunk
-                    if result is None:
-                        raise ProviderResponseError(
-                            f"provider {provider.name} 的流没有给出终块，"
-                            "拿不到这一轮的完整结果与用量"
+            retry_index = 0
+            while True:
+                try:
+                    if callable(stream_candidate):
+                        provider_stream = cast(
+                            "StreamingToolCallingProvider", provider
+                        ).stream_with_tools(
+                            messages,
+                            tools=tools,
+                            parallel_tool_calls=parallel_tool_calls,
+                            max_tokens=wire_max_tokens,
+                            temperature=temperature,
                         )
-                else:
-                    result = await cast("ToolCallingProvider", provider).complete_with_tools(
-                        messages,
-                        tools=tools,
-                        parallel_tool_calls=parallel_tool_calls,
-                        max_tokens=wire_max_tokens,
-                        temperature=temperature,
-                    )
-            except ProviderNotDispatchedError as error:
-                route_only_timed_out = False
-                dispatched = False
-                failure = error
-            except Exception as error:
-                if not isinstance(error, ProviderTimeoutError):
+                        async for chunk in provider_stream:
+                            if chunk.result is not None:
+                                result = chunk.result
+                                continue
+                            if (
+                                chunk.text_delta
+                                or chunk.reasoning_delta
+                                or chunk.tool_call_delta is not None
+                            ):
+                                emitted = True
+                                yield chunk
+                        if result is None:
+                            raise ProviderResponseError(
+                                f"provider {provider.name} 的流没有给出终块，"
+                                "拿不到这一轮的完整结果与用量"
+                            )
+                    else:
+                        result = await cast("ToolCallingProvider", provider).complete_with_tools(
+                            messages,
+                            tools=tools,
+                            parallel_tool_calls=parallel_tool_calls,
+                            max_tokens=wire_max_tokens,
+                            temperature=temperature,
+                        )
+                except ProviderNotDispatchedError as error:
                     route_only_timed_out = False
-                failure = error
+                    dispatched = False
+                    failure = error
+                except Exception as error:
+                    if not isinstance(error, ProviderTimeoutError):
+                        route_only_timed_out = False
+                    failure = error
+                if (
+                    isinstance(failure, ProviderRetryableError)
+                    and not emitted
+                    and retry_index < self._provider_max_retries
+                ):
+                    delay = self._retry_delay(retry_index, failure.retry_after_s)
+                    retry_index += 1
+                    logger.warning(
+                        "模型流建立失败，原档退避重试",
+                        task_type=task_type,
+                        tier=tier,
+                        provider=provider.name,
+                        model=provider.chat_model,
+                        retry_attempt=retry_index,
+                        retry_delay_s=delay,
+                        status_code=failure.status_code,
+                    )
+                    failure = None
+                    result = None
+                    await self._retry_sleep(delay)
+                    continue
+                break
 
             if failure is None:
                 assert result is not None
+                overflow_reason = silent_context_overflow(
+                    result,
+                    context_window_tokens=prompt_budget.context_window_tokens,
+                )
+                if overflow_reason is not None:
+                    failure = ProviderContextOverflowError(
+                        f"模型服务静默截断输入：{overflow_reason}"
+                    )
+
+            if failure is None:
+                assert result is not None
+                result = replace(
+                    result,
+                    model_identity=f"{provider.name}/{provider.chat_model}",
+                )
                 charged = await self._settle(reservation, pricing, result.usage)
                 await self._audit(
                     task_type=task_type,
@@ -704,6 +866,7 @@ class ModelGateway:
                     success=True,
                     cost_usd=charged,
                     was_fallback=index > 0,
+                    stop_reason=result.stop_reason,
                 )
                 yield CompletionChunk(result=result)
                 return
@@ -760,7 +923,12 @@ class ModelGateway:
         reservation = await self._reserve(self._pricing.embedding, estimated_usage)
         started = monotonic()
         try:
-            result = await self._embedding_provider.embed(texts)
+            result = await self._with_provider_retries(
+                partial(self._embedding_provider.embed, texts),
+                task_type=task_type,
+                tier="main",
+                provider=self._embedding_provider,
+            )
         except ProviderNotDispatchedError:
             await reservation.release()
             await self._audit(
@@ -852,19 +1020,43 @@ class ModelGateway:
             success = False
             dispatched = True
             failure: Exception | None = None
+            retry_index = 0
             try:
-                async for chunk in provider.stream(
-                    messages, max_tokens=max_tokens, temperature=temperature
-                ):
-                    emitted = True
-                    produced_chars += len(chunk)
-                    yield chunk
-                success = True
-            except ProviderNotDispatchedError as error:
-                dispatched = False
-                failure = error
-            except Exception as error:
-                failure = error
+                while True:
+                    try:
+                        async for chunk in provider.stream(
+                            messages, max_tokens=max_tokens, temperature=temperature
+                        ):
+                            emitted = True
+                            produced_chars += len(chunk)
+                            yield chunk
+                        success = True
+                    except ProviderNotDispatchedError as error:
+                        dispatched = False
+                        failure = error
+                    except Exception as error:
+                        failure = error
+                    if (
+                        isinstance(failure, ProviderRetryableError)
+                        and not emitted
+                        and retry_index < self._provider_max_retries
+                    ):
+                        delay = self._retry_delay(retry_index, failure.retry_after_s)
+                        retry_index += 1
+                        logger.warning(
+                            "模型流建立失败，原档退避重试",
+                            task_type=task_type,
+                            tier=tier,
+                            provider=provider.name,
+                            model=provider.chat_model,
+                            retry_attempt=retry_index,
+                            retry_delay_s=delay,
+                            status_code=failure.status_code,
+                        )
+                        failure = None
+                        await self._retry_sleep(delay)
+                        continue
+                    break
             finally:
                 # 流式接口拿不到 provider 回报的用量, 按已产出文本估算并受预留上限约束。
                 usage = Usage(
@@ -899,6 +1091,49 @@ class ModelGateway:
                 raise failure
             self._log_fallback(task_type, tier, attempts[index + 1][0], dispatched=dispatched)
 
+    async def _with_provider_retries[T](
+        self,
+        operation: Callable[[], Awaitable[T]],
+        *,
+        task_type: str,
+        tier: Tier,
+        provider: ModelProvider,
+    ) -> T:
+        """同一 endpoint 先消化瞬时故障，再允许路由层 fallback。
+
+        429 配额耗尽会由 adapter 归为普通 ``ProviderResponseError``，不会在这里
+        空等；暂时性 429/5xx 则尊重 ``Retry-After``，缺席时使用有上限的指数退避。
+        """
+
+        attempt = 0
+        while True:
+            try:
+                return await operation()
+            except ProviderRetryableError as error:
+                if attempt >= self._provider_max_retries:
+                    raise
+                delay = self._retry_delay(attempt, error.retry_after_s)
+                attempt += 1
+                logger.warning(
+                    "模型 endpoint 瞬时失败，原档退避重试",
+                    task_type=task_type,
+                    tier=tier,
+                    provider=provider.name,
+                    model=provider.chat_model,
+                    retry_attempt=attempt,
+                    retry_delay_s=delay,
+                    status_code=error.status_code,
+                )
+                await self._retry_sleep(delay)
+
+    def _retry_delay(self, attempt: int, retry_after_s: float | None) -> float:
+        if retry_after_s is not None:
+            return min(self._provider_retry_max_delay_s, max(0.0, retry_after_s))
+        return min(
+            self._provider_retry_max_delay_s,
+            self._provider_retry_base_delay_s * (2.0**attempt),
+        )
+
     def _chain(
         self, task_type: str, *, tier_override: Tier | None = None
     ) -> tuple[tuple[Tier, ModelProvider], ...]:
@@ -927,6 +1162,17 @@ class ModelGateway:
             return (None, None)
         table = self._pool.table
         return (table.tier_for(task_type), table.escalation_for(task_type))
+
+    def model_identities(self) -> frozenset[str]:
+        """Stable provider/model identities that can participate in this gateway's routes."""
+
+        if self._pool is None:
+            return frozenset({f"{self._chat_provider.name}/{self._chat_provider.chat_model}"})
+        return frozenset(
+            f"{spec.primary.provider}/{spec.primary.model}"
+            for spec in self._pool.table.tiers.values()
+            if spec.primary.available
+        )
 
     def prompt_budget(
         self,
@@ -1048,6 +1294,7 @@ class ModelGateway:
         tier: Tier = "main",
         cache_hit: bool = False,
         was_fallback: bool = False,
+        stop_reason: CompletionStopReason | None = None,
     ) -> None:
         if self._audit_sink is None:
             return
@@ -1067,6 +1314,7 @@ class ModelGateway:
                 prompt_cache_write_tokens=(0 if cache_hit else usage.prompt_cache_write_tokens),
                 latency_ms=max(0, round((monotonic() - started) * 1000)),
                 success=success,
+                cause=_usage_cause(task_type),
                 cost_usd=cost_usd,
                 cached=cache_hit,
                 cache_type="exact" if cache_hit else None,
@@ -1075,6 +1323,9 @@ class ModelGateway:
                 batch_id=current_batch_id(),
                 run_id=self._run_id,
                 eval_run_id=self._eval_run_id,
+                span_id=str(uuid7()),
+                parent_span_id=current_agent_span_id(),
+                stop_reason=stop_reason,
             )
         )
 

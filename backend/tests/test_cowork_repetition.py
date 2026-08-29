@@ -12,6 +12,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.agent_core.session_records import reduce_model_step_attempts
 from app.core.config import get_settings
 from app.core.db import DbSession as AsyncSession
 from app.core.db import session_factory
@@ -27,13 +28,23 @@ from app.cowork.repetition import (
     parse_arguments,
 )
 from app.cowork.runtime import (
+    CoworkHookBus,
+    ModelAttemptHookContext,
     _is_idempotent_load_query,
     initialize_cowork_state,
     load_cowork_checkpoint,
 )
 from app.cowork.tools import build_default_cowork_registry
-from app.runstore.runs import append_message, create_run, ensure_conversation, get_run
+from app.cowork_store.routing import cowork_store
+from app.runstore.runs import (
+    append_message,
+    create_run,
+    ensure_conversation,
+    get_run,
+    reap_expired_runs,
+)
 from app.worker.cowork_run import cowork_run
+from tests.conftest import iso_ago
 from tests.test_cowork_runner import (
     NativeToolProvider,
     _final_completion,
@@ -314,7 +325,10 @@ async def test_mixed_batch_keeps_the_call_that_still_makes_progress(
     assert "已经执行过" in by_id["a-last"]
     assert "乙" in by_id["b-1"]
     # 被拦的那次不该计进签名表，否则一次拦截会把计数推得越来越高。
-    signature = call_signature("read_file", {"path": str(tmp_path / "a.md")})
+    signature = call_signature(
+        "read_file",
+        registry.parse_arguments("read_file", {"path": str(tmp_path / "a.md")}),
+    )
     assert checkpoint.state["call_signatures"][signature] == DEFAULT_REPEAT_LIMIT
     assert UUID(checkpoint.state["run_id"]) == run.id
 
@@ -394,6 +408,98 @@ async def test_stalling_takes_the_tools_away_instead_of_burning_the_budget(
         if message.get("role") == "user" and "工具已经全部收回" in str(message["content"])
     ]
     assert stall_prompt, "必须显式告诉模型工具已被收回"
+    attempts = reduce_model_step_attempts(
+        await cowork_store().list_session_records(run_id=run.id)
+    )
+    assert any(
+        attempt.step == "forced_final" and attempt.phase == "completed"
+        for attempt in attempts
+    )
+
+
+class _ForcedFinalProcessCrash(BaseException):
+    pass
+
+
+async def test_forced_final_completed_attempt_recovers_without_a_second_paid_call(
+    db_session: AsyncSession,
+    tmp_path: Path,
+    store_sql,
+) -> None:
+    (tmp_path / "notes.md").write_text("内容", encoding="utf-8")
+    conversation_id = await ensure_conversation(db_session, title="强制收尾崩溃恢复")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="看看有哪些文件",
+        budget_tokens=200_000,
+        budget_calls=60,
+        budget_wall_ms=120_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    registry = build_default_cowork_registry()
+    bus = InMemoryRunBus()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    arguments = json.dumps({"path": str(tmp_path)}, ensure_ascii=False)
+    provider = NativeToolProvider(
+        [
+            *(
+                _tool_completion(
+                    ToolCall(id=f"crash-list-{index}", name="list_files", arguments=arguments)
+                )
+                for index in range(DEFAULT_REPEAT_LIMIT + DEFAULT_STALL_ROUNDS)
+            )
+        ],
+        regular_completions=["强制收尾答案"],
+    )
+
+    def crash_after_forced_terminal(hooks: CoworkHookBus) -> None:
+        async def crash(context: ModelAttemptHookContext) -> None:
+            if context.step == "forced_final" and context.stage == "after_terminal":
+                raise _ForcedFinalProcessCrash("forced-final after_terminal")
+
+        hooks.model_attempt.register("test.forced_final_crash", crash)
+
+    context = {
+        "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+        "session_factory": session_factory,
+        "bus": bus,
+        "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+        "cowork_registry": registry,
+        "cowork_hook_configurators": [crash_after_forced_terminal],
+    }
+    with pytest.raises(_ForcedFinalProcessCrash):
+        await cowork_run(context, str(run.id))
+    assert provider.regular_calls == 1
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
+    assert checkpoint is not None
+    assert checkpoint.state["stalled_rounds"] >= DEFAULT_STALL_ROUNDS
+
+    store_sql(
+        "UPDATE agent_runs SET lease_until = ? WHERE id = ?",
+        (iso_ago(1), str(run.id)),
+    )
+    reaped = await reap_expired_runs(db_session)
+    assert reaped.recovered_cowork == [(run.id, 1)]
+    context["cowork_hook_configurators"] = []
+    await cowork_run(context, str(run.id))
+
+    finished = await get_run(db_session, run.id)
+    assert finished is not None and finished.status == "done"
+    assert provider.regular_calls == 1
 
 
 async def test_textual_tool_call_after_stall_becomes_safe_fallback_without_execution(

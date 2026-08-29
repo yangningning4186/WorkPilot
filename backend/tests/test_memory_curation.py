@@ -6,6 +6,7 @@
 """
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 from uuid6 import uuid7
@@ -22,6 +23,7 @@ from app.cowork.memory import (
     set_memory_pinned,
 )
 from app.cowork_contracts import MemoryNotFoundError, PinnedMemoryError
+from app.runstore.runs import ensure_conversation
 
 pytestmark = pytest.mark.usefixtures("local_cowork_store")
 
@@ -172,16 +174,17 @@ async def test_delete_marks_invalid_without_a_successor() -> None:
 
 async def test_extraction_job_is_idempotent_and_recovers_after_a_lost_lease() -> None:
     run_id = uuid7()
+    conversation_id = await ensure_conversation(AsyncMock(), title="Memory lease")
     first = await schedule_memory_extraction(
         run_id=run_id,
-        conversation_id=uuid7(),
+        conversation_id=conversation_id,
         source_message_id=uuid7(),
         content="以后所有摘要都用表格",
         source_created_at=NOW,
     )
     second = await schedule_memory_extraction(
         run_id=run_id,
-        conversation_id=uuid7(),
+        conversation_id=conversation_id,
         source_message_id=uuid7(),
         content="不该覆盖",
         source_created_at=NOW,

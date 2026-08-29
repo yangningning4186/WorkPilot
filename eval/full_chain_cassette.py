@@ -175,7 +175,7 @@ def _restore_tool(value: object) -> CoworkToolResult:
     if not isinstance(output, Mapping) or not isinstance(evidence, list):
         raise FullChainCassetteError("recorded tool output/evidence is invalid")
     return CoworkToolResult(
-        output=dict(output),
+        content=dict(output),
         evidence=tuple(dict(cast(Mapping[str, Any], item)) for item in evidence),
         effect_ref=str(value["effect_ref"]) if value.get("effect_ref") is not None else None,
         idempotency_key=(

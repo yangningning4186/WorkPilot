@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -9,7 +10,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.agent_core.idempotency import InvocationInFlightError
+from app.agent_core.idempotency import InvocationInFlightError, InvocationOutcomeUnknownError
 from app.core.config import Settings
 from app.core.queue import InProcessRunQueue, QueuedTask
 from app.cowork.permissions import (
@@ -19,11 +20,17 @@ from app.cowork.permissions import (
 )
 from app.cowork.runtime import initialize_cowork_state
 from app.cowork.tools import build_default_cowork_registry
+from app.cowork_contracts import MemoryPolicySnapshot
+from app.cowork_store.conformance import assert_cowork_store_conforms
 from app.cowork_store.factory import (
     close_local_cowork_stores,
     initialize_local_cowork_stores,
 )
-from app.cowork_store.jsonl import JsonlConversationStore, JsonlMessage
+from app.cowork_store.jsonl import (
+    JsonlConversationCorruptionError,
+    JsonlConversationStore,
+    JsonlMessage,
+)
 from app.cowork_store.sqlite import SqliteCoworkStore
 from app.runstore.conversations import ConversationBusyError, get_conversation
 from app.runstore.runs import (
@@ -297,6 +304,71 @@ async def test_initializing_run_rolls_back_checkpoint_status_and_events_together
     await store.close()
 
 
+async def test_cowork_run_config_is_stored_once_and_rehydrated_from_checkpoint(
+    tmp_path: Path,
+) -> None:
+    store = SqliteCoworkStore(tmp_path / "run-config" / "cowork.db")
+    await store.initialize()
+    conversation_id = await store.create_conversation(title="RunConfig 分离")
+    run = await store.create_run(
+        conversation_id=conversation_id,
+        goal="冻结前缀",
+        budget_tokens=100,
+        budget_calls=2,
+        budget_wall_ms=1_000,
+        initializing=True,
+    )
+    state = {
+        "schema_version": "cowork.v2",
+        "run_id": str(run.id),
+        "conversation_id": str(conversation_id),
+        "goal": "冻结前缀",
+        "environment_block": "stable-prefix",
+        "workspace_files": ["/workspace/report.md"],
+        "status": "executing",
+        "iteration": 0,
+    }
+    await store.initialize_run(
+        run_id=run.id,
+        checkpoint_id="initial",
+        state=state,
+        events=[("plan", {"mode": "dynamic_tool_loop"})],
+    )
+
+    raw_checkpoints = await store.export_rows(
+        table="agent_checkpoints", columns=("run_id", "checkpoint_id", "state")
+    )
+    persisted_state = json.loads(raw_checkpoints[0]["state"])
+    assert persisted_state == {
+        "iteration": 0,
+        "schema_version": "cowork.v2",
+        "status": "executing",
+    }
+    assert await store.load_run_config(run_id=run.id) == {
+        "conversation_id": str(conversation_id),
+        "environment_block": "stable-prefix",
+        "goal": "冻结前缀",
+        "run_id": str(run.id),
+        "workspace_files": ["/workspace/report.md"],
+    }
+    loaded = await store.load_latest_checkpoint(run_id=run.id)
+    assert loaded is not None and loaded.state == state
+
+    state["iteration"] = 1
+    await store.save_checkpoint(
+        run_id=run.id,
+        checkpoint_id="second",
+        parent_id="initial",
+        state=state,
+    )
+    config_rows = await store.export_rows(
+        table="cowork_run_configs", columns=("run_id", "config", "created_at", "updated_at")
+    )
+    assert len(config_rows) == 1
+    assert config_rows[0]["created_at"] == config_rows[0]["updated_at"]
+    await store.close()
+
+
 async def test_restart_marks_interrupted_initialization_failed(tmp_path: Path) -> None:
     database = tmp_path / "initializing-restart" / "cowork.db"
     first = SqliteCoworkStore(database)
@@ -398,6 +470,329 @@ async def test_checkpoint_transaction_rolls_back_on_event_encoding_failure(
     await store.close()
 
 
+async def test_follow_up_claim_or_seal_has_no_terminal_race_or_orphan(tmp_path: Path) -> None:
+    store = SqliteCoworkStore(tmp_path / "follow-up-boundary" / "cowork.db")
+    await store.initialize()
+    conversation_id = await store.create_conversation(title="Follow-up 原子边界")
+    run = await store.create_run(
+        conversation_id=conversation_id,
+        goal="完成第一轮",
+        budget_tokens=1_000,
+        budget_calls=10,
+        budget_wall_ms=30_000,
+    )
+    assert await store.claim_run(run_id=run.id, worker_id="worker-a", lease_s=30)
+
+    early = await store.enqueue_queued_message(
+        run_id=run.id,
+        conversation_id=conversation_id,
+        content="第一条 follow-up",
+        source="local_owner",
+        delivery="follow_up",
+    )
+    claimed = await store.claim_follow_up_or_seal(run_id=run.id, worker_id="worker-a")
+    assert [item.id for item in claimed] == [early.id]
+    assert claimed[0].status == "consumed"
+
+    # An empty claim seals the same transactional boundary used by enqueue. A message that
+    # loses that race is carried to next_run instead of becoming an invisible follow-up.
+    assert await store.claim_follow_up_or_seal(run_id=run.id, worker_id="worker-a") == []
+    late = await store.enqueue_queued_message(
+        run_id=run.id,
+        conversation_id=conversation_id,
+        content="边界之后到达",
+        source="local_owner",
+        delivery="follow_up",
+    )
+    assert late.requested_delivery == "follow_up"
+    assert late.delivery == "next_run"
+    assert late.status == "pending"
+
+    assert await store.finish_run(run_id=run.id, status="done", worker_id="worker-a")
+    ready = await store.list_ready_next_run_messages()
+    assert [item.id for item in ready] == [late.id]
+    records = await store.list_session_records(run_id=run.id)
+    assert [(record.kind, record.operation_id, record.phase) for record in records] == [
+        ("queue_event", f"queue:{early.id}", "enqueued"),
+        ("queue_event", f"queue:{early.id}", "consumed"),
+        ("queue_event", f"queue:{late.id}", "enqueued"),
+    ]
+    await store.close()
+
+
+async def test_terminal_next_run_queue_is_fifo_cancel_safe_and_idempotent(tmp_path: Path) -> None:
+    store = SqliteCoworkStore(tmp_path / "next-run-fifo" / "cowork.db")
+    await store.initialize()
+    conversation_id = await store.create_conversation(title="Next-run FIFO")
+    run = await store.create_run(
+        conversation_id=conversation_id,
+        goal="已经结束",
+        budget_tokens=1_000,
+        budget_calls=10,
+        budget_wall_ms=30_000,
+    )
+    assert await store.finish_run(run_id=run.id, status="done")
+
+    first = await store.enqueue_queued_message(
+        run_id=run.id,
+        conversation_id=conversation_id,
+        content="后继一",
+        source="local_owner",
+        delivery="follow_up",
+    )
+    second = await store.enqueue_queued_message(
+        run_id=run.id,
+        conversation_id=conversation_id,
+        content="后继二",
+        source="local_owner",
+        delivery="next_run",
+    )
+    assert first.delivery == "next_run" and first.status == "ready"
+    assert second.delivery == "next_run" and second.status == "pending"
+    assert [item.id for item in await store.list_ready_next_run_messages()] == [first.id]
+
+    assert await store.cancel_queued_message(
+        message_id=first.id,
+        conversation_id=conversation_id,
+    )
+    assert [item.id for item in await store.list_ready_next_run_messages()] == [second.id]
+
+    successor = await store.create_run(
+        conversation_id=conversation_id,
+        goal=second.content,
+        budget_tokens=1_000,
+        budget_calls=10,
+        budget_wall_ms=30_000,
+        source_wake_id=second.id,
+    )
+    duplicate = await store.create_run(
+        conversation_id=conversation_id,
+        goal=second.content,
+        budget_tokens=1_000,
+        budget_calls=10,
+        budget_wall_ms=30_000,
+        source_wake_id=second.id,
+    )
+    assert duplicate.id == successor.id
+    assert await store.consume_ready_next_run_message(
+        message_id=second.id,
+        launched_run_id=successor.id,
+    )
+    assert not await store.consume_ready_next_run_message(
+        message_id=second.id,
+        launched_run_id=successor.id,
+    )
+    origin_records = await store.list_session_records(run_id=run.id)
+    assert [(record.operation_id, record.phase) for record in origin_records] == [
+        (f"queue:{first.id}", "enqueued"),
+        (f"queue:{second.id}", "enqueued"),
+        (f"queue:{first.id}", "cancelled"),
+        (f"queue:{second.id}", "consumed"),
+    ]
+    assert origin_records[-1].payload["launched_run_id"] == str(successor.id)
+    successor_records = await store.list_session_records(run_id=successor.id)
+    assert successor_records == []
+    await store.close()
+
+
+async def test_unconsumed_steering_uses_the_terminal_queue_boundary(tmp_path: Path) -> None:
+    store = SqliteCoworkStore(tmp_path / "steering-terminal-boundary" / "cowork.db")
+    await store.initialize()
+    conversation_id = await store.create_conversation(title="Steering terminal boundary")
+    run = await store.create_run(
+        conversation_id=conversation_id,
+        goal="即将结束",
+        budget_tokens=1_000,
+        budget_calls=10,
+        budget_wall_ms=30_000,
+    )
+    assert await store.claim_run(run_id=run.id, worker_id="worker-a", lease_s=30)
+    pending = await store.enqueue_queued_message(
+        run_id=run.id,
+        conversation_id=conversation_id,
+        content="final 前到达的 steering",
+        source="local_owner",
+        delivery="steer",
+    )
+    claimed = await store.claim_follow_up_or_seal(run_id=run.id, worker_id="worker-a")
+    assert [item.id for item in claimed] == [pending.id]
+    assert claimed[0].delivery == "steer" and claimed[0].status == "consumed"
+
+    assert await store.claim_follow_up_or_seal(run_id=run.id, worker_id="worker-a") == []
+    late = await store.enqueue_queued_message(
+        run_id=run.id,
+        conversation_id=conversation_id,
+        content="封闭边界后到达的 steering",
+        source="local_owner",
+        delivery="steer",
+    )
+    assert late.requested_delivery == "steer"
+    assert late.delivery == "next_run" and late.status == "pending"
+    assert await store.finish_run(run_id=run.id, status="done", worker_id="worker-a")
+    assert [item.id for item in await store.list_ready_next_run_messages()] == [late.id]
+    await store.close()
+
+
+async def test_abort_request_is_an_idempotent_session_record(tmp_path: Path) -> None:
+    store = SqliteCoworkStore(tmp_path / "abort-record" / "cowork.db")
+    await store.initialize()
+    conversation_id = await store.create_conversation(title="Abort record")
+    run = await store.create_run(
+        conversation_id=conversation_id,
+        goal="等待取消",
+        budget_tokens=1_000,
+        budget_calls=10,
+        budget_wall_ms=30_000,
+    )
+
+    first = await store.request_cancel(run_id=run.id)
+    second = await store.request_cancel(run_id=run.id)
+    assert first.status == second.status == "cancelled"
+    records = await store.list_session_records(run_id=run.id)
+    assert [(record.kind, record.operation_id, record.phase) for record in records] == [
+        ("abort_requested", f"abort:{run.id}", "requested")
+    ]
+    await store.close()
+
+
+async def test_v25_session_record_schema_migrates_without_losing_attempts(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "session-record-v25" / "cowork.db"
+    store = SqliteCoworkStore(path)
+    await store.initialize()
+    conversation_id = await store.create_conversation(title="Session record migration")
+    run = await store.create_run(
+        conversation_id=conversation_id,
+        goal="保留旧 attempt",
+        budget_tokens=1_000,
+        budget_calls=10,
+        budget_wall_ms=30_000,
+    )
+    await store.append_session_record(
+        run_id=run.id,
+        kind="step_attempt",
+        operation_id="legacy-attempt",
+        phase="started",
+        payload={
+            "source_checkpoint_id": "before",
+            "result_checkpoint_id": "after",
+            "iteration": 0,
+            "attempt_no": 1,
+        },
+    )
+    await store.close()
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            DROP INDEX idx_session_records_run;
+            ALTER TABLE session_records RENAME TO session_records_v26;
+            CREATE TABLE session_records (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+                seq INTEGER NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('step_attempt')),
+                operation_id TEXT NOT NULL,
+                phase TEXT NOT NULL CHECK (phase IN ('started','completed','failed')),
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE (run_id, seq),
+                UNIQUE (run_id, operation_id, phase)
+            );
+            INSERT INTO session_records
+            SELECT * FROM session_records_v26;
+            DROP TABLE session_records_v26;
+            CREATE INDEX idx_session_records_run ON session_records(run_id, seq);
+            PRAGMA user_version = 25;
+            """
+        )
+
+    reopened = SqliteCoworkStore(path)
+    await reopened.initialize()
+    records = await reopened.list_session_records(run_id=run.id)
+    assert [(record.operation_id, record.phase) for record in records] == [
+        ("legacy-attempt", "started")
+    ]
+    queue_record = await reopened.append_session_record(
+        run_id=run.id,
+        kind="queue_event",
+        operation_id="queue:migrated",
+        phase="enqueued",
+        payload={"message_id": "migrated"},
+    )
+    assert queue_record.seq == 2
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 26
+    await reopened.close()
+
+
+async def test_legacy_steering_schema_migrates_before_delivery_index_creation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "steering-v14" / "cowork.db"
+    store = SqliteCoworkStore(path)
+    await store.initialize()
+    conversation_id = await store.create_conversation(title="Steering migration")
+    run = await store.create_run(
+        conversation_id=conversation_id,
+        goal="保留旧 steering",
+        budget_tokens=1_000,
+        budget_calls=10,
+        budget_wall_ms=30_000,
+    )
+    queued = await store.enqueue_queued_message(
+        run_id=run.id,
+        conversation_id=conversation_id,
+        content="旧版队列消息",
+        source="local_owner",
+        delivery="steer",
+    )
+    await store.close()
+
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            DROP INDEX idx_cowork_queued_messages_dispatch;
+            ALTER TABLE cowork_steering_messages RENAME TO cowork_steering_messages_v26;
+            CREATE TABLE cowork_steering_messages (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+                conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                consumed_at TEXT
+            );
+            INSERT INTO cowork_steering_messages(
+                id, run_id, conversation_id, content, status, created_at, consumed_at
+            )
+            SELECT id, run_id, conversation_id, content, status, created_at, consumed_at
+            FROM cowork_steering_messages_v26;
+            DROP TABLE cowork_steering_messages_v26;
+            PRAGMA user_version = 14;
+            """
+        )
+
+    reopened = SqliteCoworkStore(path)
+    await reopened.initialize()
+    consumed = await reopened.consume_pending_steering(run_id=run.id)
+    assert [(item.id, item.content, item.delivery) for item in consumed] == [
+        (queued.id, "旧版队列消息", "steer")
+    ]
+    with sqlite3.connect(path) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(cowork_steering_messages)")
+        }
+        index_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'idx_cowork_queued_messages_dispatch'"
+        ).fetchone()
+    assert {"source", "source_wake_id", "requested_delivery", "delivery", "cancelled_at"} <= columns
+    assert index_sql is not None and "delivery" in str(index_sql[0])
+    await reopened.close()
+
+
 async def test_sqlite_store_persists_run_events_checkpoint_and_invocation_lease(
     tmp_path: Path,
 ) -> None:
@@ -477,6 +872,151 @@ async def test_sqlite_store_persists_run_events_checkpoint_and_invocation_lease(
     assert replay.result == {"path": "report.md"}
 
 
+async def test_sqlite_unknown_invocation_outcome_is_terminal_and_non_replayable(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "state" / "cowork.db"
+    store = SqliteCoworkStore(database_path)
+    await store.initialize()
+    conversation_id = await store.create_conversation(title="MCP unknown outcome")
+    run = await store.create_run(
+        conversation_id=conversation_id,
+        goal="发布远端内容",
+        budget_tokens=1_000,
+        budget_calls=10,
+        budget_wall_ms=30_000,
+    )
+    step_id = uuid4()
+    arguments = {"body": "must-not-be-persisted-in-outcome"}
+    lease = await store.acquire_invocation(
+        run_id=run.id,
+        plan_step_id=step_id,
+        tool_name="mcp__docs__publish",
+        args=arguments,
+        worker_id="worker-a",
+        lease_s=30,
+    )
+
+    await store.mark_invocation_outcome_unknown(
+        key=lease.idempotency_key,
+        worker_id="worker-a",
+    )
+
+    with pytest.raises(InvocationOutcomeUnknownError):
+        await store.acquire_invocation(
+            run_id=run.id,
+            plan_step_id=step_id,
+            tool_name="mcp__docs__publish",
+            args=arguments,
+            worker_id="worker-b",
+            lease_s=30,
+        )
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            """SELECT status, result, lease_owner, lease_until, retry_count, completed_at
+               FROM tool_invocations WHERE idempotency_key = ?""",
+            (lease.idempotency_key,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "outcome_unknown"
+    assert row[1] == '{"outcome":"unknown","reason":"remote_result_unavailable"}'
+    assert "must-not-be-persisted" not in row[1]
+    assert row[2] is None
+    assert row[3] is None
+    assert row[4] == 0
+    assert row[5] is not None
+
+
+async def test_sqlite_expired_inflight_invocation_becomes_unknown_instead_of_replaying(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "state" / "cowork.db"
+    store = SqliteCoworkStore(database_path)
+    await store.initialize()
+    conversation_id = await store.create_conversation(title="Crashed local effect")
+    run = await store.create_run(
+        conversation_id=conversation_id,
+        goal="只写一次",
+        budget_tokens=1_000,
+        budget_calls=10,
+        budget_wall_ms=30_000,
+    )
+    step_id = uuid4()
+    arguments = {"path": "once.txt", "content": "do-not-copy-to-ledger"}
+    lease = await store.acquire_invocation(
+        run_id=run.id,
+        plan_step_id=step_id,
+        tool_name="write_file",
+        args=arguments,
+        worker_id="dead-worker",
+        lease_s=30,
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE tool_invocations SET lease_until = ? WHERE idempotency_key = ?",
+            ("1970-01-01T00:00:00+00:00", lease.idempotency_key),
+        )
+
+    with pytest.raises(InvocationOutcomeUnknownError):
+        await store.acquire_invocation(
+            run_id=run.id,
+            plan_step_id=step_id,
+            tool_name="write_file",
+            args=arguments,
+            worker_id="replacement-worker",
+            lease_s=30,
+        )
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            "SELECT status, result, lease_owner, lease_until FROM tool_invocations "
+            "WHERE idempotency_key = ?",
+            (lease.idempotency_key,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "outcome_unknown"
+    assert row[1] == (
+        '{"outcome":"unknown","reason":"effect_may_have_completed_before_lease_expiry"}'
+    )
+    assert "do-not-copy-to-ledger" not in row[1]
+    assert row[2:] == (None, None)
+
+
+async def test_sqlite_failed_invocation_does_not_persist_raw_credentials(tmp_path: Path) -> None:
+    database_path = tmp_path / "state" / "cowork.db"
+    store = SqliteCoworkStore(database_path)
+    await store.initialize()
+    conversation_id = await store.create_conversation(title="Redacted failure")
+    run = await store.create_run(
+        conversation_id=conversation_id,
+        goal="失败也不能落密钥",
+        budget_tokens=1_000,
+        budget_calls=10,
+        budget_wall_ms=30_000,
+    )
+    lease = await store.acquire_invocation(
+        run_id=run.id,
+        plan_step_id=uuid4(),
+        tool_name="remote_write",
+        args={"document": "safe"},
+        worker_id="worker-a",
+        lease_s=30,
+    )
+    await store.fail_invocation(
+        key=lease.idempotency_key,
+        worker_id="worker-a",
+        error="Authorization: Bearer secret-value-123456789",
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        result = connection.execute(
+            "SELECT result FROM tool_invocations WHERE idempotency_key = ?",
+            (lease.idempotency_key,),
+        ).fetchone()[0]
+    assert "secret-value" not in result
+    assert "<redacted>" in result
+
+
 async def test_jsonl_store_fsyncs_and_ignores_duplicate_or_broken_tail(tmp_path: Path) -> None:
     store = JsonlConversationStore(tmp_path / "conversations")
     await store.initialize()
@@ -497,6 +1037,70 @@ async def test_jsonl_store_fsyncs_and_ignores_duplicate_or_broken_tail(tmp_path:
     recovered = await store.read(conversation_id)
     assert recovered == [message]
     assert path.stat().st_mode & 0o777 == 0o600
+
+
+async def test_jsonl_store_rejects_corrupt_middle_line(tmp_path: Path) -> None:
+    store = JsonlConversationStore(tmp_path / "conversations")
+    await store.initialize()
+    conversation_id = uuid4()
+    first = JsonlMessage.create(
+        conversation_id=conversation_id, seq=1, role="user", content="first"
+    )
+    second = JsonlMessage.create(
+        conversation_id=conversation_id, seq=2, role="assistant", content="second"
+    )
+    await store.append(first)
+    path = tmp_path / "conversations" / f"{conversation_id}.jsonl"
+    with path.open("ab") as stream:
+        stream.write(b'{"broken":\n')
+    await store.append(second)
+
+    with pytest.raises(JsonlConversationCorruptionError) as caught:
+        await store.read(conversation_id)
+
+    assert caught.value.line_no == 2
+    assert caught.value.reason == "invalid_json"
+
+
+async def test_jsonl_store_rejects_complete_line_with_invalid_shape(tmp_path: Path) -> None:
+    store = JsonlConversationStore(tmp_path / "conversations")
+    await store.initialize()
+    conversation_id = uuid4()
+    path = tmp_path / "conversations" / f"{conversation_id}.jsonl"
+    path.write_bytes(b"{}\n")
+
+    with pytest.raises(JsonlConversationCorruptionError) as caught:
+        await store.read(conversation_id)
+
+    assert caught.value.reason == "invalid_record_shape"
+
+
+async def test_jsonl_store_rejects_invalid_closed_fields_instead_of_coercing_them(
+    tmp_path: Path,
+) -> None:
+    store = JsonlConversationStore(tmp_path / "conversations")
+    await store.initialize()
+    conversation_id = uuid4()
+    path = tmp_path / "conversations" / f"{conversation_id}.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "record_id": str(uuid4()),
+                "conversation_id": str(conversation_id),
+                "seq": 1,
+                "role": "renamed-role",
+                "content": {"silently": "coerced-before"},
+                "created_at": "2026-08-29T00:00:00+00:00",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(JsonlConversationCorruptionError) as caught:
+        await store.read(conversation_id)
+
+    assert caught.value.reason == "invalid_record_shape"
 
 
 async def test_sqlite_conversation_archive_filters_and_restores(tmp_path: Path) -> None:
@@ -645,6 +1249,11 @@ async def test_sqlite_store_matches_postgres_memory_semantics(tmp_path: Path) ->
     other_workspace = tmp_path / "other"
     workspace.mkdir()
     other_workspace.mkdir()
+    policy_snapshot = MemoryPolicySnapshot(
+        owner_revision=0,
+        conversation_id=None,
+        conversation_revision=None,
+    )
 
     first, replaced = await store.remember_cowork_memory(
         scope="global",
@@ -653,6 +1262,7 @@ async def test_sqlite_store_matches_postgres_memory_semantics(tmp_path: Path) ->
         key="report-format",
         content="用户偏好 PDF",
         source="agent",
+        policy_snapshot=policy_snapshot,
     )
     assert replaced is None
     second, previous = await store.remember_cowork_memory(
@@ -662,9 +1272,13 @@ async def test_sqlite_store_matches_postgres_memory_semantics(tmp_path: Path) ->
         key="report-format",
         content="用户偏好 Markdown",
         source="agent",
+        policy_snapshot=policy_snapshot,
     )
-    assert second.id == first.id
+    assert second.id != first.id
     assert previous is not None and previous.content == "用户偏好 PDF"
+    historical = await store.get_cowork_memory(memory_id=first.id)
+    assert historical is not None and historical.superseded_by == second.id
+    assert historical.invalid_at is not None
 
     for scope, conversation, path, content in (
         ("conversation", mine, None, "本会话笔记"),
@@ -679,6 +1293,7 @@ async def test_sqlite_store_matches_postgres_memory_semantics(tmp_path: Path) ->
             key=None,
             content=content,
             source="agent",
+            policy_snapshot=policy_snapshot,
         )
 
     visible = await store.list_cowork_memories(
@@ -687,7 +1302,7 @@ async def test_sqlite_store_matches_postgres_memory_semantics(tmp_path: Path) ->
         include_forgotten=False,
         limit=100,
     )
-    assert {item.content for item in visible} == {
+    assert {item.content for item in visible if item.active} == {
         "用户偏好 Markdown",
         "本会话笔记",
         "本目录约定",
@@ -701,7 +1316,13 @@ async def test_sqlite_store_matches_postgres_memory_semantics(tmp_path: Path) ->
     )
     assert second.id not in {item.id for item in active}
 
-    restored, _ = await store.update_cowork_memory(memory_id=second.id, content=None, restore=True)
+    restored, _ = await store.update_cowork_memory(
+        memory_id=second.id,
+        content=None,
+        restore=True,
+        source="user",
+        policy_snapshot=policy_snapshot,
+    )
     assert restored.forgotten_at is None
     assert (await store.get_cowork_memory(memory_id=second.id)).content == "用户偏好 Markdown"
 
@@ -903,10 +1524,14 @@ async def test_failed_checkpoint_internal_messages_do_not_pollute_the_next_run(
         )
         next_state = await initialize_cowork_state(session, run_id=second.id, registry=registry)
 
-        assert next_state["messages"] == [
-            {"role": "user", "content": "hello"},
-            {"role": "user", "content": "你好"},
+        assert [
+            (item["role"], item["content"], item.get("source"))
+            for item in next_state["messages"]
+        ] == [
+            ("user", "hello", None),
+            ("user", "你好", "unknown"),
         ]
+        assert isinstance(next_state["messages"][0].get("created_at"), str)
     finally:
         await close_local_cowork_stores()
 
@@ -985,6 +1610,17 @@ async def test_sqlite_store_upgrades_memory_indexes_after_adding_validity_column
     path.parent.mkdir(parents=True)
     with sqlite3.connect(path) as connection:
         connection.execute(
+            """CREATE TABLE cowork_teams (
+                id TEXT PRIMARY KEY,
+                lead_conversation_id TEXT NOT NULL UNIQUE,
+                proposal_call_id TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'active',
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+        )
+        connection.execute(
             """CREATE TABLE cowork_memories (
                 id TEXT PRIMARY KEY,
                 scope TEXT NOT NULL,
@@ -1061,6 +1697,14 @@ async def test_sqlite_store_upgrades_legacy_board_retry_and_completion_fields(
     with sqlite3.connect(path) as connection:
         connection.row_factory = sqlite3.Row
         columns = {row[1] for row in connection.execute("PRAGMA table_info(cowork_board_tasks)")}
+        team_columns = {row[1] for row in connection.execute("PRAGMA table_info(cowork_teams)")}
+        event_tables = {
+            row[0]
+            for row in connection.execute(
+                """SELECT name FROM sqlite_master
+                   WHERE type = 'table' AND name LIKE 'cowork_team_event%'"""
+            )
+        }
         rows = {
             row["id"]: dict(row)
             for row in connection.execute(
@@ -1075,8 +1719,24 @@ async def test_sqlite_store_upgrades_legacy_board_retry_and_completion_fields(
         "completion_kind",
         "last_rejection_comment",
         "last_error",
+        "scope_receipt",
     } <= columns
+    assert {"write_delegation_scope", "write_delegation_receipt"} <= team_columns
+    assert {
+        "cowork_team_events",
+        "cowork_team_event_heads",
+        "cowork_team_event_cursors",
+        "cowork_team_event_projection_summaries",
+    } <= event_tables
     assert rows["open-task"]["attempt_count"] == 1
     assert rows["open-task"]["last_rejection_comment"] == "补齐证据"
     assert rows["done-task"]["completion_kind"] == "complete"
-    assert version == 14
+    assert version == 26
+
+
+async def test_sqlite_cowork_store_passes_session_tree_conformance(tmp_path: Path) -> None:
+    store = SqliteCoworkStore(tmp_path / "conformance" / "cowork.db")
+
+    await assert_cowork_store_conforms(store)
+
+    await store.close()

@@ -3,7 +3,7 @@ from typing import Annotated
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 
 from app.api.dependencies import (
@@ -22,6 +22,7 @@ from app.cowork.conversation_titles import fallback_conversation_title, is_place
 from app.cowork.extensions import register_skill_tools
 from app.cowork.interactions import (
     cancel_pending_interaction,
+    enqueue_queued_message,
     enqueue_steering,
     get_pending_inbox_item,
     resolve_inbox_item,
@@ -33,7 +34,6 @@ from app.cowork.permissions import (
     ensure_default_session_root,
     list_session_roots,
 )
-from app.cowork.personas import load_persona_catalog
 from app.cowork.runtime import initialize_cowork_state, resume_cowork_after_human
 from app.cowork.tools import build_default_cowork_registry
 from app.cowork_store.routing import cowork_store, local_run_guard
@@ -59,6 +59,8 @@ from app.runstore.runs import (
 )
 from app.schemas.runs import (
     CoworkInteractionResponseRequest,
+    CoworkQueuedMessageRequest,
+    CoworkQueuedMessageResponse,
     CoworkSteeringRequest,
     CreateCoworkRunRequest,
     CreateRunResponse,
@@ -156,6 +158,7 @@ async def steer_cowork_run(
         run_id=run_id,
         conversation_id=run.conversation_id,
         content=request.message,
+        source="local_owner",
     )
     trace_id = str(structlog.contextvars.get_contextvars().get("trace_id") or "local")
     await append_message(
@@ -185,6 +188,99 @@ async def steer_cowork_run(
     )
     assert refreshed is not None
     return _run_status_response(refreshed)
+
+
+@router.post(
+    "/{run_id}/queued-messages",
+    response_model=CoworkQueuedMessageResponse,
+    status_code=202,
+)
+async def queue_cowork_message(
+    run_id: UUID,
+    request: CoworkQueuedMessageRequest,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    bus: Annotated[RunBus, Depends(get_run_bus)],
+    _: Annotated[None, Depends(require_owner_identity)],
+) -> CoworkQueuedMessageResponse:
+    run = await get_run_for_identity(session, run_id=run_id)
+    if run is None or run.workflow_type != "cowork":
+        raise HTTPException(status_code=404, detail="Cowork run 不存在")
+    try:
+        item = await enqueue_queued_message(
+            session,
+            run_id=run_id,
+            conversation_id=run.conversation_id,
+            content=request.message,
+            source="local_owner",
+            delivery=request.delivery,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if item.delivery in {"steer", "follow_up"}:
+        trace_id = str(structlog.contextvars.get_contextvars().get("trace_id") or "local")
+        await append_message(
+            session,
+            conversation_id=run.conversation_id,
+            role="user",
+            content=item.content,
+            status="completed",
+            run_id=run_id,
+            trace_id=trace_id,
+        )
+    await append_events(
+        session,
+        run_id=run_id,
+        events=[
+            (
+                "queue.message.queued",
+                {
+                    "message_id": str(item.id),
+                    "message": item.content,
+                    "requested_delivery": item.requested_delivery,
+                    "delivery": item.delivery,
+                    "status": item.status,
+                },
+            )
+        ],
+    )
+    await session.commit()
+    await bus.publish(run_id)
+    return CoworkQueuedMessageResponse(
+        message_id=item.id,
+        run_id=item.run_id,
+        conversation_id=item.conversation_id,
+        message=item.content,
+        requested_delivery=item.requested_delivery,
+        delivery=item.delivery,
+        status=item.status,
+    )
+
+
+@router.delete("/{run_id}/queued-messages/{message_id}", status_code=204)
+async def cancel_cowork_queued_message(
+    run_id: UUID,
+    message_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    bus: Annotated[RunBus, Depends(get_run_bus)],
+    _: Annotated[None, Depends(require_owner_identity)],
+) -> Response:
+    run = await get_run_for_identity(session, run_id=run_id)
+    if run is None or run.workflow_type != "cowork":
+        raise HTTPException(status_code=404, detail="Cowork run 不存在")
+    cancelled = await cowork_store().cancel_queued_message(
+        message_id=message_id,
+        conversation_id=run.conversation_id,
+    )
+    if not cancelled:
+        raise HTTPException(status_code=409, detail="排队消息不存在或已经领取")
+    await append_events(
+        session,
+        run_id=run_id,
+        events=[("queue.message.cancelled", {"message_id": str(message_id)})],
+    )
+    await session.commit()
+    await bus.publish(run_id)
+    return Response(status_code=204)
 
 
 @router.post(
@@ -354,18 +450,15 @@ async def create_cowork_run(
     try:
         registry = build_default_cowork_registry()
         session_roots = await list_session_roots(session, conversation_id=conversation_id)
+        muted_skill_names = await cowork_store().list_conversation_skill_mutes(
+            conversation_id=conversation_id
+        )
         register_skill_tools(
             registry,
             settings,
             project_roots=tuple(Path(item.canonical_path) for item in session_roots),
+            muted_skill_names=muted_skill_names,
         )
-        conversation = await get_conversation(session, conversation_id=conversation_id)
-        if conversation is None:  # pragma: no cover - ensure_conversation 已校验
-            raise LookupError("Cowork 会话不存在")
-        persona = load_persona_catalog(
-            settings,
-            project_roots=tuple(Path(item.canonical_path) for item in session_roots),
-        ).get(conversation.persona_name)
         await initialize_cowork_state(
             session,
             run_id=run.id,
@@ -389,7 +482,10 @@ async def create_cowork_run(
                 conversation_id=conversation_id,
             ),
             settings=settings,
-            persona=persona,
+            muted_skill_names=muted_skill_names,
+            # This route is protected by require_owner_identity; unlike messaging or
+            # schedules, the current goal is text personally entered by the local owner.
+            semantic_review_user_text_source="local_owner",
         )
         refreshed_run = await get_run(session, run.id)
         if refreshed_run is None or refreshed_run.status != "queued":  # pragma: no cover

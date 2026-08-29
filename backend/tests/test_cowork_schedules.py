@@ -1,12 +1,14 @@
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import httpx
 import pytest
 from uuid6 import uuid7
 
+from app.agent_core.budget import CompletionClient
 from app.api.dependencies import (
     get_run_bus,
     get_run_queue_dependency,
@@ -16,8 +18,11 @@ from app.core.config import Settings, get_settings
 from app.core.db import DbSession as AsyncSession
 from app.core.db import get_db_session
 from app.core.run_bus import InMemoryRunBus
+from app.cowork.approvals import list_approval_rules
+from app.cowork.automation_tools import register_scheduler_tools
 from app.cowork.interactions import create_inbox_item, list_unattended_inbox
 from app.cowork.permissions import create_session_root
+from app.cowork.provider_profiles import create_provider_profile
 from app.cowork.schedules import (
     ScheduleError,
     compute_next_run,
@@ -27,9 +32,12 @@ from app.cowork.schedules import (
     list_dispatchable_scheduled_runs,
     update_schedule,
 )
+from app.cowork.tools import CoworkToolContext, CoworkToolRegistry
 from app.main import create_app
 from app.runstore.checkpoints import ensure_plan
+from app.runstore.conversations import get_conversation
 from app.runstore.runs import create_run, ensure_conversation, get_run
+from app.security.secret_store import LocalSecretStore
 
 pytestmark = pytest.mark.integration
 
@@ -73,6 +81,16 @@ def test_compute_next_run_supports_timezone_and_rejects_invalid_cron() -> None:
             timezone="Asia/Shanghai",
             after=base,
         )
+
+
+def test_schedule_mutations_are_persistent_authority_with_a_human_only_floor() -> None:
+    registry = CoworkToolRegistry()
+    register_scheduler_tools(registry)
+
+    for name in ("create_schedule", "manage_schedule"):
+        spec = registry.get(name)
+        assert spec.approval_required is True
+        assert spec.approval_can_be_waived is False
 
 
 async def test_due_schedule_creates_unattended_run_and_global_inbox(
@@ -140,6 +158,53 @@ async def test_due_schedule_creates_unattended_run_and_global_inbox(
     assert item.unattended is True
     assert records[0].item.id == item.id
     assert records[0].schedule_title == "晨报"
+
+
+async def test_schedule_tool_persists_standing_rules_with_schedule_scope(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await _owner_workspace(db_session, tmp_path)
+    registry = CoworkToolRegistry()
+    register_scheduler_tools(registry)
+    spec = registry.get("create_schedule")
+    assert spec.handler is not None
+    arguments = spec.args_model.model_validate(
+        {
+            "title": "带委派的计划",
+            "goal": "运行测试",
+            "schedule_kind": "once",
+            "run_at": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+            "timezone": "UTC",
+            "standing_approvals": [
+                {
+                    "tool": "run_shell",
+                    "argv_pattern": ["pytest", "-q"],
+                    "cwd": str(tmp_path),
+                }
+            ],
+        }
+    )
+    result = await spec.handler(
+        CoworkToolContext(
+            session=db_session,
+            gateway=cast("CompletionClient", object()),
+            settings=Settings(app_env="test"),
+            conversation_id=conversation_id,
+            run_id=uuid7(),
+            worker_id="schedule-test",
+            plan_step_id=uuid7(),
+            tool_call_id="create-schedule",
+        ),
+        arguments,
+    )
+
+    schedule_id = UUID(str(result.output["schedule"]["id"]))
+    rules = await list_approval_rules(db_session, conversation_id=conversation_id)
+    assert len(rules) == 1
+    assert rules[0].scope == "schedule"
+    assert rules[0].schedule_id == schedule_id
+    assert rules[0].created_by == "schedule"
 
 
 async def test_due_schedule_skips_when_conversation_has_active_run(
@@ -230,8 +295,23 @@ async def test_automation_api_creates_lists_and_runs_unattended(
     queue = RecordingQueue()
     bus = InMemoryRunBus()
     settings = Settings(
+        cowork_data_path=tmp_path / "provider-state",
         cowork_skills_path=tmp_path / "missing-skills",
         cowork_default_workspace_path=tmp_path / "default-workspace",
+        secret_store_key_path=tmp_path / "keys" / "master.key",
+        tier_main_model="qwen3.6-35b-a3b",
+    )
+    qwen = create_provider_profile(
+        settings,
+        name="Qwen 35B",
+        provider="qwen",
+        base_url="http://127.0.0.1:8102/v1",
+        default_model="qwen3.6-35b-a3b",
+        api_key="EMPTY",
+        context_window_tokens=102_400,
+        enabled=True,
+        metadata={},
+        secret_store=LocalSecretStore(settings.secret_store_key_path),
     )
 
     async def override_session() -> AsyncIterator[AsyncSession]:
@@ -261,6 +341,11 @@ async def test_automation_api_creates_lists_and_runs_unattended(
         started = await client.post(f"/api/v1/automations/{created.json()['id']}/run")
         inbox = await client.get("/api/v1/automations/inbox/items")
 
+    bound_conversation = await get_conversation(
+        db_session,
+        conversation_id=conversation_id,
+    )
+
     assert created.status_code == 201
     assert listed.status_code == 200
     assert listed.json()["total"] == 1
@@ -270,6 +355,9 @@ async def test_automation_api_creates_lists_and_runs_unattended(
     assert queue.run_ids == [UUID(started.json()["run_id"])]
     assert inbox.status_code == 200
     assert inbox.json() == {"items": [], "total": 0}
+    assert bound_conversation is not None
+    assert bound_conversation.provider_profile_id == qwen.id
+    assert bound_conversation.model_override == "qwen3.6-35b-a3b"
 
 
 async def test_automation_api_accepts_default_permissions_or_optional_workspace(

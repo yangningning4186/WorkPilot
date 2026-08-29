@@ -15,11 +15,14 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from pathlib import Path
 from re import findall, sub
 from typing import Any, Literal, cast
 
 import yaml
+
+from workpilot_ai.model_catalog import ModelCatalog, ModelCatalogError, load_model_catalog
 
 Tier = Literal["light", "main", "heavy", "external"]
 TIERS: tuple[Tier, ...] = ("light", "main", "heavy", "external")
@@ -53,6 +56,11 @@ class EndpointSpec:
     enable_thinking: bool | None
     timeout_s: float
     context_window_tokens: int
+    max_output_tokens: int | None
+    thinking_levels: tuple[str, ...]
+    input_usd_per_mtok: Decimal | None
+    output_usd_per_mtok: Decimal | None
+    metadata_source: str | None
 
     @property
     def available(self) -> bool:
@@ -218,38 +226,63 @@ def _endpoint(
     *,
     default_timeout_s: float,
     default_context_window_tokens: int,
+    model_catalog: ModelCatalog,
 ) -> EndpointSpec:
     where = f"config/routing.yaml tiers.{tier}.primary"
     if not isinstance(raw, dict):
         raise RoutingConfigError(f"{where} 必须是一个映射，实际是 {type(raw).__name__}")
+    provider = _expand(raw.get("provider", "openai_compatible"), env, where=where)
+    model = _expand(raw.get("model"), env, where=where)
+    metadata = model_catalog.get(provider, model) if model else None
     thinking = _tristate(raw.get("enable_thinking"), env, where=f"{where}.enable_thinking")
     timeout = raw.get("timeout_s", default_timeout_s)
     if not isinstance(timeout, int | float) or timeout <= 0:
         raise RoutingConfigError(f"{where}.timeout_s 必须是正数，实际是 {timeout!r}")
+    context_raw = raw.get("context_window_tokens", default_context_window_tokens)
     context_window_raw = _expand(
-        raw.get("context_window_tokens", default_context_window_tokens),
+        context_raw,
         env,
         where=f"{where}.context_window_tokens",
     ).strip()
-    try:
-        context_window_tokens = int(context_window_raw)
-    except ValueError as error:
-        raise RoutingConfigError(
-            f"{where}.context_window_tokens 必须是正整数，实际是 {context_window_raw!r}"
-        ) from error
+    if context_window_raw.casefold() == "auto":
+        if metadata is None:
+            raise RoutingConfigError(
+                f"{where}.context_window_tokens=auto，但模型目录里没有 {provider}/{model}；"
+                "先刷新 config/model-catalog.json，或为私有模型显式填写窗口。"
+            )
+        context_window_tokens = metadata.context_window_tokens
+    else:
+        try:
+            context_window_tokens = int(context_window_raw)
+        except ValueError as error:
+            raise RoutingConfigError(
+                f"{where}.context_window_tokens 必须是正整数或 auto，实际是 "
+                f"{context_window_raw!r}"
+            ) from error
+        if metadata is not None and context_window_tokens != metadata.context_window_tokens:
+            raise RoutingConfigError(
+                f"{where}.context_window_tokens={context_window_tokens} 与模型目录 "
+                f"{provider}/{model}={metadata.context_window_tokens} 不一致；使用 auto，"
+                "或先刷新目录后再显式覆盖。"
+            )
     if context_window_tokens < 1024:
         raise RoutingConfigError(
             f"{where}.context_window_tokens 不能小于 1024，实际是 {context_window_tokens}"
         )
     return EndpointSpec(
         tier=tier,
-        provider=_expand(raw.get("provider", "openai_compatible"), env, where=where),
+        provider=provider,
         base_url=_expand(raw.get("base_url"), env, where=where).rstrip("/"),
         api_key=_expand(raw.get("api_key"), env, where=where),
-        model=_expand(raw.get("model"), env, where=where),
+        model=model,
         enable_thinking=thinking,
         timeout_s=float(timeout),
         context_window_tokens=context_window_tokens,
+        max_output_tokens=None if metadata is None else metadata.max_output_tokens,
+        thinking_levels=() if metadata is None else metadata.thinking_levels,
+        input_usd_per_mtok=None if metadata is None else metadata.input_usd_per_mtok,
+        output_usd_per_mtok=None if metadata is None else metadata.output_usd_per_mtok,
+        metadata_source=None if metadata is None else metadata.source,
     )
 
 
@@ -271,7 +304,12 @@ def _positive_float(raw: object, env: Mapping[str, str], *, where: str) -> float
     return value
 
 
-def parse_routing_table(document: object, env: Mapping[str, str]) -> RoutingTable:
+def parse_routing_table(
+    document: object,
+    env: Mapping[str, str],
+    *,
+    model_catalog: ModelCatalog | None = None,
+) -> RoutingTable:
     if not isinstance(document, dict):
         raise RoutingConfigError("config/routing.yaml 顶层必须是一个映射")
     version = document.get("version")
@@ -296,6 +334,7 @@ def parse_routing_table(document: object, env: Mapping[str, str]) -> RoutingTabl
         raise RoutingConfigError("config/routing.yaml 必须声明至少一个 tiers 条目")
 
     tiers: dict[Tier, TierSpec] = {}
+    catalog = model_catalog or ModelCatalog()
     for raw_name, raw_spec in raw_tiers.items():
         name = _tier_name(raw_name, where="tiers")
         if not isinstance(raw_spec, dict):
@@ -316,6 +355,7 @@ def parse_routing_table(document: object, env: Mapping[str, str]) -> RoutingTabl
                 env,
                 default_timeout_s=float(default_timeout),
                 default_context_window_tokens=default_context_window,
+                model_catalog=catalog,
             ),
             fallback=fallback,
         )
@@ -414,4 +454,16 @@ def load_routing_table(path: Path, env: Mapping[str, str]) -> RoutingTable:
         document: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as error:
         raise RoutingConfigError(f"路由表 {path} 不是合法 YAML：{error}") from error
-    return parse_routing_table(document, env)
+    catalog = ModelCatalog()
+    if isinstance(document, dict) and document.get("model_catalog") is not None:
+        raw_catalog_path = document["model_catalog"]
+        if not isinstance(raw_catalog_path, str) or not raw_catalog_path.strip():
+            raise RoutingConfigError("model_catalog 必须是非空路径")
+        catalog_path = Path(raw_catalog_path)
+        if not catalog_path.is_absolute():
+            catalog_path = path.parent / catalog_path
+        try:
+            catalog = load_model_catalog(catalog_path)
+        except ModelCatalogError as error:
+            raise RoutingConfigError(str(error)) from error
+    return parse_routing_table(document, env, model_catalog=catalog)

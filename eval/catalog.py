@@ -21,6 +21,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from eval.deterministic_contract import (
+    SCHEMA_VERSION as DETERMINISTIC_CONTRACT_SCHEMA,
+)
+from eval.deterministic_contract import (
+    DeterministicContractError,
+)
+from eval.deterministic_contract import (
+    validate_contract as validate_deterministic_contract,
+)
+
 CATALOG_SCHEMA_VERSION = "workpilot-eval-catalog.v1"
 POLICY_SCHEMA_VERSION = "workpilot-regression-policy.v1"
 BASELINE_SCHEMA_VERSION = "workpilot-regression-baseline.v1"
@@ -41,7 +51,7 @@ _TRACK_KINDS = frozenset({"cowork", "retrieval", "generation"})
 _BASELINE_STATUSES = frozenset({"ready", "rebuild_required"})
 
 Severity = Literal["error", "warning"]
-ResourceType = Literal["track", "replay"]
+ResourceType = Literal["track", "contract", "replay"]
 ResourceHealth = Literal["ready", "warning", "invalid"]
 
 
@@ -1051,6 +1061,195 @@ def _validate_replay(
     return resource_id, "offline event replay bundle declared"
 
 
+def _validate_contract_suite(
+    raw: object,
+    *,
+    index: int,
+    repo_root: Path,
+    issues: list[CatalogIssue],
+) -> tuple[str, str]:
+    """验证无模型、无外部 I/O 的候选 contract；它不冒充已晋升 baseline。"""
+
+    fallback = f"<contract-{index}>"
+    if not isinstance(raw, Mapping):
+        issues.append(CatalogIssue("error", "contract_not_object", "contract 必须是对象", fallback))
+        return fallback, "invalid contract entry"
+    resource_id, id_issue = _resource_id(raw.get("id"), fallback=fallback)
+    if id_issue is not None:
+        issues.append(id_issue)
+    kind = raw.get("kind")
+    if kind not in {"cowork_deterministic", "pytest_deterministic"}:
+        issues.append(
+            CatalogIssue(
+                "error",
+                "contract_kind_invalid",
+                "contract kind 必须是 cowork_deterministic 或 pytest_deterministic",
+                resource_id,
+            )
+        )
+    if raw.get("mode") != "pytest_no_model_io":
+        issues.append(
+            CatalogIssue(
+                "error",
+                "contract_mode_invalid",
+                "contract mode 必须是 pytest_no_model_io",
+                resource_id,
+            )
+        )
+    declared_count = raw.get("case_count")
+    if (
+        isinstance(declared_count, bool)
+        or not isinstance(declared_count, int)
+        or declared_count < 1
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "contract_case_count_invalid",
+                "contract.case_count 必须是正整数",
+                resource_id,
+            )
+        )
+    suite = _resolve_json(
+        raw.get("suite"),
+        field="contract.suite",
+        resource_id=resource_id,
+        repo_root=repo_root,
+        issues=issues,
+    )
+    if suite is None:
+        return resource_id, "contract suite unavailable"
+    if not isinstance(suite.payload, Mapping):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "contract_suite_invalid",
+                "contract suite 根节点必须是对象",
+                resource_id,
+            )
+        )
+        return resource_id, "contract suite invalid"
+
+    if suite.payload.get("schema_version") == DETERMINISTIC_CONTRACT_SCHEMA:
+        if kind != "pytest_deterministic":
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "contract_kind_invalid",
+                    "通用确定性 contract 必须使用 pytest_deterministic",
+                    resource_id,
+                )
+            )
+        try:
+            summary = validate_deterministic_contract(suite.payload, repo_root=repo_root)
+        except DeterministicContractError as error:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "contract_suite_invalid",
+                    str(error),
+                    resource_id,
+                )
+            )
+            return resource_id, "contract suite invalid"
+        if (
+            summary["id"] != resource_id
+            or summary["mode"] != raw.get("mode")
+            or summary["case_count"] != declared_count
+        ):
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "contract_suite_mismatch",
+                    "catalog contract 声明与通用 deterministic contract 不一致",
+                    resource_id,
+                )
+            )
+            return resource_id, "contract suite invalid"
+        return resource_id, "zero-model deterministic contract declared"
+
+    if kind != "cowork_deterministic":
+        issues.append(
+            CatalogIssue(
+                "error",
+                "contract_kind_invalid",
+                "Cowork suite 内嵌 contract 必须使用 cowork_deterministic",
+                resource_id,
+            )
+        )
+    contract = suite.payload.get("deterministic_contract")
+    cases = contract.get("cases") if isinstance(contract, Mapping) else None
+    if (
+        not isinstance(contract, Mapping)
+        or contract.get("schema_version") != "agent-team-contract.v1"
+        or contract.get("mode") != raw.get("mode")
+        or contract.get("case_count") != declared_count
+        or not isinstance(cases, list)
+        or len(cases) != declared_count
+    ):
+        issues.append(
+            CatalogIssue(
+                "error",
+                "contract_suite_mismatch",
+                "catalog contract 声明与 suite deterministic_contract 不一致",
+                resource_id,
+            )
+        )
+        return resource_id, "contract suite invalid"
+    assert isinstance(cases, list)
+    root = repo_root.resolve()
+    for case in cases:
+        target = case.get("test") if isinstance(case, Mapping) else None
+        if not isinstance(target, str) or "::" not in target:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "contract_target_invalid",
+                    "deterministic contract case 缺 pytest target",
+                    resource_id,
+                )
+            )
+            continue
+        relative, test_name = target.split("::", 1)
+        path = (root / relative).resolve()
+        if (
+            not path.is_relative_to(root)
+            or not path.is_file()
+            or re.fullmatch(r"test_[a-zA-Z0-9_]+", test_name) is None
+        ):
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "contract_target_invalid",
+                    f"pytest target 不存在或逃出仓库: {target}",
+                    resource_id,
+                )
+            )
+            continue
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError as error:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "contract_target_invalid",
+                    f"pytest target 不可读: {error}",
+                    resource_id,
+                )
+            )
+            continue
+        if re.search(rf"(?:async\s+)?def\s+{re.escape(test_name)}\s*\(", source) is None:
+            issues.append(
+                CatalogIssue(
+                    "error",
+                    "contract_target_invalid",
+                    f"pytest target 函数不存在: {target}",
+                    resource_id,
+                )
+            )
+    return resource_id, "candidate suite deterministic contract declared"
+
+
 def _validate_full_chain_cassette(
     bundle: Mapping[str, object],
     *,
@@ -1217,6 +1416,21 @@ def doctor_catalog(
         )
         resources.append(("track", resource_id, detail))
 
+    contract_suites = payload.get("contract_suites", [])
+    if not isinstance(contract_suites, list):
+        issues.append(
+            CatalogIssue("error", "contract_suites_invalid", "contract_suites 必须是数组")
+        )
+        contract_suites = []
+    for index, raw_contract in enumerate(contract_suites):
+        resource_id, detail = _validate_contract_suite(
+            raw_contract,
+            index=index,
+            repo_root=repo_root,
+            issues=issues,
+        )
+        resources.append(("contract", resource_id, detail))
+
     replay_suites = payload.get("replay_suites")
     if not isinstance(replay_suites, list) or not replay_suites:
         issues.append(
@@ -1239,7 +1453,7 @@ def doctor_catalog(
                 CatalogIssue(
                     "error",
                     "resource_id_duplicate",
-                    f"track 与 replay 的 id 必须全局唯一: {resource_id}",
+                    f"track、contract 与 replay 的 id 必须全局唯一: {resource_id}",
                     resource_id,
                 )
             )

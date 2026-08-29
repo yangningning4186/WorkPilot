@@ -4,19 +4,41 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any, Protocol, cast
 
-from jsonschema import Draft202012Validator
-from jsonschema.exceptions import SchemaError
-from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import BaseModel, ValidationError
 
+from app.agent_core.json_schema import (
+    BoundedJsonSchemaError,
+    BoundedJsonSchemaValidator,
+    BoundedJsonValueError,
+    compile_bounded_json_schema,
+)
 from workpilot_ai.types import ToolDefinition
 
 
 class ToolRegistryError(RuntimeError):
     """工具注册或调用契约不合法。"""
+
+
+class MissingIdentitiesError(ToolRegistryError):
+    """A resumed run references tools/models that are no longer installed."""
+
+    def __init__(
+        self,
+        *,
+        tools: Iterable[str] = (),
+        models: Iterable[str] = (),
+    ) -> None:
+        self.tools = tuple(sorted(set(tools)))
+        self.models = tuple(sorted(set(models)))
+        parts = []
+        if self.tools:
+            parts.append(f"tools={list(self.tools)}")
+        if self.models:
+            parts.append(f"models={list(self.models)}")
+        super().__init__("恢复所需身份已缺失：" + ", ".join(parts or ["unknown"]))
 
 
 class RegistryToolSpec(Protocol):
@@ -56,6 +78,18 @@ class RegistryToolSpec(Protocol):
     @property
     def search_aliases(self) -> tuple[str, ...]: ...
 
+    @property
+    def prepare_arguments(self) -> Callable[[dict[str, Any]], dict[str, Any]] | None: ...
+
+    @property
+    def prompt_snippet(self) -> str: ...
+
+    @property
+    def prompt_guidelines(self) -> tuple[str, ...]: ...
+
+    @property
+    def execution_mode(self) -> str: ...
+
     def resolved_input_schema(self) -> dict[str, Any]: ...
 
     def catalog_entry(self) -> dict[str, Any]: ...
@@ -74,6 +108,7 @@ class ToolRegistry[SpecT: RegistryToolSpec]:
         self._system_instructions: list[str] = []
         self._runtime_snapshot: dict[str, Any] = {}
         self._activated_tools: set[str] = set()
+        self._input_schema_validators: dict[str, BoundedJsonSchemaValidator] = {}
 
     def _error(self, message: str) -> ToolRegistryError:
         return self.error_type(message)
@@ -91,7 +126,15 @@ class ToolRegistry[SpecT: RegistryToolSpec]:
             raise ValueError("本地工具必须提供 handler")
         if spec.execution == "interaction" and spec.handler is not None:
             raise ValueError("交互工具由 runtime 挂起处理，不能提供 handler")
+        validator: BoundedJsonSchemaValidator | None = None
+        if spec.input_schema is not None:
+            try:
+                validator = compile_bounded_json_schema(spec.input_schema)
+            except BoundedJsonSchemaError:
+                raise ValueError("外部工具 input schema 不安全或不受支持") from None
         self._tools[spec.name] = spec
+        if validator is not None:
+            self._input_schema_validators[spec.name] = validator
 
     def get(self, name: str) -> SpecT:
         try:
@@ -123,20 +166,29 @@ class ToolRegistry[SpecT: RegistryToolSpec]:
     def activate_tools(self, names: Iterable[str]) -> None:
         """记录本 run 已向模型暴露的工具；集合在 registry 生命周期内只增不减。"""
 
-        self._activated_tools.update(name for name in names if name in self._tools)
+        requested = tuple(names)
+        missing = tuple(name for name in requested if name not in self._tools)
+        if missing:
+            raise MissingIdentitiesError(tools=missing)
+        self._activated_tools.update(requested)
 
     def activated_tools_from_snapshot(self, snapshot: dict[str, Any]) -> frozenset[str]:
         """读取 checkpoint 中仍由当前 registry 提供的工具，不修改 registry。"""
 
         registry_state = snapshot.get("tool_registry")
+        if registry_state is None:
+            return frozenset()
         if not isinstance(registry_state, dict):
-            return frozenset()
+            raise self._error("checkpoint tool_registry 不是对象")
         activated = registry_state.get("activated_tools")
-        if not isinstance(activated, list):
+        if activated is None:
             return frozenset()
-        return frozenset(
-            name for name in activated if isinstance(name, str) and name in self._tools
-        )
+        if not isinstance(activated, list) or any(not isinstance(name, str) for name in activated):
+            raise self._error("checkpoint activated_tools 不是字符串数组")
+        missing = tuple(name for name in activated if name not in self._tools)
+        if missing:
+            raise MissingIdentitiesError(tools=missing)
+        return frozenset(activated)
 
     def restore_runtime_snapshot(self, snapshot: dict[str, Any]) -> None:
         """从 checkpoint 恢复可继续使用、且当前 registry 仍实际注册的工具。"""
@@ -166,6 +218,8 @@ class ToolRegistry[SpecT: RegistryToolSpec]:
                 name=self._tools[name].name,
                 description=self._tools[name].description,
                 parameters=self._tools[name].resolved_input_schema(),
+                prompt_snippet=self._tools[name].prompt_snippet,
+                prompt_guidelines=self._tools[name].prompt_guidelines,
             )
             for name in sorted(self._tools)
         ]
@@ -202,7 +256,12 @@ class ToolRegistry[SpecT: RegistryToolSpec]:
             specs = [self.get(name) for name in names]
         except ToolRegistryError:
             return False
-        return all(spec.risk == "read" and spec.parallel_safe for spec in specs)
+        return all(
+            spec.risk == "read"
+            and spec.parallel_safe
+            and spec.execution_mode != "sequential"
+            for spec in specs
+        )
 
     def is_interaction(self, name: str) -> bool:
         try:
@@ -219,27 +278,55 @@ class ToolRegistry[SpecT: RegistryToolSpec]:
     def is_exclusive(self, name: str) -> bool:
         """该工具是否必须独占一批调用。
 
-        独占不等于需要审批：浏览器动作已经由会话级授权放行，但它们共享一份随页面
-        变化而重建的控件编号表，同一批里的第二个动作会拿到失效的 control_index。
+        interaction 与静态逐次审批天然独占；除此之外由 spec.exclusive 表达。例如浏览器
+        动作已经由会话级授权放行，但共享一份随页面变化而重建的控件编号表，同一批里的
+        第二个动作会拿到失效的 control_index。
         """
 
         try:
-            return self.get(name).exclusive
+            spec = self.get(name)
+            return spec.exclusive or spec.execution == "interaction" or spec.approval_required
         except ToolRegistryError:
             return False
 
     def parse_arguments(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         spec = self.get(name)
+        prepared = dict(arguments)
+        if spec.prepare_arguments is not None:
+            try:
+                prepared = spec.prepare_arguments(prepared)
+            except (TypeError, ValueError) as error:
+                raise self._error(f"工具 {name} 参数兼容转换失败：{error}") from error
+            if not isinstance(prepared, dict):
+                raise self._error(f"工具 {name} 参数兼容转换必须返回 JSON object")
         if spec.input_schema is not None:
             try:
-                Draft202012Validator.check_schema(spec.input_schema)
-                Draft202012Validator(spec.input_schema).validate(arguments)
-            except (SchemaError, JsonSchemaValidationError) as error:
-                raise self._error(f"工具 {name} 参数不符合 MCP schema：{error.message}") from error
+                self._input_schema_validators[name].validate(prepared)
+            except (KeyError, BoundedJsonValueError):
+                raise self._error(f"工具 {name} 参数不符合已固定的外部 schema") from None
         try:
-            parsed = spec.args_model.model_validate(arguments)
+            parsed = spec.args_model.model_validate(prepared)
         except ValidationError as error:
+            if spec.input_schema is not None:
+                raise self._error(f"工具 {name} 参数不符合已固定的外部 schema") from None
             raise self._error(
                 f"工具 {name} 参数不符合 schema：{error.errors(include_url=False)}"
             ) from error
         return parsed.model_dump(mode="json")
+
+
+def render_tool_prompt_instructions(tools: Iterable[ToolDefinition]) -> str:
+    """只渲染当前实际暴露工具自带的 prompt 文案。"""
+
+    sections: list[str] = []
+    for tool in tools:
+        snippet = tool.prompt_snippet.strip()
+        guidelines = [item.strip() for item in tool.prompt_guidelines if item.strip()]
+        if not snippet and not guidelines:
+            continue
+        lines = [f"[{tool.name}]", snippet] if snippet else [f"[{tool.name}]"]
+        lines.extend(f"- {item}" for item in guidelines)
+        sections.append("\n".join(lines))
+    if not sections:
+        return ""
+    return "<tool_prompt_guidance>\n" + "\n\n".join(sections) + "\n</tool_prompt_guidance>"

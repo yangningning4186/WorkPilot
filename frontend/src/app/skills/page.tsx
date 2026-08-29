@@ -11,8 +11,10 @@ import {
   promoteSkillCandidate,
   rejectSkillCandidate,
   saveSkill,
+  setSessionSkillMuted,
   setSkillEnabled,
   type ManagedSkill,
+  type SkillOrigin,
   type SkillsStatusResponse,
   type SkillCandidatesResponse,
 } from "@/lib/api";
@@ -20,6 +22,23 @@ import {
 function skillError(reason: unknown): string {
   if (reason instanceof ApiError) return `Skill 目录读取失败（${reason.status}）`;
   return "暂时无法读取本地 Skill 目录。";
+}
+
+function sessionSkillError(reason: unknown): string {
+  if (reason instanceof ApiError && reason.status === 409) {
+    return "当前会话正在执行任务，暂时不能修改 Skill。请等待本轮运行结束后再重试。";
+  }
+  if (reason instanceof ApiError && reason.status === 404) {
+    return "当前会话或 Skill 已不存在。请刷新页面后重试。";
+  }
+  if (reason instanceof ApiError) return `本会话 Skill 设置失败（${reason.status}）`;
+  return "本会话 Skill 设置暂时无法保存。";
+}
+
+function skillOriginLabel(origin: SkillOrigin): string {
+  if (origin === "project") return "项目";
+  if (origin === "user") return "已安装";
+  return "出厂";
 }
 
 export default function SkillsPage() {
@@ -31,6 +50,7 @@ export default function SkillsPage() {
   const [skillName, setSkillName] = useState("");
   const [skillMd, setSkillMd] = useState("---\nname: my-skill\ndescription: Describe when this workflow is useful\ntrigger:\n  - example task\nanti_trigger:\n  - unrelated task\ntools: []\n---\n\nWrite the procedure here.\n");
   const [busy, setBusy] = useState<string | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -44,6 +64,7 @@ export default function SkillsPage() {
       setStatus(skillStatus);
       setCandidates(candidateStatus);
       setError(null);
+      setSessionError(null);
     } catch (reason) {
       setError(skillError(reason));
     } finally {
@@ -72,6 +93,20 @@ export default function SkillsPage() {
       await reload();
     } catch (reason) {
       setError(skillError(reason));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const mutateSessionSkill = async (name: string, muted: boolean) => {
+    const conversationId = status?.conversation_id;
+    if (conversationId === null || conversationId === undefined) return;
+    setBusy(`session:${name}`);
+    setSessionError(null);
+    try {
+      setStatus(await setSessionSkillMuted(conversationId, name, muted));
+    } catch (reason) {
+      setSessionError(sessionSkillError(reason));
     } finally {
       setBusy(null);
     }
@@ -128,6 +163,88 @@ export default function SkillsPage() {
               <div className="wide"><span>出厂目录（只读）</span><code>{status.builtin_path}</code></div>
               {status.project_paths.map((path) => <div className="wide" key={path}><span>项目目录</span><code>{path}</code></div>)}
             </section>
+
+            {status.conversation_id !== null && (
+              <section className="skill-session-panel" aria-labelledby="skill-session-title">
+                <header>
+                  <div>
+                    <span>CURRENT SESSION</span>
+                    <h2 id="skill-session-title">当前会话</h2>
+                    <p>在这里静音只影响这个会话；下方的全局启用状态和其他会话都不会改变。</p>
+                  </div>
+                  <div className="skill-session-identity">
+                    <small>会话</small>
+                    <code title={status.conversation_id}>{status.conversation_id.slice(0, 8)}…</code>
+                    <strong>{status.muted_names.length} 个已静音</strong>
+                  </div>
+                </header>
+
+                {sessionError !== null && (
+                  <div className="skill-session-error" role="alert">{sessionError}</div>
+                )}
+
+                {status.available_skills.length === 0 ? (
+                  <div className="skill-session-empty">
+                    <span><WorkdeskIcon name="skill" /></span>
+                    <div><strong>当前没有可用 Skill</strong><small>先在全局目录启用或安装 Skill，再为会话单独取舍。</small></div>
+                  </div>
+                ) : (
+                  <div className="skill-session-list">
+                    {status.available_skills.map((item) => {
+                      const muted = status.muted_names.includes(item.name);
+                      const busyKey = `session:${item.name}`;
+                      return (
+                        <article className={muted ? "muted" : ""} key={`${item.origin}:${item.name}`}>
+                          <span className="skill-session-mark"><WorkdeskIcon name="skill" /></span>
+                          <div className="skill-session-copy">
+                            <div>
+                              <h3>{item.name}</h3>
+                              <small className={`skill-session-origin ${item.origin}`}>{skillOriginLabel(item.origin)}</small>
+                            </div>
+                            <p>{item.description}</p>
+                            <small>{item.tools.length > 0 ? `${item.tools.length} 个工具约束` : "纯流程 Skill"}</small>
+                          </div>
+                          <div className="skill-session-state">
+                            <span>{muted ? "本会话不加载" : "本会话可用"}</span>
+                            <button
+                              aria-label={`${muted ? "恢复" : "静音"}当前会话的 ${item.name} Skill`}
+                              aria-pressed={muted}
+                              disabled={busy !== null}
+                              onClick={() => void mutateSessionSkill(item.name, !muted)}
+                              type="button"
+                            >
+                              {busy === busyKey ? "保存中…" : muted ? "恢复使用" : "本会话静音"}
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {status.muted_names.some(
+                  (name) => !status.available_skills.some((item) => item.name === name),
+                ) && (
+                  <div className="skill-session-stale">
+                    <strong>已不在目录中的静音记录</strong>
+                    <div>
+                      {status.muted_names
+                        .filter((name) => !status.available_skills.some((item) => item.name === name))
+                        .map((name) => (
+                          <button
+                            disabled={busy !== null}
+                            key={name}
+                            onClick={() => void mutateSessionSkill(name, false)}
+                            type="button"
+                          >
+                            {busy === `session:${name}` ? "清除中…" : `清除 ${name}`}
+                          </button>
+                        ))}
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
 
             {status.skills.some((item) => item.origin === "project") && (
               <section className="integration-notice">

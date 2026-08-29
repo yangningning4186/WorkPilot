@@ -13,16 +13,22 @@ import pytest
 from app.agent_core.budget import BudgetedGateway, BudgetMeter
 from workpilot_ai.errors import (
     ProviderResponseError,
+    ProviderRetryableError,
     ProviderRouteTimeoutError,
     ProviderTimeoutError,
 )
 from workpilot_ai.gateway import ModelGateway
 from workpilot_ai.providers.anthropic import AnthropicProvider
+from workpilot_ai.providers.gemini import GeminiProvider
 from workpilot_ai.providers.openai_compatible import OpenAICompatibleProvider
 from workpilot_ai.types import (
     CompletionChunk,
     CompletionResult,
     Message,
+    TextContentBlock,
+    ThinkingContentBlock,
+    ToolCall,
+    ToolCallDelta,
     ToolDefinition,
     Usage,
 )
@@ -34,7 +40,17 @@ ASK = [Message(role="user", content="读一下 README")]
 
 
 def _sse(*events: dict[str, object]) -> str:
-    return "".join(f"data: {json.dumps(event, ensure_ascii=False)}\n\n" for event in events)
+    return (
+        "".join(f"data: {json.dumps(event, ensure_ascii=False)}\n\n" for event in events)
+        + "data: [DONE]\n\n"
+    )
+
+
+def _sse_anthropic(*events: dict[str, object]) -> str:
+    return "".join(
+        f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+        for event in events
+    )
 
 
 def _openai_provider(body: str) -> OpenAICompatibleProvider:
@@ -63,6 +79,14 @@ async def _collect(
         if chunk.result is not None:
             result = chunk.result
     return text, reasoning, result
+
+
+async def _collect_tool_deltas(stream: AsyncIterator[CompletionChunk]) -> list[ToolCallDelta]:
+    output: list[ToolCallDelta] = []
+    async for chunk in stream:
+        if chunk.tool_call_delta is not None:
+            output.append(chunk.tool_call_delta)
+    return output
 
 
 async def test_openai_stream_accumulates_tool_calls_by_index() -> None:
@@ -114,6 +138,60 @@ async def test_openai_stream_accumulates_tool_calls_by_index() -> None:
     assert [(call.id, call.name) for call in result.tool_calls] == [("call_a", "read_text_file")]
     assert json.loads(result.tool_calls[0].arguments) == {"path": "README.md"}
     assert result.usage.output_tokens == 7
+
+
+async def test_openai_stream_exposes_tool_call_fragments_before_terminal_result() -> None:
+    provider = _openai_provider(
+        _sse(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_a",
+                                    "function": {
+                                        "name": "read_text_file",
+                                        "arguments": '{"path":',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": '"README.md"}'}}
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        )
+    )
+
+    deltas: list[ToolCallDelta] = []
+    result = None
+    async for chunk in provider.stream_with_tools(
+        ASK, tools=TOOLS, parallel_tool_calls=True, max_tokens=64, temperature=0.0
+    ):
+        if chunk.tool_call_delta is not None:
+            deltas.append(chunk.tool_call_delta)
+        if chunk.result is not None:
+            result = chunk.result
+
+    assert [(item.index, item.id, item.name_delta) for item in deltas] == [
+        (0, "call_a", "read_text_file"),
+        (0, "", ""),
+    ]
+    assert "".join(item.arguments_delta for item in deltas) == '{"path":"README.md"}'
+    assert result is not None and result.tool_calls[0].name == "read_text_file"
 
 
 async def test_openai_stream_reports_reasoning_separately() -> None:
@@ -304,7 +382,11 @@ async def test_anthropic_stream_assembles_tool_use_from_input_json_delta() -> No
                 "type": "message_start",
                 "message": {"model": "claude-served", "usage": {"input_tokens": 20}},
             },
-            {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking", "thinking": ""},
+            },
             {
                 "type": "content_block_delta",
                 "index": 0,
@@ -313,21 +395,31 @@ async def test_anthropic_stream_assembles_tool_use_from_input_json_delta() -> No
             {
                 "type": "content_block_delta",
                 "index": 0,
-                "delta": {"type": "text_delta", "text": "读给你看"},
+                "delta": {"type": "signature_delta", "signature": "signed-thinking"},
             },
             {
                 "type": "content_block_start",
                 "index": 1,
+                "content_block": {"type": "text", "text": ""},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": "读给你看"},
+            },
+            {
+                "type": "content_block_start",
+                "index": 2,
                 "content_block": {"type": "tool_use", "id": "toolu_1", "name": "read_text_file"},
             },
             {
                 "type": "content_block_delta",
-                "index": 1,
+                "index": 2,
                 "delta": {"type": "input_json_delta", "partial_json": '{"path":'},
             },
             {
                 "type": "content_block_delta",
-                "index": 1,
+                "index": 2,
                 "delta": {"type": "input_json_delta", "partial_json": '"README.md"}'},
             },
             {
@@ -335,6 +427,7 @@ async def test_anthropic_stream_assembles_tool_use_from_input_json_delta() -> No
                 "delta": {"stop_reason": "tool_use"},
                 "usage": {"output_tokens": 11},
             },
+            {"type": "message_stop"},
         )
     )
 
@@ -362,6 +455,168 @@ async def test_anthropic_stream_assembles_tool_use_from_input_json_delta() -> No
     assert result is not None
     assert json.loads(result.tool_calls[0].arguments) == {"path": "README.md"}
     assert result.usage.output_tokens == 11
+    assert result.content_blocks == (
+        ThinkingContentBlock(thinking="想一下", signature="signed-thinking"),
+        TextContentBlock(text="读给你看"),
+    )
+    deltas = await _collect_tool_deltas(
+        provider.stream_with_tools(
+            ASK, tools=TOOLS, parallel_tool_calls=True, max_tokens=64, temperature=0.0
+        )
+    )
+    assert [(item.index, item.id, item.name_delta) for item in deltas] == [
+        (2, "toolu_1", "read_text_file"),
+        (2, "", ""),
+        (2, "", ""),
+    ]
+    assert "".join(item.arguments_delta for item in deltas) == '{"path":"README.md"}'
+
+
+async def test_anthropic_replays_signed_thinking_before_tool_use() -> None:
+    captured: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "model": "claude-served",
+                "content": [{"type": "text", "text": "完成"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 2},
+            },
+        )
+
+    provider = AnthropicProvider(
+        base_url="http://anthropic.test/v1",
+        api_key="secret",
+        chat_model="claude",
+        timeout_s=5.0,
+        client=httpx.AsyncClient(
+            base_url="http://anthropic.test/v1", transport=httpx.MockTransport(handler)
+        ),
+    )
+    await provider.complete_with_tools(
+        [
+            Message(role="user", content="读文件"),
+            Message(
+                role="assistant",
+                content="准备读取",
+                content_blocks=(
+                    ThinkingContentBlock(thinking="先检查路径", signature="signed-thinking"),
+                    TextContentBlock(text="准备读取"),
+                ),
+                tool_calls=(
+                    ToolCall(
+                        id="toolu_1",
+                        name="read_text_file",
+                        arguments='{"path":"README.md"}',
+                    ),
+                ),
+            ),
+            Message(role="tool", content='{"ok":true}', tool_call_id="toolu_1"),
+        ],
+        tools=TOOLS,
+        parallel_tool_calls=True,
+        max_tokens=64,
+        temperature=0.0,
+    )
+
+    messages = captured["messages"]
+    assert isinstance(messages, list)
+    assistant = messages[1]
+    assert isinstance(assistant, dict)
+    assert assistant["content"] == [
+        {"type": "thinking", "thinking": "先检查路径", "signature": "signed-thinking"},
+        {"type": "text", "text": "准备读取"},
+        {
+            "type": "tool_use",
+            "id": "toolu_1",
+            "name": "read_text_file",
+            "input": {"path": "README.md"},
+        },
+    ]
+
+
+async def test_openai_stream_rejects_clean_eof_before_done() -> None:
+    provider = _openai_provider(
+        'data: {"choices":[{"delta":{"content":"half"},"finish_reason":"stop"}]}\n\n'
+    )
+
+    with pytest.raises(ProviderRetryableError, match=r"before \[DONE\]"):
+        await _collect(
+            provider.stream_with_tools(
+                ASK, tools=TOOLS, parallel_tool_calls=True, max_tokens=64, temperature=0.0
+            )
+        )
+
+
+async def test_openai_plain_stream_rejects_clean_eof_before_done() -> None:
+    provider = _openai_provider(
+        'data: {"choices":[{"delta":{"content":"half"},"finish_reason":"stop"}]}\n\n'
+    )
+
+    with pytest.raises(ProviderRetryableError, match=r"before \[DONE\]"):
+        _ = [
+            fragment
+            async for fragment in provider.stream(ASK, max_tokens=64, temperature=0.0)
+        ]
+
+
+async def test_anthropic_stream_rejects_clean_eof_before_message_stop() -> None:
+    body = _sse_anthropic(
+        {"type": "message_start", "message": {"model": "claude", "usage": {}}},
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": "half"},
+        },
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {}},
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    provider = AnthropicProvider(
+        base_url="http://anthropic.test/v1",
+        api_key="secret",
+        chat_model="claude",
+        timeout_s=5.0,
+        client=httpx.AsyncClient(
+            base_url="http://anthropic.test/v1", transport=httpx.MockTransport(handler)
+        ),
+    )
+    with pytest.raises(ProviderRetryableError, match="before message_stop"):
+        await _collect(
+            provider.stream_with_tools(
+                ASK, tools=TOOLS, parallel_tool_calls=True, max_tokens=64, temperature=0.0
+            )
+        )
+
+
+async def test_gemini_rejects_response_without_finish_reason() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [{"content": {"parts": [{"text": "half"}]}}],
+                "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 1},
+            },
+        )
+
+    provider = GeminiProvider(
+        base_url="http://gemini.test/v1beta",
+        api_key="secret",
+        chat_model="gemini-test",
+        timeout_s=5.0,
+        client=httpx.AsyncClient(
+            base_url="http://gemini.test/v1beta/", transport=httpx.MockTransport(handler)
+        ),
+    )
+    with pytest.raises(ProviderRetryableError, match=r"without.*finishReason"):
+        await provider.complete(ASK, max_tokens=64, temperature=0.0)
 
 
 class _NonStreamingProvider:

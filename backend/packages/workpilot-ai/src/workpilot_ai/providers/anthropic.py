@@ -11,7 +11,11 @@ from typing import Any
 
 import httpx
 
-from workpilot_ai.errors import ProviderNotDispatchedError, ProviderResponseError
+from workpilot_ai.errors import (
+    ProviderNotDispatchedError,
+    ProviderResponseError,
+    ProviderRetryableError,
+)
 from workpilot_ai.providers.openai_compatible import (
     _dispatch_guard,
     _raise_with_body,
@@ -19,12 +23,29 @@ from workpilot_ai.providers.openai_compatible import (
 from workpilot_ai.types import (
     CompletionChunk,
     CompletionResult,
+    CompletionStopReason,
     EmbeddingResult,
     Message,
+    MessageContentBlock,
+    RedactedThinkingContentBlock,
+    TextContentBlock,
+    ThinkingContentBlock,
     ToolCall,
+    ToolCallDelta,
     ToolDefinition,
     Usage,
 )
+
+
+def _anthropic_stop_reason(raw: object, *, has_tool_calls: bool) -> CompletionStopReason:
+    normalized = str(raw or "").casefold()
+    if normalized in {"max_tokens", "length"}:
+        return "length"
+    if normalized == "tool_use" or has_tool_calls:
+        return "tool_use"
+    if normalized in {"", "end_turn", "stop_sequence", "stop"}:
+        return "stop"
+    return "error"
 
 
 class AnthropicProvider:
@@ -124,12 +145,27 @@ class AnthropicProvider:
         if not isinstance(content, list):
             raise ProviderResponseError("Anthropic 响应缺少 content 数组")
         text_parts: list[str] = []
+        content_blocks: list[MessageContentBlock] = []
         calls: list[ToolCall] = []
         for block in content:
             if not isinstance(block, dict):
                 continue
             if block.get("type") == "text" and isinstance(block.get("text"), str):
                 text_parts.append(block["text"])
+                content_blocks.append(TextContentBlock(text=block["text"]))
+            elif block.get("type") == "thinking":
+                thinking = block.get("thinking")
+                signature = block.get("signature")
+                if not isinstance(thinking, str) or not isinstance(signature, str) or not signature:
+                    raise ProviderResponseError("Anthropic thinking 块缺少 thinking 或 signature")
+                content_blocks.append(
+                    ThinkingContentBlock(thinking=thinking, signature=signature)
+                )
+            elif block.get("type") == "redacted_thinking":
+                data = block.get("data")
+                if not isinstance(data, str) or not data:
+                    raise ProviderResponseError("Anthropic redacted_thinking 块缺少 data")
+                content_blocks.append(RedactedThinkingContentBlock(data=data))
             elif block.get("type") == "tool_use":
                 call_id = str(block.get("id") or "")
                 name = str(block.get("name") or "")
@@ -146,7 +182,10 @@ class AnthropicProvider:
                         ),
                     )
                 )
-        if not text_parts and not calls:
+        normalized_stop_reason = _anthropic_stop_reason(
+            body.get("stop_reason"), has_tool_calls=bool(calls)
+        )
+        if not text_parts and not calls and normalized_stop_reason != "length":
             raise ProviderResponseError("Anthropic 返回了空响应")
         usage = body.get("usage") or {}
         cache_read_tokens = int(usage.get("cache_read_input_tokens", 0))
@@ -164,6 +203,8 @@ class AnthropicProvider:
                 prompt_cache_write_tokens=cache_write_tokens,
             ),
             tool_calls=tuple(calls),
+            stop_reason=normalized_stop_reason,
+            content_blocks=tuple(content_blocks),
         )
 
     async def _request_payload(
@@ -250,6 +291,8 @@ class AnthropicProvider:
         payload["stream"] = True
 
         text_parts: list[str] = []
+        thinking_blocks: dict[int, dict[str, str]] = {}
+        redacted_blocks: dict[int, RedactedThinkingContentBlock] = {}
         # index → 正在拼的 tool_use。Anthropic 的 content block 按序号寻址。
         blocks: dict[int, dict[str, str]] = {}
         model = self.chat_model
@@ -258,6 +301,7 @@ class AnthropicProvider:
         cache_read_tokens = 0
         cache_write_tokens = 0
         stop_reason: object = None
+        terminal_seen = False
 
         with _dispatch_guard():
             stream = self._client.stream("POST", "messages", headers=self._headers, json=payload)
@@ -292,15 +336,36 @@ class AnthropicProvider:
                     cache_write_tokens = int(usage.get("cache_creation_input_tokens", 0))
                 elif kind == "content_block_start":
                     block = event.get("content_block") or {}
+                    index = event.get("index")
+                    if not isinstance(index, int):
+                        raise ProviderResponseError("Anthropic content block 缺少 index")
                     if block.get("type") == "tool_use":
-                        index = event.get("index")
-                        if not isinstance(index, int):
-                            raise ProviderResponseError("Anthropic tool_use 块缺少 index")
                         blocks[index] = {
                             "id": str(block.get("id") or ""),
                             "name": str(block.get("name") or ""),
                             "json": "",
                         }
+                        yield CompletionChunk(
+                            tool_call_delta=ToolCallDelta(
+                                index=index,
+                                id=str(block.get("id") or ""),
+                                name_delta=str(block.get("name") or ""),
+                            )
+                        )
+                    elif block.get("type") == "thinking":
+                        thinking_blocks[index] = {
+                            "thinking": str(block.get("thinking") or ""),
+                            "signature": str(block.get("signature") or ""),
+                        }
+                    elif block.get("type") == "redacted_thinking":
+                        redacted_data = block.get("data")
+                        if not isinstance(redacted_data, str) or not redacted_data:
+                            raise ProviderResponseError(
+                                "Anthropic redacted_thinking 块缺少 data"
+                            )
+                        redacted_blocks[index] = RedactedThinkingContentBlock(
+                            data=redacted_data
+                        )
                 elif kind == "content_block_delta":
                     delta = event.get("delta") or {}
                     delta_type = delta.get("type")
@@ -312,17 +377,43 @@ class AnthropicProvider:
                     elif delta_type == "thinking_delta":
                         fragment = str(delta.get("thinking") or "")
                         if fragment:
+                            index = event.get("index")
+                            if not isinstance(index, int) or index not in thinking_blocks:
+                                raise ProviderResponseError(
+                                    "Anthropic thinking_delta 缺少对应 thinking block"
+                                )
+                            thinking_blocks[index]["thinking"] += fragment
                             yield CompletionChunk(reasoning_delta=fragment)
+                    elif delta_type == "signature_delta":
+                        index = event.get("index")
+                        if not isinstance(index, int) or index not in thinking_blocks:
+                            raise ProviderResponseError(
+                                "Anthropic signature_delta 缺少对应 thinking block"
+                            )
+                        thinking_blocks[index]["signature"] += str(delta.get("signature") or "")
                     elif delta_type == "input_json_delta":
                         index = event.get("index")
                         if isinstance(index, int) and index in blocks:
-                            blocks[index]["json"] += str(delta.get("partial_json") or "")
+                            fragment = str(delta.get("partial_json") or "")
+                            blocks[index]["json"] += fragment
+                            if fragment:
+                                yield CompletionChunk(
+                                    tool_call_delta=ToolCallDelta(
+                                        index=index,
+                                        arguments_delta=fragment,
+                                    )
+                                )
                 elif kind == "message_delta":
                     usage = event.get("usage") or {}
                     output_tokens = int(usage.get("output_tokens", output_tokens))
                     stop_reason = (event.get("delta") or {}).get("stop_reason") or stop_reason
+                elif kind == "message_stop":
+                    terminal_seen = True
         finally:
             await stream.__aexit__(None, None, None)
+
+        if not terminal_seen:
+            raise ProviderRetryableError("Anthropic stream ended before message_stop")
 
         calls: list[ToolCall] = []
         for index in sorted(blocks):
@@ -335,7 +426,28 @@ class AnthropicProvider:
                 ToolCall(id=block["id"], name=block["name"], arguments=block["json"] or "{}")
             )
         text = "".join(text_parts)
-        if not text and not calls:
+        protocol_blocks: list[tuple[int, MessageContentBlock]] = []
+        for index, block in thinking_blocks.items():
+            if not block["signature"]:
+                raise ProviderResponseError("Anthropic thinking 块在 message_stop 前缺少 signature")
+            protocol_blocks.append(
+                (
+                    index,
+                    ThinkingContentBlock(
+                        thinking=block["thinking"], signature=block["signature"]
+                    ),
+                )
+            )
+        protocol_blocks.extend(redacted_blocks.items())
+        # Text is still projected through ``CompletionResult.text`` for every adapter.  Keep a
+        # matching block as well so Anthropic can replay the exact content-block protocol.
+        if text:
+            text_indexes = [index for index in (*thinking_blocks, *redacted_blocks, *blocks)]
+            protocol_blocks.append(
+                ((max(text_indexes) + 1) if text_indexes else 0, TextContentBlock(text=text))
+            )
+        normalized_stop_reason = _anthropic_stop_reason(stop_reason, has_tool_calls=bool(calls))
+        if not text and not calls and normalized_stop_reason != "length":
             raise ProviderResponseError(f"Anthropic 流式响应为空(stop_reason={stop_reason})")
         yield CompletionChunk(
             result=CompletionResult(
@@ -349,6 +461,8 @@ class AnthropicProvider:
                     prompt_cache_write_tokens=cache_write_tokens,
                 ),
                 tool_calls=tuple(calls),
+                stop_reason=normalized_stop_reason,
+                content_blocks=tuple(block for _, block in sorted(protocol_blocks)),
             )
         )
 
@@ -378,7 +492,26 @@ async def _anthropic_messages(messages: list[Message]) -> tuple[str, list[dict[s
             continue
         if message.role == "assistant":
             blocks: list[dict[str, Any]] = []
-            if message.content:
+            has_text_block = False
+            for block in message.content_blocks:
+                if isinstance(block, TextContentBlock):
+                    blocks.append({"type": "text", "text": block.text})
+                    has_text_block = True
+                elif isinstance(block, ThinkingContentBlock):
+                    if not block.signature:
+                        raise ValueError("Anthropic thinking block 缺少 signature")
+                    blocks.append(
+                        {
+                            "type": "thinking",
+                            "thinking": block.thinking,
+                            "signature": block.signature,
+                        }
+                    )
+                elif isinstance(block, RedactedThinkingContentBlock):
+                    if not block.data:
+                        raise ValueError("Anthropic redacted_thinking block 缺少 data")
+                    blocks.append({"type": "redacted_thinking", "data": block.data})
+            if message.content and not has_text_block:
                 blocks.append({"type": "text", "text": message.content})
             for call in message.tool_calls:
                 try:

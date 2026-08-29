@@ -64,6 +64,22 @@
       }
     }
   ],
+  "contract_suites": [
+    {
+      "id": "agent-teams-contract",
+      "kind": "cowork_deterministic",
+      "mode": "pytest_no_model_io",
+      "suite": "eval/suites/agent-teams-dev-v1.json",
+      "case_count": 4
+    },
+    {
+      "id": "control-plane-contract",
+      "kind": "pytest_deterministic",
+      "mode": "pytest_no_model_io",
+      "suite": "eval/contracts/control-plane-v1.json",
+      "case_count": 30
+    }
+  ],
   "replay_suites": [
     {
       "id": "run-protocol-v1",

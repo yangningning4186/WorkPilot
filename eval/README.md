@@ -35,6 +35,10 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.regression check \
 独立 v2 baseline；Run 事件回放和 full-chain cassette 也都是 `ready`。Cowork dev（39 条）
 和冻结 test（11 条）始终是两个比较分母，不能混成一份 50 条 baseline。
 
+`agent-teams-dev-v1.json` 仍是待人工复核的 candidate，不能伪装成已晋升 baseline；它以
+`agent-teams-contract` 单独登记到 catalog。该 contract 是零模型、零外部 I/O 的 pytest gate，
+固定写委派 receipt、scope 越权/篡改拒绝、返工预算和进程重启恢复四类边界。
+
 ## Cowork 单 Agent 50 条基线
 
 `cowork-core-50-v1.6.1.json` 是当前 Cowork 端到端标注候选集：39 条 dev、11 条冻结 test，
@@ -64,8 +68,12 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
   --authorization-note '<已核验的模型端点与合成数据发送授权>'
 ```
 
-评测只记录 token 用量，不用 token 数决定任务成败：`run_budget_tokens` 固定为 `0`。
-`--budget-tokens` 仅为旧命令保留且只接受 `0`；模型调用数和墙钟上限仍可独立配置，防止失控循环。
+live runner 默认按整批强制 `2,000,000 token / 400 次模型调用 / 5,000 秒墙钟` 三重熔断。
+每条 Run 会拿到整批剩余额度作为更紧的上限，模型 dispatch 前按最坏 token 用量预留，因此并发或
+单条长任务不能先穿透再记账；基础设施失败导致用量无法结算时整批 fail closed。`--budget-tokens`
+仅为旧命令兼容且只接受 `0`；`--budget-calls`、`--budget-wall-ms` 可额外收紧单条 Run，
+`--max-total-tokens`、
+`--max-model-calls`、`--max-wall-seconds` 配置整批上限，三项总量上限都必须为正数。
 
 跑完整 50 条必须显式留下 test access 审计：
 
@@ -144,10 +152,66 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.full_chain_cassette \
 
 `.github/workflows/eval-nightly.yml` 每天北京时间 02:00 在带 `workpilot-eval` 标签的自托管
 runner 上运行 Cowork dev、冻结 test、KB evaluation 和 Generation 70 条，再与固定 v2
-baseline 配对比较。模型固定为 `deepseek-v4-flash`，token 熔断关闭，KB 与索引由自托管 runner
-持有；任务不会改写 baseline。原始 report、prompt、模型 cassette 只在本机保留 30 天且至少
+baseline 配对比较；同一矩阵还执行 `agent-teams-contract` 的四条和
+`control-plane-contract` 的 30 条零模型 deterministic case。模型固定为
+`deepseek-v4-flash`；nightly 默认总上限为 `6,000,000 token / 1,200 次模型调用 /
+18,000 秒墙钟`，并把剩余额度下压给每个 live 子进程。子进程超时会终止整个 process group；
+报告缺少或存在未结算 usage 时停止后续 live track 并失败。当前报告没有可靠、完整的模型定价，
+因此明确记录 `cost_limit=not_enforced_without_reliable_pricing`，不伪造金额熔断。KB 与索引由自托管 runner
+持有；总调用/token 台账覆盖 `ModelGateway`，本地 KB query embedding 因底层客户端不返回 usage，
+由冻结 item 数和 track 墙钟上限约束并在 summary 明示该口径。任务不会改写 baseline。原始 report、prompt、模型 cassette 只在本机保留 30 天且至少
 保留最近 7 批；上传的 artifact 仅含 Catalog doctor、full-chain 零 I/O 验证、回归指标与摘要，
 GitHub 保留期同为 30 天。
+
+Rerank 按 track 固定，而不是由 workflow 的全局开关覆盖：KB retrieval 使用
+`RERANK_ENABLED=true`，与冻结校准的 `score_source=rerank` 一致；Generation 使用
+`RERANK_ENABLED=false` 保持 fusion baseline。配置要求 reranker 时发生 fallback，仍会让
+对应 retrieval 跑批 fail closed。
+
+## Skill paired gate
+
+`cowork_runner` 支持 `--skills-mode enabled|disabled` 和隔离的 `--skills-root`。disabled 臂
+不注册 Skill 工具，也不注入 Skill catalog；enabled 臂走生产 catalog 与 `load_skill` 路径。
+除 `skills_mode` 外，两臂的模型、suite、Skill root hash、预算、scorer 与实现配置必须一致：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
+  --suite eval/suites/skill-paired-dev-v1.json --label skill-disabled \
+  --skills-mode disabled --skills-root eval/fixtures/skills \
+  --allow-synthetic --allow-model-send --authorization-note '<已核验授权>'
+
+PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_runner \
+  --suite eval/suites/skill-paired-dev-v1.json --label skill-enabled \
+  --skills-mode enabled --skills-root eval/fixtures/skills \
+  --allow-synthetic --allow-model-send --authorization-note '<已核验授权>'
+
+PYTHONPATH=backend backend/.venv/bin/python -m eval.skill_paired_gate \
+  --suite eval/suites/skill-paired-dev-v1.json \
+  --disabled-report /path/to/disabled/report.json \
+  --enabled-report /path/to/enabled/report.json \
+  --output-dir eval/outputs/skill-paired-gate/RUN
+```
+
+gate 同时检查触发激活、反触发误激活、任务成功、guardrail、工具错误、calls/tokens 和 paired
+bootstrap。仓库内套件是 synthetic，只能输出 `engineering_only_no_product_claim`；正式晋升还需
+owner 审核的人类题集与盲评。
+
+## Team quality/cost paired baseline
+
+`team_quality_baseline` 按 case 交替两臂顺序。single 臂对两份材料做一次综合；Team 臂使用生产
+Team store、两个持久 Worker Session、只读 Board scope、durable wake、Worker 工具循环、Board
+review 与 Lead 综合。两臂共享同一个模型网关和 calls/tokens/墙钟熔断：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.team_quality_baseline \
+  --suite eval/suites/team-quality-paired-dev-v1.json \
+  --label team-quality-RUN --allow-synthetic --allow-model-send \
+  --authorization-note '<已核验授权>'
+```
+
+报告比较 task success、敏感信息 guardrail、Board 完成率、Worker 失败率、模型 calls、tokens、
+墙钟和 paired bootstrap，并生成隐藏臂标识的盲评模板。内置 synthetic suite 在 owner 审核前同样
+只能作为工程基线。
 
 ## A5 长期记忆注入
 
@@ -445,8 +509,12 @@ RERANK_ENABLED=false PYTHONPATH=backend backend/.venv/bin/python \
   --allow-model-send --authorization-note '<approval reference>'
 ```
 
-runner 直接走生产 `search_index`，再由 `ModelGateway` 生成；`evaluation_generation` 对支持
-省略输出上限的 provider 不下发 `max_tokens`，报告明确记录 `token_budget=null`。正式指标为
+runner 直接走生产 `search_index`，再由 `ModelGateway` 生成；默认整批上限为
+`1,500,000 token / 150 次模型调用 / 5,000 秒墙钟`。因为该 task type 允许 provider
+省略单次输出上限，每次 dispatch 前按所选模型完整 context window 做并发预留；失败或缺 usage
+按预留额结算。`evaluation_generation` 对支持
+省略输出上限的 provider 不下发 provider `max_tokens`，报告中的 `token_budget=null` 只表示
+该 provider 字段省略，不表示整批 token 熔断关闭。正式指标为
 `citation_wellformed_non_refusal`、`citation_support_answerable` 和
 `constraint_pass_answerable`；可答题拒答或零引用都计 0，不能靠缩分母刷分。声明启用 rerank
 但实际 score source 发生 fallback 时，该题记为基础设施错误，不进入可晋升 baseline。

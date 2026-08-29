@@ -151,7 +151,7 @@ def register_reading_tools(registry: CoworkToolRegistry) -> None:
         material = await _load(context, args.path)
         label = unit_label(material)
         return CoworkToolResult(
-            output={
+            content={
                 "path": str(material.path),
                 "material_id": material.material_id,
                 "title": material.title,
@@ -180,7 +180,7 @@ def register_reading_tools(registry: CoworkToolRegistry) -> None:
         label = unit_label(material)
         if result.is_empty:
             return CoworkToolResult(
-                output={
+                content={
                     "path": str(material.path),
                     "query": args.query,
                     "mode": None,
@@ -201,7 +201,7 @@ def register_reading_tools(registry: CoworkToolRegistry) -> None:
         if result.is_loose:
             guidance = "命中来自宽松词匹配，可靠性低。" + guidance
         return CoworkToolResult(
-            output={
+            content={
                 "path": str(material.path),
                 "query": args.query,
                 "mode": result.mode,
@@ -240,7 +240,7 @@ def register_reading_tools(registry: CoworkToolRegistry) -> None:
             if material.unit_at(locator).text.strip()
         )
         return CoworkToolResult(
-            output={
+            content={
                 "path": str(material.path),
                 "material_id": material.material_id,
                 "title": material.title,
@@ -319,7 +319,7 @@ def register_reading_tools(registry: CoworkToolRegistry) -> None:
             else ()
         )
         return CoworkToolResult(
-            output={
+            content={
                 "path": str(material.path),
                 "material_id": material.material_id,
                 # 前端阅读器面板订阅这个字段来决定要不要动视口。
@@ -387,7 +387,7 @@ def register_reading_tools(registry: CoworkToolRegistry) -> None:
         if target != args.locator:
             note = f"（你给的是第 {args.locator} {label}，实际在这里）"
         return CoworkToolResult(
-            output={
+            content={
                 "path": str(material.path),
                 "material_id": material.material_id,
                 # 面板订阅这个字段：批注不移动视口，只是多出一块高亮。

@@ -17,7 +17,8 @@ from app.cowork.tools import (
     CoworkToolResult,
     CoworkToolSpec,
 )
-from workpilot_ai.types import CompletionResult, Message, ToolCall, ToolDefinition
+from app.run_events import RunEventType
+from workpilot_ai.types import CompletionResult, Message, ToolCall, ToolDefinition, Usage
 
 READONLY_SUBAGENT_SYSTEM_PROMPT = """你是 WorkPilot 的隔离只读研究子 Agent。
 
@@ -38,7 +39,7 @@ MAX_TOOL_CALLS = 8
 
 # 子 Agent 的进度事件。名字只有一个、用 `phase` 分档，前端因此只需要一个 case；
 # 每条都带父调用的 tool_call_id，进度才挂得回时间线上那张 explore 卡片。
-SUBAGENT_EVENT = "subagent.progress"
+SUBAGENT_EVENT: RunEventType = "subagent.progress"
 
 _CANCELLED_ANSWER = "用户已停止本次运行，只读子 Agent 中止调查。以下是中止前已核实的证据。"
 
@@ -78,6 +79,8 @@ class _SubagentState(TypedDict):
     rounds_used: int
     calls_used: int
     used_tokens: int
+    used_input_tokens: int
+    used_output_tokens: int
     evidence_tools: list[str]
 
 
@@ -147,6 +150,8 @@ class _ReadonlySubagentRuntime:
                 rounds_used=0,
                 calls_used=0,
                 used_tokens=0,
+                used_input_tokens=0,
+                used_output_tokens=0,
                 evidence_tools=[],
             )
         )
@@ -283,6 +288,8 @@ class _ReadonlySubagentRuntime:
     def _charge(state: _SubagentState, completion: CompletionResult) -> None:
         # 这份分支账包含在共享 BudgetedGateway 总账内，只用于观测单分支成本。
         state["used_tokens"] += completion.usage.input_tokens + completion.usage.output_tokens
+        state["used_input_tokens"] += completion.usage.input_tokens
+        state["used_output_tokens"] += completion.usage.output_tokens
 
     async def _finish(
         self,
@@ -322,7 +329,7 @@ class _ReadonlySubagentRuntime:
     @staticmethod
     def _result(state: _SubagentState) -> CoworkToolResult:
         return CoworkToolResult(
-            output={
+            content={
                 "answer": state["answer"],
                 "status": state["status"],
                 "evidence_tools": list(state["evidence_tools"]),
@@ -330,7 +337,11 @@ class _ReadonlySubagentRuntime:
                 "calls_used": state["calls_used"],
                 "used_tokens": state["used_tokens"],
                 "read_only": True,
-            }
+            },
+            usage=Usage(
+                input_tokens=state["used_input_tokens"],
+                output_tokens=state["used_output_tokens"],
+            ),
         )
 
 

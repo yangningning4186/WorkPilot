@@ -54,7 +54,7 @@ def test_agent_teams_candidate_suite_covers_delegation_and_opt_out() -> None:
 
     assert summarize_suite(suite) == {
         "name": "agent-teams-dev",
-        "version": "1.0",
+        "version": "1.1",
         "items": 2,
         "splits": {"dev": 2},
         "categories": {"agent_team": 2},
@@ -64,10 +64,27 @@ def test_agent_teams_candidate_suite_covers_delegation_and_opt_out() -> None:
         "review_status": "pending_human_review",
         "reviewer": None,
         "reviewed_at": None,
+        "contract_cases": 4,
+        "contract_categories": {
+            "budget": 1,
+            "recovery": 1,
+            "retry": 1,
+            "scope_authorization": 1,
+        },
+        "contract_mode": "pytest_no_model_io",
     }
     propose, opt_out = suite["items"]
     assert propose["gold"]["required_tools"] == ["load_tools", "propose_team"]
     assert "propose_team" in opt_out["gold"]["forbidden_tools"]
+
+
+def test_agent_teams_contract_rejects_missing_or_escaping_pytest_targets() -> None:
+    path = Path(__file__).parents[2] / "eval" / "suites" / "agent-teams-dev-v1.json"
+    suite = deepcopy(load_suite(path))
+    suite["deterministic_contract"]["cases"][0]["test"] = "../outside.py::test_escape"
+
+    with pytest.raises(CoworkSuiteError, match="pytest target 非法"):
+        validate_suite(suite)
 
 
 def test_cowork_suite_approval_requires_complete_auditable_signoff() -> None:

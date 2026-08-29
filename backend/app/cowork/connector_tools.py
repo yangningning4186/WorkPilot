@@ -511,12 +511,12 @@ async def _list_handler(context: CoworkToolContext, _: BaseModel) -> CoworkToolR
         for account in list_connector_accounts(context.settings)
         if account.enabled and account.status in {"connected", "configured"}
     ]
-    return CoworkToolResult(output={"connectors": [_public_account(item) for item in accounts]})
+    return CoworkToolResult(content={"connectors": [_public_account(item) for item in accounts]})
 
 
 async def _read_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
     args = ConnectorRequestArgs.model_validate(raw.model_dump())
-    return CoworkToolResult(output=await _connector_request(context, args, method="GET", body=None))
+    return CoworkToolResult(content=await _connector_request(context, args, method="GET", body=None))
 
 
 async def _action_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
@@ -525,7 +525,7 @@ async def _action_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkT
         context, args, method=args.method, body=args.body if args.method != "DELETE" else None
     )
     return CoworkToolResult(
-        output=output, effect_ref=f"connector:{args.account_id}:{args.method}:{args.path}"
+        content=output, effect_ref=f"connector:{args.account_id}:{args.method}:{args.path}"
     )
 
 
@@ -539,7 +539,7 @@ async def _feishu_read(
     _require_feishu_account(context, account_id)
     request = ConnectorRequestArgs(account_id=account_id, path=path, query=query or {})
     return CoworkToolResult(
-        output=await _connector_request(context, request, method="GET", body=None)
+        content=await _connector_request(context, request, method="GET", body=None)
     )
 
 
@@ -555,7 +555,7 @@ async def _feishu_write(
     _require_feishu_account(context, account_id)
     request = ConnectorRequestArgs(account_id=account_id, path=path)
     output = await _connector_request(context, request, method=method, body=body)
-    return CoworkToolResult(output=output, effect_ref=effect_ref)
+    return CoworkToolResult(content=output, effect_ref=effect_ref)
 
 
 async def _calendar_list_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:

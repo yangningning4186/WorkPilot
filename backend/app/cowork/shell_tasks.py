@@ -65,10 +65,11 @@ class _ShellTask:
         return self.process.returncode is None
 
     def absorb(self, chunk: bytes) -> None:
-        room = self.max_output_bytes - len(self.buffer)
-        if room > 0:
-            self.buffer.extend(chunk[:room])
-        if len(chunk) > room:
+        self.buffer.extend(chunk)
+        if len(self.buffer) > self.max_output_bytes:
+            removed = len(self.buffer) - self.max_output_bytes
+            del self.buffer[:removed]
+            self.delivered = max(0, self.delivered - removed)
             self.truncated = True
 
     def snapshot(self, *, incremental: bool) -> ShellTaskSnapshot:

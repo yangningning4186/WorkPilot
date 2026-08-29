@@ -5,6 +5,7 @@
 #
 # 改这个文件不需要改代码——帕累托实验（§4 的 C1–C8）就是靠改 routes 切配置的。
 version: 1
+model_catalog: model-catalog.json
 
 defaults:
   timeout_s: 30
@@ -18,7 +19,7 @@ tiers:
       api_key: ${CLUSTER_API_KEY}
       model: ${TIER_LIGHT_MODEL}
       enable_thinking: ${TIER_LIGHT_ENABLE_THINKING}
-      context_window_tokens: ${TIER_LIGHT_CONTEXT_WINDOW_TOKENS}
+      context_window_tokens: auto
     # fallback 不传递：每档写全自己的链路，别指望接上 main 的那一串。
     fallback: [main, heavy, external]
 
@@ -30,7 +31,7 @@ tiers:
       api_key: ${CLUSTER_API_KEY}
       model: ${TIER_MAIN_MODEL}
       enable_thinking: ${TIER_MAIN_ENABLE_THINKING}
-      context_window_tokens: ${TIER_MAIN_CONTEXT_WINDOW_TOKENS}
+      context_window_tokens: auto
     fallback: [heavy, external]
 
   # 规划、反思、判分：这些环节错了会级联放大，省钱最不划算。
@@ -41,7 +42,7 @@ tiers:
       api_key: ${CLUSTER_API_KEY}
       model: ${TIER_HEAVY_MODEL}
       enable_thinking: ${TIER_HEAVY_ENABLE_THINKING}
-      context_window_tokens: ${TIER_HEAVY_CONTEXT_WINDOW_TOKENS}
+      context_window_tokens: auto
     fallback: [main, external]
 
   # 商用 API：对照基线 + 集群整体不可用时的兜底。它自己不再 fallback。
@@ -65,6 +66,9 @@ routes:
   cowork_decision:
     tier: main
     timeout_s: ${COWORK_MODEL_TIMEOUT_S}
+  cowork_semantic_approval:
+    tier: main
+    timeout_s: ${COWORK_MODEL_TIMEOUT_S}
 
   # —— 改写/分解：高频、对单次质量不敏感，后面还有检索与 rerank 兜底。
   query_decomposition: light
@@ -77,7 +81,7 @@ routes:
   memory_op: light
 
   # —— 结构化抽取：**刻意留在 main**。
-  # docs/07 §3 的设计是 light 起步、置信度不达标再升档，但那套升档机制还没实现。
+  # docs/07 §3 的结构化抽取升档仍未接入这些 producer；不要先把起始档降到 light。
   # 在没有升档兜底的情况下先降到 light，等于把 A1/A2 已经量到的首轮合格率
   # （抽卡 30%）再往下压一截。等 §3 落地后这两行才改成 light。
   evidence_sufficiency: main
@@ -91,16 +95,13 @@ routes:
 # 置信度驱动的动态升档（§3）：起始档跑完、确定性检查不达标时换这一档重做。
 # 与 fallback 不同——fallback 处理"调用失败"，升档处理"调用成功但结果不可信"。
 #
-# 目标 == 上面 routes 里的起始档 = **已登记但未启用**。要启用就把 routes 里
-# 对应那行改成更低的档（例如 evidence_sufficiency: light），一处改动即刻生效。
-#
-# 现在刻意都是未启用状态：把主答路径的证据门控换到 4B 上是一次会改变线上答案的
-# 变更，必须先有对照数据（§3 要测的是升档率、质量增益、相比全走 main 的净省），
-# 不能顺手翻过去。light 曾因部署参数只有 8192 而让长证据直接超上下文；当前示例按
-# 32768 配置，但分档仍必须服从每个 endpoint 声明的真实 context_window_tokens。
+# 目标 == 起始档表示登记但未启用；目标严格更高才生效。结构化抽取两项目前仍未启用。
+# Cowork 则只在“第一次引用 repair 后仍未通过本地引用账本校验”时从 main 升到 heavy；
+# 普通回答不升档，provider 失败仍使用 fallback。
 escalation:
   evidence_sufficiency: main
   agent_extract_card: main
+  cowork_decision: heavy
 
 # 未登记的 task_type 落到甜点档，并靠 llm_calls 的审计发现遗漏。
 default_route: main

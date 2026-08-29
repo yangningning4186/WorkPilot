@@ -1,7 +1,8 @@
 """`tool_invocations` 副作用幂等租约协议（约束 9 / ADR-0007）。
 
-三个函数就是那条约束的全部实现：`acquire_invocation` 抢租约、`complete_invocation`
-落结果、`fail_invocation` 释放。**幂等落在这一层而不是 Agent 的 cursor 上**——
+四个函数就是那条约束的全部实现：`acquire_invocation` 抢租约、`complete_invocation`
+落结果、`fail_invocation` 释放、`mark_invocation_outcome_unknown` 将可能已经发生的外部
+副作用封为不可重放终态。**幂等落在这一层而不是 Agent 的 cursor 上**——
 interrupt 或崩溃恢复可能重新进入尚未确认完成的执行片段，状态恢复不等于副作用不重放。
 
 与 `runs.py` / `checkpoints.py` 同层同形状：Postgres 为主，桌面 Cowork 走 SQLite 旁路。
@@ -65,4 +66,17 @@ async def complete_invocation(
 async def fail_invocation(session: AsyncSession, *, key: str, worker_id: str, error: str) -> None:
     store = cowork_store()
     await store.fail_invocation(key=key, worker_id=worker_id, error=error)
+    return
+
+
+async def mark_invocation_outcome_unknown(
+    session: AsyncSession,
+    *,
+    key: str,
+    worker_id: str,
+) -> None:
+    """Persist a terminal, non-replayable outcome without recording transport diagnostics."""
+
+    store = cowork_store()
+    await store.mark_invocation_outcome_unknown(key=key, worker_id=worker_id)
     return
