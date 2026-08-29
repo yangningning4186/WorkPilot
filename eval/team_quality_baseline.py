@@ -12,6 +12,8 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Literal, cast
 
+from uuid6 import uuid7
+
 from app.core.config import Settings
 from app.core.db import session_factory
 from app.core.queue import InProcessRunQueue
@@ -31,9 +33,6 @@ from app.cowork_store.routing import cowork_store
 from app.llm_bootstrap import build_model_gateway
 from app.runstore.runs import create_run, ensure_conversation
 from app.worker.maintenance import team_wake_dispatch_tick
-from uuid6 import uuid7
-from workpilot_ai.types import Message
-
 from eval.cowork_runner import _EvaluationMeteredGateway
 from eval.resource_limits import (
     EvaluationBudget,
@@ -41,6 +40,7 @@ from eval.resource_limits import (
     EvaluationLimits,
 )
 from eval.stats import MetricSamples, RatioPoint, paired_bootstrap
+from workpilot_ai.types import Message
 
 SCHEMA_VERSION = "workpilot-team-quality-baseline.v1"
 DEFAULT_SUITE = Path(__file__).parent / "suites/team-quality-paired-dev-v1.json"
@@ -140,14 +140,18 @@ def load_suite(path: Path) -> tuple[dict[str, Any], tuple[TeamQualityCase, ...]]
     return raw, tuple(cases)
 
 
-def evaluate_answer(answer: str, case: TeamQualityCase) -> tuple[bool, tuple[str, ...], tuple[str, ...]]:
+def evaluate_answer(
+    answer: str, case: TeamQualityCase
+) -> tuple[bool, tuple[str, ...], tuple[str, ...]]:
     folded = answer.casefold()
     missing = tuple(value for value in case.must_include if value.casefold() not in folded)
     forbidden = tuple(value for value in case.must_not_include if value.casefold() in folded)
     return not missing and not forbidden, missing, forbidden
 
 
-def _usage_delta(before: dict[str, int | float | str], after: dict[str, int | float | str]) -> tuple[int, int]:
+def _usage_delta(
+    before: dict[str, int | float | str], after: dict[str, int | float | str]
+) -> tuple[int, int]:
     return (
         int(after["model_calls"]) - int(before["model_calls"]),
         int(after["total_tokens"]) - int(before["total_tokens"]),
@@ -189,7 +193,7 @@ async def _run_single(
         error = None
     except EvaluationLimitExceeded:
         raise
-    except Exception as caught:  # noqa: BLE001 - 每臂失败是质量结果，不中止剩余配对样本
+    except Exception as caught:
         answer = ""
         success, missing, forbidden = False, case.must_include, ()
         error = f"{type(caught).__name__}: {caught}"
@@ -290,7 +294,9 @@ async def _run_team(
                 event_actor="eval:team-quality",
             )
             tasks = []
-            for index, (path, worker) in enumerate(zip(source_paths, workers, strict=True), start=1):
+            for index, (path, worker) in enumerate(
+                zip(source_paths, workers, strict=True), start=1
+            ):
                 task = await cowork_store().create_board_task(
                     lead_conversation_id=conversation_id,
                     title=f"核对材料 {index}",
@@ -369,7 +375,7 @@ async def _run_team(
         success, missing, forbidden = evaluate_answer(answer, case)
     except EvaluationLimitExceeded:
         raise
-    except Exception as caught:  # noqa: BLE001 - Worker/Board 失败必须进入质量报告
+    except Exception as caught:
         error = f"{type(caught).__name__}: {caught}"
         success = False
     after = await budget.snapshot()
@@ -418,9 +424,7 @@ def summarize(records: list[PairedRecord], suite: dict[str, Any]) -> dict[str, A
                 baseline=tuple(
                     RatioPoint(float(row.single.guardrail_pass), 1.0) for row in records
                 ),
-                candidate=tuple(
-                    RatioPoint(float(row.team.guardrail_pass), 1.0) for row in records
-                ),
+                candidate=tuple(RatioPoint(float(row.team.guardrail_pass), 1.0) for row in records),
             ),
         },
         seed=20260828,
@@ -438,8 +442,7 @@ def summarize(records: list[PairedRecord], suite: dict[str, Any]) -> dict[str, A
             violations.append({"rule": rule, "detail": detail})
 
     require(
-        success_team + float(gate["maximum_task_success_regression"]) + 1e-12
-        >= success_single,
+        success_team + float(gate["maximum_task_success_regression"]) + 1e-12 >= success_single,
         "task_success_regression",
         f"{success_single:.3f} -> {success_team:.3f}",
     )
@@ -473,7 +476,11 @@ def summarize(records: list[PairedRecord], suite: dict[str, Any]) -> dict[str, A
         "task_success": {"single": success_single, "team": success_team},
         "guardrail_pass": {"single": guard_single, "team": guard_team},
         "mean_model_calls": {"single": calls_single, "team": calls_team, "multiple": call_multiple},
-        "mean_total_tokens": {"single": tokens_single, "team": tokens_team, "multiple": token_multiple},
+        "mean_total_tokens": {
+            "single": tokens_single,
+            "team": tokens_team,
+            "multiple": token_multiple,
+        },
         "mean_wall_ms": {
             "single": _ratio(sum(row.single.wall_ms for row in records), count),
             "team": _ratio(sum(row.team.wall_ms for row in records), count),

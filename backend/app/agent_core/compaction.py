@@ -439,6 +439,7 @@ class OutboundCompactor:
             if attempt == 1:
                 rendered = _truncate_middle(rendered, max(1_000, self.max_input_chars // 2))
             try:
+
                 async def invoke(rendered_prompt: str = rendered) -> CompletionResult:
                     template_arguments = {
                         name: self.max_summary_chars
@@ -460,9 +461,7 @@ class OutboundCompactor:
                     )
 
                 completion = (
-                    await invoke()
-                    if summary_attempt is None
-                    else await summary_attempt(invoke)
+                    await invoke() if summary_attempt is None else await summary_attempt(invoke)
                 )
                 summary = _parse_summary(completion.text)
                 return _truncate_middle(summary, self.max_summary_chars), False
@@ -658,7 +657,9 @@ def _merge_compaction_details(
                     continue
                 if not isinstance(arguments, dict):
                     continue
-                destination = modified_files if any(item in name for item in write_markers) else read_files
+                destination = (
+                    modified_files if any(item in name for item in write_markers) else read_files
+                )
                 for key in ("path", "file", "file_path", "source_path", "target_path"):
                     add(destination, arguments.get(key))
         elif message.get("role") == "tool":

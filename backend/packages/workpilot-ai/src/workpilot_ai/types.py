@@ -72,9 +72,7 @@ class RedactedThinkingContentBlock:
     type: Literal["redacted_thinking"] = field(default="redacted_thinking", init=False)
 
 
-type MessageContentBlock = (
-    TextContentBlock | ThinkingContentBlock | RedactedThinkingContentBlock
-)
+type MessageContentBlock = TextContentBlock | ThinkingContentBlock | RedactedThinkingContentBlock
 
 
 def content_block_payload(block: MessageContentBlock) -> dict[str, str]:
@@ -112,9 +110,7 @@ def content_blocks_from_payload(raw: object) -> tuple[MessageContentBlock, ...]:
                     thinking=str(item["thinking"]), signature=str(item["signature"])
                 )
             )
-        elif kind == "redacted_thinking" and isinstance(item.get("data"), str) and item.get(
-            "data"
-        ):
+        elif kind == "redacted_thinking" and isinstance(item.get("data"), str) and item.get("data"):
             converted.append(RedactedThinkingContentBlock(data=str(item["data"])))
         else:
             raise ValueError(f"非法 content block: {kind!r}")

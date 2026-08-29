@@ -3921,9 +3921,7 @@ class _CoworkExecution:
                         "" if completion_for_span is None else completion_for_span.provider
                     ),
                     "tool_call_count": (
-                        0
-                        if completion_for_span is None
-                        else len(completion_for_span.tool_calls)
+                        0 if completion_for_span is None else len(completion_for_span.tool_calls)
                     ),
                 },
             )
@@ -5305,9 +5303,7 @@ class _CoworkExecution:
         async def emit_outcome(outcome: ToolExecutionOutcome) -> None:
             await emit(
                 outcome.call,
-                "completed"
-                if outcome.error is None and outcome.result_error is None
-                else "failed",
+                "completed" if outcome.error is None and outcome.result_error is None else "failed",
             )
 
         def progress_emitter(call: PendingToolCall) -> ToolProgressEmitter:

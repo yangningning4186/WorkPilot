@@ -91,7 +91,9 @@ async def test_gateway_retries_retryable_response_before_fallback_and_honors_ret
         nonlocal calls
         calls += 1
         if calls < 3:
-            return httpx.Response(503, text="temporarily unavailable", headers={"Retry-After": "1.25"})
+            return httpx.Response(
+                503, text="temporarily unavailable", headers={"Retry-After": "1.25"}
+            )
         return httpx.Response(
             200,
             json={

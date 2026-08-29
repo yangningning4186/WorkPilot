@@ -158,9 +158,7 @@ class AnthropicProvider:
                 signature = block.get("signature")
                 if not isinstance(thinking, str) or not isinstance(signature, str) or not signature:
                     raise ProviderResponseError("Anthropic thinking 块缺少 thinking 或 signature")
-                content_blocks.append(
-                    ThinkingContentBlock(thinking=thinking, signature=signature)
-                )
+                content_blocks.append(ThinkingContentBlock(thinking=thinking, signature=signature))
             elif block.get("type") == "redacted_thinking":
                 data = block.get("data")
                 if not isinstance(data, str) or not data:
@@ -360,12 +358,8 @@ class AnthropicProvider:
                     elif block.get("type") == "redacted_thinking":
                         redacted_data = block.get("data")
                         if not isinstance(redacted_data, str) or not redacted_data:
-                            raise ProviderResponseError(
-                                "Anthropic redacted_thinking 块缺少 data"
-                            )
-                        redacted_blocks[index] = RedactedThinkingContentBlock(
-                            data=redacted_data
-                        )
+                            raise ProviderResponseError("Anthropic redacted_thinking 块缺少 data")
+                        redacted_blocks[index] = RedactedThinkingContentBlock(data=redacted_data)
                 elif kind == "content_block_delta":
                     delta = event.get("delta") or {}
                     delta_type = delta.get("type")
@@ -433,9 +427,7 @@ class AnthropicProvider:
             protocol_blocks.append(
                 (
                     index,
-                    ThinkingContentBlock(
-                        thinking=block["thinking"], signature=block["signature"]
-                    ),
+                    ThinkingContentBlock(thinking=block["thinking"], signature=block["signature"]),
                 )
             )
         protocol_blocks.extend(redacted_blocks.items())

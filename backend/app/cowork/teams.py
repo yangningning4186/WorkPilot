@@ -1152,9 +1152,7 @@ async def run_team_worker_wake(
     return await runtime.run()
 
 
-async def _emit(
-    context: CoworkToolContext, name: RunEventType, payload: dict[str, Any]
-) -> None:
+async def _emit(context: CoworkToolContext, name: RunEventType, payload: dict[str, Any]) -> None:
     if context.emit_progress is not None:
         await context.emit_progress(name, payload)
 

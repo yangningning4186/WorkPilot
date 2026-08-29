@@ -471,7 +471,9 @@ async def fork_conversation(
     retained = messages[:boundary]
     abandoned = messages[boundary:]
     normalized_title = (
-        title.strip() if title is not None and title.strip() else f"{source.title or '新会话'} · 分支"
+        title.strip()
+        if title is not None and title.strip()
+        else f"{source.title or '新会话'} · 分支"
     )[:120]
     store = cowork_store()
     fork_id = await store.create_conversation(title=normalized_title)

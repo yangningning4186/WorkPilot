@@ -15,9 +15,7 @@ type FollowUpHook[StateT] = Callable[[StateT], Awaitable[StateT | None]]
 type DispatchNode[StateT, DecisionT] = Callable[[StateT], Awaitable[DecisionT]]
 type MaterializeNode[StateT, DecisionT] = Callable[[StateT, DecisionT], Awaitable[StateT]]
 ToolBatchExecutionMode = Literal["sequential", "parallel"]
-AgentDriveActionKind = Literal[
-    "prepare", "dispatch", "materialize", "execute", "follow_up", "done"
-]
+AgentDriveActionKind = Literal["prepare", "dispatch", "materialize", "execute", "follow_up", "done"]
 
 AgentActionKind = Literal["prepare", "dispatch", "materialize", "execute"]
 AgentActionPhase = Literal["started", "completed", "failed"]
@@ -76,9 +74,7 @@ class AgentToolActionUpdate:
     payload: dict[str, Any]
 
 
-type ToolActionUpdateHook = Callable[
-    [AgentToolActionInfo, str, dict[str, Any]], Awaitable[None]
-]
+type ToolActionUpdateHook = Callable[[AgentToolActionInfo, str, dict[str, Any]], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -205,19 +201,13 @@ class AgentLoopHookRegistry[StateT]:
             get_steering_messages=(
                 self.get_steering_messages.run if self.get_steering_messages.ids() else None
             ),
-            get_follow_up_messages=(
-                self._follow_up if self.get_follow_up_messages.ids() else None
-            ),
-            before_tool_call=(
-                self.before_tool_call.run if self.before_tool_call.ids() else None
-            ),
+            get_follow_up_messages=(self._follow_up if self.get_follow_up_messages.ids() else None),
+            before_tool_call=(self.before_tool_call.run if self.before_tool_call.ids() else None),
             after_tool_call=self.after_tool_call.run if self.after_tool_call.ids() else None,
             action_info=action_info,
             action_event=self._action_event if self.action_events.ids() else None,
             tool_execution_mode=tool_execution_mode,
-            tool_action_event=(
-                self._tool_action_event if self.tool_action_events.ids() else None
-            ),
+            tool_action_event=(self._tool_action_event if self.tool_action_events.ids() else None),
             tool_action_update=(
                 self._tool_action_update if self.tool_action_updates.ids() else None
             ),
@@ -351,8 +341,9 @@ class AgentLoopLane[StateT, DecisionT]:
         self._phase = self._entry_phase()
 
     async def _after_turn(self) -> None:
-        if self._hooks.should_stop_after_turn is not None and await self._hooks.should_stop_after_turn(
-            self._state
+        if (
+            self._hooks.should_stop_after_turn is not None
+            and await self._hooks.should_stop_after_turn(self._state)
         ):
             self._phase = "done"
             return

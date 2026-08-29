@@ -270,18 +270,14 @@ def reduce_session_records(records: list[SessionRecord]) -> ReducedSessionRecord
                     "queue_terminal_without_enqueue", record.operation_id
                 )
             elif previous.phase != "enqueued":
-                raise SessionRecordCorruptionError(
-                    "duplicate_queue_terminal", record.operation_id
-                )
+                raise SessionRecordCorruptionError("duplicate_queue_terminal", record.operation_id)
             elif (
                 previous.message_id != message_id
                 or previous.requested_delivery != requested
                 or previous.delivery != delivery
                 or previous.source != source
             ):
-                raise SessionRecordCorruptionError(
-                    "queue_identity_mismatch", record.operation_id
-                )
+                raise SessionRecordCorruptionError("queue_identity_mismatch", record.operation_id)
             launched_run_id = payload.get("launched_run_id")
             if launched_run_id is not None and (
                 record.phase != "consumed"
@@ -289,15 +285,11 @@ def reduce_session_records(records: list[SessionRecord]) -> ReducedSessionRecord
                 or not isinstance(launched_run_id, str)
                 or not launched_run_id
             ):
-                raise SessionRecordCorruptionError(
-                    "invalid_queue_launch", record.operation_id
-                )
+                raise SessionRecordCorruptionError("invalid_queue_launch", record.operation_id)
             queue_by_operation[record.operation_id] = QueueEventState(
                 operation_id=record.operation_id,
                 message_id=message_id,
-                requested_delivery=cast(
-                    "Literal['steer', 'follow_up', 'next_run']", requested
-                ),
+                requested_delivery=cast("Literal['steer', 'follow_up', 'next_run']", requested),
                 delivery=cast("Literal['steer', 'follow_up', 'next_run']", delivery),
                 source=source,
                 phase=cast("Literal['enqueued', 'consumed', 'cancelled']", record.phase),
@@ -312,13 +304,9 @@ def reduce_session_records(records: list[SessionRecord]) -> ReducedSessionRecord
                 or not isinstance(source, str)
                 or not source
             ):
-                raise SessionRecordCorruptionError(
-                    "invalid_abort_request", record.operation_id
-                )
+                raise SessionRecordCorruptionError("invalid_abort_request", record.operation_id)
             if abort_request is not None:
-                raise SessionRecordCorruptionError(
-                    "duplicate_abort_request", record.operation_id
-                )
+                raise SessionRecordCorruptionError("duplicate_abort_request", record.operation_id)
             abort_request = AbortRequestState(operation_id=record.operation_id, source=source)
             continue
         if record.kind == "harness_action":
@@ -329,7 +317,11 @@ def reduce_session_records(records: list[SessionRecord]) -> ReducedSessionRecord
                 or record.phase not in {"started", "completed", "failed"}
                 or (
                     iteration is not None
-                    and (not isinstance(iteration, int) or isinstance(iteration, bool) or iteration < 0)
+                    and (
+                        not isinstance(iteration, int)
+                        or isinstance(iteration, bool)
+                        or iteration < 0
+                    )
                 )
             ):
                 raise SessionRecordCorruptionError(
@@ -367,9 +359,7 @@ def reduce_session_records(records: list[SessionRecord]) -> ReducedSessionRecord
                     "action_terminal_without_start", record.operation_id
                 )
             elif previous_action.phase != "started":
-                raise SessionRecordCorruptionError(
-                    "duplicate_action_terminal", record.operation_id
-                )
+                raise SessionRecordCorruptionError("duplicate_action_terminal", record.operation_id)
             elif (
                 previous_action.action != action
                 or previous_action.iteration != iteration
@@ -377,9 +367,7 @@ def reduce_session_records(records: list[SessionRecord]) -> ReducedSessionRecord
                 or previous_action.tool_name != tool_name
                 or previous_action.index != index
             ):
-                raise SessionRecordCorruptionError(
-                    "action_identity_mismatch", record.operation_id
-                )
+                raise SessionRecordCorruptionError("action_identity_mismatch", record.operation_id)
             actions_by_operation[record.operation_id] = HarnessActionState(
                 operation_id=record.operation_id,
                 action=cast(
@@ -409,9 +397,7 @@ def reduce_session_records(records: list[SessionRecord]) -> ReducedSessionRecord
         for action in actions_by_operation.values()
         if action.phase == "started" and action.action == "tool"
     ]
-    if open_tools and (
-        not open_top_level or open_top_level[0].action != "execute"
-    ):
+    if open_tools and (not open_top_level or open_top_level[0].action != "execute"):
         raise SessionRecordCorruptionError(
             "open_tool_without_execute_action",
             "/".join(action.operation_id for action in open_tools),

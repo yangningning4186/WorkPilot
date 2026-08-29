@@ -1125,9 +1125,7 @@ async def test_durable_follow_up_continues_the_same_run_after_a_final_answer(
         source="local_owner",
         delivery="follow_up",
     )
-    provider = NativeToolProvider(
-        [_final_completion("第一问答案"), _final_completion("追问答案")]
-    )
+    provider = NativeToolProvider([_final_completion("第一问答案"), _final_completion("追问答案")])
 
     await cowork_run(
         {
@@ -1144,7 +1142,10 @@ async def test_durable_follow_up_continues_the_same_run_after_a_final_answer(
     assert finished is not None and finished.status == "done"
     assert provider.tool_calls == 2
     second_history = provider.tool_histories[1]
-    assert any(message.role == "assistant" and message.content == "第一问答案" for message in second_history)
+    assert any(
+        message.role == "assistant" and message.content == "第一问答案"
+        for message in second_history
+    )
     assert any(
         message.role == "user" and message.content == "这是同一轮的追问"
         for message in second_history
@@ -1166,7 +1167,9 @@ async def test_durable_follow_up_continues_the_same_run_after_a_final_answer(
         for record in await cowork_store().list_session_records(run_id=run.id)
         if record.kind == "harness_action"
     ]
-    assert [record.payload["action"] for record in action_records if record.phase == "completed"] == [
+    assert [
+        record.payload["action"] for record in action_records if record.phase == "completed"
+    ] == [
         "prepare",
         "dispatch",
         "materialize",
@@ -2651,12 +2654,9 @@ async def test_cowork_recovers_provider_context_overflow_without_mutating_canoni
     assert compaction_payload["turn_prefix_summary"]
     assert "已经调用 list_files" in compaction_payload["turn_prefix_summary"]
     assert "details" in compaction_payload
-    attempts = reduce_model_step_attempts(
-        await cowork_store().list_session_records(run_id=run.id)
-    )
+    attempts = reduce_model_step_attempts(await cowork_store().list_session_records(run_id=run.id))
     assert any(
-        attempt.step == "compaction" and attempt.phase == "completed"
-        for attempt in attempts
+        attempt.step == "compaction" and attempt.phase == "completed" for attempt in attempts
     )
 
 

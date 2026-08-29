@@ -165,9 +165,7 @@ async def test_openai_stream_exposes_tool_call_fragments_before_terminal_result(
                 "choices": [
                     {
                         "delta": {
-                            "tool_calls": [
-                                {"index": 0, "function": {"arguments": '"README.md"}'}}
-                            ]
+                            "tool_calls": [{"index": 0, "function": {"arguments": '"README.md"}'}}]
                         },
                         "finish_reason": "tool_calls",
                     }
@@ -557,10 +555,7 @@ async def test_openai_plain_stream_rejects_clean_eof_before_done() -> None:
     )
 
     with pytest.raises(ProviderRetryableError, match=r"before \[DONE\]"):
-        _ = [
-            fragment
-            async for fragment in provider.stream(ASK, max_tokens=64, temperature=0.0)
-        ]
+        _ = [fragment async for fragment in provider.stream(ASK, max_tokens=64, temperature=0.0)]
 
 
 async def test_anthropic_stream_rejects_clean_eof_before_message_stop() -> None:

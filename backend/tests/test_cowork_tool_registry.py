@@ -70,9 +70,7 @@ def test_tool_argument_compatibility_runs_before_schema_validation() -> None:
         )
     )
 
-    assert registry.parse_arguments("compat_search", {"q": "季度报告"}) == {
-        "query": "季度报告"
-    }
+    assert registry.parse_arguments("compat_search", {"q": "季度报告"}) == {"query": "季度报告"}
 
 
 def test_tool_prompt_guidance_and_sequential_execution_are_declared_on_spec() -> None:

@@ -256,8 +256,7 @@ def _endpoint(
             context_window_tokens = int(context_window_raw)
         except ValueError as error:
             raise RoutingConfigError(
-                f"{where}.context_window_tokens 必须是正整数或 auto，实际是 "
-                f"{context_window_raw!r}"
+                f"{where}.context_window_tokens 必须是正整数或 auto，实际是 {context_window_raw!r}"
             ) from error
         if metadata is not None and context_window_tokens != metadata.context_window_tokens:
             raise RoutingConfigError(

@@ -1320,9 +1320,7 @@ class SqliteCoworkStore:
                FROM session_records_legacy"""
         )
         connection.execute("DROP TABLE session_records_legacy")
-        connection.execute(
-            "CREATE INDEX idx_session_records_run ON session_records(run_id, seq)"
-        )
+        connection.execute("CREATE INDEX idx_session_records_run ON session_records(run_id, seq)")
 
     async def close(self) -> None:
         return None
@@ -2947,9 +2945,7 @@ class SqliteCoworkStore:
                 raise ValueError(f"session record operation/phase 冲突: {operation_id}/{phase}")
             return record
         if (
-            connection.execute(
-                "SELECT 1 FROM agent_runs WHERE id = ?", (str(run_id),)
-            ).fetchone()
+            connection.execute("SELECT 1 FROM agent_runs WHERE id = ?", (str(run_id),)).fetchone()
             is None
         ):
             raise RunNotFoundError(str(run_id))
@@ -5260,12 +5256,8 @@ class SqliteCoworkStore:
             source=cast("SteeringSource", str(row["source"])),
             status=status or cast("QueuedMessageStatus", str(row["status"])),
             created_at=cast(datetime, _datetime(row["created_at"])),
-            consumed_at=(
-                consumed_at if consumed_at is not None else _datetime(row["consumed_at"])
-            ),
-            requested_delivery=cast(
-                "QueuedMessageDelivery", str(row["requested_delivery"])
-            ),
+            consumed_at=(consumed_at if consumed_at is not None else _datetime(row["consumed_at"])),
+            requested_delivery=cast("QueuedMessageDelivery", str(row["requested_delivery"])),
             delivery=cast("QueuedMessageDelivery", str(row["delivery"])),
             cancelled_at=_datetime(row["cancelled_at"]),
         )

@@ -257,9 +257,7 @@ class ToolRegistry[SpecT: RegistryToolSpec]:
         except ToolRegistryError:
             return False
         return all(
-            spec.risk == "read"
-            and spec.parallel_safe
-            and spec.execution_mode != "sequential"
+            spec.risk == "read" and spec.parallel_safe and spec.execution_mode != "sequential"
             for spec in specs
         )
 

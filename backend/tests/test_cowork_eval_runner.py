@@ -146,6 +146,7 @@ def test_skill_pairing_mode_changes_the_real_fixture_registry(tmp_path: Path) ->
     assert "load_skill" not in disabled.names()
     assert "incident-handoff" in enabled.runtime_snapshot()["skills"]["names"]
 
+
 async def test_fixture_rag_returns_only_evidence_contract() -> None:
     suite = load_suite(DEFAULT_SUITE)
     documents = suite["fixtures"]["knowledge-architecture"]["knowledge_documents"]

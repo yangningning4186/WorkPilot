@@ -253,12 +253,7 @@ async def execute_shell_command(
     full_output_path: Path | None = None,
     full_output_max_bytes: int = 64 * 1024 * 1024,
 ) -> ShellExecutionResult:
-    if (
-        timeout_s <= 0
-        or terminate_grace_s < 0
-        or max_output_bytes < 1
-        or full_output_max_bytes < 1
-    ):
+    if timeout_s <= 0 or terminate_grace_s < 0 or max_output_bytes < 1 or full_output_max_bytes < 1:
         raise ValueError("shell 执行限制必须为正数")
     environment = _minimal_environment()
     if command.has_operators:

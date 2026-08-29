@@ -56,9 +56,7 @@ def _image_attachment(path: str, max_bytes: int) -> MessageAttachment:
     with image_path.open("rb") as handle:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
-    media_type = (
-        "image/jpeg" if image_path.suffix.casefold() in {".jpg", ".jpeg"} else "image/png"
-    )
+    media_type = "image/jpeg" if image_path.suffix.casefold() in {".jpg", ".jpeg"} else "image/png"
     return MessageAttachment(
         kind="image",
         filename=image_path.name,
@@ -492,7 +490,9 @@ def register_browser_tools(
         output = await _snapshot(
             args.session_id, session, max_chars=context.settings.cowork_web_text_max_chars
         )
-        return CoworkToolResult(content=output, effect_ref=_effect(args.session_id, session, "back"))
+        return CoworkToolResult(
+            content=output, effect_ref=_effect(args.session_id, session, "back")
+        )
 
     async def type_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = BrowserTypeArgs.model_validate(raw.model_dump())

@@ -251,9 +251,7 @@ async def test_agent_loop_owns_tool_batch_mode_events_and_explicit_termination()
             await emit(info, "completed")
         return ToolBatchResult(state={**state, "pending": False}, terminate=True)
 
-    async def record_tool(
-        tool: AgentToolActionInfo, phase: AgentToolActionPhase
-    ) -> None:
+    async def record_tool(tool: AgentToolActionInfo, phase: AgentToolActionPhase) -> None:
         tool_events.append(f"{tool.tool_name}:{phase}")
 
     async def record_update(

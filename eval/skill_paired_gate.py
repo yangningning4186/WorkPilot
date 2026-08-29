@@ -172,9 +172,7 @@ def _mean(values: list[int | float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
-def evaluate(
-    *, suite_path: Path, off_report_path: Path, on_report_path: Path
-) -> dict[str, Any]:
+def evaluate(*, suite_path: Path, off_report_path: Path, on_report_path: Path) -> dict[str, Any]:
     suite = load_suite(suite_path)
     contract = _pairing_contract(suite)
     off_report = _read_json(off_report_path)
@@ -196,9 +194,7 @@ def evaluate(
     trigger_activation = _mean(
         [float(expected_skill in on[item_id].loaded_skills) for item_id in trigger_ids]
     )
-    anti_activation = _mean(
-        [float(bool(on[item_id].loaded_skills)) for item_id in anti_ids]
-    )
+    anti_activation = _mean([float(bool(on[item_id].loaded_skills)) for item_id in anti_ids])
     wrong_skill_ids = [
         item_id
         for item_id in expected_ids
@@ -224,19 +220,25 @@ def evaluate(
     token_regression = (
         (mean_tokens_on - mean_tokens_off) / mean_tokens_off if mean_tokens_off else 0.0
     )
-    call_regression = (
-        (mean_calls_on - mean_calls_off) / mean_calls_off if mean_calls_off else 0.0
-    )
+    call_regression = (mean_calls_on - mean_calls_off) / mean_calls_off if mean_calls_off else 0.0
 
     boot = paired_bootstrap(
         {
             "task_success": MetricSamples(
-                baseline=tuple(RatioPoint(float(off[item_id].success), 1.0) for item_id in expected_ids),
-                candidate=tuple(RatioPoint(float(on[item_id].success), 1.0) for item_id in expected_ids),
+                baseline=tuple(
+                    RatioPoint(float(off[item_id].success), 1.0) for item_id in expected_ids
+                ),
+                candidate=tuple(
+                    RatioPoint(float(on[item_id].success), 1.0) for item_id in expected_ids
+                ),
             ),
             "guardrail_pass": MetricSamples(
-                baseline=tuple(RatioPoint(float(off[item_id].guardrail), 1.0) for item_id in expected_ids),
-                candidate=tuple(RatioPoint(float(on[item_id].guardrail), 1.0) for item_id in expected_ids),
+                baseline=tuple(
+                    RatioPoint(float(off[item_id].guardrail), 1.0) for item_id in expected_ids
+                ),
+                candidate=tuple(
+                    RatioPoint(float(on[item_id].guardrail), 1.0) for item_id in expected_ids
+                ),
             ),
         },
         seed=20260828,
@@ -289,8 +291,7 @@ def evaluate(
         f"relative regression {call_regression:.3f}",
     )
     require(
-        error_rate_on - error_rate_off
-        <= float(gate["maximum_tool_error_rate_increase"]) + 1e-12,
+        error_rate_on - error_rate_off <= float(gate["maximum_tool_error_rate_increase"]) + 1e-12,
         "tool_error_rate_regression",
         f"{error_rate_off:.3f} -> {error_rate_on:.3f}",
     )
@@ -302,7 +303,9 @@ def evaluate(
         "passed": not violations,
         "status": "passed" if not violations else "failed",
         "claim_scope": (
-            "product_quality" if review["status"] == "approved" else "engineering_only_no_product_claim"
+            "product_quality"
+            if review["status"] == "approved"
+            else "engineering_only_no_product_claim"
         ),
         "suite": suite["name"],
         "suite_sha256": _sha256(suite_path),
@@ -315,11 +318,22 @@ def evaluate(
         "metrics": {
             "trigger_activation_rate": trigger_activation,
             "anti_trigger_activation_rate": anti_activation,
-            "trigger_task_success": {"disabled": trigger_success_off, "enabled": trigger_success_on},
+            "trigger_task_success": {
+                "disabled": trigger_success_off,
+                "enabled": trigger_success_on,
+            },
             "anti_trigger_task_success": {"disabled": anti_success_off, "enabled": anti_success_on},
             "guardrail_pass": {"disabled": guardrail_off, "enabled": guardrail_on},
-            "mean_tokens": {"disabled": mean_tokens_off, "enabled": mean_tokens_on, "relative_delta": token_regression},
-            "mean_calls": {"disabled": mean_calls_off, "enabled": mean_calls_on, "relative_delta": call_regression},
+            "mean_tokens": {
+                "disabled": mean_tokens_off,
+                "enabled": mean_tokens_on,
+                "relative_delta": token_regression,
+            },
+            "mean_calls": {
+                "disabled": mean_calls_off,
+                "enabled": mean_calls_on,
+                "relative_delta": call_regression,
+            },
             "tool_error_rate": {"disabled": error_rate_off, "enabled": error_rate_on},
             "paired_bootstrap": {name: value.to_dict() for name, value in boot.items()},
         },
@@ -393,7 +407,9 @@ def main() -> None:
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     (args.output_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
-    print(json.dumps({"passed": report["passed"], "output": str(args.output_dir)}, ensure_ascii=False))
+    print(
+        json.dumps({"passed": report["passed"], "output": str(args.output_dir)}, ensure_ascii=False)
+    )
     raise SystemExit(0 if report["passed"] else 1)
 
 

@@ -781,8 +781,7 @@ async def test_legacy_steering_schema_migrates_before_delivery_index_creation(
     ]
     with sqlite3.connect(path) as connection:
         columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info(cowork_steering_messages)")
+            row[1] for row in connection.execute("PRAGMA table_info(cowork_steering_messages)")
         }
         index_sql = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'index' "
@@ -1525,8 +1524,7 @@ async def test_failed_checkpoint_internal_messages_do_not_pollute_the_next_run(
         next_state = await initialize_cowork_state(session, run_id=second.id, registry=registry)
 
         assert [
-            (item["role"], item["content"], item.get("source"))
-            for item in next_state["messages"]
+            (item["role"], item["content"], item.get("source")) for item in next_state["messages"]
         ] == [
             ("user", "hello", None),
             ("user", "你好", "unknown"),

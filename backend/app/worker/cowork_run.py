@@ -416,9 +416,7 @@ async def cowork_run(ctx: dict[str, Any], run_id_raw: str) -> None:
                 tracer=AgentTracer(
                     default_telemetry_store(),
                     run_id=run_id,
-                    trace_id=str(
-                        structlog.contextvars.get_contextvars().get("trace_id") or run_id
-                    ),
+                    trace_id=str(structlog.contextvars.get_contextvars().get("trace_id") or run_id),
                 ),
                 hook_configurators=hook_configurators,
             )

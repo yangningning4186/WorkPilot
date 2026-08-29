@@ -25,6 +25,11 @@ from typing import Any, Literal, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pymupdf
+from docx import Document
+from openpyxl import Workbook, load_workbook  # type: ignore[import-untyped]
+from pptx import Presentation
+from pydantic import BaseModel
+
 from app.agent_core.contracts import HumanInterrupt
 from app.core.config import Settings
 from app.core.db import DbSession as AsyncSession
@@ -73,20 +78,6 @@ from app.knowledge_contracts import EvidenceBundle, EvidenceSegment, RagSearchRe
 from app.llm_bootstrap import build_model_gateway
 from app.runstore.runs import append_message, create_run, ensure_conversation, get_run
 from app.worker.cowork_run import cowork_run
-from docx import Document
-from openpyxl import Workbook, load_workbook  # type: ignore[import-untyped]
-from pptx import Presentation
-from pydantic import BaseModel
-from workpilot_ai.gateway import ModelGateway, PromptBudget, request_character_count
-from workpilot_ai.pricing import estimate_tokens
-from workpilot_ai.types import (
-    CompletionChunk,
-    CompletionResult,
-    EmbeddingResult,
-    Message,
-    ToolDefinition,
-)
-
 from eval.cowork_task_suite import (
     DEFAULT_SUITE,
     load_suite,
@@ -107,6 +98,15 @@ from eval.resource_limits import (
     EvaluationLimitExceeded,
     EvaluationLimits,
     TokenReservation,
+)
+from workpilot_ai.gateway import ModelGateway, PromptBudget, request_character_count
+from workpilot_ai.pricing import estimate_tokens
+from workpilot_ai.types import (
+    CompletionChunk,
+    CompletionResult,
+    EmbeddingResult,
+    Message,
+    ToolDefinition,
 )
 
 REPORT_SCHEMA_VERSION = "cowork-eval-report.v1"
@@ -2107,12 +2107,12 @@ async def run_suite(
     # 落在包目录里还有一个额外好处——report.json 和产生它的那份 SQLite 是同一份快照。
     store_root = package / "store"
     settings_update: dict[str, Any] = {
-            "cowork_data_path": store_root,
-            "memory_extraction_enabled": False,
-            "skill_distillation_enabled": False,
-            "cowork_shell_allowlist": [],
-            "run_heartbeat_s": 60.0,
-            "model_timeout_s": settings.cowork_model_timeout_s,
+        "cowork_data_path": store_root,
+        "memory_extraction_enabled": False,
+        "skill_distillation_enabled": False,
+        "cowork_shell_allowlist": [],
+        "run_heartbeat_s": 60.0,
+        "model_timeout_s": settings.cowork_model_timeout_s,
     }
     if skills_root is not None:
         settings_update["cowork_skills_path"] = skills_root.expanduser().resolve()

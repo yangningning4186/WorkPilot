@@ -408,12 +408,9 @@ async def test_stalling_takes_the_tools_away_instead_of_burning_the_budget(
         if message.get("role") == "user" and "工具已经全部收回" in str(message["content"])
     ]
     assert stall_prompt, "必须显式告诉模型工具已被收回"
-    attempts = reduce_model_step_attempts(
-        await cowork_store().list_session_records(run_id=run.id)
-    )
+    attempts = reduce_model_step_attempts(await cowork_store().list_session_records(run_id=run.id))
     assert any(
-        attempt.step == "forced_final" and attempt.phase == "completed"
-        for attempt in attempts
+        attempt.step == "forced_final" and attempt.phase == "completed" for attempt in attempts
     )
 
 

@@ -1821,13 +1821,7 @@ def _shell_result_error(result: CoworkToolResult) -> str | None:
 
 def _shell_full_output_path(context: CoworkToolContext, root_path: Path) -> Path:
     call_key = hashlib.sha256(context.tool_call_id.encode()).hexdigest()[:20]
-    candidate = (
-        root_path
-        / ".workpilot-output"
-        / "shell"
-        / str(context.run_id)
-        / f"{call_key}.txt"
-    )
+    candidate = root_path / ".workpilot-output" / "shell" / str(context.run_id) / f"{call_key}.txt"
     resolved_root = root_path.resolve()
     resolved = candidate.resolve(strict=False)
     if resolved != resolved_root and not resolved.is_relative_to(resolved_root):

@@ -516,7 +516,9 @@ async def _list_handler(context: CoworkToolContext, _: BaseModel) -> CoworkToolR
 
 async def _read_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
     args = ConnectorRequestArgs.model_validate(raw.model_dump())
-    return CoworkToolResult(content=await _connector_request(context, args, method="GET", body=None))
+    return CoworkToolResult(
+        content=await _connector_request(context, args, method="GET", body=None)
+    )
 
 
 async def _action_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
