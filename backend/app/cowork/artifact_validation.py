@@ -240,6 +240,7 @@ def validate_artifact_in_subprocess(
         start_new_session=os.name == "posix",
         creationflags=creationflags,
     )
+
     def terminate() -> None:
         if os.name == "posix":
             try:
@@ -280,22 +281,24 @@ def validate_artifact_in_subprocess(
             )
             if violation is not None:
                 terminate()
-                raise ValueError(
-                    f"Artifact 校验子进程资源超限（{violation}），已终止"
-                ) from None
+                raise ValueError(f"Artifact 校验子进程资源超限（{violation}），已终止") from None
     if len(stdout) > 4 * 1024 * 1024 or len(stderr) > 64 * 1024:
         raise ValueError("Artifact 校验子进程输出超过上限")
     try:
         payload = json.loads(stdout)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         detail = stderr.decode("utf-8", errors="replace")[-2_000:]
-        raise ValueError(f"Artifact 校验子进程返回无效结果：{detail or process.returncode}") from error
+        raise ValueError(
+            f"Artifact 校验子进程返回无效结果：{detail or process.returncode}"
+        ) from error
     if process.returncode != 0 or not payload.get("ok"):
         raise ValueError(str(payload.get("error") or "Artifact 校验子进程失败"))
     return ArtifactValidationReport.model_validate(payload.get("report"))
 
 
-def _dimension(checks: list[ValidationCheck], *, empty: ValidationStatus = "not_run") -> ValidationDimension:
+def _dimension(
+    checks: list[ValidationCheck], *, empty: ValidationStatus = "not_run"
+) -> ValidationDimension:
     if not checks:
         return ValidationDimension(status=empty)
     statuses = {check.status for check in checks}
@@ -330,13 +333,8 @@ def _validate_ooxml_container_budget(path: Path) -> None:
             expanded += info.file_size
             compressed += max(1, info.compress_size)
             if expanded > _OOXML_MAX_EXPANDED_BYTES:
-                raise ValueError(
-                    f"OOXML 解压后大小超过上限 {_OOXML_MAX_EXPANDED_BYTES} bytes"
-                )
-        if (
-            expanded > 16 * 1024 * 1024
-            and expanded > compressed * _OOXML_MAX_EXPANSION_RATIO
-        ):
+                raise ValueError(f"OOXML 解压后大小超过上限 {_OOXML_MAX_EXPANDED_BYTES} bytes")
+        if expanded > 16 * 1024 * 1024 and expanded > compressed * _OOXML_MAX_EXPANSION_RATIO:
             raise ValueError("OOXML 压缩比异常，疑似 zip bomb")
 
 
@@ -423,7 +421,9 @@ def _render_check(path: Path) -> ValidationCheck:
 def _pptx_checks(
     path: Path,
     spec: PresentationSpec | None,
-) -> tuple[list[ValidationCheck], list[ValidationCheck], list[ValidationCheck], list[ValidationCheck]]:
+) -> tuple[
+    list[ValidationCheck], list[ValidationCheck], list[ValidationCheck], list[ValidationCheck]
+]:
     presentation = Presentation(str(path))
     structural = [ValidationCheck(name="reopen", status="passed", message="PPTX 可重新打开")]
     semantic: list[ValidationCheck] = []
@@ -550,18 +550,48 @@ def _pptx_checks(
                     overlaps += 1
         rendered_fingerprints.append(tuple(sorted(fingerprint)))
     rendered_repetition = sum(
-        first == second
-        for first, second in pairwise(rendered_fingerprints)
-        if first and second
+        first == second for first, second in pairwise(rendered_fingerprints) if first and second
     )
     visual.extend(
         [
-            ValidationCheck(name="blank_slides", status="failed" if blank else "passed", message=f"空白页 {blank}", value=blank),
-            ValidationCheck(name="out_of_bounds", status="failed" if out_of_bounds else "passed", message=f"越界元素 {out_of_bounds}", value=out_of_bounds),
-            ValidationCheck(name="large_overlap", status="failed" if overlaps else "passed", message=f"疑似大面积文本重叠 {overlaps}", value=overlaps),
-            ValidationCheck(name="min_font_pt", status="failed" if min_font is not None and min_font < 16 else "passed", message="未发现小于 16 pt 的正文" if min_font is None or min_font >= 16 else f"最小字号 {min_font:g} pt", value=min_font),
-            ValidationCheck(name="text_overload", status="failed" if overloaded else "passed", message=f"文字过载页 {overloaded}", value=overloaded),
-            ValidationCheck(name="content_density", status="failed" if sparse else "passed", message=f"非 focus 的空洞内容页 {sparse}", value=sparse),
+            ValidationCheck(
+                name="blank_slides",
+                status="failed" if blank else "passed",
+                message=f"空白页 {blank}",
+                value=blank,
+            ),
+            ValidationCheck(
+                name="out_of_bounds",
+                status="failed" if out_of_bounds else "passed",
+                message=f"越界元素 {out_of_bounds}",
+                value=out_of_bounds,
+            ),
+            ValidationCheck(
+                name="large_overlap",
+                status="failed" if overlaps else "passed",
+                message=f"疑似大面积文本重叠 {overlaps}",
+                value=overlaps,
+            ),
+            ValidationCheck(
+                name="min_font_pt",
+                status="failed" if min_font is not None and min_font < 16 else "passed",
+                message="未发现小于 16 pt 的正文"
+                if min_font is None or min_font >= 16
+                else f"最小字号 {min_font:g} pt",
+                value=min_font,
+            ),
+            ValidationCheck(
+                name="text_overload",
+                status="failed" if overloaded else "passed",
+                message=f"文字过载页 {overloaded}",
+                value=overloaded,
+            ),
+            ValidationCheck(
+                name="content_density",
+                status="failed" if sparse else "passed",
+                message=f"非 focus 的空洞内容页 {sparse}",
+                value=sparse,
+            ),
             ValidationCheck(
                 name="hollow_containers",
                 status="failed" if hollow_container_pages else "passed",
@@ -592,11 +622,28 @@ def _pptx_checks(
             value=focus_like_pages,
         )
     )
-    semantic.append(ValidationCheck(name="titles", status="warning" if missing_title else "passed", message=f"缺少可识别标题的页面 {missing_title}", value=missing_title))
+    semantic.append(
+        ValidationCheck(
+            name="titles",
+            status="warning" if missing_title else "passed",
+            message=f"缺少可识别标题的页面 {missing_title}",
+            value=missing_title,
+        )
+    )
     repeated = 0
     if spec is not None:
-        repeated = sum(first.layout == second.layout for first, second in zip(spec.slides, spec.slides[1:], strict=False))
-    semantic.append(ValidationCheck(name="layout_repetition", status="warning" if repeated else "passed", message=f"相邻重复 layout {repeated}", value=repeated))
+        repeated = sum(
+            first.layout == second.layout
+            for first, second in zip(spec.slides, spec.slides[1:], strict=False)
+        )
+    semantic.append(
+        ValidationCheck(
+            name="layout_repetition",
+            status="warning" if repeated else "passed",
+            message=f"相邻重复 layout {repeated}",
+            value=repeated,
+        )
+    )
     if spec is not None:
         focus_layouts = {"title", "statement", "section", "quote"}
         focus_pages = sum(
@@ -656,11 +703,15 @@ def _pptx_checks(
             elif slide.layout == "big_number" and len(slide.metrics) == 1 and not slide.body:
                 sparse_supporting.append(slide.id)
             elif slide.layout == "image_text":
-                explanation = "".join(slide.bullets) + (slide.body or "") + (slide.image_caption or "")
+                explanation = (
+                    "".join(slide.bullets) + (slide.body or "") + (slide.image_caption or "")
+                )
                 if len(slide.bullets) < 2 and len(explanation.strip()) < 24:
                     sparse_supporting.append(slide.id)
-            elif slide.layout == "timeline" and len(slide.timeline) == 2 and all(
-                not entry.detail for entry in slide.timeline
+            elif (
+                slide.layout == "timeline"
+                and len(slide.timeline) == 2
+                and all(not entry.detail for entry in slide.timeline)
             ):
                 sparse_supporting.append(slide.id)
             elif slide.layout == "matrix" and len(slide.matrix) == 2:
@@ -696,9 +747,7 @@ def _pptx_checks(
             "方案介绍",
             "总结",
         }
-        generic = [
-            slide.id for slide in spec.slides if slide.title.strip() in generic_titles
-        ]
+        generic = [slide.id for slide in spec.slides if slide.title.strip() in generic_titles]
         semantic.append(
             ValidationCheck(
                 name="generic_titles",
@@ -712,7 +761,14 @@ def _pptx_checks(
             )
         )
     external = _external_ooxml_relationships(path)
-    security.append(ValidationCheck(name="external_relationships", status="failed" if external else "passed", message=f"外部关系 {len(external)}", value=len(external)))
+    security.append(
+        ValidationCheck(
+            name="external_relationships",
+            status="failed" if external else "passed",
+            message=f"外部关系 {len(external)}",
+            value=len(external),
+        )
+    )
     return structural, semantic, visual, security
 
 
@@ -735,25 +791,33 @@ def _docx_checks(
 ) -> tuple[list[ValidationCheck], list[ValidationCheck], list[ValidationCheck]]:
     document = Document(str(path))
     structural = [ValidationCheck(name="reopen", status="passed", message="DOCX 可重新打开")]
-    headings = [paragraph for paragraph in document.paragraphs if paragraph.style and paragraph.style.name.startswith("Heading")]
+    headings = [
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph.style and paragraph.style.name.startswith("Heading")
+    ]
     heading_levels: list[int] = []
     for paragraph in headings:
         style = paragraph.style
         match = re.match(r"Heading\s+([1-9])", style.name if style is not None else "")
         if match:
             heading_levels.append(int(match.group(1)))
-    heading_jumps = sum(
-        current > previous + 1
-        for previous, current in pairwise(heading_levels)
-    )
+    heading_jumps = sum(current > previous + 1 for previous, current in pairwise(heading_levels))
     letter_sections = 0
     safe_margins = 0
     for section in document.sections:
         width = float(section.page_width.inches) if section.page_width is not None else 0
         height = float(section.page_height.inches) if section.page_height is not None else 0
         letter_sections += int(abs(width - 8.5) <= 0.05 and abs(height - 11) <= 0.05)
-        margins = (section.top_margin, section.bottom_margin, section.left_margin, section.right_margin)
-        safe_margins += int(all(value is not None and float(value.inches) >= 0.7 for value in margins))
+        margins = (
+            section.top_margin,
+            section.bottom_margin,
+            section.left_margin,
+            section.right_margin,
+        )
+        safe_margins += int(
+            all(value is not None and float(value.inches) >= 0.7 for value in margins)
+        )
     fixed_tables = 0
     fixed_row_heights = 0
     excessive_columns = 0
@@ -766,26 +830,53 @@ def _docx_checks(
         [
             ValidationCheck(
                 name="page_geometry",
-                status=("failed" if strict else "warning") if letter_sections != len(document.sections) or safe_margins != len(document.sections) else "passed",
+                status=("failed" if strict else "warning")
+                if letter_sections != len(document.sections)
+                or safe_margins != len(document.sections)
+                else "passed",
                 message=f"Letter 页型 {letter_sections}/{len(document.sections)}，安全页边距 {safe_margins}/{len(document.sections)}",
             ),
             ValidationCheck(
                 name="table_layout",
-                status=("failed" if strict else "warning") if fixed_tables != len(document.tables) or fixed_row_heights or excessive_columns else "passed",
+                status=("failed" if strict else "warning")
+                if fixed_tables != len(document.tables) or fixed_row_heights or excessive_columns
+                else "passed",
                 message=f"固定网格表格 {fixed_tables}/{len(document.tables)}，固定行高 {fixed_row_heights}，超宽表格 {excessive_columns}",
             ),
         ]
     )
     semantic = [
-        ValidationCheck(name="heading_hierarchy", status=("failed" if strict else "warning") if not headings or heading_jumps else "passed", message=f"标题段落 {len(headings)}，跳级 {heading_jumps}", value=len(headings)),
-        ValidationCheck(name="tables", status="passed", message=f"表格 {len(document.tables)}", value=len(document.tables)),
+        ValidationCheck(
+            name="heading_hierarchy",
+            status=("failed" if strict else "warning")
+            if not headings or heading_jumps
+            else "passed",
+            message=f"标题段落 {len(headings)}，跳级 {heading_jumps}",
+            value=len(headings),
+        ),
+        ValidationCheck(
+            name="tables",
+            status="passed",
+            message=f"表格 {len(document.tables)}",
+            value=len(document.tables),
+        ),
     ]
     external = _external_ooxml_relationships(path)
     with zipfile.ZipFile(path) as archive:
         embedded = [name for name in archive.namelist() if name.startswith("word/embeddings/")]
     security = [
-        ValidationCheck(name="external_relationships", status="failed" if external else "passed", message=f"外部关系 {len(external)}", value=len(external)),
-        ValidationCheck(name="embedded_objects", status="failed" if embedded else "passed", message=f"嵌入对象 {len(embedded)}", value=len(embedded)),
+        ValidationCheck(
+            name="external_relationships",
+            status="failed" if external else "passed",
+            message=f"外部关系 {len(external)}",
+            value=len(external),
+        ),
+        ValidationCheck(
+            name="embedded_objects",
+            status="failed" if embedded else "passed",
+            message=f"嵌入对象 {len(embedded)}",
+            value=len(embedded),
+        ),
     ]
     return structural, semantic, security
 
@@ -821,21 +912,51 @@ def _xlsx_checks(
                         network_formulas += int(_NETWORK_FORMULA.search(upper) is not None)
                     if value is not None and isinstance(value, str):
                         width = float(sheet.column_dimensions[cell.column_letter].width or 13)
-                        if _display_width(value) > max(1, width - 1) and not cell.alignment.wrap_text:
+                        if (
+                            _display_width(value) > max(1, width - 1)
+                            and not cell.alignment.wrap_text
+                        ):
                             clipped_cells += 1
             blank_sheets += int(populated == 0)
         structural = [ValidationCheck(name="reopen", status="passed", message="XLSX 可重新打开")]
         semantic = [
-            ValidationCheck(name="sheets", status=("failed" if strict else "warning") if blank_sheets else "passed", message=f"工作表 {len(workbook.sheetnames)}，空白 {blank_sheets}", value=len(workbook.sheetnames)),
-            ValidationCheck(name="formulas", status="failed" if errors else "passed", message=f"公式 {formulas}，显式错误 {errors}", value=formulas),
-            ValidationCheck(name="merged_cells", status="passed", message=f"合并区域 {merged}", value=merged),
+            ValidationCheck(
+                name="sheets",
+                status=("failed" if strict else "warning") if blank_sheets else "passed",
+                message=f"工作表 {len(workbook.sheetnames)}，空白 {blank_sheets}",
+                value=len(workbook.sheetnames),
+            ),
+            ValidationCheck(
+                name="formulas",
+                status="failed" if errors else "passed",
+                message=f"公式 {formulas}，显式错误 {errors}",
+                value=formulas,
+            ),
+            ValidationCheck(
+                name="merged_cells", status="passed", message=f"合并区域 {merged}", value=merged
+            ),
             ValidationCheck(name="charts", status="passed", message=f"图表 {charts}", value=charts),
-            ValidationCheck(name="potential_clipping", status=("failed" if strict else "warning") if clipped_cells else "passed", message=f"疑似被列宽截断的文本单元格 {clipped_cells}", value=clipped_cells),
+            ValidationCheck(
+                name="potential_clipping",
+                status=("failed" if strict else "warning") if clipped_cells else "passed",
+                message=f"疑似被列宽截断的文本单元格 {clipped_cells}",
+                value=clipped_cells,
+            ),
         ]
         external = _external_ooxml_relationships(path)
         security = [
-            ValidationCheck(name="external_relationships", status="failed" if external else "passed", message=f"外部关系 {len(external)}", value=len(external)),
-            ValidationCheck(name="dde_or_external_formula", status="failed" if dde else "passed", message=f"疑似 DDE/外部公式 {dde}", value=dde),
+            ValidationCheck(
+                name="external_relationships",
+                status="failed" if external else "passed",
+                message=f"外部关系 {len(external)}",
+                value=len(external),
+            ),
+            ValidationCheck(
+                name="dde_or_external_formula",
+                status="failed" if dde else "passed",
+                message=f"疑似 DDE/外部公式 {dde}",
+                value=dde,
+            ),
             ValidationCheck(
                 name="network_formula",
                 status="failed" if network_formulas else "passed",
@@ -867,7 +988,8 @@ def _pdf_active_content(document: object) -> list[str]:
         )
     try:
         findings.extend(
-            f"embedded:{name}" for name in document.embfile_names()  # type: ignore[attr-defined]
+            f"embedded:{name}"
+            for name in document.embfile_names()  # type: ignore[attr-defined]
         )
     except (RuntimeError, ValueError):
         findings.append("embedded-files:unreadable")
@@ -908,12 +1030,40 @@ def _pdf_checks(
                     or x1 > rectangle.x1 + 1
                     or y1 > rectangle.y1 + 1
                 )
-        structural = [ValidationCheck(name="reopen", status="failed" if encrypted else "passed", message="PDF 已加密" if encrypted else "PDF 可重新打开")]
-        semantic = [ValidationCheck(name="pages", status="failed" if document.page_count == 0 else "passed", message=f"页面 {document.page_count}", value=document.page_count)]
+        structural = [
+            ValidationCheck(
+                name="reopen",
+                status="failed" if encrypted else "passed",
+                message="PDF 已加密" if encrypted else "PDF 可重新打开",
+            )
+        ]
+        semantic = [
+            ValidationCheck(
+                name="pages",
+                status="failed" if document.page_count == 0 else "passed",
+                message=f"页面 {document.page_count}",
+                value=document.page_count,
+            )
+        ]
         visual = [
-            ValidationCheck(name="blank_pages", status="failed" if blank else "passed", message=f"空白页 {blank}", value=blank),
-            ValidationCheck(name="page_raster", status="failed" if raster_failures else "passed", message=f"逐页栅格化失败 {raster_failures}", value=raster_failures),
-            ValidationCheck(name="text_bounds", status="failed" if out_of_bounds else "passed", message=f"越界文本块 {out_of_bounds}", value=out_of_bounds),
+            ValidationCheck(
+                name="blank_pages",
+                status="failed" if blank else "passed",
+                message=f"空白页 {blank}",
+                value=blank,
+            ),
+            ValidationCheck(
+                name="page_raster",
+                status="failed" if raster_failures else "passed",
+                message=f"逐页栅格化失败 {raster_failures}",
+                value=raster_failures,
+            ),
+            ValidationCheck(
+                name="text_bounds",
+                status="failed" if out_of_bounds else "passed",
+                message=f"越界文本块 {out_of_bounds}",
+                value=out_of_bounds,
+            ),
         ]
         active_content = _pdf_active_content(document)
         security = [
@@ -929,15 +1079,30 @@ def _pdf_checks(
         document.close()
 
 
-def _html_checks(path: Path) -> tuple[list[ValidationCheck], list[ValidationCheck], list[ValidationCheck]]:
+def _html_checks(
+    path: Path,
+) -> tuple[list[ValidationCheck], list[ValidationCheck], list[ValidationCheck]]:
     raw = path.read_text(encoding="utf-8")
     parser = _OfflineHtmlSecurityParser()
     parser.feed(raw)
     parser.close()
     active = parser.findings
     structural = [ValidationCheck(name="utf8", status="passed", message="HTML 是 UTF-8 文本")]
-    semantic = [ValidationCheck(name="title", status="warning" if "<title" not in raw.casefold() else "passed", message="已检查 title")]
-    security = [ValidationCheck(name="active_or_external_content", status="failed" if active else "passed", message=f"主动或外部内容 {len(active)}", value=len(active))]
+    semantic = [
+        ValidationCheck(
+            name="title",
+            status="warning" if "<title" not in raw.casefold() else "passed",
+            message="已检查 title",
+        )
+    ]
+    security = [
+        ValidationCheck(
+            name="active_or_external_content",
+            status="failed" if active else "passed",
+            message=f"主动或外部内容 {len(active)}",
+            value=len(active),
+        )
+    ]
     return structural, semantic, security
 
 
@@ -959,14 +1124,23 @@ def _evidence_checks(
     if spec is None or spec.evidence_policy == "none":
         return []
     total = len(spec.claims)
-    bound = sum(claim.claim_id in bound_claim_ids and bool(claim.evidence_ids) for claim in spec.claims)
+    bound = sum(
+        claim.claim_id in bound_claim_ids and bool(claim.evidence_ids) for claim in spec.claims
+    )
     coverage = 100.0 if total == 0 else bound * 100.0 / total
     status: ValidationStatus = "passed"
     if coverage < 100 and spec.evidence_policy == "required":
         status = "failed"
     elif coverage < 100:
         status = "warning"
-    return [ValidationCheck(name="claim_coverage", status=status, message=f"Claim 证据覆盖 {coverage:.1f}%（{bound}/{total}）", value=round(coverage, 1))]
+    return [
+        ValidationCheck(
+            name="claim_coverage",
+            status=status,
+            message=f"Claim 证据覆盖 {coverage:.1f}%（{bound}/{total}）",
+            value=round(coverage, 1),
+        )
+    ]
 
 
 #: 各维度在综合分里的权重。**security 刻意不在这张表里**——它是一票否决维度：
@@ -1078,7 +1252,9 @@ def validate_artifact(
     if render_visual and suffix in {".pptx", ".docx", ".xlsx"}:
         visual.append(_render_check(path))
     elif suffix in {".pptx", ".docx", ".xlsx"}:
-        visual.append(ValidationCheck(name="render", status="not_run", message="未请求真实版面渲染"))
+        visual.append(
+            ValidationCheck(name="render", status="not_run", message="未请求真实版面渲染")
+        )
     structural_dimension = _dimension(structural)
     semantic_dimension = _dimension(semantic)
     visual_dimension = _dimension(visual)

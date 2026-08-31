@@ -769,9 +769,10 @@ async def test_gemini_sends_tool_parameters_as_json_schema() -> None:
     declaration = declarations[0]["functionDeclarations"][0]
     assert "parameters" not in declaration
     assert declaration["parametersJsonSchema"] == parameters
-    assert declaration["parametersJsonSchema"]["properties"]["document"][
-        "additionalProperties"
-    ] is False
+    assert (
+        declaration["parametersJsonSchema"]["properties"]["document"]["additionalProperties"]
+        is False
+    )
     assert result.stop_reason == "tool_use"
     assert result.tool_calls[0].name == "write_document"
     assert json.loads(result.tool_calls[0].arguments) == {"document": {"title": "周报"}}

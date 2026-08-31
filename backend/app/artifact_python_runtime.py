@@ -27,10 +27,7 @@ EXPECTED_DISTRIBUTIONS = {
 
 
 def _runtime_info() -> dict[str, object]:
-    installed = {
-        name: metadata.version(name)
-        for name in EXPECTED_DISTRIBUTIONS
-    }
+    installed = {name: metadata.version(name) for name in EXPECTED_DISTRIBUTIONS}
     return {
         "profile": RUNTIME_PROFILE,
         "python": sys.version.split()[0],
@@ -90,7 +87,9 @@ def _selftest() -> None:
 
 
 def _usage_error(message: str) -> NoReturn:
-    raise SystemExit(f"{message}\n用法: workpilot-artifact-python [-c code | -m module | script.py] [args...]")
+    raise SystemExit(
+        f"{message}\n用法: workpilot-artifact-python [-c code | -m module | script.py] [args...]"
+    )
 
 
 def _run_code(arguments: list[str]) -> int:

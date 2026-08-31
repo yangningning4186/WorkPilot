@@ -185,7 +185,7 @@ def test_project_expert_team_persona_parses_members_and_tool_boundaries(
     persona_root = project / ".workpilot" / "personas"
     persona_root.mkdir(parents=True)
     (persona_root / "release-council.toml").write_text(
-        '''name = "release-council"
+        """name = "release-council"
 label = "发布专家团"
 description = "用实现与独立复核两个角色检查发布"
 expert_type = "team"
@@ -210,7 +210,7 @@ role = "独立检查实现结论"
 reason = "避免自验收"
 system_block = "寻找反例并报告证据缺口。"
 tool_patterns = ["read_*"]
-''',
+""",
         encoding="utf-8",
     )
 
@@ -314,7 +314,9 @@ async def test_selected_expert_council_freezes_manifest_into_runtime_prompt(
         conversation_id=conversation_id,
         persona_name="expert-council",
     )
-    run = await _new_run(db_session, conversation_id=conversation_id, goal="启动深度研究与风险评审团")
+    run = await _new_run(
+        db_session, conversation_id=conversation_id, goal="启动深度研究与风险评审团"
+    )
 
     state = await initialize_cowork_state(
         db_session,

@@ -270,12 +270,8 @@ def test_pptx_runtime_is_owned_by_the_builtin_skill_package() -> None:
 
     assert compatibility_renderer is render_presentation
     assert compatibility_rasterizer is render_presentation_pages
-    assert render_presentation.__module__.endswith(
-        "skills.builtin.pptx.scripts.render_pptx"
-    )
-    assert render_presentation_pages.__module__.endswith(
-        "skills.builtin.pptx.scripts.pptx2image"
-    )
+    assert render_presentation.__module__.endswith("skills.builtin.pptx.scripts.render_pptx")
+    assert render_presentation_pages.__module__.endswith("skills.builtin.pptx.scripts.pptx2image")
 
 
 def test_safe_svg_is_embedded_in_pptx_and_docx_with_alt_text(tmp_path: Path) -> None:
@@ -392,9 +388,21 @@ def test_pptx_cover_visual_cards_and_activity_render_as_native_layouts(tmp_path:
                     "title": "四种习俗都在回答同一个问题：如何表达团圆",
                     "cards": [
                         {"kicker": "观察", "title": "赏月", "detail": "从圆月意象理解团圆与思念。"},
-                        {"kicker": "品味", "title": "月饼", "detail": "从分享食物理解共同体与祝福。"},
-                        {"kicker": "合作", "title": "灯谜", "detail": "用协作猜谜让文化知识进入体验。"},
-                        {"kicker": "表达", "title": "花灯", "detail": "把祝愿写成可展示、可分享的作品。"},
+                        {
+                            "kicker": "品味",
+                            "title": "月饼",
+                            "detail": "从分享食物理解共同体与祝福。",
+                        },
+                        {
+                            "kicker": "合作",
+                            "title": "灯谜",
+                            "detail": "用协作猜谜让文化知识进入体验。",
+                        },
+                        {
+                            "kicker": "表达",
+                            "title": "花灯",
+                            "detail": "把祝愿写成可展示、可分享的作品。",
+                        },
                     ],
                 },
                 {
@@ -420,8 +428,16 @@ def test_pptx_cover_visual_cards_and_activity_render_as_native_layouts(tmp_path:
 
     assert report.deliverable is True, report.model_dump(mode="json")
     assert any(shape.shape_type == 13 for shape in presentation.slides[0].shapes)
-    assert "赏月" in "\n".join(shape.text for shape in presentation.slides[1].shapes if getattr(shape, "has_text_frame", False))
-    assert "3 分钟" in "\n".join(shape.text for shape in presentation.slides[2].shapes if getattr(shape, "has_text_frame", False))
+    assert "赏月" in "\n".join(
+        shape.text
+        for shape in presentation.slides[1].shapes
+        if getattr(shape, "has_text_frame", False)
+    )
+    assert "3 分钟" in "\n".join(
+        shape.text
+        for shape in presentation.slides[2].shapes
+        if getattr(shape, "has_text_frame", False)
+    )
 
 
 def test_pptx_chart_layout_is_an_editable_native_chart(tmp_path: Path) -> None:
@@ -464,14 +480,8 @@ def test_pptx_chart_layout_is_an_editable_native_chart(tmp_path: Path) -> None:
     presentation = Presentation(target)
 
     assert report.deliverable is True, report.model_dump(mode="json")
-    assert any(
-        shape.shape_type == MSO_SHAPE_TYPE.CHART
-        for shape in presentation.slides[1].shapes
-    )
-    assert (
-        "Renderer 回归样例"
-        in presentation.slides[1].notes_slide.notes_text_frame.text
-    )
+    assert any(shape.shape_type == MSO_SHAPE_TYPE.CHART for shape in presentation.slides[1].shapes)
+    assert "Renderer 回归样例" in presentation.slides[1].notes_slide.notes_text_frame.text
 
 
 def test_pptx_diagrams_and_constrained_canvas_render_as_editable_native_shapes(
@@ -489,7 +499,12 @@ def test_pptx_diagrams_and_constrained_canvas_render_as_editable_native_shapes(
                     "diagram": {
                         "kind": "process",
                         "nodes": [
-                            {"id": "observe", "title": "识别问题", "detail": "统一事实", "emphasis": "primary"},
+                            {
+                                "id": "observe",
+                                "title": "识别问题",
+                                "detail": "统一事实",
+                                "emphasis": "primary",
+                            },
                             {"id": "design", "title": "形成方案", "detail": "比较路径"},
                             {"id": "pilot", "title": "小步试点", "detail": "验证假设"},
                             {"id": "scale", "title": "规模推广", "detail": "沉淀标准"},
@@ -506,7 +521,12 @@ def test_pptx_diagrams_and_constrained_canvas_render_as_editable_native_shapes(
                         "nodes": [
                             {"id": "observe", "title": "观察", "detail": "收集反馈"},
                             {"id": "judge", "title": "判断", "detail": "识别偏差"},
-                            {"id": "act", "title": "行动", "detail": "实施调整", "emphasis": "primary"},
+                            {
+                                "id": "act",
+                                "title": "行动",
+                                "detail": "实施调整",
+                                "emphasis": "primary",
+                            },
                             {"id": "review", "title": "复盘", "detail": "沉淀方法"},
                         ],
                     },
@@ -518,7 +538,12 @@ def test_pptx_diagrams_and_constrained_canvas_render_as_editable_native_shapes(
                     "diagram": {
                         "kind": "hierarchy",
                         "nodes": [
-                            {"id": "root", "title": "项目委员会", "detail": "方向与资源", "emphasis": "primary"},
+                            {
+                                "id": "root",
+                                "title": "项目委员会",
+                                "detail": "方向与资源",
+                                "emphasis": "primary",
+                            },
                             {"id": "product", "title": "产品组", "detail": "方案与范围"},
                             {"id": "delivery", "title": "交付组", "detail": "计划与质量"},
                             {"id": "research", "title": "用户研究"},
@@ -544,7 +569,12 @@ def test_pptx_diagrams_and_constrained_canvas_render_as_editable_native_shapes(
                             {"id": "lead", "title": "全部线索", "detail": "2,400 条"},
                             {"id": "qualified", "title": "有效需求", "detail": "860 条"},
                             {"id": "review", "title": "方案评审", "detail": "260 条"},
-                            {"id": "won", "title": "签约客户", "detail": "72 家", "emphasis": "primary"},
+                            {
+                                "id": "won",
+                                "title": "签约客户",
+                                "detail": "72 家",
+                                "emphasis": "primary",
+                            },
                         ],
                     },
                 },
@@ -555,7 +585,12 @@ def test_pptx_diagrams_and_constrained_canvas_render_as_editable_native_shapes(
                     "diagram": {
                         "kind": "pyramid",
                         "nodes": [
-                            {"id": "strategy", "title": "战略牵引", "detail": "明确优先级", "emphasis": "primary"},
+                            {
+                                "id": "strategy",
+                                "title": "战略牵引",
+                                "detail": "明确优先级",
+                                "emphasis": "primary",
+                            },
                             {"id": "mechanism", "title": "机制协同", "detail": "打通职责"},
                             {"id": "data", "title": "数据闭环", "detail": "持续反馈"},
                             {"id": "foundation", "title": "基础设施", "detail": "平台与标准"},
@@ -568,11 +603,55 @@ def test_pptx_diagrams_and_constrained_canvas_render_as_editable_native_shapes(
                     "title": "受约束画布表达非标准关系",
                     "canvas": {
                         "elements": [
-                            {"type": "shape", "id": "input", "x": 2, "y": 24, "width": 24, "height": 42, "title": "输入", "detail": "事实与需求"},
-                            {"type": "shape", "id": "engine", "x": 38, "y": 12, "width": 24, "height": 64, "shape": "hexagon", "title": "决策引擎", "detail": "规则 + 判断", "fill_role": "accent", "fill_style": "solid"},
-                            {"type": "shape", "id": "output", "x": 74, "y": 24, "width": 24, "height": 42, "title": "输出", "detail": "行动与结果", "fill_role": "positive"},
-                            {"type": "connector", "id": "edge-in", "source_id": "input", "target_id": "engine", "label": "校验"},
-                            {"type": "connector", "id": "edge-out", "source_id": "engine", "target_id": "output", "label": "执行", "color_role": "positive"},
+                            {
+                                "type": "shape",
+                                "id": "input",
+                                "x": 2,
+                                "y": 24,
+                                "width": 24,
+                                "height": 42,
+                                "title": "输入",
+                                "detail": "事实与需求",
+                            },
+                            {
+                                "type": "shape",
+                                "id": "engine",
+                                "x": 38,
+                                "y": 12,
+                                "width": 24,
+                                "height": 64,
+                                "shape": "hexagon",
+                                "title": "决策引擎",
+                                "detail": "规则 + 判断",
+                                "fill_role": "accent",
+                                "fill_style": "solid",
+                            },
+                            {
+                                "type": "shape",
+                                "id": "output",
+                                "x": 74,
+                                "y": 24,
+                                "width": 24,
+                                "height": 42,
+                                "title": "输出",
+                                "detail": "行动与结果",
+                                "fill_role": "positive",
+                            },
+                            {
+                                "type": "connector",
+                                "id": "edge-in",
+                                "source_id": "input",
+                                "target_id": "engine",
+                                "label": "校验",
+                            },
+                            {
+                                "type": "connector",
+                                "id": "edge-out",
+                                "source_id": "engine",
+                                "target_id": "output",
+                                "label": "执行",
+                                "color_role": "positive",
+                            },
                         ]
                     },
                 },
@@ -592,9 +671,7 @@ def test_pptx_diagrams_and_constrained_canvas_render_as_editable_native_shapes(
         shape.shape_type == MSO_SHAPE_TYPE.LINE
         or (
             getattr(getattr(shape._element, "spPr", None), "prstGeom", None) is not None
-            and shape._element.spPr.prstGeom.get("prst", "").startswith(
-                ("line", "bentConnector")
-            )
+            and shape._element.spPr.prstGeom.get("prst", "").startswith(("line", "bentConnector"))
         )
         for slide in presentation.slides
         for shape in slide.shapes
@@ -603,9 +680,7 @@ def test_pptx_diagrams_and_constrained_canvas_render_as_editable_native_shapes(
         shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE and "决策引擎" in shape.text
         for shape in presentation.slides[-1].shapes
     )
-    visual_story = next(
-        check for check in report.semantic.checks if check.name == "visual_story"
-    )
+    visual_story = next(check for check in report.semantic.checks if check.name == "visual_story")
     assert visual_story.status == "passed"
 
 
@@ -639,8 +714,24 @@ def test_pptx_diagrams_and_constrained_canvas_render_as_editable_native_shapes(
                 "title": "越界画布",
                 "canvas": {
                     "elements": [
-                        {"type": "shape", "id": "a", "x": 80, "y": 10, "width": 30, "height": 20, "title": "越界"},
-                        {"type": "shape", "id": "b", "x": 5, "y": 50, "width": 30, "height": 20, "title": "正常"},
+                        {
+                            "type": "shape",
+                            "id": "a",
+                            "x": 80,
+                            "y": 10,
+                            "width": 30,
+                            "height": 20,
+                            "title": "越界",
+                        },
+                        {
+                            "type": "shape",
+                            "id": "b",
+                            "x": 5,
+                            "y": 50,
+                            "width": 30,
+                            "height": 20,
+                            "title": "正常",
+                        },
                     ]
                 },
             },
@@ -653,8 +744,24 @@ def test_pptx_diagrams_and_constrained_canvas_render_as_editable_native_shapes(
                 "title": "重叠画布",
                 "canvas": {
                     "elements": [
-                        {"type": "shape", "id": "a", "x": 10, "y": 10, "width": 45, "height": 45, "title": "A"},
-                        {"type": "shape", "id": "b", "x": 30, "y": 25, "width": 45, "height": 45, "title": "B"},
+                        {
+                            "type": "shape",
+                            "id": "a",
+                            "x": 10,
+                            "y": 10,
+                            "width": 45,
+                            "height": 45,
+                            "title": "A",
+                        },
+                        {
+                            "type": "shape",
+                            "id": "b",
+                            "x": 30,
+                            "y": 25,
+                            "width": 45,
+                            "height": 45,
+                            "title": "B",
+                        },
                     ]
                 },
             },
@@ -667,8 +774,25 @@ def test_pptx_diagrams_and_constrained_canvas_render_as_editable_native_shapes(
                 "title": "文字容量",
                 "canvas": {
                     "elements": [
-                        {"type": "text", "id": "a", "x": 5, "y": 5, "width": 12, "height": 12, "font_size": 36, "text": "这是一段远远超过小边界盒容量的文字" * 4},
-                        {"type": "shape", "id": "b", "x": 55, "y": 40, "width": 30, "height": 30, "title": "另一区块"},
+                        {
+                            "type": "text",
+                            "id": "a",
+                            "x": 5,
+                            "y": 5,
+                            "width": 12,
+                            "height": 12,
+                            "font_size": 36,
+                            "text": "这是一段远远超过小边界盒容量的文字" * 4,
+                        },
+                        {
+                            "type": "shape",
+                            "id": "b",
+                            "x": 55,
+                            "y": 40,
+                            "width": 30,
+                            "height": 30,
+                            "title": "另一区块",
+                        },
                     ]
                 },
             },
@@ -681,9 +805,30 @@ def test_pptx_diagrams_and_constrained_canvas_render_as_editable_native_shapes(
                 "title": "悬空连接线",
                 "canvas": {
                     "elements": [
-                        {"type": "shape", "id": "a", "x": 5, "y": 10, "width": 30, "height": 30, "title": "A"},
-                        {"type": "shape", "id": "b", "x": 65, "y": 10, "width": 30, "height": 30, "title": "B"},
-                        {"type": "connector", "id": "edge", "source_id": "a", "target_id": "missing"},
+                        {
+                            "type": "shape",
+                            "id": "a",
+                            "x": 5,
+                            "y": 10,
+                            "width": 30,
+                            "height": 30,
+                            "title": "A",
+                        },
+                        {
+                            "type": "shape",
+                            "id": "b",
+                            "x": 65,
+                            "y": 10,
+                            "width": 30,
+                            "height": 30,
+                            "title": "B",
+                        },
+                        {
+                            "type": "connector",
+                            "id": "edge",
+                            "source_id": "a",
+                            "target_id": "missing",
+                        },
                     ]
                 },
             },
@@ -696,9 +841,33 @@ def test_pptx_diagrams_and_constrained_canvas_render_as_editable_native_shapes(
                 "title": "连接线穿过节点",
                 "canvas": {
                     "elements": [
-                        {"type": "shape", "id": "a", "x": 2, "y": 38, "width": 20, "height": 20, "title": "A"},
-                        {"type": "shape", "id": "blocker", "x": 40, "y": 34, "width": 20, "height": 28, "title": "中间节点"},
-                        {"type": "shape", "id": "b", "x": 78, "y": 38, "width": 20, "height": 20, "title": "B"},
+                        {
+                            "type": "shape",
+                            "id": "a",
+                            "x": 2,
+                            "y": 38,
+                            "width": 20,
+                            "height": 20,
+                            "title": "A",
+                        },
+                        {
+                            "type": "shape",
+                            "id": "blocker",
+                            "x": 40,
+                            "y": 34,
+                            "width": 20,
+                            "height": 28,
+                            "title": "中间节点",
+                        },
+                        {
+                            "type": "shape",
+                            "id": "b",
+                            "x": 78,
+                            "y": 38,
+                            "width": 20,
+                            "height": 20,
+                            "title": "B",
+                        },
                         {"type": "connector", "id": "edge", "source_id": "a", "target_id": "b"},
                     ]
                 },
@@ -882,7 +1051,11 @@ def test_pptx_rich_native_layouts_render_without_sparse_supporting_pages(
                 left_title="增长驱动",
                 left_items=["新签企业客户 7 家", "工单积压环比下降 26.9%", "重点客户上线按期"],
                 right_title="主要约束",
-                right_items=["续约率低于目标 2 个百分点", "3 家客户待安全评审", "华南流失原因待复盘"],
+                right_items=[
+                    "续约率低于目标 2 个百分点",
+                    "3 家客户待安全评审",
+                    "华南流失原因待复盘",
+                ],
             ),
             SlideSpec.model_validate(
                 {
@@ -937,12 +1110,14 @@ def test_pptx_rich_native_layouts_render_without_sparse_supporting_pages(
 
     assert report.deliverable is True
     assert cover_title.text_frame.paragraphs[0].runs[0].font.size.pt == 39
-    assert next(
-        check for check in report.semantic.checks if check.name == "supporting_density"
-    ).status == "passed"
-    assert next(
-        check for check in report.semantic.checks if check.name == "visual_story"
-    ).status == "passed"
+    assert (
+        next(check for check in report.semantic.checks if check.name == "supporting_density").status
+        == "passed"
+    )
+    assert (
+        next(check for check in report.semantic.checks if check.name == "visual_story").status
+        == "passed"
+    )
 
 
 def test_pptx_focus_layouts_render_titles_and_messages_without_overlap(
@@ -1019,9 +1194,7 @@ def test_pptx_sparse_supporting_page_fails_delivery_even_when_not_blank(
     report = validate_artifact(target, spec=spec, render_visual=True)
 
     assert report.deliverable is False
-    density = next(
-        check for check in report.semantic.checks if check.name == "supporting_density"
-    )
+    density = next(check for check in report.semantic.checks if check.name == "supporting_density")
     assert density.status == "failed"
     assert "thin" in density.message
 
@@ -1039,9 +1212,7 @@ def test_pptx_output_density_catches_legacy_title_and_body_page(tmp_path: Path) 
 
     report = validate_artifact(target, render_visual=False)
 
-    density = next(
-        check for check in report.visual.checks if check.name == "content_density"
-    )
+    density = next(check for check in report.visual.checks if check.name == "content_density")
     assert density.status == "failed"
     assert density.value == 1
     assert report.deliverable is False
@@ -1103,16 +1274,12 @@ def test_pptx_output_density_catches_title_plus_four_short_labels(tmp_path: Path
         ("吃月饼", "赏月·拜月", "饮桂花酒", "玩花灯·猜灯谜"),
         strict=True,
     ):
-        text = slide.shapes.add_textbox(
-            Inches(left), Inches(top), Inches(4.2), Inches(0.7)
-        )
+        text = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(4.2), Inches(0.7))
         text.text_frame.text = label
     presentation.save(target)
 
     report = validate_artifact(target, render_visual=False)
-    density = next(
-        check for check in report.visual.checks if check.name == "content_density"
-    )
+    density = next(check for check in report.visual.checks if check.name == "content_density")
 
     assert density.status == "failed"
     assert density.value == 1
@@ -1149,12 +1316,8 @@ def test_pptx_multiple_metric_pages_are_not_misclassified_as_focus(tmp_path: Pat
     render_candidate(spec, target)
     report = validate_artifact(target, spec=spec, render_visual=False)
 
-    inferred = next(
-        check for check in report.visual.checks if check.name == "inferred_focus_ratio"
-    )
-    density = next(
-        check for check in report.visual.checks if check.name == "content_density"
-    )
+    inferred = next(check for check in report.visual.checks if check.name == "inferred_focus_ratio")
+    density = next(check for check in report.visual.checks if check.name == "content_density")
     assert inferred.status == "passed"
     assert inferred.value == 1
     assert density.status == "passed"

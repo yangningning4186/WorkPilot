@@ -87,9 +87,7 @@ _TOOL_PREVIEW_VISION_FALLBACK = """
 
 def _contains_image_attachments(messages: list[Message]) -> bool:
     return any(
-        attachment.kind == "image"
-        for message in messages
-        for attachment in message.attachments
+        attachment.kind == "image" for message in messages for attachment in message.attachments
     )
 
 

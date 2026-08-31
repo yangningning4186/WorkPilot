@@ -430,11 +430,7 @@ def _completion_record_payload(completion: CompletionResult) -> dict[str, Any]:
                 "id": call.id,
                 "name": call.name,
                 "arguments": call.arguments,
-                **(
-                    {"thought_signature": call.thought_signature}
-                    if call.thought_signature
-                    else {}
-                ),
+                **({"thought_signature": call.thought_signature} if call.thought_signature else {}),
             }
             for call in completion.tool_calls
         ],
@@ -3535,7 +3531,11 @@ class _CoworkExecution:
                     "request": request,
                     "human_only_reason": (
                         human_only_reason
-                        or ("该动作按安全策略不可由 AI 自动审核或常驻规则豁免" if human_only else None)
+                        or (
+                            "该动作按安全策略不可由 AI 自动审核或常驻规则豁免"
+                            if human_only
+                            else None
+                        )
                     ),
                 },
             )

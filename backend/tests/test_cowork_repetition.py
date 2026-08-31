@@ -311,7 +311,8 @@ async def test_identical_schema_failure_is_validated_only_twice(
     tool_payloads = [
         json.loads(str(message["content"]))
         for message in checkpoint.state["messages"]
-        if message.get("role") == "tool" and str(message.get("tool_call_id", "")).startswith("invalid-")
+        if message.get("role") == "tool"
+        and str(message.get("tool_call_id", "")).startswith("invalid-")
     ]
     assert len(tool_payloads) == 3
     assert sum("Field required" in payload["error"] for payload in tool_payloads) == 2

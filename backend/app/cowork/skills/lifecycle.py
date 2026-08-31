@@ -221,8 +221,7 @@ def _scan_managed(
             dirnames[:] = [
                 name
                 for name in sorted(dirnames)
-                if name not in _IGNORED_RESOURCE_DIRS
-                and not (directory_path / name).is_symlink()
+                if name not in _IGNORED_RESOURCE_DIRS and not (directory_path / name).is_symlink()
             ]
             for filename in sorted(filenames):
                 path = directory_path / filename
@@ -329,8 +328,7 @@ def list_managed_skills(
         )
     ]
     project = [
-        replace(item, enabled=item.enabled and item.name not in disabled)
-        for item in project
+        replace(item, enabled=item.enabled and item.name not in disabled) for item in project
     ]
     return builtin + user + project
 

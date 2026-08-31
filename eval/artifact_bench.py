@@ -51,9 +51,7 @@ def score_artifact(
 ) -> tuple[ArtifactValidationReport, ArtifactBenchMetrics]:
     bindings = evidence_bindings or []
     bound_claim_ids = frozenset(
-        item.claim_id
-        for item in bindings
-        if item.evidence and not item.missing_evidence_ids
+        item.claim_id for item in bindings if item.evidence and not item.missing_evidence_ids
     )
     report = validate_artifact(
         path,
@@ -68,18 +66,12 @@ def score_artifact(
         else 1.0
     )
     formula_check = _check(report, "formulas")
-    formula_validity = (
-        1.0 if formula_check is None or formula_check[0] == "passed" else 0.0
-    )
+    formula_validity = 1.0 if formula_check is None or formula_check[0] == "passed" else 0.0
     claim_count = len(spec.claims) if spec is not None else 0
-    accurate = sum(
-        bool(item.evidence) and not item.missing_evidence_ids for item in bindings
-    )
+    accurate = sum(bool(item.evidence) and not item.missing_evidence_ids for item in bindings)
     citation_accuracy = 1.0 if claim_count == 0 else accurate / claim_count
     duplicates = max(0, side_effect_attempts - unique_effects)
-    duplicate_rate = (
-        duplicates / side_effect_attempts if side_effect_attempts > 0 else 0.0
-    )
+    duplicate_rate = duplicates / side_effect_attempts if side_effect_attempts > 0 else 0.0
     metrics = ArtifactBenchMetrics(
         file_open_rate=1.0 if report.structural.status == "passed" else 0.0,
         requirement_pass=1.0 if report.semantic.status != "failed" else 0.0,

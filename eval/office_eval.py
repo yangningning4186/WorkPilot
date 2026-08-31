@@ -75,9 +75,7 @@ async def run_one_click_evaluation(
             include_test=include_test,
             test_access_note=test_access_note,
         )
-        eligible_ids = [
-            str(item["id"]) for item in precheck["results"] if item["gate"]["passed"]
-        ]
+        eligible_ids = [str(item["id"]) for item in precheck["results"] if item["gate"]["passed"]]
         reviews, model_run = await run_model_reviews(
             suite,
             submission_root,
@@ -114,14 +112,10 @@ async def run_one_click_evaluation(
             "model_calls": model_run["model_calls"],
             "actual_identities": model_run["actual_identities"],
             "prompt_fingerprint": model_run["prompt_fingerprint"],
-            "implementation_fingerprint": model_run[
-                "implementation_fingerprint"
-            ],
+            "implementation_fingerprint": model_run["implementation_fingerprint"],
             "calibration_status": model_run["calibration_status"],
             "benchmark_eligible": model_run["benchmark_eligible"],
-            "benchmark_ineligibility_reason": model_run[
-                "benchmark_ineligibility_reason"
-            ],
+            "benchmark_ineligibility_reason": model_run["benchmark_ineligibility_reason"],
         }
         (staging / "report.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -147,18 +141,13 @@ def _configured_judge(
     api_key = os.getenv(args.api_key_env, "") or settings.cluster_api_key
     if provider_name == "gemini":
         base_url = (
-            args.judge_base_url
-            or "https://generativelanguage.googleapis.com/v1beta"
+            args.judge_base_url or "https://generativelanguage.googleapis.com/v1beta"
         ).strip()
         model = (args.judge_model or "").strip()
         if not model:
-            raise OfficeModelJudgeError(
-                "Gemini judge 必须通过 --judge-model 指定实际模型 ID"
-            )
+            raise OfficeModelJudgeError("Gemini judge 必须通过 --judge-model 指定实际模型 ID")
         if not api_key:
-            raise OfficeModelJudgeError(
-                f"Gemini judge 缺少 API key；请设置 {args.api_key_env}"
-            )
+            raise OfficeModelJudgeError(f"Gemini judge 缺少 API key；请设置 {args.api_key_env}")
         context_window = args.context_window_tokens or 1_048_576
         provider = GeminiProvider(
             base_url=base_url,
@@ -222,9 +211,7 @@ def _configured_judge(
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="一键执行 Office/PPT 确定性规则与视觉大模型复核"
-    )
+    parser = argparse.ArgumentParser(description="一键执行 Office/PPT 确定性规则与视觉大模型复核")
     parser.add_argument("--suite", type=Path, default=DEFAULT_SUITE)
     parser.add_argument("--submission-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -249,9 +236,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         default=None,
     )
-    parser.add_argument(
-        "--no-enable-thinking", dest="enable_thinking", action="store_false"
-    )
+    parser.add_argument("--no-enable-thinking", dest="enable_thinking", action="store_false")
     parser.add_argument("--max-model-calls", type=int, default=DEFAULT_MAX_MODEL_CALLS)
     parser.add_argument("--max-total-tokens", type=int, default=DEFAULT_MAX_TOTAL_TOKENS)
     parser.add_argument("--max-pages", type=int, default=DEFAULT_MAX_PAGES)

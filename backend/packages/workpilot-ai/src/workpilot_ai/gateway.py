@@ -117,10 +117,7 @@ def request_character_count(
         if message.tool_call_id is not None:
             total += len(message.tool_call_id)
         total += sum(
-            len(call.id)
-            + len(call.name)
-            + len(call.arguments)
-            + len(call.thought_signature)
+            len(call.id) + len(call.name) + len(call.arguments) + len(call.thought_signature)
             for call in message.tool_calls
         )
     if tools is not None:

@@ -165,9 +165,7 @@ def _apply_windows_job_limits(*, memory_mb: int, pids_limit: int, cpu_seconds: i
         raise OSError(ctypes_api.get_last_error(), "无法设置 Windows Job Object 上限")
     if not kernel32.AssignProcessToJobObject(handle, kernel32.GetCurrentProcess()):
         kernel32.CloseHandle(handle)
-        raise OSError(
-            ctypes_api.get_last_error(), "无法把校验进程加入 Windows Job Object"
-        )
+        raise OSError(ctypes_api.get_last_error(), "无法把校验进程加入 Windows Job Object")
     global _WINDOWS_JOB_HANDLE
     _WINDOWS_JOB_HANDLE = handle
 
@@ -211,11 +209,7 @@ def apply_process_limits(
     # Darwin 的 RLIMIT_NPROC 是“该登录用户的全局进程数”，不是当前进程树；桌面用户
     # 往往早已超过 sandbox 的 128 上限，降低它会让 sandbox-exec 连第一个子进程都无法
     # 启动。Linux user namespace 可安全使用 hard rlimit；macOS 由可信父进程树监控限额。
-    if (
-        enforce_nproc
-        and sys.platform.startswith("linux")
-        and hasattr(resource, "RLIMIT_NPROC")
-    ):
+    if enforce_nproc and sys.platform.startswith("linux") and hasattr(resource, "RLIMIT_NPROC"):
         lower_limit(resource.RLIMIT_NPROC, pids_limit)
     if file_size_bytes is not None and hasattr(resource, "RLIMIT_FSIZE"):
         lower_limit(resource.RLIMIT_FSIZE, file_size_bytes)

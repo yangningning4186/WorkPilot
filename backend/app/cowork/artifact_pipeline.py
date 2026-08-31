@@ -114,9 +114,7 @@ def _render_validate_commit_locked(
             try:
                 os.link(candidate, target)
             except FileExistsError as error:
-                raise CoworkFileError(
-                    "Artifact 目标在最终提交时被创建，未覆盖并发写入"
-                ) from error
+                raise CoworkFileError("Artifact 目标在最终提交时被创建，未覆盖并发写入") from error
             candidate.unlink()
         else:
             os.replace(candidate, target)

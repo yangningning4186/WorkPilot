@@ -21,6 +21,7 @@ def render_candidate(spec: ArtifactSpec, target: Path) -> None:
 
     dispatch(spec, target)
 
+
 __all__ = [
     "ArtifactEnvelope",
     "ArtifactPlan",

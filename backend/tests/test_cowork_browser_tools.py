@@ -143,9 +143,7 @@ def test_browser_click_classifies_navigation_separately_from_submissions() -> No
     assert _is_consequential_control(
         {"tag": "button", "in_form": True, "type": "submit", "label": "继续"}
     )
-    assert _is_consequential_control(
-        {"tag": "a", "href": "#", "label": "删除这条记录"}
-    )
+    assert _is_consequential_control({"tag": "a", "href": "#", "label": "删除这条记录"})
     assert _is_consequential_control(
         {"tag": "button", "in_form": False, "type": "button", "label": "Archive"}
     )

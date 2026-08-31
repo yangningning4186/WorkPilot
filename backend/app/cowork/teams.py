@@ -173,9 +173,7 @@ class ProposeTeamArgs(_StrictArgs):
                 raise ValueError("expert 必须是合法 Persona name")
             if any(member.profile is None for member in self.members):
                 raise ValueError("专家团的每个成员都必须提供 profile")
-            if self.expert_sha256 is None or not re.fullmatch(
-                r"[0-9a-f]{64}", self.expert_sha256
-            ):
+            if self.expert_sha256 is None or not re.fullmatch(r"[0-9a-f]{64}", self.expert_sha256):
                 raise ValueError("专家团必须提供 expert_team_manifest 中的 expert_sha256")
             profiles = [member.profile for member in self.members]
             if len(profiles) != len(set(profiles)):
@@ -465,15 +463,11 @@ def _worker_state(raw: dict[str, Any]) -> TeamWorkerState:
     if expert_profile is not None:
         if (
             not isinstance(expert_profile, dict)
-            or set(expert_profile)
-            != {"expert", "manifest_sha256", "profile", "label"}
+            or set(expert_profile) != {"expert", "manifest_sha256", "profile", "label"}
             or any(not isinstance(value, str) for value in expert_profile.values())
-            or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", expert_profile["expert"])
-            is None
-            or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", expert_profile["profile"])
-            is None
-            or re.fullmatch(r"[0-9a-f]{64}", expert_profile["manifest_sha256"])
-            is None
+            or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", expert_profile["expert"]) is None
+            or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", expert_profile["profile"]) is None
+            or re.fullmatch(r"[0-9a-f]{64}", expert_profile["manifest_sha256"]) is None
             or not 1 <= len(expert_profile["label"]) <= 64
         ):
             raise ValueError("Worker Session expert_profile 形状无效")
@@ -481,8 +475,7 @@ def _worker_state(raw: dict[str, Any]) -> TeamWorkerState:
         not isinstance(state["tool_patterns"], list)
         or len(state["tool_patterns"]) > 100
         or any(
-            not isinstance(pattern, str)
-            or re.fullmatch(r"[A-Za-z0-9_-]{1,64}\*?", pattern) is None
+            not isinstance(pattern, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}\*?", pattern) is None
             for pattern in state["tool_patterns"]
         )
     ):
@@ -1071,9 +1064,7 @@ class _TeamWorkerRuntime:
             updated["status"] = "answered"
             updated["report"] = completion.text
         else:
-            updated["pending_calls"] = [
-                _tool_call_state(call) for call in completion.tool_calls
-            ]
+            updated["pending_calls"] = [_tool_call_state(call) for call in completion.tool_calls]
         await self._persist(updated)
         return json_state(updated)
 
@@ -1343,9 +1334,7 @@ def register_team_tools(registry: CoworkToolRegistry) -> None:
                 context.session,
                 conversation_id=context.conversation_id,
             )
-            project_roots = tuple(
-                Path(root.canonical_path) for root in roots if root.enabled
-            )
+            project_roots = tuple(Path(root.canonical_path) for root in roots if root.enabled)
             catalog = load_persona_catalog(
                 context.settings,
                 project_roots=project_roots,
@@ -1394,9 +1383,9 @@ def register_team_tools(registry: CoworkToolRegistry) -> None:
                     "name": worker.name,
                     "role": worker.role,
                     "reason": worker.reason,
-                    "expert_profile": cast(
-                        "dict[str, Any]", members[index]["state"]
-                    ).get("expert_profile"),
+                    "expert_profile": cast("dict[str, Any]", members[index]["state"]).get(
+                        "expert_profile"
+                    ),
                     "session_id": str(worker.session_id),
                     "session_status": "idle",
                 }
