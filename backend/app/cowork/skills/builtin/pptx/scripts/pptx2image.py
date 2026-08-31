@@ -43,23 +43,6 @@ class _ResolvedFont:
     stroke_width: int = 0
 
 
-_REGULAR_FONTS = (
-    Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
-    Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
-    Path("/System/Library/Fonts/Supplemental/Helvetica.ttf"),
-    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
-    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-    Path("C:/Windows/Fonts/msyh.ttc"),
-    Path("C:/Windows/Fonts/arial.ttf"),
-)
-_BOLD_FONTS = (
-    Path("/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
-    Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
-    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
-    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
-    Path("C:/Windows/Fonts/msyhbd.ttc"),
-    Path("C:/Windows/Fonts/arialbd.ttf"),
-)
 _SUPPORTED_AUTO_SHAPES = frozenset(
     {
         MSO_AUTO_SHAPE_TYPE.RECTANGLE,
@@ -587,16 +570,16 @@ def _font(
     configured = os.environ.get(
         "WORKPILOT_PPTX_FONT_BOLD" if bold else "WORKPILOT_PPTX_FONT", ""
     ).strip()
-    candidates = ((Path(configured),) if configured else ()) + (
-        _BOLD_FONTS if bold else _REGULAR_FONTS
-    )
-    for candidate in candidates:
+    # Host font inventories differ across macOS, Linux, and Windows; only an explicit
+    # override may replace the bundled font used for deterministic QA measurements.
+    if configured:
+        candidate = Path(configured)
         if candidate.is_file():
             try:
                 candidate_font = ImageFont.truetype(str(candidate), size_px)
             except OSError:
-                continue
-            if not _missing_characters(candidate_font, text):
+                candidate_font = None
+            if candidate_font is not None and not _missing_characters(candidate_font, text):
                 name = candidate.name.casefold()
                 synthetic_stroke = max(1, size_px // 40) if bold and "bold" not in name else 0
                 return _ResolvedFont(candidate_font, synthetic_stroke)

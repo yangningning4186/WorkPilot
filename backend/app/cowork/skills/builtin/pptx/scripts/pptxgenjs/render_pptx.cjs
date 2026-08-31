@@ -394,12 +394,14 @@ function renderQuote(slide, pptx, spec, item) {
     fill: mixHex(theme.accent, theme.background, 0.07),
     line: mixHex(theme.accent, theme.background, 0.18),
   });
-  addText(slide, "“", { x: 1.28, y: 1.66, w: 0.65, h: 1.0 }, {
+  addText(slide, "“", { x: 1.28, y: 1.62, w: 0.65, h: 1.12 }, {
     theme,
     role: "title",
     fontSize: 66,
     bold: true,
     color: theme.accent,
+    valign: "mid",
+    margin: 0,
   });
   addText(slide, item.body, { x: 2.08, y: 1.82, w: 9.15, h: 3.48 }, {
     theme,

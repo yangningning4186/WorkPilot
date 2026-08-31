@@ -469,9 +469,12 @@ def _add_seed_slide(presentation: PresentationDocument, title: str, body: str) -
     title_run.font.bold = True
     title_run.font.color.rgb = RGBColor(47, 43, 37)
 
-    eyebrow = slide.shapes.add_textbox(Inches(0.88), Inches(1.35), Inches(2.0), Inches(0.35))
+    eyebrow = slide.shapes.add_textbox(Inches(0.88), Inches(1.35), Inches(2.0), Inches(0.45))
     eyebrow_frame = eyebrow.text_frame
     eyebrow_frame.clear()
+    eyebrow_frame.margin_top = 0
+    eyebrow_frame.margin_bottom = 0
+    eyebrow_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
     eyebrow_run = eyebrow_frame.paragraphs[0].add_run()
     eyebrow_run.text = "关键事实"
     eyebrow_run.font.name = "Aptos"
@@ -656,7 +659,12 @@ def test_seed_representative_oracles_pass_each_format(tmp_path: Path) -> None:
         tmp_path / "representative-report",
     )
 
-    assert report["summary"]["gate_passed"] == 4
+    gate_failures = {
+        result["id"]: result["gate"]["reasons"]
+        for result in report["results"]
+        if not result["gate"]["passed"]
+    }
+    assert report["summary"]["gate_passed"] == 4, gate_failures
     assert report["summary"]["automatic_passed"] == 4
     assert all(item["automatic_score"] == 100 for item in report["results"])
     assert len(report["suite_sha256"]) == 64

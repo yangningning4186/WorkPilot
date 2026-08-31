@@ -6,6 +6,7 @@ import pytest
 from docx import Document
 from docx.oxml.ns import qn
 from openpyxl import load_workbook
+from PIL import ImageFont
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
 from pptx.util import Inches
@@ -258,6 +259,16 @@ def test_pptx_rasterizer_selects_a_font_with_bold_chinese_glyphs() -> None:
     resolved = _font(text, 35, bold=True, pixels_per_emu=1600 / 12_191_695)
 
     assert not _missing_characters(resolved.font, text)
+
+
+def test_pptx_rasterizer_uses_bundled_font_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.cowork.skills.builtin.pptx.scripts import pptx2image
+
+    monkeypatch.delenv("WORKPILOT_PPTX_FONT", raising=False)
+    expected = ImageFont.load_default()
+    monkeypatch.setattr(pptx2image, "_bundled_unicode_font", lambda _size: expected)
+
+    assert pptx2image._font("deterministic", 18, bold=False, pixels_per_emu=1).font is expected
 
 
 def test_pptx_runtime_is_owned_by_the_builtin_skill_package() -> None:
@@ -1162,7 +1173,10 @@ def test_pptx_focus_layouts_render_titles_and_messages_without_overlap(
         for slide in presentation.slides
     ]
 
-    assert report.deliverable is True
+    failed_visual = [
+        check.model_dump(mode="json") for check in report.visual.checks if check.status == "failed"
+    ]
+    assert report.deliverable is True, failed_visual
     assert "本轮判断" in slide_text[0]
     assert "增长已经恢复" in slide_text[0]
     assert "第二部分" in slide_text[1]
