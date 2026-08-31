@@ -41,6 +41,23 @@ jobs:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
 
+      - name: Set up Node.js for PPTX renderer
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: backend/app/cowork/skills/builtin/pptx/scripts/pptxgenjs/package-lock.json
+
+      - name: Install PPTX renderer dependencies
+        working-directory: backend/app/cowork/skills/builtin/pptx/scripts/pptxgenjs
+        run: npm ci --omit=dev --ignore-scripts
+
+      - name: Check PPTX renderer
+        working-directory: backend/app/cowork/skills/builtin/pptx/scripts/pptxgenjs
+        run: |
+          npm run check
+          npm run selftest
+
       # --locked：lock 与 pyproject 不一致直接失败，不允许 CI 悄悄解出另一套依赖。
       # Python 版本由 backend/.python-version 固定为 3.12（3.14 上 ML 依赖无 wheel）。
       - name: Sync dependencies
