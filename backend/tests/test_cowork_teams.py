@@ -20,6 +20,7 @@ from app.cowork.permissions import (
     list_capability_grants,
     revoke_capability_grant,
 )
+from app.cowork.personas import load_persona_catalog, snapshot_persona
 from app.cowork.runtime import initialize_cowork_state, resume_cowork_after_human
 from app.cowork.semantic_approvals import (
     build_semantic_approval_evidence,
@@ -32,9 +33,12 @@ from app.cowork.teams import (
     BOARD_REVIEW_TASK_TOOL_NAME,
     PROPOSE_TEAM_TOOL_NAME,
     TEAM_MANAGE_TOOL_NAME,
+    ProposeTeamArgs,
     _bounded_worker_tool_error,
     _bounded_worker_tool_result,
     _initial_worker_state,
+    _materialize_team_members,
+    _worker_state,
     register_team_tools,
     team_run_summary,
     worker_limits,
@@ -87,6 +91,7 @@ class _WorkerGateway:
                         id="read-outside",
                         name="read_file",
                         arguments=json.dumps({"path": str(self.outside_path)}),
+                        thought_signature="worker-gemini-signature",
                     ),
                 ),
             )
@@ -155,6 +160,83 @@ def test_team_worker_persisted_tool_content_is_bounded_and_errors_are_stable() -
         "ok": False,
         "error": {"code": "tool_error:builtins.RuntimeError"},
     }
+
+
+def test_expert_roster_materializes_trusted_prompts_roles_and_tool_boundaries(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(cowork_data_path=tmp_path / "data")
+    expert = load_persona_catalog(settings).get("expert-council")
+    digest = snapshot_persona(expert, settings)["sha256"]
+    args = ProposeTeamArgs.model_validate(
+        {
+            "expert": "expert-council",
+            "expert_sha256": digest,
+            "members": [
+                {
+                    "name": "evidence",
+                    "profile": "evidence-researcher",
+                    "reason": "核对本次材料",
+                },
+                {
+                    "name": "critic",
+                    "profile": "critical-reviewer",
+                },
+            ],
+        }
+    )
+
+    members = _materialize_team_members(args, expert=expert)
+    evidence = members[0]
+    evidence_state = cast("dict[str, Any]", evidence["state"])
+
+    assert evidence["role"] == "收集并核验与问题直接相关的事实、来源、时间边界和证据缺口"
+    assert evidence["reason"] == "核对本次材料"
+    assert evidence_state["expert_profile"] == {
+        "expert": "expert-council",
+        "manifest_sha256": digest,
+        "profile": "evidence-researcher",
+        "label": "证据研究专家",
+    }
+    assert evidence_state["tool_patterns"] == [
+        "list_files",
+        "read_file",
+        "read_text_file",
+        "search_files",
+        "read_pdf",
+    ]
+    assert "你是证据研究专家" in evidence_state["messages"][0]["content"]
+
+    with pytest.raises(ValueError, match="不包含 profile unknown"):
+        _materialize_team_members(
+            ProposeTeamArgs.model_validate(
+                {
+                    "expert": "expert-council",
+                    "expert_sha256": digest,
+                    "members": [{"name": "unknown", "profile": "unknown"}],
+                }
+            ),
+            expert=expert,
+        )
+    with pytest.raises(ValueError, match="role 由 profile 固化"):
+        ProposeTeamArgs.model_validate(
+            {
+                "expert": "expert-council",
+                "expert_sha256": digest,
+                "members": [
+                    {
+                        "name": "spoofed",
+                        "profile": "evidence-researcher",
+                        "role": "模型临时编造的职责",
+                    }
+                ],
+            }
+        )
+    corrupted = cast("dict[str, Any]", _initial_worker_state())
+    corrupted["expert_profile"] = {"expert": "expert-council"}
+    corrupted["tool_patterns"] = ["*"]
+    with pytest.raises(ValueError, match="expert_profile 形状无效"):
+        _worker_state(corrupted)
 
 
 async def _drive_team_wake_until_review(
@@ -327,6 +409,119 @@ async def test_propose_team_always_waits_for_hitl_then_prespawns_idle_sessions(
     assert [row["status"] for row in rows] == ["idle", "idle"]
     assert all(row["active_task_id"] is None for row in rows)
     assert all(len(json.loads(str(row["state"]))["messages"]) == 1 for row in rows)
+
+
+async def test_approved_expert_team_persists_specialist_identity_and_prompt(
+    db_session: AsyncSession,
+    store_sql,
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Expert council")
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="让证据专家和审阅专家独立会诊",
+        budget_tokens=20_000,
+        budget_calls=10,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    registry = build_default_cowork_registry()
+    register_team_tools(registry)
+    proposal = registry.parse_arguments(
+        PROPOSE_TEAM_TOOL_NAME,
+        {
+            "expert": "expert-council",
+            "expert_sha256": snapshot_persona(
+                load_persona_catalog(Settings()).get("expert-council"),
+                Settings(),
+            )["sha256"],
+            "members": [
+                {"name": "evidence", "profile": "evidence-researcher"},
+                {"name": "critic", "profile": "critical-reviewer"},
+            ],
+            "note": "按专家包固化身份",
+        },
+    )
+    stale_proposal = {**proposal, "expert_sha256": "0" * 64}
+    stale_call_id = "stale-expert-council"
+    stale_context = replace(
+        _context(
+            db_session,
+            gateway=_FinalWorkerGateway(),
+            conversation_id=conversation_id,
+            run_id=run.id,
+            tool_call_id=stale_call_id,
+        ),
+        approved_call_ids=frozenset({stale_call_id}),
+        approval_evidence={
+            stale_call_id: build_trusted_approval_evidence(
+                signing_key=_APPROVAL_SIGNING_KEY,
+                source="user",
+                run_id=run.id,
+                tool_call_id=stale_call_id,
+                tool=PROPOSE_TEAM_TOOL_NAME,
+                arguments_sha256=arguments_sha256(stale_proposal),
+                details={"inbox_id": str(uuid7()), "standing_rule_id": None},
+            )
+        },
+    )
+    with pytest.raises(ValueError, match="专家团定义已变化"):
+        await registry.execute(
+            PROPOSE_TEAM_TOOL_NAME,
+            stale_proposal,
+            context=stale_context,
+        )
+    assert await cowork_store().get_team_for_lead(lead_conversation_id=conversation_id) is None
+
+    call_id = "approved-expert-council"
+    context = replace(
+        _context(
+            db_session,
+            gateway=_FinalWorkerGateway(),
+            conversation_id=conversation_id,
+            run_id=run.id,
+            tool_call_id=call_id,
+        ),
+        approved_call_ids=frozenset({call_id}),
+        approval_evidence={
+            call_id: build_trusted_approval_evidence(
+                signing_key=_APPROVAL_SIGNING_KEY,
+                source="user",
+                run_id=run.id,
+                tool_call_id=call_id,
+                tool=PROPOSE_TEAM_TOOL_NAME,
+                arguments_sha256=arguments_sha256(proposal),
+                details={"inbox_id": str(uuid7()), "standing_rule_id": None},
+            )
+        },
+    )
+
+    proposed = await registry.execute(PROPOSE_TEAM_TOOL_NAME, proposal, context=context)
+
+    assert proposed.output["expert"] == "expert-council"
+    assert proposed.output["workers"][0]["role"].startswith("收集并核验")
+    assert proposed.output["workers"][0]["expert_profile"] == {
+        "expert": "expert-council",
+        "manifest_sha256": proposal["expert_sha256"],
+        "profile": "evidence-researcher",
+        "label": "证据研究专家",
+    }
+    rows = store_sql(
+        """SELECT worker.name, session.state
+           FROM cowork_team_worker_sessions AS session
+           JOIN cowork_team_workers AS worker ON worker.id = session.worker_id"""
+    )
+    states = {str(row["name"]): json.loads(str(row["state"])) for row in rows}
+    assert states["evidence"]["expert_profile"]["profile"] == "evidence-researcher"
+    assert states["critic"]["expert_profile"]["profile"] == "critical-reviewer"
+    assert "你是证据研究专家" in states["evidence"]["messages"][0]["content"]
+    assert states["evidence"]["tool_patterns"] == [
+        "list_files",
+        "read_file",
+        "read_text_file",
+        "search_files",
+        "read_pdf",
+    ]
 
 
 async def test_team_manage_requires_fresh_human_approval(
@@ -569,6 +764,13 @@ async def test_write_scope_is_bound_to_non_waivable_team_approval_receipt(
         registry=registry,
     )
     assert completed.status == "review"
+    assignment = json.loads(worker_gateway.histories[0][-1].content)
+    assert assignment["worker_identity"] == {
+        "name": "writer",
+        "role": "写入批准目录",
+        "reason": "隔离委派",
+        "expert_profile": None,
+    }
 
     tampered = await create_write("create-tampered-write")
     store_sql(
@@ -717,7 +919,18 @@ async def test_lead_uses_board_and_worker_gets_only_assignment_envelope_and_scop
     user_messages = [message for message in first_history if message.role == "user"]
     assert len(user_messages) == 1
     envelope = json.loads(user_messages[0].content)
-    assert set(envelope) == {"task_description", "acceptance_criteria", "resource_scope"}
+    assert set(envelope) == {
+        "worker_identity",
+        "task_description",
+        "acceptance_criteria",
+        "resource_scope",
+    }
+    assert envelope["worker_identity"] == {
+        "name": "files",
+        "role": "核对文件边界",
+        "reason": "独立执行",
+        "expert_profile": None,
+    }
     assert envelope["resource_scope"] == [
         {"path": str(allowed.resolve()), "access_mode": "read_only"}
     ]
@@ -725,6 +938,8 @@ async def test_lead_uses_board_and_worker_gets_only_assignment_envelope_and_scop
         [message.content for message in first_history], ensure_ascii=False
     )
     tool_result = gateway.histories[1][-1]
+    assistant_message = gateway.histories[1][-2]
+    assert assistant_message.tool_calls[0].thought_signature == "worker-gemini-signature"
     assert tool_result.role == "tool"
     assert "不在当前 Board task" in tool_result.content
     assert {tool.name for tool in gateway.tools}

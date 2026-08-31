@@ -39,6 +39,7 @@ def test_nightly_matrix_runs_all_promoted_tracks_with_hard_resource_fuses(
         "grounded-generation",
         "agent-teams-contract",
         "control-plane-contract",
+        "office-eval-contract",
     ]
     for item in (specs[0], specs[1], specs[3]):
         assert item.command.count("--max-total-tokens") == 1
@@ -55,6 +56,8 @@ def test_nightly_matrix_runs_all_promoted_tracks_with_hard_resource_fuses(
     assert any("test_write_scope_is_bound" in value for value in specs[4].command)
     assert specs[5].command[:4] == ("python-fixture", "-m", "pytest", "-q")
     assert any("test_mcp_oauth_token_is_forwarded" in value for value in specs[5].command)
+    assert specs[6].command[:4] == ("python-fixture", "-m", "pytest", "-q")
+    assert any("test_review_minimums_block" in value for value in specs[6].command)
     assert all("--allow-model-send" not in value for spec in specs[4:] for value in spec.command)
 
 

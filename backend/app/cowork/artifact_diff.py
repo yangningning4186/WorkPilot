@@ -8,7 +8,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-import fitz  # type: ignore[import-untyped]
+import pymupdf
 from docx import Document
 from openpyxl import load_workbook  # type: ignore[import-untyped]
 from pptx import Presentation
@@ -17,6 +17,8 @@ MAX_DIFF_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_DIFF_TEXT_CHARS = 120_000
 MAX_DIFF_LINES = 500
 MAX_DIFF_CHARS = 48_000
+
+_pymupdf: Any = pymupdf
 
 _TEXT_SUFFIXES = frozenset(
     {".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml", ".html"}
@@ -183,14 +185,14 @@ def _semantic_text(raw: bytes, suffix: str) -> str:
             )
         text = "\n".join(lines)
     elif suffix == ".pdf":
-        document = fitz.open(stream=raw, filetype="pdf")
+        pdf_document: Any = _pymupdf.open(stream=raw, filetype="pdf")
         try:
             text = "\n".join(
                 f"[第 {index + 1} 页]\n{page.get_text('text')}"
-                for index, page in enumerate(document)
+                for index, page in enumerate(pdf_document)
             )
         finally:
-            document.close()
+            pdf_document.close()
     else:  # pragma: no cover - 调用前已封闭 suffix
         raise ValueError("不支持的差异格式")
     if len(text) > MAX_DIFF_TEXT_CHARS:

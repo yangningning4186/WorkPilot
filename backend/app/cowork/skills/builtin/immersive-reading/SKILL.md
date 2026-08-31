@@ -1,6 +1,7 @@
 ---
 name: immersive-reading
 description: 带着用户读一份具体文档时，如何取证、引用并驱动阅读器翻页高亮
+kind: workflow
 trigger:
   - 用户就某一份 PDF、论文、合同或长文档提问
   - 用户问“这篇里怎么说的”“第几页写了什么”“帮我读一下”
@@ -15,6 +16,10 @@ tools:
   - read_material
   - reader_goto
   - reader_annotate
+runtime:
+  profile: none
+compatibility:
+  - Evidence Ledger v1
 status: active
 ---
 

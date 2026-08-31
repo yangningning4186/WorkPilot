@@ -35,13 +35,90 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.regression check \
 独立 v2 baseline；Run 事件回放和 full-chain cassette 也都是 `ready`。Cowork dev（39 条）
 和冻结 test（11 条）始终是两个比较分母，不能混成一份 50 条 baseline。
 
+## Office Artifact 评测集
+
+`artifact-rendering-dev-v1.json` 是零模型、零网络的最终文件评测集，当前包含 10 条 PPTX、
+DOCX、XLSX、PDF、HTML 正负样本。它覆盖中文粗体字形、SVG/图片、原生图表、文字溢出、
+Word 标题与表格、Excel 公式与裁切、PDF 逐页栅格化、离线 HTML 和主动内容拒绝。
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.artifact_suite validate
+PYTHONPATH=backend backend/.venv/bin/python -m eval.artifact_suite run \
+  --output-dir eval/outputs/artifact-rendering/<label>
+```
+
+runner 评分最终保存的 Office 文件，而不是 Spec 或模型文字；输出逐 case 的结构、语义、视觉、
+证据、安全状态与 ArtifactBench 指标。输出目录必须不存在，避免覆盖历史结果。当前 suite 为
+`synthetic + pending_human_review`，只用于工程回归，不能宣称产品质量基线。
+
+公开集合接入清单位于 `eval/datasets/artifact-benchmarks/catalog.json`。目前登记 PPTC、
+PresentBench、DOC2PPT、PPTEval 和 OfficeBench，并显式区分许可证复核、split 冻结与 adapter
+状态；没有任何第三方数据被静默下载或伪装成已接入：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.artifact_suite public-catalog
+```
+
+### Office 内容评测轨
+
+`office-content-dev-v1.json` 评最终 DOCX、XLSX、PPTX、PDF 的任务内容，而不是只评文件能否
+打开或全文关键词。首版含 12 题（8 dev / 4 test）、99 条带来源引用的实例级检查、12 条惩罚
+和 36 条带分档锚点的人工/VLM 复核标准。评分先过格式/安全门禁，再分别计算 fundamentals、
+completeness、correctness、fidelity、usability；复核未完成时总分保持 `null`。PPT 文本只取观众
+可见页面，不把 speaker notes 算入内容；关键数字与标签做局部关系绑定，原生图表直接检查系列
+数据。自动轨仍是独立硬门禁，但总分权重调整为自动 60% / 复核 40%；任一复核 criterion
+低于最低档都会否决通过，不能被自动分掩盖。
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.office_content_suite validate
+PYTHONPATH=backend backend/.venv/bin/python -m eval.office_content_suite prepare \
+  --workspace-root /tmp/workpilot-office-content-dev
+PYTHONPATH=backend backend/.venv/bin/python -m eval.office_content_suite score \
+  --submission-root /tmp/workpilot-office-content-dev \
+  --output-dir eval/outputs/office-content/<label>
+```
+
+对已经生成到 `submission/` 的文件，可用一条命令同时跑确定性规则、逐页渲染、视觉大模型复核
+和最终汇总。命令默认读取已配置的 heavy（否则 main）端点；该模型必须支持图片输入，也可用
+`--judge-base-url/--judge-model` 显式指定。Office 文件和题目来源资料会发送给模型，因此必须同时提供发送开关
+和非空授权说明：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m eval.office_eval \
+  --submission-root /tmp/workpilot-office-content-dev \
+  --output-dir eval/outputs/office-content/<model-label> \
+  --allow-model-send \
+  --authorization-note '仅允许本次 synthetic Office dev 文件发送到内部视觉模型'
+```
+
+模型响应采用严格 JSON、固定模型身份、有限调用/token/页数预算，并绑定最终文件 SHA-256；文本
+模型拒绝图片时直接失败，不会静默退化成“看不到页面也评视觉”。输出额外包含
+`model-reviews.json` 与 `model-review-run.json`。当前 VLM rubric 尚未与办公专家盲评完成校准，
+所以报告会给出 `final_score` 和 `engineering_pass`，但 `benchmark_eligible=false`；发布门禁仍只接受
+合格人工复核，不能把模型工程分冒充正式 benchmark 成绩。
+
+发布候选必须额外传 `--reviews <reviews.json> --require-complete-reviews`；报告会固定 suite SHA-256、
+scorer fingerprint 和生成时间。`office-eval-contract` 已登记到 catalog/nightly，零模型回归最终
+文件验证、四格式代表 oracle、三类 PPT 防投机反例、复核否决和 Cowork Office 工作流覆盖：
+
+```bash
+PYTHONPATH=backend backend/.venv/bin/python -m pytest -q \
+  backend/tests/test_artifact_eval_suite.py \
+  backend/tests/test_office_content_suite.py \
+  backend/tests/test_cowork_task_suite.py
+```
+
+test 访问必须额外传 `--include-test --test-access-note '<原因>'`。完整方法、评分公式、复核文件
+格式与晋升条件见 [docs/20-办公文件内容评测集.md](../docs/20-办公文件内容评测集.md)。当前仍为
+`synthetic + pending_human_review` 候选集，不得冒充正式 baseline。
+
 `agent-teams-dev-v1.json` 仍是待人工复核的 candidate，不能伪装成已晋升 baseline；它以
 `agent-teams-contract` 单独登记到 catalog。该 contract 是零模型、零外部 I/O 的 pytest gate，
 固定写委派 receipt、scope 越权/篡改拒绝、返工预算和进程重启恢复四类边界。
 
 ## Cowork 单 Agent 50 条基线
 
-`cowork-core-50-v1.6.1.json` 是当前 Cowork 端到端标注候选集：39 条 dev、11 条冻结 test，
+`cowork-core-50-v1.6.1.json` 是当前 catalog/nightly 已批准的 Cowork 端到端集：39 条 dev、11 条冻结 test，
 覆盖 workspace（含只读 git 视图）、artifact、格式 Skill + Shell、Web、knowledge/RAG、工作区文档沉浸阅读
 与安全/HITL，并新增飞书连接器和持久 shell 两类回归任务。每条记录均包含
 可复现 fixture、初始 capability、期望终态、gold 工具、工具顺序/调用预算和确定性成功断言；
@@ -53,6 +130,8 @@ knowledge 类额外强制 `EvidenceBundle` 合约，不允许 `chunk_id`、内�
 套件保留生成来源 `origin=synthetic`。行之签字批准的 v1.6.0 原文件继续冻结保留；v1.6.1
 只修复 034 的模型可见引用断言、040 的写权限和 044 的 baseline/空白确定性断言，并于
 `2026-08-25T10:42:21+08:00` 由行之重新复核批准。这不改变冻结 test 不得用于调参的约束。
+本地 CLI 默认的 `v1.6.2` 仍是 `pending_human_review` 候选版本；在签字、重跑并晋升独立 baseline
+之前，不得把它的结果与 v1.6.1 baseline 混比或称为正式回归结论。
 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/python -m eval.cowork_task_suite
@@ -153,7 +232,7 @@ PYTHONPATH=backend backend/.venv/bin/python -m eval.full_chain_cassette \
 `.github/workflows/eval-nightly.yml` 每天北京时间 02:00 在带 `workpilot-eval` 标签的自托管
 runner 上运行 Cowork dev、冻结 test、KB evaluation 和 Generation 70 条，再与固定 v2
 baseline 配对比较；同一矩阵还执行 `agent-teams-contract` 的四条和
-`control-plane-contract` 的 30 条零模型 deterministic case。模型固定为
+`control-plane-contract` 的 30 条、`office-eval-contract` 的 10 条零真实模型 deterministic case。模型固定为
 `deepseek-v4-flash`；nightly 默认总上限为 `6,000,000 token / 1,200 次模型调用 /
 18,000 秒墙钟`，并把剩余额度下压给每个 live 子进程。子进程超时会终止整个 process group；
 报告缺少或存在未结算 usage 时停止后续 live track 并失败。当前报告没有可靠、完整的模型定价，

@@ -20,7 +20,7 @@ WorkPilot 是单用户桌面应用，但 Agent 仍会处理不可信网页、文
 
 | 能力面 | 新 capability | 边界 |
 |---|---|---|
-| 命令执行 | `sandbox.execute` / `host.execute` | 隔离容器和宿主机明确分开；隔离后端不可用时拒绝，不回退宿主机 |
+| 命令执行 | `sandbox.execute` / `host.execute` | 操作系统原生沙箱和普通宿主 Shell 明确分开；隔离后端不可用时拒绝，不回退宿主机 |
 | 浏览器 | `browser.read` / `browser.write` / `browser.destructive` | 导航/观察、填写、点击/上传/下载分别授权 |
 | 外部系统 | `external.read` / `external.write` / `external.destructive` | 查询、创建/更新、删除分别授权；DELETE 动态解析为 destructive |
 | 网络 | `network.fetch` | grant 必须带精确 origin 或 domain scope；每次请求和每个重定向重新校验 |
@@ -38,11 +38,11 @@ WorkPilot 是单用户桌面应用，但 Agent 仍会处理不可信网页、文
 规范化参数哈希、grant/rule 标识、资源 scope、审批来源、调用标识和签发时间；它随工具结果与事件保存，
 用于回答“这次调用为什么被允许”。参数在批准后发生变化时，执行入口按哈希拒绝。
 
-`run_sandbox` 使用本机 Docker 或 Podman 的 argv 接口，默认 `--network=none`、只读根文件系统、
-drop all capabilities、no-new-privileges、非 root 用户、资源上限，并只将已授权 cwd 读写挂载到
-`/workspace`。`run_shell` 明确代表宿主执行，仍保留独立审批和路径授权。
-镜像使用 `--pull=never`；owner 必须在启用前显式预拉取配置的镜像，Agent 不能借一次
-`sandbox.execute` 授权触发宿主侧联网下载。
+`run_sandbox` 使用随桌面安装包冻结的 `workpilot-artifact-python`：macOS 由 Seatbelt、Linux 由
+bubblewrap 强制隔离。已授权 cwd 与 Skill 只读，临时 work、tmp 和候选 outputs 可写，网络默认
+拒绝；候选通过路径和 Artifact 校验后才由可信 sidecar 提交回 cwd。`run_shell` 明确代表普通
+宿主执行，仍保留独立审批和路径授权。原生隔离后端或随包运行时缺失时 fail closed；不探测
+Docker，不联网安装依赖，也不回退 `host.execute`。
 
 ## 考虑过的替代方案
 
@@ -58,7 +58,7 @@ drop all capabilities、no-new-privileges、非 root 用户、资源上限，并
 
 - 用户首次访问不同 origin/domain 时会看到更多授权请求。
 - 外部连接器必须正确声明 read/write/destructive；新增工具漏声明会在注册或执行阶段失败。
-- 本机没有可用 Docker/Podman 或指定镜像时，`run_sandbox` 不能执行。
+- 本机没有可用 Seatbelt/bubblewrap 或安装包缺少随包 Artifact Python 时，`run_sandbox` 不能执行。
 - 历史宽泛 grant 在迁移期仍被兼容读取，需要后续版本提供显式清理和迁移提示。
 
 ## 后续影响
@@ -67,4 +67,4 @@ drop all capabilities、no-new-privileges、非 root 用户、资源上限，并
 2. 网络客户端必须把重定向后的 URL 再送回授权器，不能只检查初始 URL。
 3. 审批 UI 只能从用户实际看到的 inbox payload 派生常驻规则。
 4. 回归测试固定覆盖过期、撤销、批准后参数变化、软链竞态、重复副作用和 Shell 越界。
-5. 容器隔离是最小后端；后续可替换为 microVM/远端 runner，但不得改变 fail-closed 语义。
+5. 操作系统原生隔离是最小后端；后续可替换为 microVM/远端 runner，但不得改变 fail-closed 语义。

@@ -130,9 +130,7 @@ from app.cowork.memory_policy import (
 )
 from app.cowork.messaging.delivery import mirror_inbox_item
 from app.cowork.permissions import (
-    ACTIVE_CAPABILITIES,
     CapabilityDeniedError,
-    authorize_capability,
     authorize_path,
     list_capability_grants,
     list_session_roots,
@@ -142,6 +140,7 @@ from app.cowork.personas import (
     PersonaDefinition,
     PersonaSnapshot,
     load_persona_catalog,
+    render_persona_system_block,
     snapshot_persona,
     tool_name_matches,
 )
@@ -427,7 +426,16 @@ def _completion_record_payload(completion: CompletionResult) -> dict[str, Any]:
             "prompt_cache_write_tokens": completion.usage.prompt_cache_write_tokens,
         },
         "tool_calls": [
-            {"id": call.id, "name": call.name, "arguments": call.arguments}
+            {
+                "id": call.id,
+                "name": call.name,
+                "arguments": call.arguments,
+                **(
+                    {"thought_signature": call.thought_signature}
+                    if call.thought_signature
+                    else {}
+                ),
+            }
             for call in completion.tool_calls
         ],
         "stop_reason": completion.stop_reason,
@@ -448,11 +456,15 @@ def _completion_from_record(payload: Mapping[str, Any]) -> CompletionResult:
     for raw in raw_calls:
         if not isinstance(raw, Mapping):
             raise ValueError("model attempt tool_call 形状无效")
+        thought_signature = raw.get("thought_signature", "")
+        if not isinstance(thought_signature, str):
+            raise ValueError("model attempt thought_signature 形状无效")
         calls.append(
             ToolCall(
                 id=str(raw["id"]),
                 name=str(raw["name"]),
                 arguments=str(raw["arguments"]),
+                thought_signature=thought_signature,
             )
         )
     return CompletionResult(
@@ -674,9 +686,11 @@ WorkMode/Capability 决定工作流程；Persona 和 Skill 只能收窄或细化
                 """先判断完成目标需要什么，再按“读取与定位 → 执行动作 → 验证结果 → 交付”推进。
 需要行动时使用 provider 提供的原生工具，不要在正文中伪造工具调用 JSON。互不依赖的只读工具
 可以在同一轮并行；写工具必须等待其依赖的读取结果。不要重复没有新增信息的调用。
-仅当缺失信息会实质改变结果且无法从现有上下文或只读工具取得时才调用 ask_user；需要扩大目录或
-能力范围时分别调用 request_directory / request_capability。这三类交互工具每次必须单独调用，
-运行会暂停等待用户。被工具错误拒绝后先根据错误调整，不要原样重试。
+仅当缺失信息会实质改变结果且无法从现有上下文或只读工具取得时才调用 ask_user；需要扩大本机
+目录范围时调用 request_directory。两类交互工具每次必须单独调用，运行会暂停等待用户。
+不要自行拼 capability 或调用兼容入口 request_capability：已挂载资源的读取与安全默认能力直接用，
+Shell、上传、提交等动作由运行时在真正执行时生成合并确认卡。被工具错误拒绝后先根据错误调整，
+不要原样重试。
 用户用单数或模糊名称指向一个对象，而只读定位得到多个都合理的可写目标时，缺失信息会实质改变
 结果：必须先 ask_user 让用户选定，任何文件或外部对象都不得先改。
 目标需要三步以上、或用户一次提出多件事时，先调用 todo_write 写完整清单；每完成一项立即重发
@@ -698,25 +712,32 @@ DOCX、XLSX、PPTX、PDF
             ),
             PromptBlock(
                 "Office、Shell 与远程资料",
-                """Office 文件采用“格式 Skill + Python/CLI + 工作区产物”，没有专用 inspect/edit
-工具。先 load_skill 加载 docx/xlsx/pptx/pdf 中匹配的一项；使用 list_files 定位文件，按 Skill
-处理。需要创建或修改 Office 文件时，编写短小、可复核的脚本，再用 run_shell 在授权工作区执行；
+                """Office 文件采用“格式 Skill + 固定 Renderer + 工作区产物”。先 load_skill 加载
+docx/xlsx/pptx/pdf 中匹配的一项；使用 list_files 定位文件，按 Skill 处理。新建 DOCX/XLSX/PPTX/PDF
+必须使用 render_artifact。Renderer 拒绝 Spec 或验证失败时，应缩短内容、拆页或调整受支持的布局后
+重新提交 Spec；不得自动降级为 python-pptx/python-docx/openpyxl/reportlab 等任意坐标脚本。
+只有编辑既有文件、且固定 Renderer 明确不支持保持原格式的局部修改时，才可按格式 Skill 使用 run_sandbox；
 若用户只要求读取/总结并明确不修改任何文件，则不得创建辅助脚本、备份或产物，改用单次只读
 run_shell 命令在内存中打开并输出所需内容。默认保留原件并输出带清晰后缀的新文件；
 用户明确要求覆盖时，也必须先复制可恢复备份。命令完成后 WorkPilot 会校验新建或修改的支持格式文件，
 并自动登记到 Artifacts；Office 交付物不要使用 run_in_background=true。
-run_shell 直接在宿主机执行，另需 host.execute；run_sandbox 使用无网络容器，另需
-sandbox.execute。两者显式 cwd 都必须具有 filesystem.write 授权。省略 cwd 时，持久 PTY
+run_shell 直接在宿主机执行，未命中可信规则的命令会生成一次动作审批卡；run_sandbox 使用
+随包 Python 与无网络的操作系统原生沙箱，输入和 Skill 只读，只有验证后的候选输出会提交。
+沙箱脚本必须通过 WORKPILOT_INPUTS/WORKPILOT_WORK/WORKPILOT_OUTPUTS 环境变量定位目录，
+并直接调用 $WORKPILOT_PYTHON；不得用 python/python3、which、PATH 探测或宿主解释器候选列表。
+两者显式 cwd 都必须具有 filesystem.write 授权。省略 cwd 时，持久 PTY
 沿用会话当前目录，其他命令使用第一个可写工作区根目录。要连续保留 cd/export/venv 时使用
 persistent_session=true，后续调用可继续省略 cwd；PTY 恢复后只保留最后 cwd，
 environment_status=lost_on_recovery 时必须重做 export、venv 激活等准备。
-公开网页或远程 PDF 用 fetch_url；个人资料库用 search_knowledge。缺少对应能力时才调用
-request_capability。附件存储路径不等于用户授权工作目录。""",
+公开网页或远程 PDF 用 fetch_url；个人资料库用 search_knowledge。公共网页读取和已挂载知识库
+不需要重复申请 capability。附件存储路径不等于用户授权工作目录。""",
             ),
             PromptBlock(
                 "安全与最终交付",
                 """不得拆分或改写待审批命令，不得绕过 capability、allowlist、租约或用户审批。
 有副作用的动作以工具返回的真实对象、范围和状态为准。任务达成、确实受阻或预算耗尽时停止；
+PPTX 的视觉验证只有 ArtifactManifest 中 visual.status=passed 才算完成；warning、not_run 或渲染器
+缺失都必须保留对应待办并在最终答复中明确说明，禁止宣称已完成视觉验证。
 最终答复直接给结果，列出实际改动、验证和可打开的产物路径，并明确仍未完成或无法验证的部分。""",
             ),
             PromptBlock("工具与扩展契约", extra_instructions),
@@ -748,8 +769,8 @@ def _ephemeral_context(
 ) -> str:
     """每轮重算、挂在 outbound 视图末尾的临时上下文。
 
-    这几块内容的共同点是**会在一次 run 内变化**：目录与能力会因为 request_directory /
-    request_capability 获批而增加，模式会因为计划获批而翻转，清单每完成一项都要重发，
+    这几块内容的共同点是**会在一次 run 内变化**：目录会因为 request_directory 获批而增加，
+    模式会因为计划获批而翻转，清单每完成一项都要重发，
     阅读器的视口按定义每一轮都可能不同。
     放在末尾意味着它们变化时只有这一小块失效，前面所有轮次的前缀仍然复用。
 
@@ -1117,11 +1138,14 @@ def _tool_result_strings(value: object) -> list[str]:
 
 
 def _canonical_tool_call(call: ToolCall) -> CanonicalToolCall:
-    return {
+    payload: CanonicalToolCall = {
         "id": call.id,
         "type": "function",
         "function": {"name": call.name, "arguments": call.arguments},
     }
+    if call.thought_signature:
+        payload["thought_signature"] = call.thought_signature
+    return payload
 
 
 def _tool_error_message(tool_call_id: str, reason: str) -> CoworkMessage:
@@ -1453,7 +1477,7 @@ async def initialize_cowork_state(
         "capability_exclusive": capabilities.exclusive,
         "persona_name": selected_persona.name,
         "persona_snapshot": persona_snapshot,
-        "persona_block": selected_persona.system_block,
+        "persona_block": render_persona_system_block(selected_persona, persona_snapshot),
         "persona_tool_patterns": list(selected_persona.tool_patterns),
         "mode_block": capabilities.render_system_block(activation),
         "workspace_files": [path.strip() for path in workspace_files if path.strip()],
@@ -3121,8 +3145,27 @@ class _CoworkExecution:
                     self._raw_tool_arguments(call),
                 )
             except (CoworkToolError, TypeError, ValueError) as error:
+                signature = call_signature(call.name, parse_arguments(call.arguments))
+                counts = normalize_counts(context.state.get("call_signatures"))
+                previous_failures = counts.get(signature, 0)
+                denied = _json_state(context.state)
+                if previous_failures >= 2:
+                    denied["call_signatures"] = counts
+                    return ToolGateBlock(
+                        state=denied,
+                        calls=context.calls,
+                        reason=(
+                            f"这个调用（{call.name}，参数完全相同）已经连续两次未通过 "
+                            "schema 校验，本次不再校验或执行。请根据前两次错误修改参数；"
+                            "不能修正时直接说明限制，禁止原样重试或改走低质量生成路径。"
+                        ),
+                        event_tool=call.name,
+                        event_reason="相同工具参数连续两次未通过 schema，已拒绝再次尝试",
+                        stalled_round=True,
+                    )
+                denied["call_signatures"] = bump(counts, (signature,))
                 return ToolGateBlock(
-                    state=context.state,
+                    state=denied,
                     calls=context.calls,
                     reason=str(error),
                     event_tool=call.name,
@@ -3316,11 +3359,6 @@ class _CoworkExecution:
         call = shell_calls[0]
         try:
             request = self.registry.parse_arguments("run_shell", self._raw_tool_arguments(call))
-            await authorize_capability(
-                self.session,
-                conversation_id=UUID(context.state["conversation_id"]),
-                capability="host.execute",
-            )
             shell_args = RunShellArgs.model_validate(request)
             resolved_cwd = await resolve_run_shell_cwd(
                 self.session,
@@ -3497,7 +3535,7 @@ class _CoworkExecution:
                     "request": request,
                     "human_only_reason": (
                         human_only_reason
-                        or ("该动作会创建或修改跨会话持久权限" if human_only else None)
+                        or ("该动作按安全策略不可由 AI 自动审核或常驻规则豁免" if human_only else None)
                     ),
                 },
             )
@@ -4058,6 +4096,9 @@ class _CoworkExecution:
         )
         conversation_id = UUID(state["conversation_id"])
         grants = await list_capability_grants(self.session, conversation_id=conversation_id)
+        required_capabilities = self.registry.required_global_capabilities(
+            item.name for item in active_tools
+        )
         ephemeral_suffix = _ephemeral_context(
             mode=state["mode"],
             todos=state["todos"],
@@ -4072,9 +4113,9 @@ class _CoworkExecution:
                         else grant.capability
                     )
                     for grant in grants
-                    if grant.active and grant.capability in ACTIVE_CAPABILITIES
+                    if grant.active and grant.capability in required_capabilities
                 ],
-                sorted(ACTIVE_CAPABILITIES),
+                sorted(required_capabilities),
             ),
             reading_viewport_block=render_reading_viewport_block(state["reading_viewport"]),
             loaded_tools=_loaded_tool_names(self.registry),
@@ -4786,6 +4827,8 @@ class _CoworkExecution:
         warning = (
             "批准后会预创建独立持久 Worker Session，并允许 Lead 通过 Board 分配任务。"
             "Worker 不继承 Lead 历史，模型调用计入执行任务时所在 run 的预算。"
+            "若 arguments.expert 非空，成员职责、提示词与工具收窄规则由对应 expert/profile "
+            "固化，expert_sha256 会阻止批准后静默切换定义。"
             "若 arguments.write_delegation_scope 非空，本次批准还会把列出的目录明确"
             "委派为 Worker 可写边界；后续写任务只能是它的子集。"
             if call.name == "propose_team"
@@ -5618,6 +5661,9 @@ class _CoworkExecution:
                     tool_call_id=call["call_id"],
                     approved_call_ids=frozenset(state["approved_calls"]),
                     approval_evidence=state["approval_evidence"],
+                    evidence_ledger=tuple(
+                        dict(item) for item in state["evidence_ledger"] if isinstance(item, dict)
+                    ),
                     semantic_approval_signing_key=_semantic_approval_signing_key(
                         self.settings,
                         run_id=run_id,

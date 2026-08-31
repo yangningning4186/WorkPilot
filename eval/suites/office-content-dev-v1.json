@@ -1,0 +1,1631 @@
+{
+  "schema_version": "workpilot-office-content-suite.v1",
+  "name": "office-content-seed",
+  "version": "1.1.0",
+  "origin": "synthetic",
+  "data_classification": "synthetic",
+  "review_status": "pending_human_review",
+  "reviewer": null,
+  "reviewed_at": null,
+  "methodology": [
+    "PresentBench: instance-specific binary checklists, localized evidence, and dimension-normalized scoring (https://arxiv.org/html/2603.07244)",
+    "PPT-Eval: leaf-level partial credit plus explicit penalties and judge meta-evaluation (https://arxiv.org/html/2606.31154)",
+    "SpreadsheetBench 2: final-workbook target checks, formula/result semantics, and separate data/format criteria (https://arxiv.org/html/2606.29955)",
+    "OmegaUse-OfficeVal: final-deliverable format gate followed by executable rule-level scoring (https://github.com/baidu-frontier-research/OmegaUse-OfficeVal/blob/main/docs/verifier-contract.md)",
+    "Office Comprehension Benchmark: atomic binary assertions for auditable office-file content evaluation (https://github.com/microsoft/OfficeComprehensionBench)",
+    "Score policy v1.1: automatic checks remain an independent hard gate while final-score weights are 60% automatic and 40% anchored review"
+  ],
+  "dimension_weights": {
+    "fundamentals": 0.2,
+    "completeness": 0.2,
+    "correctness": 0.2,
+    "fidelity": 0.2,
+    "usability": 0.2
+  },
+  "automatic_weight": 0.6,
+  "review_weight": 0.4,
+  "items": [
+    {
+      "id": "office-docx-001-quarterly-brief",
+      "split": "dev",
+      "artifact_type": "docx",
+      "task_type": "analyze",
+      "category": "management_brief",
+      "difficulty": "medium",
+      "prompt": "根据 inputs/performance.md 制作一份面向经营管理会的中文季度经营简报。必须包含执行摘要、KPI 表、主要风险和未来 30 天行动，清楚区分实际值与目标值，不得把未达目标写成超额完成。行动要写负责人和日期。最终仅交付 submission/q3-business-brief.docx。",
+      "output_file": "q3-business-brief.docx",
+      "fixtures": [
+        {
+          "path": "performance.md",
+          "content": "# Q3 经营数据\n\n数据截至：2026-08-31。\n\n- 收入：1,240 万元；季度目标：1,300 万元；目标达成率：95.4%。\n- 续约率：91%；季度目标：93%。\n- 支持工单积压：38 单；上季度末：52 单，环比减少 26.9%。\n- 新签企业客户：7 家，其中 3 家尚未完成安全评审。\n\n## 风险\n1. 安全评审排期可能拖延 3 家客户上线，负责人：李雯。\n2. 华南续约率为 87%，低于总体水平，负责人：周成。\n\n## 已确认行动\n- 李雯在 2026-09-10 前给出 3 家客户逐户上线计划。\n- 周成在 2026-09-15 前完成华南流失客户复盘。\n"
+        }
+      ],
+      "gate": {
+        "render_visual": true,
+        "fail_on_dimensions": ["structural", "security"],
+        "require_measured_dimensions": ["structural", "security"],
+        "min_validator_quality": 50
+      },
+      "rubric": [
+        {
+          "id": "docx-001-fund-headings",
+          "dimension": "fundamentals",
+          "description": "使用至少四个 Word 标题组织管理简报。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_count", "metric": "docx_heading_count", "operator": "gte", "value": 4}
+        },
+        {
+          "id": "docx-001-fund-kpi-table",
+          "dimension": "fundamentals",
+          "description": "包含至少一张原生表格。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "structure_count", "metric": "docx_table_count", "operator": "gte", "value": 1}
+        },
+        {
+          "id": "docx-001-complete-kpis",
+          "dimension": "completeness",
+          "description": "KPI 表同时覆盖收入、续约率、工单积压和新签客户。",
+          "source_refs": ["performance.md#Q3 经营数据"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["收入", "续约率", "工单积压", "新签企业客户"], "match": "all", "scope": {"kind": "docx_table", "index": 1}}
+        },
+        {
+          "id": "docx-001-complete-actions",
+          "dimension": "completeness",
+          "description": "行动部分同时保留两位负责人及其日期。",
+          "source_refs": ["performance.md#已确认行动"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["李雯", "2026-09-10", "周成", "2026-09-15"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "docx-001-correct-revenue",
+          "dimension": "correctness",
+          "description": "正确呈现收入实际、目标和达成率。",
+          "source_refs": ["performance.md#Q3 经营数据/收入"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["1,240", "1,300", "95.4%"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "docx-001-correct-backlog",
+          "dimension": "correctness",
+          "description": "正确呈现积压从 52 单降至 38 单及 26.9% 降幅。",
+          "source_refs": ["performance.md#Q3 经营数据/支持工单"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["38", "52", "26.9%"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "docx-001-fidelity-asof",
+          "dimension": "fidelity",
+          "description": "明确标注数据截至日期。",
+          "source_refs": ["performance.md#数据截至"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["2026-08-31"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "docx-001-usable-order",
+          "dimension": "usability",
+          "description": "按执行摘要、KPI、风险、行动的决策阅读顺序组织内容。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_ordered", "values": ["执行摘要", "KPI", "风险", "行动"], "scope": {"kind": "artifact"}}
+        }
+      ],
+      "penalties": [
+        {
+          "id": "docx-001-penalty-overclaim",
+          "description": "将低于目标的收入描述为超额或已完成目标。",
+          "source_refs": ["performance.md#Q3 经营数据/收入", "prompt"],
+          "points": 20,
+          "blocking": true,
+          "trigger": {"type": "text_claim_contains", "values": ["超额完成", "已完成目标"], "match": "any", "scope": {"kind": "artifact"}}
+        }
+      ],
+      "review_criteria": [
+        {
+          "id": "docx-001-review-coherence",
+          "dimension": "coherence",
+          "description": "经营结论是否形成从结果、原因、风险到行动的清晰叙事。",
+          "anchors": ["0：事实堆砌或相互矛盾", "1：结构可读但结论与行动衔接较弱", "2：主结论突出，风险和行动均由数据自然导出"]
+        },
+        {
+          "id": "docx-001-review-decision",
+          "dimension": "decision_utility",
+          "description": "管理者能否据此识别偏差、责任人和下一个检查点。",
+          "anchors": ["0：无法支持决策", "1：指出偏差但责任或时点不完整", "2：偏差、负责人、日期和检查点完整可执行"]
+        },
+        {
+          "id": "docx-001-review-visual",
+          "dimension": "visual_quality",
+          "description": "版式是否适合经营会快速浏览，包括层级、表格和留白。",
+          "anchors": ["0：难以阅读或明显错版", "1：基本清楚但层级或密度一般", "2：层级鲜明、表格易扫读且无视觉噪声"]
+        }
+      ],
+      "pass_threshold": 75
+    },
+    {
+      "id": "office-docx-002-decision-memo",
+      "split": "dev",
+      "artifact_type": "docx",
+      "task_type": "transform",
+      "category": "meeting_to_memo",
+      "difficulty": "medium",
+      "prompt": "把 inputs/meeting-notes.md 整理成正式的中文决策备忘录。分别列出已决事项、未决事项和行动登记表，不要把试点写成全国上线，也不要改变预算上限。最终仅交付 submission/pilot-decision-memo.docx。",
+      "output_file": "pilot-decision-memo.docx",
+      "fixtures": [
+        {
+          "path": "meeting-notes.md",
+          "content": "# 客服自动化试点会议记录\n\n日期：2026-09-01\n\n已决：\n- 先在华东区域试点，不进行全国上线。\n- 本阶段预算上限为 18 万元。\n- 成功门槛：首响时间下降至少 20%，且客户满意度不得下降。\n\n未决：\n- 隐私评审能否在 9 月 14 日前结束，需法务确认。\n\n行动：\n- 陈梅：9 月 8 日前完成数据字段映射。\n- 赵倩：9 月 12 日前确认供应商 SLA。\n- 孙宇：9 月 15 日主持 go/no-go 评审。\n"
+        }
+      ],
+      "gate": {
+        "render_visual": true,
+        "fail_on_dimensions": ["structural", "security"],
+        "require_measured_dimensions": ["structural", "security"],
+        "min_validator_quality": 50
+      },
+      "rubric": [
+        {
+          "id": "docx-002-fund-headings",
+          "dimension": "fundamentals",
+          "description": "文档至少有三个标题段落。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_count", "metric": "docx_heading_count", "operator": "gte", "value": 3}
+        },
+        {
+          "id": "docx-002-fund-action-table",
+          "dimension": "fundamentals",
+          "description": "行动登记使用原生 Word 表格。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "structure_count", "metric": "docx_table_count", "operator": "gte", "value": 1}
+        },
+        {
+          "id": "docx-002-complete-decisions",
+          "dimension": "completeness",
+          "description": "已决事项包含华东试点、预算上限和成功门槛。",
+          "source_refs": ["meeting-notes.md#已决"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["华东", "18 万元", "20%", "客户满意度"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "docx-002-complete-open",
+          "dimension": "completeness",
+          "description": "未决事项保留隐私评审与法务确认。",
+          "source_refs": ["meeting-notes.md#未决"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["隐私评审", "9 月 14 日", "法务"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "docx-002-correct-actions-a",
+          "dimension": "correctness",
+          "description": "陈梅的数据字段映射行动及日期正确。",
+          "source_refs": ["meeting-notes.md#行动/陈梅"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["陈梅", "9 月 8 日", "数据字段映射"], "match": "all", "scope": {"kind": "docx_table", "index": 1}}
+        },
+        {
+          "id": "docx-002-correct-actions-b",
+          "dimension": "correctness",
+          "description": "赵倩和孙宇的行动及日期正确。",
+          "source_refs": ["meeting-notes.md#行动/赵倩", "meeting-notes.md#行动/孙宇"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["赵倩", "9 月 12 日", "供应商 SLA", "孙宇", "9 月 15 日", "go/no-go"], "match": "all", "scope": {"kind": "docx_table", "index": 1}}
+        },
+        {
+          "id": "docx-002-fidelity-scope",
+          "dimension": "fidelity",
+          "description": "明确保持华东试点的范围限制。",
+          "source_refs": ["meeting-notes.md#已决", "prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["不进行全国上线", "不做全国上线", "仅限华东", "范围限于华东"], "match": "any", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "docx-002-usable-order",
+          "dimension": "usability",
+          "description": "已决、未决、行动三部分顺序清楚。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_ordered", "values": ["已决", "未决", "行动"], "scope": {"kind": "artifact"}}
+        }
+      ],
+      "penalties": [
+        {
+          "id": "docx-002-penalty-budget",
+          "description": "把 18 万元预算错误放大为 180 万元。",
+          "source_refs": ["meeting-notes.md#已决/预算"],
+          "points": 25,
+          "blocking": true,
+          "trigger": {"type": "text_contains", "values": ["180 万元", "180万"], "match": "any", "scope": {"kind": "artifact"}}
+        }
+      ],
+      "review_criteria": [
+        {
+          "id": "docx-002-review-coherence",
+          "dimension": "coherence",
+          "description": "会议碎片是否被重组成边界清楚、无重复的正式备忘录。",
+          "anchors": ["0：仍是杂乱记录或类别混淆", "1：分类基本正确但有重复或表达松散", "2：已决、未决和行动边界明确且语言正式"]
+        },
+        {
+          "id": "docx-002-review-decision",
+          "dimension": "decision_utility",
+          "description": "读者能否直接据此执行试点和追踪未决风险。",
+          "anchors": ["0：关键执行信息不可用", "1：大体可执行但缺状态或跟进线索", "2：范围、门槛、待确认项和行动均可直接追踪"]
+        },
+        {
+          "id": "docx-002-review-visual",
+          "dimension": "visual_quality",
+          "description": "备忘录标题层级和行动表是否专业、易扫读。",
+          "anchors": ["0：错版或表格不可读", "1：可读但视觉层级一般", "2：层级克制、表格清晰、重点突出"]
+        }
+      ],
+      "pass_threshold": 75
+    },
+    {
+      "id": "office-docx-003-conflict-status",
+      "split": "test",
+      "artifact_type": "docx",
+      "task_type": "conflict_handling",
+      "category": "conflict_and_uncertainty",
+      "difficulty": "hard",
+      "prompt": "根据 inputs/project-plan.md 与 inputs/finance-email.md 写一份项目状态备忘录。资料里的上线日期和预算口径互相冲突，必须并列呈现来源、明确标为待确认，并给出确认责任人；不得自行选择一个版本当作最终结论。最终仅交付 submission/launch-status-memo.docx。",
+      "output_file": "launch-status-memo.docx",
+      "fixtures": [
+        {
+          "path": "project-plan.md",
+          "content": "# Project Orion 项目计划 v7\n\n更新时间：2026-08-28\n- 计划上线日期：2026-10-12。\n- 项目总预算：48 万元。\n- 上线负责人：顾晨。\n"
+        },
+        {
+          "path": "finance-email.md",
+          "content": "# 财务与 PMO 确认邮件\n\n发送时间：2026-08-30\n- PMO 当前排期显示上线日期为 2026-10-19。\n- 财务已批准预算为 45 万元；额外 3 万元尚未批准。\n- 请顾晨在 2026-09-03 前召集 PMO 与财务确认唯一口径。\n"
+        }
+      ],
+      "gate": {
+        "render_visual": true,
+        "fail_on_dimensions": ["structural", "security"],
+        "require_measured_dimensions": ["structural", "security"],
+        "min_validator_quality": 50
+      },
+      "rubric": [
+        {
+          "id": "docx-003-fund-headings",
+          "dimension": "fundamentals",
+          "description": "文档具有状态、冲突和下一步等清晰标题。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_count", "metric": "docx_heading_count", "operator": "gte", "value": 3}
+        },
+        {
+          "id": "docx-003-fund-table",
+          "dimension": "fundamentals",
+          "description": "至少用一张表并列冲突口径。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "structure_count", "metric": "docx_table_count", "operator": "gte", "value": 1}
+        },
+        {
+          "id": "docx-003-complete-date-conflict",
+          "dimension": "completeness",
+          "description": "日期冲突同时出现 10 月 12 日和 10 月 19 日。",
+          "source_refs": ["project-plan.md#计划上线日期", "finance-email.md#PMO 当前排期"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["2026-10-12", "2026-10-19"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "docx-003-complete-budget-conflict",
+          "dimension": "completeness",
+          "description": "预算冲突同时出现 48 万元、45 万元和 3 万元未批准。",
+          "source_refs": ["project-plan.md#项目总预算", "finance-email.md#财务已批准预算"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["48 万元", "45 万元", "3 万元", "未批准"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "docx-003-correct-owner",
+          "dimension": "correctness",
+          "description": "确认责任人为顾晨。",
+          "source_refs": ["finance-email.md#请顾晨"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["顾晨"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "docx-003-correct-deadline",
+          "dimension": "correctness",
+          "description": "确认截止日期为 2026-09-03。",
+          "source_refs": ["finance-email.md#请顾晨"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["2026-09-03"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "docx-003-fidelity-uncertain",
+          "dimension": "fidelity",
+          "description": "明确将口径标记为冲突或待确认。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["冲突", "待确认"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "docx-003-usable-next-step",
+          "dimension": "usability",
+          "description": "给出召集 PMO 与财务确认唯一口径的下一步。",
+          "source_refs": ["finance-email.md#确认唯一口径"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["PMO", "财务", "确认"], "match": "all", "scope": {"kind": "artifact"}}
+        }
+      ],
+      "penalties": [
+        {
+          "id": "docx-003-penalty-resolution",
+          "description": "在没有依据时宣称最终上线日或最终批准预算。",
+          "source_refs": ["prompt", "project-plan.md", "finance-email.md"],
+          "points": 30,
+          "blocking": true,
+          "trigger": {"type": "text_claim_contains", "values": ["最终上线日期为", "最终确定上线", "48 万元已获批准"], "match": "any", "scope": {"kind": "artifact"}}
+        }
+      ],
+      "review_criteria": [
+        {
+          "id": "docx-003-review-coherence",
+          "dimension": "coherence",
+          "description": "两类冲突是否被清楚配对到各自来源，而非混成模糊叙述。",
+          "anchors": ["0：来源与口径混乱", "1：指出冲突但来源映射不够清楚", "2：日期和预算均逐项映射来源并解释状态"]
+        },
+        {
+          "id": "docx-003-review-decision",
+          "dimension": "decision_utility",
+          "description": "备忘录是否让管理者知道谁在何时完成何种确认。",
+          "anchors": ["0：只有问题没有处置", "1：有负责人或时点但不完整", "2：责任人、截止日、参与方和预期产出完整"]
+        },
+        {
+          "id": "docx-003-review-visual",
+          "dimension": "visual_quality",
+          "description": "冲突对照与待确认状态是否在视觉上醒目且专业。",
+          "anchors": ["0：冲突难以识别或错版", "1：可识别但对照关系一般", "2：对照紧凑，状态与下一步一眼可见"]
+        }
+      ],
+      "pass_threshold": 80
+    },
+    {
+      "id": "office-pptx-001-monthly-review",
+      "split": "dev",
+      "artifact_type": "pptx",
+      "task_type": "analyze",
+      "category": "executive_update",
+      "difficulty": "medium",
+      "prompt": "根据 inputs/northstar-metrics.md 制作 5 页中文月度经营复盘 PPT：封面、经营结果、客户与交付、主要风险、未来 30 天。每页要有明确结论标题，不能把低于计划的 ARR 或高于目标的流失率写成正向超额。最终仅交付 submission/northstar-monthly-review.pptx。",
+      "output_file": "northstar-monthly-review.pptx",
+      "fixtures": [
+        {
+          "path": "northstar-metrics.md",
+          "content": "# Northstar 2026 年 8 月\n\n- ARR：860 万元；计划：900 万元。\n- 月度客户流失率：2.8%；目标：不高于 2.2%。\n- 企业试点：7 家；预计本季度转付费：3 家。\n- API P95 延迟：较 7 月下降 18%。\n- 交付：12 个里程碑完成 10 个，2 个延期。\n\n## 风险\n- 企业 API 准备度为黄灯，负责人：王蕾，9 月 9 日复核。\n- 两个延期里程碑的共同依赖是数据迁移，负责人：刘川，9 月 12 日给出恢复计划。\n"
+        }
+      ],
+      "gate": {
+        "render_visual": true,
+        "fail_on_dimensions": ["structural", "visual", "security"],
+        "require_measured_dimensions": ["structural", "visual", "security"],
+        "min_validator_quality": 60
+      },
+      "rubric": [
+        {
+          "id": "pptx-001-fund-count",
+          "dimension": "fundamentals",
+          "description": "演示文稿严格为 5 页。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_count", "metric": "pptx_slide_count", "operator": "eq", "value": 5}
+        },
+        {
+          "id": "pptx-001-fund-titles",
+          "dimension": "fundamentals",
+          "description": "五页标题覆盖封面、结果、客户交付、风险和未来 30 天。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "structure_values", "metric": "pptx_slide_titles", "values": ["Northstar", "经营结果", "客户与交付", "风险", "未来 30 天"], "match": "all"}
+        },
+        {
+          "id": "pptx-001-complete-customer",
+          "dimension": "completeness",
+          "description": "客户与交付页包含 7 家试点、3 家转化及 10/12 里程碑。",
+          "source_refs": ["northstar-metrics.md#企业试点", "northstar-metrics.md#交付"],
+          "weight": 1,
+          "critical": true,
+          "check": {
+            "type": "text_labeled_values",
+            "requirements": [
+              {"labels": ["试点"], "values": ["7"], "direction": "within", "max_distance": 40},
+              {"labels": ["转付费", "转化"], "values": ["3"], "direction": "within", "max_distance": 40},
+              {"labels": ["里程碑", "交付"], "values": ["10", "12"], "direction": "within", "max_distance": 60}
+            ],
+            "scope": {"kind": "pptx_slide", "selector": "客户与交付"}
+          }
+        },
+        {
+          "id": "pptx-001-complete-risks",
+          "dimension": "completeness",
+          "description": "风险页包含 API 黄灯和数据迁移依赖。",
+          "source_refs": ["northstar-metrics.md#风险"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["API", "黄灯", "数据迁移"], "match": "all", "scope": {"kind": "pptx_slide", "selector": "风险"}}
+        },
+        {
+          "id": "pptx-001-correct-arr",
+          "dimension": "correctness",
+          "description": "经营结果页正确显示 ARR 实际 860 万和计划 900 万。",
+          "source_refs": ["northstar-metrics.md#ARR"],
+          "weight": 1,
+          "critical": true,
+          "check": {
+            "type": "text_labeled_values",
+            "requirements": [
+              {"labels": ["ARR"], "values": ["860"], "direction": "after", "max_distance": 30},
+              {"labels": ["计划"], "values": ["900"], "direction": "after", "max_distance": 20}
+            ],
+            "scope": {"kind": "pptx_slide", "selector": "经营结果"}
+          }
+        },
+        {
+          "id": "pptx-001-correct-churn",
+          "dimension": "correctness",
+          "description": "经营结果页正确显示流失率 2.8% 与目标 2.2%。",
+          "source_refs": ["northstar-metrics.md#月度客户流失率"],
+          "weight": 1,
+          "critical": true,
+          "check": {
+            "type": "text_labeled_values",
+            "requirements": [
+              {"labels": ["流失率"], "values": ["2.8%"], "direction": "after", "max_distance": 25},
+              {"labels": ["目标"], "values": ["2.2%"], "direction": "after", "max_distance": 20}
+            ],
+            "scope": {"kind": "pptx_slide", "selector": "经营结果"}
+          }
+        },
+        {
+          "id": "pptx-001-fidelity-latency",
+          "dimension": "fidelity",
+          "description": "只按资料陈述 P95 延迟环比下降 18%。",
+          "source_refs": ["northstar-metrics.md#API P95 延迟"],
+          "weight": 1,
+          "critical": false,
+          "check": {
+            "type": "text_labeled_values",
+            "requirements": [
+              {"labels": ["P95"], "values": ["18%"], "direction": "after", "max_distance": 40}
+            ],
+            "scope": {"kind": "artifact"}
+          }
+        },
+        {
+          "id": "pptx-001-usable-actions",
+          "dimension": "usability",
+          "description": "未来 30 天页包含两位负责人和复核日期。",
+          "source_refs": ["northstar-metrics.md#风险"],
+          "weight": 1,
+          "critical": false,
+          "check": {
+            "type": "text_labeled_values",
+            "requirements": [
+              {"labels": ["王蕾"], "values": ["9 月 9 日"], "direction": "after", "max_distance": 40},
+              {"labels": ["刘川"], "values": ["9 月 12 日"], "direction": "after", "max_distance": 40}
+            ],
+            "scope": {"kind": "pptx_slide", "selector": "未来 30 天"}
+          }
+        }
+      ],
+      "penalties": [
+        {
+          "id": "pptx-001-penalty-overclaim",
+          "description": "将 ARR 或流失率错误描述为超额或全面领先。",
+          "source_refs": ["northstar-metrics.md#ARR", "northstar-metrics.md#月度客户流失率"],
+          "points": 25,
+          "blocking": true,
+          "trigger": {"type": "text_claim_contains", "values": ["ARR 超额", "流失率优于目标", "全面领先"], "match": "any", "scope": {"kind": "artifact"}}
+        }
+      ],
+      "review_criteria": [
+        {
+          "id": "pptx-001-review-coherence",
+          "dimension": "coherence",
+          "description": "五页是否形成从经营偏差到风险和行动的连续故事线。",
+          "anchors": ["0：页面孤立或结论冲突", "1：顺序合理但页间逻辑较弱", "2：每页结论承接前页并导向行动"]
+        },
+        {
+          "id": "pptx-001-review-decision",
+          "dimension": "decision_utility",
+          "description": "管理者能否快速看出哪些指标偏离、为何以及谁来修复。",
+          "anchors": ["0：只展示数据", "1：有风险或行动但不完整", "2：偏差、风险、负责人和日期均明确"]
+        },
+        {
+          "id": "pptx-001-review-visual",
+          "dimension": "visual_quality",
+          "description": "页面是否具备执行汇报所需的结论层级、有效信息密度、数据强调和视觉一致性。",
+          "anchors": ["0：错版、难读，或多页只有标题/空卡片/大面积无意留白", "1：整体可读，但个别内容页偏空、主视觉弱或构图重复", "2：普通页信息充实、峰值页留白有意，数据视觉化恰当且全稿有节奏"]
+        }
+      ],
+      "pass_threshold": 75
+    },
+    {
+      "id": "office-pptx-002-automation-proposal",
+      "split": "dev",
+      "artifact_type": "pptx",
+      "task_type": "create",
+      "category": "grounded_proposal",
+      "difficulty": "hard",
+      "prompt": "使用 inputs/business-case.md 制作 6 页客服自动化立项建议 PPT。应包含现状、方案、试点证据、成本区间、边界与决策请求；至少使用一个原生图表，并在同一图表中准确呈现试点工时下降 18%—24% 的区间。所有收益必须保留区间和试点限定，不得杜撰 ROI 或承诺固定节省比例。最终仅交付 submission/service-automation-proposal.pptx。",
+      "output_file": "service-automation-proposal.pptx",
+      "fixtures": [
+        {
+          "path": "business-case.md",
+          "content": "# 客服自动化 Business Case\n\n- 当前人工支持成本：每季度 32 万元。\n- 6 周小规模试点覆盖 2 个队列，重复问题处理工时下降 18%—24%。该结果尚未在全部队列验证。\n- 一次性实施成本估算：15 万—21 万元。\n- 年度软件费估算：9.6 万元。\n- 第一阶段范围：知识检索、回复草稿、人工确认后发送。\n- 明确不包含：CRM 迁移、自动退款、无人值守发送。\n- 决策请求：批准 8 周受控试点，预算上限 21 万元；第 6 周做中期评审。\n"
+        }
+      ],
+      "gate": {
+        "render_visual": true,
+        "fail_on_dimensions": ["structural", "visual", "security"],
+        "require_measured_dimensions": ["structural", "visual", "security"],
+        "min_validator_quality": 60
+      },
+      "rubric": [
+        {
+          "id": "pptx-002-fund-count",
+          "dimension": "fundamentals",
+          "description": "演示文稿严格为 6 页。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_count", "metric": "pptx_slide_count", "operator": "eq", "value": 6}
+        },
+        {
+          "id": "pptx-002-fund-chart",
+          "dimension": "fundamentals",
+          "description": "原生图表在同一数据系列中准确呈现试点工时下降 18%—24% 的区间。",
+          "source_refs": ["prompt", "business-case.md#6 周小规模试点"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "pptx_chart_data", "required_values": [18, 24], "required_labels": ["工时"], "tolerance": 0.000001, "accept_percentage_fractions": true}
+        },
+        {
+          "id": "pptx-002-complete-scope",
+          "dimension": "completeness",
+          "description": "方案范围包含知识检索、回复草稿和人工确认。",
+          "source_refs": ["business-case.md#第一阶段范围"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["知识检索", "回复草稿", "人工确认"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pptx-002-complete-exclusions",
+          "dimension": "completeness",
+          "description": "明确列出 CRM 迁移、自动退款和无人值守发送不在范围内。",
+          "source_refs": ["business-case.md#明确不包含"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["CRM 迁移", "自动退款", "无人值守发送"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pptx-002-correct-cost",
+          "dimension": "correctness",
+          "description": "正确呈现实施成本 15—21 万和年度软件费 9.6 万。",
+          "source_refs": ["business-case.md#成本"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_labeled_values", "requirements": [{"labels": ["实施成本", "一次性成本"], "values": ["15", "21"], "direction": "after", "max_distance": 50}, {"labels": ["年度软件费", "软件费"], "values": ["9.6"], "direction": "after", "max_distance": 40}], "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pptx-002-correct-request",
+          "dimension": "correctness",
+          "description": "决策请求为 8 周试点、预算上限 21 万和第 6 周中评。",
+          "source_refs": ["business-case.md#决策请求"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_labeled_values", "requirements": [{"labels": ["受控试点", "试点周期"], "values": ["8 周"], "direction": "within", "max_distance": 45}, {"labels": ["预算上限", "预算"], "values": ["21 万"], "direction": "after", "max_distance": 35}, {"labels": ["中期评审", "中评"], "values": ["第 6 周"], "direction": "within", "max_distance": 45}], "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pptx-002-fidelity-range",
+          "dimension": "fidelity",
+          "description": "收益保留 18%—24% 区间并说明仅来自 2 个队列试点。",
+          "source_refs": ["business-case.md#6 周小规模试点"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_labeled_values", "requirements": [{"labels": ["工时下降", "处理工时"], "values": ["18%", "24%"], "direction": "within", "max_distance": 55}, {"labels": ["试点", "队列"], "values": ["2 个队列"], "direction": "within", "max_distance": 55}, {"labels": ["全部队列", "验证"], "values": ["尚未"], "direction": "within", "max_distance": 45}], "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pptx-002-usable-decision",
+          "dimension": "usability",
+          "description": "存在标题明确的决策请求页。",
+          "source_refs": ["prompt", "business-case.md#决策请求"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "structure_values", "metric": "pptx_slide_titles", "values": ["决策"], "match": "all"}
+        }
+      ],
+      "penalties": [
+        {
+          "id": "pptx-002-penalty-guarantee",
+          "description": "把试点区间写成固定节省承诺或杜撰 ROI。",
+          "source_refs": ["business-case.md#6 周小规模试点", "prompt"],
+          "points": 30,
+          "blocking": true,
+          "trigger": {"type": "text_claim_contains", "values": ["保证节省 24%", "固定节省 24%", "ROI 为", "投资回报率为"], "match": "any", "scope": {"kind": "artifact"}}
+        }
+      ],
+      "review_criteria": [
+        {
+          "id": "pptx-002-review-coherence",
+          "dimension": "coherence",
+          "description": "提案是否从问题、证据、方案、经济性自然推导到决策请求。",
+          "anchors": ["0：论证断裂或前后矛盾", "1：要素齐全但推导较弱", "2：证据边界清楚，方案和请求由前文充分支撑"]
+        },
+        {
+          "id": "pptx-002-review-decision",
+          "dimension": "decision_utility",
+          "description": "决策者能否比较投入、潜在收益、风险边界和阶段闸门。",
+          "anchors": ["0：无法做立项判断", "1：有成本或范围但取舍不清", "2：投入、区间收益、排除项和中评闸门均清楚"]
+        },
+        {
+          "id": "pptx-002-review-visual",
+          "dimension": "visual_quality",
+          "description": "图表、页面层次与信息密度是否真实帮助比较成本和试点结果。",
+          "anchors": ["0：图表错误/纯装饰，或内容散落在大面积空白与空容器中", "1：图表基本正确但主视觉、密度或信息强调一般", "2：图表数据正确、标注清楚，普通页无空洞且视觉结构与论点紧密配合"]
+        }
+      ],
+      "pass_threshold": 80
+    },
+    {
+      "id": "office-pptx-003-conflict-steerco",
+      "split": "test",
+      "artifact_type": "pptx",
+      "task_type": "conflict_handling",
+      "category": "steering_committee",
+      "difficulty": "hard",
+      "prompt": "将 inputs/product-note.md 与 inputs/ops-note.md 整理成 5 页项目指导委员会简报。必须有专门的“待决策”页，同时展示人员和日期的两组冲突口径，不得替委员会擅自选择。最后一页列出决策人、会议日期和决策后动作。最终仅交付 submission/atlas-steerco.pptx。",
+      "output_file": "atlas-steerco.pptx",
+      "fixtures": [
+        {
+          "path": "product-note.md",
+          "content": "# Atlas 产品组说明\n- 首发范围需要 6 名实施工程师。\n- 建议上线日：2026-11-03。\n- 若按 4 人配置，只能覆盖核心客户。\n"
+        },
+        {
+          "path": "ops-note.md",
+          "content": "# Atlas 运营组说明\n- 当前确认可用人员为 4 名实施工程师。\n- 运营可承诺的上线日：2026-11-10。\n- 指导委员会会议：2026-09-18；决策人：沈宁。\n- 决策后由贺敏在两个工作日内更新资源与上线基线。\n"
+        }
+      ],
+      "gate": {
+        "render_visual": true,
+        "fail_on_dimensions": ["structural", "visual", "security"],
+        "require_measured_dimensions": ["structural", "visual", "security"],
+        "min_validator_quality": 60
+      },
+      "rubric": [
+        {
+          "id": "pptx-003-fund-count",
+          "dimension": "fundamentals",
+          "description": "演示文稿严格为 5 页。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_count", "metric": "pptx_slide_count", "operator": "eq", "value": 5}
+        },
+        {
+          "id": "pptx-003-fund-decision-slide",
+          "dimension": "fundamentals",
+          "description": "有标题包含“待决策”的专门页面。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_values", "metric": "pptx_slide_titles", "values": ["待决策"], "match": "all"}
+        },
+        {
+          "id": "pptx-003-complete-headcount",
+          "dimension": "completeness",
+          "description": "待决策页并列 6 人需求与 4 人可用。",
+          "source_refs": ["product-note.md#实施工程师", "ops-note.md#可用人员"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_labeled_values", "requirements": [{"labels": ["产品组", "首发范围", "需求"], "values": ["6"], "direction": "within", "max_distance": 55}, {"labels": ["运营组", "当前确认", "可用"], "values": ["4"], "direction": "within", "max_distance": 55}], "scope": {"kind": "pptx_slide", "selector": "待决策"}}
+        },
+        {
+          "id": "pptx-003-complete-dates",
+          "dimension": "completeness",
+          "description": "待决策页并列 11 月 3 日与 11 月 10 日。",
+          "source_refs": ["product-note.md#建议上线日", "ops-note.md#可承诺的上线日"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_labeled_values", "requirements": [{"labels": ["产品组", "建议上线日", "建议上线"], "values": ["2026-11-03"], "direction": "within", "max_distance": 70}, {"labels": ["运营组", "承诺上线日", "承诺上线"], "values": ["2026-11-10"], "direction": "within", "max_distance": 70}], "scope": {"kind": "pptx_slide", "selector": "待决策"}}
+        },
+        {
+          "id": "pptx-003-correct-decision-owner",
+          "dimension": "correctness",
+          "description": "最后一页正确写明决策人沈宁。",
+          "source_refs": ["ops-note.md#决策人"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_labeled_values", "requirements": [{"labels": ["决策人"], "values": ["沈宁"], "direction": "after", "max_distance": 35}], "scope": {"kind": "pptx_slide", "index": 5}}
+        },
+        {
+          "id": "pptx-003-correct-followup",
+          "dimension": "correctness",
+          "description": "最后一页正确写明贺敏在两个工作日内更新基线。",
+          "source_refs": ["ops-note.md#决策后"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_labeled_values", "requirements": [{"labels": ["决策后", "后续动作"], "values": ["贺敏", "两个工作日", "基线"], "direction": "after", "max_distance": 120}], "scope": {"kind": "pptx_slide", "index": 5}}
+        },
+        {
+          "id": "pptx-003-fidelity-open",
+          "dimension": "fidelity",
+          "description": "把两组口径明确标为待决策而非最终结论。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["待决策"], "match": "all", "scope": {"kind": "pptx_slide", "selector": "待决策"}}
+        },
+        {
+          "id": "pptx-003-usable-meeting",
+          "dimension": "usability",
+          "description": "最后一页包含 2026-09-18 委员会会议日期。",
+          "source_refs": ["ops-note.md#指导委员会会议"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_labeled_values", "requirements": [{"labels": ["指导委员会会议", "会议日期"], "values": ["2026-09-18"], "direction": "after", "max_distance": 45}], "scope": {"kind": "pptx_slide", "index": 5}}
+        }
+      ],
+      "penalties": [
+        {
+          "id": "pptx-003-penalty-final",
+          "description": "擅自宣称人员或上线日已经最终确定。",
+          "source_refs": ["prompt", "product-note.md", "ops-note.md"],
+          "points": 30,
+          "blocking": true,
+          "trigger": {"type": "text_claim_contains", "values": ["最终确定为 6 人", "最终确定为 4 人", "最终上线日为", "已确定 11 月"], "match": "any", "scope": {"kind": "artifact"}}
+        }
+      ],
+      "review_criteria": [
+        {
+          "id": "pptx-003-review-coherence",
+          "dimension": "coherence",
+          "description": "冲突、影响、选项和决策流程是否构成清楚的委员会叙事。",
+          "anchors": ["0：冲突与影响关系不清", "1：能看懂冲突但选项或影响不足", "2：两组口径、影响和决策路径清晰衔接"]
+        },
+        {
+          "id": "pptx-003-review-decision",
+          "dimension": "decision_utility",
+          "description": "待决策页是否让委员会明确知道要决定什么以及决定后的动作。",
+          "anchors": ["0：没有可执行决策问题", "1：问题明确但后续责任不完整", "2：决策问题、决策人、会议和后续动作完整"]
+        },
+        {
+          "id": "pptx-003-review-visual",
+          "dimension": "visual_quality",
+          "description": "冲突口径是否以公平、可比较且不空洞的视觉方式呈现。",
+          "anchors": ["0：偏向单一口径、难比较，或只有两个空卡片承载零散短句", "1：可比较但视觉权重、密度或信息组织一般", "2：两方口径、影响和状态对称清楚，空间均由有效信息或有意强调占据"]
+        }
+      ],
+      "pass_threshold": 80
+    },
+    {
+      "id": "office-xlsx-001-sales-summary",
+      "split": "dev",
+      "artifact_type": "xlsx",
+      "task_type": "analyze",
+      "category": "sales_workbook",
+      "difficulty": "medium",
+      "prompt": "根据 inputs/orders.csv 制作销售分析工作簿。严格创建“明细”“汇总”两个工作表且顺序不变。“明细”A1:F6 依次为订单号、区域、产品、数量、单价、销售额，F2:F6 必须用公式计算；“汇总”A1:B5 依次放指标/数值、总销售额、华东、华南、华北，B2 必须是公式。金额使用人民币格式，并添加至少一个原生图表。最终仅交付 submission/sales-summary.xlsx。",
+      "output_file": "sales-summary.xlsx",
+      "fixtures": [
+        {
+          "path": "orders.csv",
+          "content": "订单号,区域,产品,数量,单价\nO-1001,华东,A,10,120\nO-1002,华南,B,8,250\nO-1003,华东,B,5,250\nO-1004,华北,A,20,120\nO-1005,华南,C,3,800\n"
+        }
+      ],
+      "gate": {
+        "render_visual": true,
+        "fail_on_dimensions": ["structural", "security"],
+        "require_measured_dimensions": ["structural", "security"],
+        "min_validator_quality": 50
+      },
+      "rubric": [
+        {
+          "id": "xlsx-001-fund-sheets",
+          "dimension": "fundamentals",
+          "description": "工作表名称和顺序严格为明细、汇总。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_values", "metric": "xlsx_sheet_names", "values": ["明细", "汇总"], "match": "exact_order"}
+        },
+        {
+          "id": "xlsx-001-fund-formulas",
+          "dimension": "fundamentals",
+          "description": "至少有 6 个公式，覆盖 5 行销售额和总计。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_count", "metric": "xlsx_formula_count", "operator": "gte", "value": 6}
+        },
+        {
+          "id": "xlsx-001-complete-first",
+          "dimension": "completeness",
+          "description": "首笔订单 O-1001 的字段完整保留。",
+          "source_refs": ["orders.csv#row=2"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["O-1001", "华东", "A", "10", "120"], "match": "all", "scope": {"kind": "xlsx_range", "selector": "明细", "cell_range": "A2:F2"}}
+        },
+        {
+          "id": "xlsx-001-complete-last",
+          "dimension": "completeness",
+          "description": "末笔订单 O-1005 的字段完整保留。",
+          "source_refs": ["orders.csv#row=6"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["O-1005", "华南", "C", "3", "800"], "match": "all", "scope": {"kind": "xlsx_range", "selector": "明细", "cell_range": "A6:F6"}}
+        },
+        {
+          "id": "xlsx-001-correct-line",
+          "dimension": "correctness",
+          "description": "明细 F2 是公式且结果为 1,200。",
+          "source_refs": ["orders.csv#row=2", "prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "xlsx_formula_value", "address": "明细!F2", "expected": 1200, "tolerance": 0}
+        },
+        {
+          "id": "xlsx-001-correct-total",
+          "dimension": "correctness",
+          "description": "汇总 B2 是公式且总销售额为 9,250。",
+          "source_refs": ["orders.csv#all", "prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "xlsx_formula_value", "address": "汇总!B2", "expected": 9250, "tolerance": 0}
+        },
+        {
+          "id": "xlsx-001-fidelity-regions",
+          "dimension": "fidelity",
+          "description": "区域汇总分别为华东 2,450、华南 4,400、华北 2,400。",
+          "source_refs": ["orders.csv#all"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "xlsx_cells_value", "cells": {"汇总!B3": 2450, "汇总!B4": 4400, "汇总!B5": 2400}, "tolerance": 0}
+        },
+        {
+          "id": "xlsx-001-usable-chart",
+          "dimension": "usability",
+          "description": "包含至少一个原生图表用于区域比较。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "structure_count", "metric": "xlsx_chart_count", "operator": "gte", "value": 1}
+        },
+        {
+          "id": "xlsx-001-usable-currency",
+          "dimension": "usability",
+          "description": "销售额单元格使用人民币金额格式。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "xlsx_number_format", "address": "明细!F2", "contains_any": ["¥", "￥", "CNY", "RMB"]}
+        }
+      ],
+      "penalties": [
+        {
+          "id": "xlsx-001-penalty-wrong-total",
+          "description": "出现常见错算总额 9,500。",
+          "source_refs": ["orders.csv#all"],
+          "points": 25,
+          "blocking": true,
+          "trigger": {"type": "xlsx_cell_value", "address": "汇总!B2", "expected": 9500, "tolerance": 0}
+        }
+      ],
+      "review_criteria": [
+        {
+          "id": "xlsx-001-review-coherence",
+          "dimension": "coherence",
+          "description": "明细与汇总之间的字段、标签和计算链路是否易于理解。",
+          "anchors": ["0：结构混乱或难追溯", "1：可理解但标签或布局有摩擦", "2：从明细到汇总的计算关系清楚且可审计"]
+        },
+        {
+          "id": "xlsx-001-review-decision",
+          "dimension": "decision_utility",
+          "description": "汇总和图表是否能让销售负责人快速比较区域贡献。",
+          "anchors": ["0：无法做区域比较", "1：有汇总但重点不突出", "2：总额与区域差异一眼可见并可下钻"]
+        },
+        {
+          "id": "xlsx-001-review-visual",
+          "dimension": "visual_quality",
+          "description": "表头、数字格式、列宽和图表是否专业可读。",
+          "anchors": ["0：截断、错版或格式误导", "1：基本可读但样式一般", "2：格式一致、数字易读、图表克制准确"]
+        }
+      ],
+      "pass_threshold": 80
+    },
+    {
+      "id": "office-xlsx-002-budget-variance",
+      "split": "dev",
+      "artifact_type": "xlsx",
+      "task_type": "analyze",
+      "category": "budget_model",
+      "difficulty": "hard",
+      "prompt": "根据 inputs/budget.csv 制作预算差异工作簿。创建“预算表”“摘要”两张表。“预算表”A1:E6 为项目、预算、实际、差异、差异率；D2:E6 全部使用公式，其中差异=实际-预算、差异率=差异/预算，第 6 行为合计。“摘要”A1:B4 为指标/数值、总预算、总实际、总差异率，B2:B4 使用公式引用预算表。金额和百分比格式正确，并添加原生图表。最终仅交付 submission/budget-variance.xlsx。",
+      "output_file": "budget-variance.xlsx",
+      "fixtures": [
+        {
+          "path": "budget.csv",
+          "content": "项目,预算,实际\n设计,120000,118000\n研发,450000,472500\n测试,90000,85500\n上线,60000,72000\n"
+        }
+      ],
+      "gate": {
+        "render_visual": true,
+        "fail_on_dimensions": ["structural", "security"],
+        "require_measured_dimensions": ["structural", "security"],
+        "min_validator_quality": 50
+      },
+      "rubric": [
+        {
+          "id": "xlsx-002-fund-sheets",
+          "dimension": "fundamentals",
+          "description": "工作表名称和顺序严格为预算表、摘要。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_values", "metric": "xlsx_sheet_names", "values": ["预算表", "摘要"], "match": "exact_order"}
+        },
+        {
+          "id": "xlsx-002-fund-formulas",
+          "dimension": "fundamentals",
+          "description": "至少包含 13 个公式：差异、差异率、合计和摘要引用。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_count", "metric": "xlsx_formula_count", "operator": "gte", "value": 13}
+        },
+        {
+          "id": "xlsx-002-complete-projects",
+          "dimension": "completeness",
+          "description": "四个预算项目完整保留。",
+          "source_refs": ["budget.csv#all"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["设计", "研发", "测试", "上线"], "match": "all", "scope": {"kind": "xlsx_sheet", "selector": "预算表"}}
+        },
+        {
+          "id": "xlsx-002-complete-summary",
+          "dimension": "completeness",
+          "description": "摘要包含总预算、总实际和总差异率三个指标。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["总预算", "总实际", "总差异率"], "match": "all", "scope": {"kind": "xlsx_sheet", "selector": "摘要"}}
+        },
+        {
+          "id": "xlsx-002-correct-design",
+          "dimension": "correctness",
+          "description": "设计差异 D2 的公式结果为 -2,000。",
+          "source_refs": ["budget.csv#设计", "prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "xlsx_formula_value", "address": "预算表!D2", "expected": -2000, "tolerance": 0}
+        },
+        {
+          "id": "xlsx-002-correct-total",
+          "dimension": "correctness",
+          "description": "合计行总预算 720,000、总实际 748,000、差异 28,000。",
+          "source_refs": ["budget.csv#all"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "xlsx_cells_value", "cells": {"预算表!B6": 720000, "预算表!C6": 748000, "预算表!D6": 28000}, "tolerance": 0}
+        },
+        {
+          "id": "xlsx-002-fidelity-rate",
+          "dimension": "fidelity",
+          "description": "摘要总差异率公式结果约为 3.8889%。",
+          "source_refs": ["budget.csv#all", "prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "xlsx_formula_value", "address": "摘要!B4", "expected": 0.0388888889, "tolerance": 0.000001}
+        },
+        {
+          "id": "xlsx-002-usable-percent",
+          "dimension": "usability",
+          "description": "差异率使用百分比格式。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "xlsx_number_format", "address": "预算表!E2", "contains_any": ["%"]}
+        },
+        {
+          "id": "xlsx-002-usable-chart",
+          "dimension": "usability",
+          "description": "至少包含一个原生图表。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "structure_count", "metric": "xlsx_chart_count", "operator": "gte", "value": 1}
+        }
+      ],
+      "penalties": [
+        {
+          "id": "xlsx-002-penalty-sign",
+          "description": "把总差异错误写成 -28,000。",
+          "source_refs": ["budget.csv#all", "prompt"],
+          "points": 25,
+          "blocking": true,
+          "trigger": {"type": "xlsx_cell_value", "address": "预算表!D6", "expected": -28000, "tolerance": 0}
+        }
+      ],
+      "review_criteria": [
+        {
+          "id": "xlsx-002-review-coherence",
+          "dimension": "coherence",
+          "description": "预算表、合计行和摘要的公式链路是否清楚且易审计。",
+          "anchors": ["0：计算链路不可追踪", "1：可追踪但标签或引用不够直观", "2：输入、差异、合计和摘要层次完整清晰"]
+        },
+        {
+          "id": "xlsx-002-review-decision",
+          "dimension": "decision_utility",
+          "description": "管理者能否快速定位主要超支项目和总体偏差。",
+          "anchors": ["0：无法识别偏差", "1：有数值但优先级不清", "2：总体与项目偏差都醒目且支持追查"]
+        },
+        {
+          "id": "xlsx-002-review-visual",
+          "dimension": "visual_quality",
+          "description": "金额、百分比、正负差异和图表的视觉编码是否一致准确。",
+          "anchors": ["0：格式误导或难读", "1：基本正确但强调不一致", "2：格式统一，正负差异和图表表达准确"]
+        }
+      ],
+      "pass_threshold": 80
+    },
+    {
+      "id": "office-xlsx-003-capacity-forecast",
+      "split": "test",
+      "artifact_type": "xlsx",
+      "task_type": "analyze",
+      "category": "operations_forecast",
+      "difficulty": "hard",
+      "prompt": "根据 inputs/capacity.csv 制作运营容量工作簿。严格创建“周度”“摘要”两张表。“周度”A1:E5 为周次、需求、产能、缺口、利用率；D2:E5 使用公式，缺口=需求-产能，利用率=需求/产能。“摘要”列出总需求、总产能、峰值利用率，三个数值均用公式；利用率用百分比，并添加需求与产能对比图。最终仅交付 submission/capacity-forecast.xlsx。",
+      "output_file": "capacity-forecast.xlsx",
+      "fixtures": [
+        {
+          "path": "capacity.csv",
+          "content": "周次,需求,产能\nW1,420,480\nW2,460,480\nW3,510,500\nW4,530,500\n"
+        }
+      ],
+      "gate": {
+        "render_visual": true,
+        "fail_on_dimensions": ["structural", "security"],
+        "require_measured_dimensions": ["structural", "security"],
+        "min_validator_quality": 50
+      },
+      "rubric": [
+        {
+          "id": "xlsx-003-fund-sheets",
+          "dimension": "fundamentals",
+          "description": "工作表名称和顺序严格为周度、摘要。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_values", "metric": "xlsx_sheet_names", "values": ["周度", "摘要"], "match": "exact_order"}
+        },
+        {
+          "id": "xlsx-003-fund-formulas",
+          "dimension": "fundamentals",
+          "description": "至少包含 11 个公式。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_count", "metric": "xlsx_formula_count", "operator": "gte", "value": 11}
+        },
+        {
+          "id": "xlsx-003-complete-weeks",
+          "dimension": "completeness",
+          "description": "W1 至 W4 四周均完整保留。",
+          "source_refs": ["capacity.csv#all"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["W1", "W2", "W3", "W4"], "match": "all", "scope": {"kind": "xlsx_sheet", "selector": "周度"}}
+        },
+        {
+          "id": "xlsx-003-complete-summary",
+          "dimension": "completeness",
+          "description": "摘要包含总需求、总产能和峰值利用率。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["总需求", "总产能", "峰值利用率"], "match": "all", "scope": {"kind": "xlsx_sheet", "selector": "摘要"}}
+        },
+        {
+          "id": "xlsx-003-correct-gap",
+          "dimension": "correctness",
+          "description": "W3 缺口公式结果为 10。",
+          "source_refs": ["capacity.csv#W3", "prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "xlsx_formula_value", "address": "周度!D4", "expected": 10, "tolerance": 0}
+        },
+        {
+          "id": "xlsx-003-correct-total-demand",
+          "dimension": "correctness",
+          "description": "摘要总需求公式结果为 1,920。",
+          "source_refs": ["capacity.csv#all"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "xlsx_formula_value", "address": "摘要!B2", "expected": 1920, "tolerance": 0}
+        },
+        {
+          "id": "xlsx-003-fidelity-peak",
+          "dimension": "fidelity",
+          "description": "峰值利用率公式结果为 106%。",
+          "source_refs": ["capacity.csv#W4"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "xlsx_formula_value", "address": "摘要!B4", "expected": 1.06, "tolerance": 0.000001}
+        },
+        {
+          "id": "xlsx-003-usable-percent",
+          "dimension": "usability",
+          "description": "利用率使用百分比格式。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "xlsx_number_format", "address": "周度!E2", "contains_any": ["%"]}
+        },
+        {
+          "id": "xlsx-003-usable-chart",
+          "dimension": "usability",
+          "description": "包含至少一个需求与产能对比图。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "structure_count", "metric": "xlsx_chart_count", "operator": "gte", "value": 1}
+        }
+      ],
+      "penalties": [
+        {
+          "id": "xlsx-003-penalty-gap-sign",
+          "description": "把 W3 缺口错误表示为 -10。",
+          "source_refs": ["capacity.csv#W3", "prompt"],
+          "points": 20,
+          "blocking": true,
+          "trigger": {"type": "xlsx_cell_value", "address": "周度!D4", "expected": -10, "tolerance": 0}
+        }
+      ],
+      "review_criteria": [
+        {
+          "id": "xlsx-003-review-coherence",
+          "dimension": "coherence",
+          "description": "周度输入、缺口、利用率和摘要是否形成易追踪的运营模型。",
+          "anchors": ["0：计算和结构混乱", "1：基本可追踪但摘要衔接一般", "2：周度到摘要的逻辑清楚且公式可审计"]
+        },
+        {
+          "id": "xlsx-003-review-decision",
+          "dimension": "decision_utility",
+          "description": "运营负责人能否快速识别何时产能不足以及峰值程度。",
+          "anchors": ["0：无法识别容量风险", "1：能找出风险但不够醒目", "2：短缺周和峰值利用率清楚支持排班决策"]
+        },
+        {
+          "id": "xlsx-003-review-visual",
+          "dimension": "visual_quality",
+          "description": "需求/产能图、百分比和缺口显示是否清楚准确。",
+          "anchors": ["0：图表或格式误导", "1：基本可读但强调一般", "2：图表标注准确，短缺和峰值视觉突出"]
+        }
+      ],
+      "pass_threshold": 80
+    },
+    {
+      "id": "office-pdf-001-external-incident",
+      "split": "dev",
+      "artifact_type": "pdf",
+      "task_type": "transform",
+      "category": "audience_safe_summary",
+      "difficulty": "hard",
+      "prompt": "依据 inputs/approved-facts.md 和 inputs/internal-only.md 制作恰好 2 页的对外事故说明 PDF。只可使用已批准事实，说明影响、时间线、处置和后续更新；必须排除客户名称、访问令牌、人员归责和未经证实的根因推测。最终仅交付 submission/external-incident-summary.pdf。",
+      "output_file": "external-incident-summary.pdf",
+      "fixtures": [
+        {
+          "path": "approved-facts.md",
+          "content": "# 可对外事实\n- 事件日期：2026-08-29。\n- 09:12—10:06 UTC 出现服务降级，共 54 分钟。\n- 约 14% 的 API 请求经历延迟升高。\n- 未发现数据丢失。\n- 团队通过回滚最近一次配置变更恢复服务。\n- 下一次进展更新：2026-09-02。\n"
+        },
+        {
+          "path": "internal-only.md",
+          "content": "# 仅限内部\n- 受影响重点客户：Acme Bank。\n- 临时访问令牌：tok_live_8QX7。\n- 尚未证实的猜测：某工程师跳过复核导致配置错误。\n- 禁止在对外材料中出现以上三项。\n"
+        }
+      ],
+      "gate": {
+        "render_visual": true,
+        "fail_on_dimensions": ["structural", "visual", "security"],
+        "require_measured_dimensions": ["structural", "visual", "security"],
+        "min_validator_quality": 70
+      },
+      "rubric": [
+        {
+          "id": "pdf-001-fund-pages",
+          "dimension": "fundamentals",
+          "description": "PDF 恰好为 2 页。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_count", "metric": "pdf_page_count", "operator": "eq", "value": 2}
+        },
+        {
+          "id": "pdf-001-fund-raster",
+          "dimension": "fundamentals",
+          "description": "PDF 每页均可正常栅格化。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "validator_status", "dimension": "visual", "check_name": "page_raster", "allowed": ["passed"]}
+        },
+        {
+          "id": "pdf-001-complete-timeline",
+          "dimension": "completeness",
+          "description": "包含事件日期、起止时间和 54 分钟时长。",
+          "source_refs": ["approved-facts.md#时间"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["2026-08-29", "09:12", "10:06", "54"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-001-complete-actions",
+          "dimension": "completeness",
+          "description": "包含回滚处置和下一次更新日期。",
+          "source_refs": ["approved-facts.md#处置", "approved-facts.md#下一次更新"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["回滚", "2026-09-02"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-001-correct-impact",
+          "dimension": "correctness",
+          "description": "正确说明约 14% API 请求延迟升高。",
+          "source_refs": ["approved-facts.md#影响"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["14%", "API", "延迟"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-001-correct-data",
+          "dimension": "correctness",
+          "description": "明确说明未发现数据丢失。",
+          "source_refs": ["approved-facts.md#数据丢失"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["未发现数据丢失"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-001-fidelity-secret",
+          "dimension": "fidelity",
+          "description": "不泄露客户名、令牌或未经证实的人员归责。",
+          "source_refs": ["internal-only.md", "prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_not_contains", "values": ["Acme Bank", "tok_live_8QX7", "跳过复核", "某工程师"], "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-001-usable-structure",
+          "dimension": "usability",
+          "description": "内容按影响、时间线、处置、后续更新顺序组织。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_ordered", "values": ["影响", "时间线", "处置", "更新"], "scope": {"kind": "artifact"}}
+        }
+      ],
+      "penalties": [
+        {
+          "id": "pdf-001-penalty-confidential",
+          "description": "任何内部机密或未经证实归责进入对外 PDF。",
+          "source_refs": ["internal-only.md"],
+          "points": 100,
+          "blocking": true,
+          "trigger": {"type": "text_contains", "values": ["Acme Bank", "tok_live_8QX7", "工程师跳过复核"], "match": "any", "scope": {"kind": "artifact"}}
+        }
+      ],
+      "review_criteria": [
+        {
+          "id": "pdf-001-review-coherence",
+          "dimension": "coherence",
+          "description": "对外说明是否用克制、连贯的语言解释发生了什么和已做什么。",
+          "anchors": ["0：叙述混乱或自相矛盾", "1：基本连贯但重点或措辞一般", "2：时间线、影响、处置和下一步清晰一致"]
+        },
+        {
+          "id": "pdf-001-review-decision",
+          "dimension": "decision_utility",
+          "description": "客户能否理解当前状态、数据安全结论和下一次更新时间。",
+          "anchors": ["0：关键状态不清", "1：大部分信息可找到但不够直接", "2：影响、恢复状态、数据结论和更新时间一目了然"]
+        },
+        {
+          "id": "pdf-001-review-visual",
+          "dimension": "visual_quality",
+          "description": "两页 PDF 是否专业、稳定且适合对外发送。",
+          "anchors": ["0：错版、难读或像内部草稿", "1：可发送但排版与品牌感一般", "2：页面平衡、层级清楚、风格克制专业"]
+        }
+      ],
+      "pass_threshold": 85
+    },
+    {
+      "id": "office-pdf-002-travel-policy",
+      "split": "dev",
+      "artifact_type": "pdf",
+      "task_type": "transform",
+      "category": "policy_guide",
+      "difficulty": "medium",
+      "prompt": "根据 inputs/travel-policy.md 制作 2 至 3 页中文差旅政策速查 PDF。必须包含生效日期、适用对象、机票与酒店规则、例外流程和提交前检查清单；不得改变审批金额或把例外审批写成自动批准。最终仅交付 submission/travel-policy-guide.pdf。",
+      "output_file": "travel-policy-guide.pdf",
+      "fixtures": [
+        {
+          "path": "travel-policy.md",
+          "content": "# 差旅政策 2026-10\n\n生效日期：2026-10-01。适用于中国大陆所有正式员工与实习生。\n\n## 机票\n- 默认经济舱。单程票价超过 6,000 元，需部门总监事前审批。\n- 飞行时长超过 8 小时，可申请高级经济舱，仍需部门总监审批。\n\n## 酒店\n- 一线城市每晚含税上限 900 元；其他城市 650 元。\n\n## 例外\n- 因展会或极端天气超标，提交价格截图与原因，由财务运营审批；不是自动批准。\n\n## 报销\n- 行程结束后 10 个自然日内提交，需发票、行程单和审批记录。\n"
+        }
+      ],
+      "gate": {
+        "render_visual": true,
+        "fail_on_dimensions": ["structural", "visual", "security"],
+        "require_measured_dimensions": ["structural", "visual", "security"],
+        "min_validator_quality": 70
+      },
+      "rubric": [
+        {
+          "id": "pdf-002-fund-pages",
+          "dimension": "fundamentals",
+          "description": "PDF 为 2 至 3 页。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_count", "metric": "pdf_page_count", "operator": "gte", "value": 2}
+        },
+        {
+          "id": "pdf-002-fund-max-pages",
+          "dimension": "fundamentals",
+          "description": "PDF 不超过 3 页。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_count", "metric": "pdf_page_count", "operator": "lte", "value": 3}
+        },
+        {
+          "id": "pdf-002-complete-audience",
+          "dimension": "completeness",
+          "description": "包含生效日期及正式员工与实习生适用范围。",
+          "source_refs": ["travel-policy.md#生效与适用"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["2026-10-01", "正式员工", "实习生"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-002-complete-checklist",
+          "dimension": "completeness",
+          "description": "提交前清单包含发票、行程单和审批记录。",
+          "source_refs": ["travel-policy.md#报销"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["发票", "行程单", "审批记录"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-002-correct-flight",
+          "dimension": "correctness",
+          "description": "机票规则保留 6,000 元与 8 小时两个阈值及总监审批。",
+          "source_refs": ["travel-policy.md#机票"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["6,000", "8 小时", "部门总监"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-002-correct-hotel",
+          "dimension": "correctness",
+          "description": "酒店上限正确区分一线城市 900 元与其他城市 650 元。",
+          "source_refs": ["travel-policy.md#酒店"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["一线城市", "900", "其他城市", "650"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-002-fidelity-exception",
+          "dimension": "fidelity",
+          "description": "例外仍需价格截图、原因和财务运营审批。",
+          "source_refs": ["travel-policy.md#例外"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["价格截图", "原因", "财务运营", "审批"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-002-usable-deadline",
+          "dimension": "usability",
+          "description": "速查表明确报销提交期限为 10 个自然日。",
+          "source_refs": ["travel-policy.md#报销"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["10 个自然日"], "match": "all", "scope": {"kind": "artifact"}}
+        }
+      ],
+      "penalties": [
+        {
+          "id": "pdf-002-penalty-auto-approve",
+          "description": "把超标例外错误写成自动批准。",
+          "source_refs": ["travel-policy.md#例外", "prompt"],
+          "points": 30,
+          "blocking": true,
+          "trigger": {"type": "text_claim_contains", "values": ["自动批准", "无需审批"], "match": "any", "scope": {"kind": "artifact"}}
+        }
+      ],
+      "review_criteria": [
+        {
+          "id": "pdf-002-review-coherence",
+          "dimension": "coherence",
+          "description": "速查指南是否按出行前、预订、例外、报销的使用流程组织。",
+          "anchors": ["0：规则散乱难查", "1：分类可读但使用路径不够顺", "2：使用流程自然，常规与例外边界清楚"]
+        },
+        {
+          "id": "pdf-002-review-decision",
+          "dimension": "decision_utility",
+          "description": "员工能否快速判断自己的预订是否合规以及需要谁审批。",
+          "anchors": ["0：无法据此行动", "1：阈值可找但审批路径不够醒目", "2：阈值、审批人、材料和期限都能快速定位"]
+        },
+        {
+          "id": "pdf-002-review-visual",
+          "dimension": "visual_quality",
+          "description": "规则、例外和检查清单是否在视觉上易扫读。",
+          "anchors": ["0：密集难读或错版", "1：基本可读但重点层级一般", "2：卡片、表格或清单使用恰当，重点清楚"]
+        }
+      ],
+      "pass_threshold": 80
+    },
+    {
+      "id": "office-pdf-003-evidence-brief",
+      "split": "test",
+      "artifact_type": "pdf",
+      "task_type": "analyze",
+      "category": "evidence_synthesis",
+      "difficulty": "hard",
+      "prompt": "将 inputs/survey.md 与 inputs/pilot.md 综合成恰好 1 页的管理层决策简报 PDF。必须区分员工意愿调查与小规模试点证据，明确样本和局限，只提出可逆的下一步；不得宣称生产率或交付速度已经提升。最终仅交付 submission/focus-time-evidence-brief.pdf。",
+      "output_file": "focus-time-evidence-brief.pdf",
+      "fixtures": [
+        {
+          "path": "survey.md",
+          "content": "# 安静时段意愿调查\n- 受访员工：420 人。\n- 68% 希望每周设置固定无会议时段。\n- 调查为自报偏好，不测量实际生产率。\n"
+        },
+        {
+          "path": "pilot.md",
+          "content": "# 6 周 Focus Time 试点\n- 参与团队：12 个。\n- 固定专注时段遵守率较基线提升 17%。\n- 试点没有测量交付周期、产出量或质量。\n- 建议下一步：在另外 20 个团队开展 8 周试点，同时预先定义交付周期与员工负荷指标。\n"
+        }
+      ],
+      "gate": {
+        "render_visual": true,
+        "fail_on_dimensions": ["structural", "visual", "security"],
+        "require_measured_dimensions": ["structural", "visual", "security"],
+        "min_validator_quality": 70
+      },
+      "rubric": [
+        {
+          "id": "pdf-003-fund-pages",
+          "dimension": "fundamentals",
+          "description": "PDF 恰好为 1 页。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "structure_count", "metric": "pdf_page_count", "operator": "eq", "value": 1}
+        },
+        {
+          "id": "pdf-003-fund-raster",
+          "dimension": "fundamentals",
+          "description": "单页可正常栅格化且无越界文本。",
+          "source_refs": ["prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "validator_status", "dimension": "visual", "check_name": "text_bounds", "allowed": ["passed"]}
+        },
+        {
+          "id": "pdf-003-complete-survey",
+          "dimension": "completeness",
+          "description": "调查证据包含 420 人和 68% 两个要点。",
+          "source_refs": ["survey.md"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["420", "68%"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-003-complete-pilot",
+          "dimension": "completeness",
+          "description": "试点证据包含 12 个团队、6 周和 17% 提升。",
+          "source_refs": ["pilot.md"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["12", "6 周", "17%"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-003-correct-survey-limit",
+          "dimension": "correctness",
+          "description": "明确调查是自报偏好而非生产率测量。",
+          "source_refs": ["survey.md#局限"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["自报", "偏好", "不测量"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-003-correct-pilot-limit",
+          "dimension": "correctness",
+          "description": "明确试点未测量交付周期、产出量或质量。",
+          "source_refs": ["pilot.md#局限"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_contains", "values": ["未测量", "交付周期", "产出量", "质量"], "match": "all", "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-003-fidelity-no-productivity",
+          "dimension": "fidelity",
+          "description": "不宣称生产率或交付速度已经提升。",
+          "source_refs": ["survey.md#局限", "pilot.md#局限", "prompt"],
+          "weight": 1,
+          "critical": true,
+          "check": {"type": "text_claim_not_contains", "values": ["生产率提升", "生产力提升", "交付速度提升", "交付周期缩短"], "scope": {"kind": "artifact"}}
+        },
+        {
+          "id": "pdf-003-usable-next-test",
+          "dimension": "usability",
+          "description": "提出 20 个团队、8 周并预定义指标的可逆试点。",
+          "source_refs": ["pilot.md#建议下一步"],
+          "weight": 1,
+          "critical": false,
+          "check": {"type": "text_contains", "values": ["20 个团队", "8 周", "交付周期", "员工负荷"], "match": "all", "scope": {"kind": "artifact"}}
+        }
+      ],
+      "penalties": [
+        {
+          "id": "pdf-003-penalty-causal",
+          "description": "把偏好或遵守率提升错误升级为已证实的生产率/交付改善。",
+          "source_refs": ["survey.md#局限", "pilot.md#局限"],
+          "points": 35,
+          "blocking": true,
+          "trigger": {"type": "text_claim_contains", "values": ["证明生产率提升", "生产率提升 17%", "交付速度提升 17%", "交付周期已缩短"], "match": "any", "scope": {"kind": "artifact"}}
+        }
+      ],
+      "review_criteria": [
+        {
+          "id": "pdf-003-review-coherence",
+          "dimension": "coherence",
+          "description": "一页内是否清楚区分两类证据、共同启示与尚未知部分。",
+          "anchors": ["0：证据混淆或因果跳跃", "1：能区分来源但综合结论较弱", "2：证据类型、局限和综合判断边界清楚"]
+        },
+        {
+          "id": "pdf-003-review-decision",
+          "dimension": "decision_utility",
+          "description": "管理层能否据此决定是否继续一个可逆、可测量的试点。",
+          "anchors": ["0：没有可执行建议", "1：建议存在但测量或退出条件不清", "2：试点规模、周期、指标和证据缺口完整"]
+        },
+        {
+          "id": "pdf-003-review-visual",
+          "dimension": "visual_quality",
+          "description": "一页简报是否在不拥挤的前提下突出数字、局限和建议。",
+          "anchors": ["0：拥挤或重点混乱", "1：可读但层级或密度一般", "2：证据、局限、建议分区清楚且关键数字醒目"]
+        }
+      ],
+      "pass_threshold": 85
+    }
+  ]
+}

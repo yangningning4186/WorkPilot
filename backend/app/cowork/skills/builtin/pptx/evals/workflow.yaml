@@ -1,0 +1,61 @@
+schema_version: 1
+cases:
+  - name: evidence-backed-research-deck
+    input: 把三篇论文整理成面向算法团队的 8 页方案汇报
+    required_outputs: [STORY.md, DESIGN.md]
+    assertions:
+      - single_pptx_skill_owns_planning_design_and_generation
+      - every_slide_has_role_rhythm_message_layout_intent
+      - every_slide_has_visual_role_density_content_units_antipattern
+      - every_numeric_slide_has_interpretation
+      - no_consecutive_hero
+      - focus_pages_are_not_overused
+      - no_adjacent_duplicate_layout
+      - factual_slides_reference_evidence
+      - unresolved_material_is_explicit
+      - every_supporting_slide_has_l1_structure_or_evidence_visual
+      - design_only_uses_renderer_controls
+      - final_generation_backend_is_pptxgenjs
+  - name: planning-only
+    input: 只给我故事线，暂时不要生成 PPTX
+    assertions:
+      - pptx_skill_keeps_planning_in_same_flow
+      - no_preview_or_render_call
+      - no_final_artifact
+  - name: direct-draft-with-defaults
+    input: 直接做一份 6 页内部项目复盘，不用问我
+    required_outputs: [STORY.md, DESIGN.md]
+    assertions:
+      - no_unnecessary_clarification
+      - assumptions_are_explicit
+      - each_slide_has_one_takeaway
+      - no_empty_container_or_decorative_visual_substitution
+      - visual_kit_is_selected_before_preview
+  - name: facilitation-deck
+    input: 为 40 分钟中秋主题班会规划一份可直接主持的 PPT，不要做成百科介绍
+    required_outputs: [STORY.md, DESIGN.md]
+    assertions:
+      - scene_prototype_is_facilitation
+      - story_closes_goal_knowledge_activity_debrief_action_loop
+      - every_slide_declares_function
+      - activity_pages_declare_audience_action
+      - design_contains_verified_asset_manifest
+      - cards_are_not_used_as_label_only_containers
+      - representative_review_pages_are_marked
+  - name: diagram-before-free-canvas
+    input: 做一页展示总部、两个事业部和四个执行小组关系的组织结构图；另一页展示输入、规则引擎和三个输出的非标准关系
+    required_outputs: [STORY.md, DESIGN.md]
+    assertions:
+      - hierarchy_uses_diagram_with_single_root_tree
+      - nonstandard_relation_considers_bounded_canvas_only_after_components
+      - diagram_nodes_are_short_and_within_supported_count
+      - canvas_uses_safe_percentage_boxes_and_id_connectors
+      - no_remote_diagram_dependency_or_arbitrary_script
+      - diagram_and_canvas_pages_are_marked_for_preview
+  - name: rebuild-existing-deck
+    input: 按这份旧 PPT 的内容和风格重新做一份，并保留原文件
+    assertions:
+      - existing_deck_is_read_only_input
+      - candidate_uses_a_new_filename
+      - renderer_does_not_fallback_to_python_pptx_writes
+      - unsupported_master_animation_fidelity_is_disclosed

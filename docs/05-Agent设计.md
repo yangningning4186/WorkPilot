@@ -340,7 +340,7 @@ provider，而是在首 token 前选择容量足够的 fallback，或明确失�
 
 | 场景 | 行为 |
 |---|---|
-| 进程重启 | 从 `agent_checkpoints` 读回最新 state，从 `cursor` 继续 |
+| 进程重启 | 读取最新 RunConfig + v3 checkpoint；已知旧版本显式迁移，损坏形状或缺失工具/模型身份则具名拒绝 |
 | 用户关闭页面 | worker 不依附 HTTP 连接，任务继续执行并落库；重进时回放 `run_events` 渲染时间线 |
 | 单步失败 | 面向模型的错误信息 → executor 重试（≤2 次）→ 仍失败则 reflector 重规划（≤2 次） |
 | 工具超时 | 走 fallback 链，降级结果标记 `status=fallback`，在时间线上明示 |

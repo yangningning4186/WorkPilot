@@ -7,10 +7,13 @@ import {
   fetchArtifactDiff,
   fetchArtifactPreview,
   type ArtifactDiffPayload,
+  type ArtifactManifestPayload,
+  type ArtifactValidationDimension,
+  type ArtifactValidationStatus,
   type CoworkArtifact,
 } from "@/lib/api";
 
-type ArtifactTab = "preview" | "diff";
+type ArtifactTab = "preview" | "diff" | "quality" | "evidence";
 
 function fileMark(artifact: CoworkArtifact): { label: string; className: string } {
   const suffix = artifact.title.toLowerCase().split(".").pop() ?? "";
@@ -32,6 +35,7 @@ function previewModeLabel(mode: string): string {
   if (mode === "native-pdf") return "原生 PDF";
   if (mode === "structure") return "结构预览";
   if (mode === "text") return "文本预览";
+  if (mode === "offline-html") return "离线 HTML 报告";
   return "安全预览";
 }
 
@@ -79,12 +83,101 @@ function DiffView({ diff }: { diff: ArtifactDiffPayload }) {
   );
 }
 
+function manifestFrom(artifact: CoworkArtifact): ArtifactManifestPayload | null {
+  const value = artifact.meta.artifact_manifest;
+  if (
+    typeof value !== "object"
+    || value === null
+    || !("schema_version" in value)
+    || value.schema_version !== 1
+    || !("validation_report" in value)
+  ) return null;
+  return value as ArtifactManifestPayload;
+}
+
+function statusLabel(status: ArtifactValidationStatus): string {
+  if (status === "passed") return "通过";
+  if (status === "warning") return "警告";
+  if (status === "failed") return "失败";
+  return "未运行";
+}
+
+function QualityDimension({ label, value }: { label: string; value: ArtifactValidationDimension }) {
+  return (
+    <section className={`artifact-quality-dimension ${value.status}`}>
+      <header><strong>{label}</strong><span>{statusLabel(value.status)}</span></header>
+      {value.checks.map((check) => (
+        <div key={check.name}>
+          <i aria-hidden="true" />
+          <p><strong>{check.name}</strong><span>{check.message}</span></p>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function QualityView({ manifest }: { manifest: ArtifactManifestPayload | null }) {
+  if (manifest === null) {
+    return <div className="artifact-rail-empty compact"><span><WorkdeskIcon name="shield" /></span><strong>没有质量清单</strong><p>这份旧交付物生成时尚未接入 ArtifactManifest v1。</p></div>;
+  }
+  const report = manifest.validation_report;
+  return (
+    <div className="artifact-quality">
+      <header>
+        <div><strong>{manifest.quality.score}</strong><span>/ 100</span></div>
+        <p><strong>{manifest.status === "validated" ? "已验证" : "验证未通过"}</strong><span>{manifest.skill.name} · {manifest.runtime.profile}</span></p>
+      </header>
+      <QualityDimension label="文件结构" value={report.structural} />
+      <QualityDimension label="内容语义" value={report.semantic} />
+      <QualityDimension label="视觉版面" value={report.visual} />
+      <QualityDimension label="引用证据" value={report.evidence} />
+      <QualityDimension label="主动内容安全" value={report.security} />
+    </div>
+  );
+}
+
+function EvidenceView({
+  manifest,
+  onOpenEvidence,
+}: {
+  manifest: ArtifactManifestPayload | null;
+  onOpenEvidence?: (path: string, locator: number | null) => void;
+}) {
+  if (manifest === null || manifest.evidence_bindings.length === 0) {
+    return <div className="artifact-rail-empty compact"><span><WorkdeskIcon name="file" /></span><strong>没有产物证据绑定</strong><p>Claim Set 为空，或这份旧交付物尚未记录 Claim → Evidence。</p></div>;
+  }
+  return (
+    <div className="artifact-evidence">
+      {manifest.evidence_bindings.map((binding) => (
+        <article key={binding.claim_id}>
+          <header><span>{binding.target_id}</span><small>{binding.target_type}</small></header>
+          <h3>{binding.claim}</h3>
+          {binding.evidence.map((evidence) => (
+            <div key={evidence.citation_id}>
+              <p><strong>{evidence.citation_id} · {evidence.title ?? "本地资料"}</strong>{evidence.quote !== null && <span>“{evidence.quote}”</span>}</p>
+              <footer>
+                <code>{evidence.source_uri ?? "来源路径未记录"}{evidence.locator !== null ? ` · p.${evidence.locator}` : ""}</code>
+                {evidence.source_uri !== null && onOpenEvidence !== undefined && (
+                  <button onClick={() => onOpenEvidence(evidence.source_uri as string, evidence.locator)} type="button">打开原文</button>
+                )}
+              </footer>
+            </div>
+          ))}
+          {binding.missing_evidence_ids.length > 0 && <p className="artifact-evidence-missing">缺少证据：{binding.missing_evidence_ids.join("、")}</p>}
+        </article>
+      ))}
+    </div>
+  );
+}
+
 export function ArtifactRail({
   artifacts,
   onClose,
+  onOpenEvidence,
 }: {
   artifacts: CoworkArtifact[];
   onClose: () => void;
+  onOpenEvidence?: (path: string, locator: number | null) => void;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(artifacts[0]?.id ?? null);
   const [tab, setTab] = useState<ArtifactTab>("preview");
@@ -141,6 +234,7 @@ export function ArtifactRail({
   const mark = fileMark(selected);
   const sha = typeof selected.meta.sha256 === "string" ? selected.meta.sha256 : null;
   const summary = typeof selected.meta.summary === "string" ? selected.meta.summary : null;
+  const manifest = manifestFrom(selected);
 
   return (
     <aside className="workdesk-artifact-rail" aria-label="Artifact 交付物">
@@ -190,6 +284,10 @@ export function ArtifactRail({
             变更
             {diff?.available && <span><b>+{diff.added_lines}</b><i>−{diff.removed_lines}</i></span>}
           </button>
+          <button aria-selected={tab === "quality"} onClick={() => setTab("quality")} role="tab" type="button">质量</button>
+          <button aria-selected={tab === "evidence"} onClick={() => setTab("evidence")} role="tab" type="button">
+            证据{manifest !== null && <span>{manifest.evidence_bindings.length}</span>}
+          </button>
         </nav>
         <div className="artifact-rail-viewport">
           {loading ? (
@@ -198,8 +296,12 @@ export function ArtifactRail({
             preview !== null
               ? <iframe referrerPolicy="no-referrer" sandbox="" src={preview.url} title={`${selected.title} 预览`} />
               : <div className="artifact-rail-empty compact"><span><WorkdeskIcon name="file" /></span><strong>无法预览</strong><p>{previewError ?? "这个格式暂时没有安全预览器。"}</p></div>
-          ) : diff !== null ? (
+          ) : tab === "diff" && diff !== null ? (
             <DiffView diff={diff} />
+          ) : tab === "quality" ? (
+            <QualityView manifest={manifest} />
+          ) : tab === "evidence" ? (
+            <EvidenceView manifest={manifest} onOpenEvidence={onOpenEvidence} />
           ) : (
             <div className="artifact-rail-empty compact"><span><WorkdeskIcon name="shield" /></span><strong>差异读取失败</strong><p>文件本身仍然可在“预览”中检查。</p></div>
           )}

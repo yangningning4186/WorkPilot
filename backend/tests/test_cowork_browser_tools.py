@@ -6,10 +6,13 @@ from uuid6 import uuid7
 from app.cowork.browser_tools import (
     PlaywrightBrowserManager,
     _BrowserSession,
+    _fresh_control,
+    _inspect_control,
+    _is_consequential_control,
     register_browser_tools,
 )
-from app.cowork.permissions import CapabilityDeniedError
 from app.cowork.tools import CoworkToolError, build_default_cowork_registry
+from app.cowork.web import CoworkWebError
 
 
 class _ClosingBrowserContext:
@@ -53,6 +56,14 @@ class _FakePage:
             await self.guard(route)
 
 
+class _FakeControlHandle:
+    def __init__(self, info: dict[str, object]) -> None:
+        self.info = info
+
+    async def evaluate(self, _: str) -> dict[str, object]:
+        return dict(self.info)
+
+
 class _FakeBrowserContext(_ClosingBrowserContext):
     def __init__(self) -> None:
         super().__init__()
@@ -79,35 +90,33 @@ class _FakeBrowser:
         return True
 
 
-class _ScopedNetworkStore:
-    def __init__(self) -> None:
-        self.targets: list[str] = []
-
-    async def authorize_scoped_capability(self, *, target: str, **_: Any) -> None:
-        self.targets.append(target)
-        if "exfil.example" in target:
-            raise CapabilityDeniedError("未授权 origin")
-
-
 def test_browser_navigation_splits_action_levels_and_consequential_approval() -> None:
     registry = build_default_cowork_registry()
     register_browser_tools(registry)
 
-    for name in ("browser_open", "browser_back", "browser_type", "browser_select"):
+    for name in ("browser_open", "browser_back"):
         spec = registry.get(name)
         assert spec.approval_required is False
         assert spec.exclusive is True
         assert spec.effect != "none"
 
-    assert registry.get("browser_open").capability == "browser.read"
-    assert registry.get("browser_back").capability == "browser.read"
-    assert registry.get("browser_type").capability == "browser.write"
-    assert registry.get("browser_select").capability == "browser.write"
-    assert registry.get("browser_click").capability == "browser.destructive"
-    assert registry.get("browser_click").approval_required is True
+    assert registry.get("browser_open").capability is None
+    assert registry.get("browser_open").extra_capabilities == ()
+    assert registry.get("browser_back").capability is None
+    assert registry.get("browser_type").approval_required is True
+    assert registry.get("browser_type").approval_can_be_waived is False
+    assert registry.get("browser_select").approval_required is True
+    assert registry.get("browser_select").approval_can_be_waived is False
+    assert registry.get("browser_click").capability is None
+    assert registry.get("browser_click").approval_required is False
+    assert registry.get("browser_submit").approval_required is True
+    assert registry.get("browser_submit").approval_can_be_waived is False
     assert registry.get("browser_upload").approval_required is True
+    assert registry.get("browser_upload").approval_can_be_waived is False
     assert registry.get("browser_upload").exclusive is True
-    assert registry.get("browser_download").extra_capabilities == ("browser.destructive",)
+    assert registry.get("browser_download").extra_capabilities == ()
+    assert registry.get("browser_download").approval_required is True
+    assert registry.get("browser_download").approval_can_be_waived is False
     assert registry.get("browser_download").exclusive is True
     assert registry.get("browser_screenshot").approval_required is False
     assert registry.get("browser_snapshot").effect == "none"
@@ -115,6 +124,84 @@ def test_browser_navigation_splits_action_levels_and_consequential_approval() ->
     assert "query" in registry.get("browser_snapshot").resolved_input_schema()["properties"]
     assert registry.get("browser_find").model_visible is False
     assert "browser_find" not in registry.deferred_tool_names()
+
+
+def test_browser_click_classifies_navigation_separately_from_submissions() -> None:
+    assert not _is_consequential_control(
+        {"tag": "a", "href": "https://example.com/next", "label": "下一页"}
+    )
+    assert not _is_consequential_control(
+        {
+            "tag": "button",
+            "in_form": False,
+            "type": "button",
+            "label": "展开菜单",
+            "aria_controls": "menu-1",
+            "aria_expanded": "false",
+        }
+    )
+    assert _is_consequential_control(
+        {"tag": "button", "in_form": True, "type": "submit", "label": "继续"}
+    )
+    assert _is_consequential_control(
+        {"tag": "a", "href": "#", "label": "删除这条记录"}
+    )
+    assert _is_consequential_control(
+        {"tag": "button", "in_form": False, "type": "button", "label": "Archive"}
+    )
+
+
+async def test_browser_action_rebinds_the_same_dom_node_before_execution() -> None:
+    url = "https://example.com/form"
+    page = cast(Any, type("Page", (), {"url": url})())
+    handle = _FakeControlHandle(
+        {
+            "connected": True,
+            "tag": "button",
+            "type": "button",
+            "role": "",
+            "name": "Save",
+            "placeholder": "",
+            "text": "Save",
+            "href": "",
+            "raw_href": "",
+            "target": "",
+            "download": "",
+            "aria_expanded": "",
+            "aria_controls": "",
+            "in_form": True,
+            "disabled": False,
+        }
+    )
+    cached = await _inspect_control(cast(Any, handle))
+    session = _BrowserSession(
+        context=cast(Any, _ClosingBrowserContext()),
+        page=page,
+        conversation_id=uuid7(),
+        idle_expires_at=100,
+        hard_expires_at=200,
+        controls=[cast(Any, handle)],
+        control_info=[cached],
+        snapshot_url=url,
+    )
+
+    rebound, _ = await _fresh_control(
+        session,
+        0,
+        expected_url=url,
+        expected_label="Save",
+    )
+    assert rebound is handle
+
+    handle.info["name"] = "Delete"
+    handle.info["text"] = "Delete"
+    with pytest.raises(CoworkToolError, match="发生变化"):
+        await _fresh_control(
+            session,
+            0,
+            expected_url=url,
+            expected_label="Save",
+        )
 
 
 def test_readonly_subagent_cannot_receive_browser_actions() -> None:
@@ -133,18 +220,19 @@ def test_readonly_subagent_cannot_receive_browser_actions() -> None:
     assert "browser_upload" not in names
 
 
-async def test_browser_scope_guard_checks_subresources_and_blocks_exfiltration(
+async def test_browser_public_target_guard_checks_every_subresource(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    store = _ScopedNetworkStore()
     browser = _FakeBrowser()
     manager = PlaywrightBrowserManager()
     manager._browser = cast(Any, browser)
+    checked: list[str] = []
 
-    async def public_target(_: str) -> None:
-        return None
+    async def public_target(url: str) -> None:
+        checked.append(url)
+        if "exfil.example" in url:
+            raise CoworkWebError("目标解析到私网地址")
 
-    monkeypatch.setattr("app.cowork.browser_tools.cowork_store", lambda: store)
     monkeypatch.setattr("app.cowork.browser_tools.assert_public_target", public_target)
 
     _, session = await manager.open(
@@ -153,7 +241,8 @@ async def test_browser_scope_guard_checks_subresources_and_blocks_exfiltration(
         timeout_s=1,
     )
 
-    assert store.targets == [
+    assert checked == [
+        "https://allowed.example/",
         "https://allowed.example/",
         "https://exfil.example/pixel?secret=private",
     ]

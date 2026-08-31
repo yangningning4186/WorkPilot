@@ -22,7 +22,7 @@ from app.cowork.tools import build_default_cowork_registry
 from app.cowork_policy import ACTIVE_CAPABILITIES
 
 SCHEMA_VERSION = "cowork-task-suite.v1"
-DEFAULT_SUITE = Path(__file__).parent / "suites" / "cowork-core-50-v1.6.1.json"
+DEFAULT_SUITE = Path(__file__).parent / "suites" / "cowork-core-50-v1.6.2.json"
 EXPECTED_ITEMS = 50
 EXPECTED_SPLITS = {"dev": 39, "test": 11}
 EXPECTED_CATEGORIES = {
@@ -57,10 +57,11 @@ register_team_tools(_REGISTRY)
 _ADAPTER_TOOL_CAPABILITIES: dict[str, frozenset[str]] = {
     # Skill 工具依赖运行期 catalog，所以和 RAG / 浏览器一样不在默认注册表里。
     "load_skill": frozenset(),
-    "search_knowledge": frozenset({"knowledge.read"}),
-    "browser_open": frozenset({"network.fetch", "browser.read"}),
-    "browser_snapshot": frozenset({"browser.read"}),
-    "browser_close": frozenset({"browser.read"}),
+    # 挂载知识库即授权读取；公网浏览器始终保留地址安全校验，但不再要求全局 grant。
+    "search_knowledge": frozenset(),
+    "browser_open": frozenset(),
+    "browser_snapshot": frozenset(),
+    "browser_close": frozenset(),
 }
 
 # 退役工具只能出现在 forbidden_tools 中，用来冻结“不得回退旧协议”的产品契约；
@@ -202,8 +203,8 @@ def missing_capabilities_for(
 ) -> dict[str, list[str]]:
     """gold 要求调用的工具里, 哪些的 capability 这道题根本没授权。
 
-    这类题目不是"难", 是**不可解**: 工具执行入口会先拒掉, 模型只能转去
-    request_capability, run 停在 waiting_human, 于是这一分永远拿不到。把它算进
+    这类题目不是"难", 是**不可解**: 工具执行入口会先拒掉, 运行时只能转去授权卡并
+    停在 waiting_human, 于是这一分永远拿不到。把它算进
     成功率等于在给评分注入一个与被测系统无关的常数项。
     """
 

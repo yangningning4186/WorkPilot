@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import cast
 from uuid import UUID
 
-import fitz
+import pymupdf
 import pytest
 from uuid6 import uuid7
 
@@ -123,7 +123,7 @@ async def test_general_tools_create_index_and_reuse_artifact_exactly_once(
     assert len(read_result.output["baseline_sha256"]) == 64
 
     pdf_path = tmp_path / "brief.pdf"
-    document = fitz.open()
+    document = pymupdf.open()
     page = document.new_page()
     page.insert_text((72, 72), "WorkPilot PDF auto detection")
     document.save(pdf_path)

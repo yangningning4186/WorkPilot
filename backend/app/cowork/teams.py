@@ -8,7 +8,7 @@ import re
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
 from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -17,7 +17,14 @@ from app.agent_core.budget import RunBudgetExceededError, ToolCompletionClient
 from app.agent_core.loop import run_tool_loop
 from app.agent_core.state import json_state
 from app.cowork.authorization import arguments_sha256
-from app.cowork.permissions import authorize_path
+from app.cowork.permissions import authorize_path, list_session_roots
+from app.cowork.personas import (
+    ExpertTeamMemberDefinition,
+    PersonaDefinition,
+    load_persona_catalog,
+    snapshot_persona,
+    tool_name_matches,
+)
 from app.cowork.redaction import redact_persisted_tool_value
 from app.cowork.tools import (
     CoworkToolContext,
@@ -88,8 +95,9 @@ class _StrictArgs(BaseModel):
 
 class TeamMemberProposal(_StrictArgs):
     name: str = Field(min_length=1, max_length=24)
-    role: str = Field(min_length=1, max_length=160)
+    role: str = Field(default="", max_length=160)
     reason: str = Field(default="", max_length=500)
+    profile: str | None = Field(default=None, min_length=1, max_length=64)
 
     @model_validator(mode="after")
     def normalize_name(self) -> TeamMemberProposal:
@@ -99,6 +107,14 @@ class TeamMemberProposal(_StrictArgs):
         self.name = normalized
         self.role = " ".join(self.role.split())
         self.reason = " ".join(self.reason.split())
+        if self.profile is not None:
+            self.profile = self.profile.strip().lower()
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", self.profile):
+                raise ValueError("Expert profile 必须是合法小写标识")
+            if self.role:
+                raise ValueError("专家成员的 role 由 profile 固化，提案中不能覆盖")
+        elif not self.role:
+            raise ValueError("普通 Worker 必须提供 role")
         return self
 
 
@@ -134,6 +150,8 @@ class TeamBudgetLimitsArgs(_StrictArgs):
 
 
 class ProposeTeamArgs(_StrictArgs):
+    expert: str | None = Field(default=None, min_length=1, max_length=64)
+    expert_sha256: str | None = Field(default=None, min_length=64, max_length=64)
     members: list[TeamMemberProposal] = Field(min_length=1, max_length=MAX_TEAM_MEMBERS)
     note: str = Field(default="", max_length=1000)
     # 这是 roster 审批的一部分，不是 standing approval。为空时 Team 只能接只读任务；
@@ -149,6 +167,23 @@ class ProposeTeamArgs(_StrictArgs):
         names = [member.name for member in self.members]
         if len(names) != len(set(names)):
             raise ValueError("同一团队的 Worker name 不能重复")
+        if self.expert is not None:
+            self.expert = self.expert.strip().lower()
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", self.expert):
+                raise ValueError("expert 必须是合法 Persona name")
+            if any(member.profile is None for member in self.members):
+                raise ValueError("专家团的每个成员都必须提供 profile")
+            if self.expert_sha256 is None or not re.fullmatch(
+                r"[0-9a-f]{64}", self.expert_sha256
+            ):
+                raise ValueError("专家团必须提供 expert_team_manifest 中的 expert_sha256")
+            profiles = [member.profile for member in self.members]
+            if len(profiles) != len(set(profiles)):
+                raise ValueError("同一专家团不能重复启用同一个 profile")
+        elif any(member.profile is not None for member in self.members):
+            raise ValueError("使用 profile 时必须同时指定 expert")
+        elif self.expert_sha256 is not None:
+            raise ValueError("expert_sha256 只能与 expert 一起使用")
         self.note = self.note.strip()
         return self
 
@@ -327,6 +362,7 @@ class _WorkerToolCall(TypedDict):
     id: str
     name: str
     arguments: str
+    thought_signature: NotRequired[str]
 
 
 class _WorkerMessage(TypedDict):
@@ -344,15 +380,54 @@ class TeamWorkerState(TypedDict):
     rounds_used: int
     calls_used: int
     report: str
+    expert_profile: NotRequired[dict[str, str] | None]
+    tool_patterns: NotRequired[list[str]]
 
 
-def _initial_worker_state() -> TeamWorkerState:
+def _initial_worker_state(
+    *,
+    expert_name: str | None = None,
+    expert_sha256: str | None = None,
+    expert_member: ExpertTeamMemberDefinition | None = None,
+) -> TeamWorkerState:
+    expert_fields = (
+        expert_name is not None,
+        expert_sha256 is not None,
+        expert_member is not None,
+    )
+    if any(expert_fields) and not all(expert_fields):
+        raise ValueError("expert_name、expert_sha256 与 expert_member 必须同时提供")
+    expert_profile: dict[str, str] | None = None
+    tool_patterns: list[str] = []
+    system_prompt = TEAM_WORKER_SYSTEM_PROMPT
+    if expert_name is not None and expert_member is not None:
+        assert expert_sha256 is not None
+        expert_profile = {
+            "expert": expert_name,
+            "manifest_sha256": expert_sha256,
+            "profile": expert_member.profile,
+            "label": expert_member.label,
+        }
+        tool_patterns = list(expert_member.tool_patterns)
+        identity = json.dumps(
+            {
+                **expert_profile,
+                "role": expert_member.role,
+                "reason": expert_member.reason,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        system_prompt = (
+            f"{TEAM_WORKER_SYSTEM_PROMPT}\n\n<expert_profile>\n{identity}\n"
+            f"{expert_member.system_block}\n</expert_profile>"
+        )
     return json_state(
         TeamWorkerState(
             messages=[
                 {
                     "role": "system",
-                    "content": TEAM_WORKER_SYSTEM_PROMPT,
+                    "content": system_prompt,
                     "tool_calls": [],
                     "tool_call_id": None,
                 }
@@ -363,6 +438,8 @@ def _initial_worker_state() -> TeamWorkerState:
             rounds_used=0,
             calls_used=0,
             report="",
+            expert_profile=expert_profile,
+            tool_patterns=tool_patterns,
         )
     )
 
@@ -381,7 +458,84 @@ def _worker_state(raw: dict[str, Any]) -> TeamWorkerState:
     }
     if not required.issubset(raw):
         raise ValueError("Worker Session state 缺少必要字段")
-    return json_state(cast("TeamWorkerState", raw))
+    state = json_state(cast("TeamWorkerState", raw))
+    state.setdefault("expert_profile", None)
+    state.setdefault("tool_patterns", [])
+    expert_profile = state["expert_profile"]
+    if expert_profile is not None:
+        if (
+            not isinstance(expert_profile, dict)
+            or set(expert_profile)
+            != {"expert", "manifest_sha256", "profile", "label"}
+            or any(not isinstance(value, str) for value in expert_profile.values())
+            or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", expert_profile["expert"])
+            is None
+            or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", expert_profile["profile"])
+            is None
+            or re.fullmatch(r"[0-9a-f]{64}", expert_profile["manifest_sha256"])
+            is None
+            or not 1 <= len(expert_profile["label"]) <= 64
+        ):
+            raise ValueError("Worker Session expert_profile 形状无效")
+    if (
+        not isinstance(state["tool_patterns"], list)
+        or len(state["tool_patterns"]) > 100
+        or any(
+            not isinstance(pattern, str)
+            or re.fullmatch(r"[A-Za-z0-9_-]{1,64}\*?", pattern) is None
+            for pattern in state["tool_patterns"]
+        )
+    ):
+        raise ValueError("Worker Session tool_patterns 形状无效")
+    return state
+
+
+def _materialize_team_members(
+    args: ProposeTeamArgs,
+    *,
+    expert: PersonaDefinition | None,
+) -> list[dict[str, Any]]:
+    """把模型提案解析成受信 roster；专家职责永远取自 Persona 包。"""
+
+    if args.expert is None:
+        if expert is not None:  # pragma: no cover - 调用约束
+            raise ValueError("普通团队不能绑定专家 Persona")
+        return [
+            {
+                "name": member.name,
+                "role": member.role,
+                "reason": member.reason,
+                "state": cast("dict[str, Any]", _initial_worker_state()),
+            }
+            for member in args.members
+        ]
+    if expert is None or expert.name != args.expert:
+        raise ValueError(f"未知专家团 Persona: {args.expert}")
+    if expert.expert_type != "team":
+        raise ValueError(f"Persona {expert.name} 不是专家团")
+    definitions = {member.profile: member for member in expert.team_members}
+    materialized: list[dict[str, Any]] = []
+    for proposal in args.members:
+        assert proposal.profile is not None  # 已由 ProposeTeamArgs 校验
+        definition = definitions.get(proposal.profile)
+        if definition is None:
+            raise ValueError(f"专家团 {expert.name} 不包含 profile {proposal.profile}")
+        materialized.append(
+            {
+                "name": proposal.name,
+                "role": definition.role,
+                "reason": proposal.reason or definition.reason,
+                "state": cast(
+                    "dict[str, Any]",
+                    _initial_worker_state(
+                        expert_name=expert.name,
+                        expert_sha256=args.expert_sha256,
+                        expert_member=definition,
+                    ),
+                ),
+            }
+        )
+    return materialized
 
 
 def _message_from_state(message: _WorkerMessage) -> Message:
@@ -393,14 +547,22 @@ def _message_from_state(message: _WorkerMessage) -> Message:
     )
 
 
+def _tool_call_state(call: ToolCall) -> _WorkerToolCall:
+    payload: _WorkerToolCall = {
+        "id": call.id,
+        "name": call.name,
+        "arguments": call.arguments,
+    }
+    if call.thought_signature:
+        payload["thought_signature"] = call.thought_signature
+    return payload
+
+
 def _assistant_message(completion: CompletionResult) -> _WorkerMessage:
     return {
         "role": "assistant",
         "content": completion.text,
-        "tool_calls": [
-            {"id": call.id, "name": call.name, "arguments": call.arguments}
-            for call in completion.tool_calls
-        ],
+        "tool_calls": [_tool_call_state(call) for call in completion.tool_calls],
         "tool_call_id": None,
     }
 
@@ -726,7 +888,16 @@ class _TeamWorkerRuntime:
         self.task = task
         self.worker = worker
         self.session = session
-        self.tools = registry.team_worker_tool_definitions() if task.resource_scope else []
+        worker_state = _worker_state(session.state)
+        tools = registry.team_worker_tool_definitions() if task.resource_scope else []
+        if worker_state["expert_profile"] is not None:
+            patterns = tuple(worker_state["tool_patterns"])
+            tools = [
+                tool
+                for tool in tools
+                if any(tool_name_matches(pattern, tool.name) for pattern in patterns)
+            ]
+        self.tools = tools
         self.allowed_tools = frozenset(tool.name for tool in self.tools)
         self.gateway = cast("ToolCompletionClient", context.gateway)
         self.limits = worker_limits(
@@ -831,6 +1002,12 @@ class _TeamWorkerRuntime:
     def _start_assignment(self, state: TeamWorkerState) -> TeamWorkerState:
         updated = json_state(state)
         envelope: dict[str, Any] = {
+            "worker_identity": {
+                "name": self.worker.name,
+                "role": self.worker.role,
+                "reason": self.worker.reason,
+                "expert_profile": state["expert_profile"],
+            },
             "task_description": f"{self.task.title}\n\n{self.task.description}",
             "acceptance_criteria": self.task.acceptance_criteria,
             "resource_scope": self.task.resource_scope,
@@ -895,8 +1072,7 @@ class _TeamWorkerRuntime:
             updated["report"] = completion.text
         else:
             updated["pending_calls"] = [
-                {"id": call.id, "name": call.name, "arguments": call.arguments}
-                for call in completion.tool_calls
+                _tool_call_state(call) for call in completion.tool_calls
             ]
         await self._persist(updated)
         return json_state(updated)
@@ -1160,6 +1336,31 @@ async def _emit(context: CoworkToolContext, name: RunEventType, payload: dict[st
 def register_team_tools(registry: CoworkToolRegistry) -> None:
     async def propose_team(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = ProposeTeamArgs.model_validate(raw.model_dump())
+        expert: PersonaDefinition | None = None
+        project_roots: tuple[Path, ...] = ()
+        if args.expert is not None:
+            roots = await list_session_roots(
+                context.session,
+                conversation_id=context.conversation_id,
+            )
+            project_roots = tuple(
+                Path(root.canonical_path) for root in roots if root.enabled
+            )
+            catalog = load_persona_catalog(
+                context.settings,
+                project_roots=project_roots,
+            )
+            try:
+                expert = catalog.get(args.expert)
+            except ValueError:
+                raise ValueError(f"未知专家团 Persona: {args.expert}") from None
+            current_snapshot = snapshot_persona(
+                expert,
+                context.settings,
+                project_roots=project_roots,
+            )
+            if current_snapshot["sha256"] != args.expert_sha256:
+                raise ValueError("专家团定义已变化；请重新选择 Persona 后重新提出编制")
         delegation_scope, delegation_authorizations = await _canonical_resource_scope(
             context,
             [
@@ -1173,13 +1374,7 @@ def register_team_tools(registry: CoworkToolRegistry) -> None:
             delegation_scope,
             delegation_authorizations,
         )
-        members = [
-            {
-                **member.model_dump(mode="json"),
-                "state": cast("dict[str, Any]", _initial_worker_state()),
-            }
-            for member in args.members
-        ]
+        members = _materialize_team_members(args, expert=expert)
         team, workers = await cowork_store().create_team(
             lead_conversation_id=context.conversation_id,
             proposal_call_id=context.tool_call_id,
@@ -1199,11 +1394,15 @@ def register_team_tools(registry: CoworkToolRegistry) -> None:
                     "name": worker.name,
                     "role": worker.role,
                     "reason": worker.reason,
+                    "expert_profile": cast(
+                        "dict[str, Any]", members[index]["state"]
+                    ).get("expert_profile"),
                     "session_id": str(worker.session_id),
                     "session_status": "idle",
                 }
-                for worker in workers
+                for index, worker in enumerate(workers)
             ],
+            "expert": args.expert,
             "write_delegation_scope": team.write_delegation_scope,
             "write_delegation_receipt_id": (
                 None
@@ -1396,7 +1595,10 @@ def register_team_tools(registry: CoworkToolRegistry) -> None:
             name=PROPOSE_TEAM_TOOL_NAME,
             description=(
                 "提出 Agent Team 编制并强制暂停等待用户审批。members 为 1-4 个 Worker，"
-                "每个包含唯一 name、职责 role 和组建理由 reason。即使会话处于 auto 也不能"
+                "普通团队成员包含唯一 name、职责 role 和组建理由 reason；专家团还要提供 "
+                "expert Persona name、expert_team_manifest 的 expert_sha256，成员用 profile "
+                "选择包内固化职责且不得自填 role。"
+                "即使会话处于 auto 也不能"
                 "跳过审批；write_delegation_scope 会把明确的绝对目录作为 Worker 写权限"
                 "委派一并展示给用户，未列出的目录只能分配只读任务。批准后只预创建空闲"
                 "持久 Session，不立即调用模型。必须单独调用。"
@@ -1517,7 +1719,8 @@ def register_team_tools(registry: CoworkToolRegistry) -> None:
         "上次报告与验收意见；如果用户明确接受部分成果或取消任务，使用 board_resolve_task，"
         "不要对 open/blocked task 调 board_review_task。board_assign_task 成功仅表示异步分配已"
         "持久接收，不能当成 Worker 完成；必须等待 submitted/blocked/failed 的 durable Lead "
-        "wake 后再协调或验收。结束回答前必须检查 Board 状态。"
+        "wake 后再协调或验收。专家团必须使用已注册 expert/profile，角色提示词和工具白名单"
+        "会随 Worker Session 固化；不得用自由文本 role 冒充专家。结束回答前必须检查 Board 状态。"
     )
 
 

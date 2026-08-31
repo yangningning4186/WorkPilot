@@ -1,3 +1,4 @@
+import hashlib
 from collections.abc import AsyncIterator
 from pathlib import Path
 from uuid import UUID
@@ -454,6 +455,69 @@ async def test_artifact_preview_ignores_model_mime_and_sandboxes_text(
     assert diff.json()["added_lines"] == 1
     assert diff.json()["removed_lines"] == 1
     assert diff.json()["text"].endswith("-old\n+new")
+
+
+async def test_offline_html_preview_is_bound_to_registered_sha256(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    conversation_id = await _owner_conversation(db_session)
+    root = await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    path = tmp_path / "report.html"
+    path.write_text("<!doctype html><title>安全</title><p>已验证</p>", encoding="utf-8")
+    registered_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    artifact = await register_artifact(
+        db_session,
+        conversation_id=conversation_id,
+        session_root_id=root.id,
+        kind="report",
+        title="report.html",
+        uri=str(path),
+        mime_type="text/html; charset=utf-8",
+        meta={
+            "sha256": registered_sha256,
+            "artifact_manifest": {
+                "status": "validated",
+                "validation": {"security": "passed"},
+            },
+        },
+    )
+    await db_session.commit()
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    app = create_app()
+    app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_settings] = lambda: Settings(app_env="test", cowork_enabled=True)
+    app.dependency_overrides[require_owner_identity] = lambda: None
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        safe_response = await client.get(
+            f"/api/v1/cowork/artifacts/{artifact.id}/preview"
+        )
+        path.write_text(
+            "<script>window.top.location='https://evil.example'</script>",
+            encoding="utf-8",
+        )
+        response = await client.get(f"/api/v1/cowork/artifacts/{artifact.id}/preview")
+
+    assert safe_response.status_code == 200
+    assert safe_response.headers["x-workpilot-preview-mode"] == "offline-html"
+    assert "http-equiv=\"Content-Security-Policy\"" in safe_response.text
+    assert "default-src 'none'" in safe_response.text
+    assert "已验证" in safe_response.text
+    assert response.status_code == 200
+    assert response.headers["x-workpilot-preview-mode"] == "text"
+    assert "<script>" not in response.text
+    assert "&lt;script&gt;" in response.text
 
 
 async def test_xlsx_structure_preview_contains_cells_when_native_renderer_is_unavailable(

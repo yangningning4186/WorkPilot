@@ -632,6 +632,55 @@ const server = createServer((request, response) => {
     return;
   }
 
+  if (path === "/api/v1/personas" && request.method === "GET") {
+    json(response, 200, {
+      items: [
+        {
+          name: "expert-council",
+          label: "深度研究与风险评审团",
+          description: "并行核验证据和分析方案，再由独立审阅专家检查反例与风险。",
+          tool_patterns: [],
+          default_approval_mode: "interactive",
+          recommended_connectors: [],
+          recommended_work_mode: "office",
+          expert_type: "team",
+          team_members: [
+            {
+              profile: "evidence-researcher",
+              label: "证据研究专家",
+              role: "核验证据",
+              reason: "建立事实层",
+              tool_patterns: ["read_file"],
+            },
+            {
+              profile: "domain-analyst",
+              label: "领域分析专家",
+              role: "分析机制与方案",
+              reason: "比较可选方案",
+              tool_patterns: ["read_file"],
+            },
+          ],
+          origin: "builtin",
+        },
+        {
+          name: "general",
+          label: "通用执行",
+          description: "完整 Cowork 工具面。",
+          tool_patterns: [],
+          default_approval_mode: "interactive",
+          recommended_connectors: [],
+          recommended_work_mode: "office",
+          expert_type: "agent",
+          team_members: [],
+          origin: "builtin",
+        },
+      ],
+      errors: [],
+      project_paths: [],
+    });
+    return;
+  }
+
   if (path === "/api/v1/conversations" && request.method === "GET") {
     const existing = currentSession(request);
     // 页面会并行请求活跃与归档列表。首屏还没有 cookie 时，两条请求必须共用同一个

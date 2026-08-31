@@ -1,0 +1,15 @@
+schema_version: 1
+metrics:
+  file_open_rate: 1.0
+  required_section_pass: 1.0
+  genre_structure_pass: 1.0
+  placeholder_leak_rate_max: 0.0
+  page_geometry_pass: 1.0
+  heading_hierarchy_pass: 1.0
+  table_layout_pass: 1.0
+  # 视觉渲染依赖本机 LibreOffice；缺失时 Validator 返回 not_run，
+  # 这一项按“未测量”处理，不得记为通过。
+  visual_render_pass_when_available: 1.0
+  overflow_rate_max: 0.0
+  citation_coverage_min: 0.9
+  unsafe_active_content_rate_max: 0.0

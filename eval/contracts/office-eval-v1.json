@@ -1,0 +1,109 @@
+{
+  "schema_version": "workpilot-deterministic-contract.v1",
+  "id": "office-eval-contract",
+  "version": "1.1",
+  "mode": "pytest_no_model_io",
+  "description": "Office/PPT 评测自身的零真实模型回归契约：最终文件验证、实例级内容 oracle、防关键词投机、原生图表数据、复核资格/否决、一键 VLM 编排与 Cowork 办公工作流覆盖。",
+  "case_count": 10,
+  "categories": {
+    "artifact_validation": 1,
+    "content_oracle": 1,
+    "anti_gaming": 3,
+    "review_gate": 3,
+    "model_orchestration": 1,
+    "workflow_coverage": 1
+  },
+  "cases": [
+    {
+      "id": "office-eval-contract-artifact-final-file",
+      "category": "artifact_validation",
+      "test": "backend/tests/test_artifact_eval_suite.py::test_artifact_rendering_suite_runs_final_file_checks_offline",
+      "invariants": [
+        "评分对象是最终 Office/PDF/HTML 文件，而不是模型说明、脚本或中间 Spec",
+        "结构、语义、视觉、证据与安全失败必须由独立 Validator 稳定复现"
+      ]
+    },
+    {
+      "id": "office-eval-contract-content-oracles",
+      "category": "content_oracle",
+      "test": "backend/tests/test_office_content_suite.py::test_seed_representative_oracles_pass_each_format",
+      "invariants": [
+        "DOCX、XLSX、PPTX、PDF 的代表性正确样本必须通过格式门禁和全部实例级自动检查",
+        "报告必须绑定 suite 哈希与 scorer fingerprint"
+      ]
+    },
+    {
+      "id": "office-eval-contract-notes-not-visible",
+      "category": "anti_gaming",
+      "test": "backend/tests/test_office_content_suite.py::test_slide_scope_excludes_speaker_notes",
+      "invariants": [
+        "PPT 演讲者备注不属于观众可见页面内容",
+        "不能把必需事实藏在备注中骗过内容评分"
+      ]
+    },
+    {
+      "id": "office-eval-contract-labeled-values",
+      "category": "anti_gaming",
+      "test": "backend/tests/test_office_content_suite.py::test_labeled_values_bind_numbers_to_their_business_meaning",
+      "invariants": [
+        "业务数值必须与邻近语义标签绑定",
+        "交换实际值和计划值不能仅凭关键词齐全而通过"
+      ]
+    },
+    {
+      "id": "office-eval-contract-native-chart-data",
+      "category": "anti_gaming",
+      "test": "backend/tests/test_office_content_suite.py::test_pptx_chart_check_reads_native_data_and_percentage_fractions",
+      "invariants": [
+        "PPT 原生图表必须从内嵌系列数据校验而非只数图表对象",
+        "百分数的 18/24 与 0.18/0.24 表示应按同一业务值比较"
+      ]
+    },
+    {
+      "id": "office-eval-contract-review-veto",
+      "category": "review_gate",
+      "test": "backend/tests/test_office_content_suite.py::test_review_minimums_block_a_high_automatic_score",
+      "invariants": [
+        "任何人工复核标准低于最低档都必须阻止 benchmark 通过",
+        "自动轨保持独立硬门禁，总分按自动 60% / 复核 40% 计算",
+        "自动分满分不能用加权结果掩盖连贯性、决策价值或视觉质量零分"
+      ]
+    },
+    {
+      "id": "office-eval-contract-release-cli",
+      "category": "review_gate",
+      "test": "backend/tests/test_office_content_suite.py::test_release_cli_requires_complete_passing_reviews",
+      "invariants": [
+        "发布模式必须拒绝缺失、过期或未通过最低档的复核",
+        "只有当前文件哈希绑定的完整复核与 benchmark 全部通过时 CLI 才返回成功"
+      ]
+    },
+    {
+      "id": "office-eval-contract-uncalibrated-model-ineligible",
+      "category": "review_gate",
+      "test": "backend/tests/test_office_content_suite.py::test_uncalibrated_model_review_scores_engineering_but_not_benchmark",
+      "invariants": [
+        "未经专家盲评校准的模型复核可以生成工程总分，但不得获得 benchmark 资格",
+        "模型满分不能使发布门禁通过，报告必须显式列出资格失败原因"
+      ]
+    },
+    {
+      "id": "office-eval-contract-one-click-model-review",
+      "category": "model_orchestration",
+      "test": "backend/tests/test_office_content_suite.py::test_one_click_office_eval_writes_engineering_result_but_not_benchmark",
+      "invariants": [
+        "一键链路必须按最终文件执行确定性门禁、逐页视觉附件、严格模型复核和哈希绑定汇总",
+        "测试使用 fake VLM 且零网络；产物必须同时包含报告、模型复核与模型运行审计"
+      ]
+    },
+    {
+      "id": "office-eval-contract-cowork-workflow",
+      "category": "workflow_coverage",
+      "test": "backend/tests/test_cowork_task_suite.py::test_cowork_office_candidate_suite_pins_native_ppt_workflow_coverage",
+      "invariants": [
+        "办公候选集必须固定新建、编辑、只读与 grounding 四类工作流配额",
+        "PPT 新建题必须走 render_artifact 原生链路并验证页数与关键内容"
+      ]
+    }
+  ]
+}

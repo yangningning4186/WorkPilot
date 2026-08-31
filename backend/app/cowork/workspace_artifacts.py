@@ -16,15 +16,19 @@ import os
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-import fitz  # type: ignore[import-untyped]
+import pymupdf
 from docx import Document
 from openpyxl import load_workbook  # type: ignore[import-untyped]
 from pptx import Presentation
 
 from app.cowork.artifact_diff import build_artifact_diff, capture_artifact_baseline
 from app.cowork.artifact_formats import TEXT_ARTIFACT_MIME_BY_SUFFIX
+from app.cowork.artifact_manifest import legacy_artifact_manifest
+from app.cowork.artifact_validation import validate_artifact_in_subprocess
+
+_pymupdf: Any = pymupdf
 
 _SKIPPED_DIRECTORIES = frozenset(
     {
@@ -71,6 +75,7 @@ class DiscoveredWorkspaceArtifact:
     sha256: str
     size_bytes: int
     diff: dict[str, object]
+    artifact_manifest: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +106,7 @@ async def discover_workspace_artifacts(
     max_scan_entries: int,
     max_files: int,
     max_file_bytes: int,
+    sandboxed_generated_code: bool = False,
 ) -> WorkspaceArtifactDiscovery:
     return await asyncio.to_thread(
         _discover_workspace_artifacts,
@@ -109,6 +115,7 @@ async def discover_workspace_artifacts(
         max_scan_entries=max_scan_entries,
         max_files=max_files,
         max_file_bytes=max_file_bytes,
+        sandboxed_generated_code=sandboxed_generated_code,
     )
 
 
@@ -201,6 +208,7 @@ def _discover_workspace_artifacts(
     max_scan_entries: int,
     max_files: int,
     max_file_bytes: int,
+    sandboxed_generated_code: bool = False,
 ) -> WorkspaceArtifactDiscovery:
     after = _snapshot_workspace_artifacts(
         root,
@@ -220,6 +228,7 @@ def _discover_workspace_artifacts(
                     path,
                     previous=before.files.get(path),
                     max_file_bytes=max_file_bytes,
+                    sandboxed_generated_code=sandboxed_generated_code,
                 )
             )
         except (OSError, UnicodeError, ValueError, zipfile.BadZipFile) as error:
@@ -236,6 +245,7 @@ def _validated_artifact(
     *,
     previous: ArtifactFingerprint | None,
     max_file_bytes: int,
+    sandboxed_generated_code: bool = False,
 ) -> DiscoveredWorkspaceArtifact:
     stat = path.stat()
     if stat.st_size > max_file_bytes:
@@ -246,6 +256,22 @@ def _validated_artifact(
         _validate_native_file(path, suffix, max_file_bytes=max_file_bytes)
     else:
         path.read_bytes().decode("utf-8-sig")
+    manifest: dict[str, object] | None = None
+    artifact_type = suffix.removeprefix(".")
+    if artifact_type in {"docx", "xlsx", "pptx", "pdf", "html"}:
+        report = validate_artifact_in_subprocess(
+            path,
+            render_visual=suffix == ".pptx",
+            max_file_bytes=max_file_bytes,
+        )
+        if not report.deliverable:
+            failures = report.quality.warnings[:3]
+            raise ValueError("产物安全/结构验证失败：" + "；".join(failures))
+        manifest = legacy_artifact_manifest(
+            artifact_type=artifact_type,  # type: ignore[arg-type]
+            report=report,
+            sandboxed_generated_code=sandboxed_generated_code,
+        ).model_dump(mode="json")
     return DiscoveredWorkspaceArtifact(
         path=path,
         title=path.name,
@@ -260,6 +286,7 @@ def _validated_artifact(
             before_bytes=None if previous is None else previous.baseline_bytes,
             created=previous is None,
         ),
+        artifact_manifest=manifest,
     )
 
 
@@ -286,7 +313,7 @@ def _validate_native_file(path: Path, suffix: str, *, max_file_bytes: int) -> No
     elif suffix == ".pptx":
         Presentation(str(path))
     else:
-        document = fitz.open(path)
+        document = _pymupdf.open(path)
         try:
             if document.needs_pass:
                 raise ValueError("PDF 已加密，无法验证")

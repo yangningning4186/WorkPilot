@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import shutil
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -23,9 +25,21 @@ from app.cowork.artifact_formats import (
     TEXT_ARTIFACT_MIME_BY_SUFFIX,
     TEXT_ARTIFACT_SUFFIXES,
 )
+from app.cowork.artifact_manifest import ArtifactSkillRef, bind_claim_evidence
+from app.cowork.artifact_pipeline import render_validate_commit
+from app.cowork.artifact_renderers import render_candidate
+from app.cowork.artifact_renderers.contracts import (
+    ArtifactSpec,
+    DocumentSpec,
+    HtmlReportSpec,
+    PdfSpec,
+    PresentationSpec,
+)
+from app.cowork.artifact_validation import validate_artifact
 from app.cowork.artifacts import register_artifact
 from app.cowork.authorization import arguments_sha256, build_authorization_receipt
 from app.cowork.files import (
+    CoworkFileError,
     list_files,
     read_pdf_file,
     read_text_file,
@@ -56,6 +70,17 @@ from app.cowork.semantic_approvals import verify_semantic_approval_evidence
 from app.cowork.shell import assess_shell_command, execute_shell_command
 from app.cowork.shell_sessions import CoworkPersistentShellManager, ShellSessionError
 from app.cowork.shell_tasks import CoworkShellTaskManager, ShellTaskError, ShellTaskSnapshot
+from app.cowork.skills.builtin.pptx.scripts.create_montage import create_slide_montage
+from app.cowork.skills.builtin.pptx.scripts.pptx2image import (
+    PptxRasterError,
+    render_presentation_pages,
+)
+from app.cowork.skills.catalog import (
+    BUILTIN_SKILLS_ROOT,
+    PROJECT_SKILLS_RELATIVE,
+    SkillCatalogError,
+    load_skill_catalog,
+)
 from app.cowork.todos import TodoWriteArgs, todo_items, todo_summary
 from app.cowork.web import fetch_url, search_web
 from app.cowork.workspace_artifacts import (
@@ -63,7 +88,11 @@ from app.cowork.workspace_artifacts import (
     discover_workspace_artifacts,
     snapshot_workspace_artifacts,
 )
-from app.cowork_policy import SCOPED_CAPABILITIES, normalize_network_origin
+from app.cowork_policy import (
+    SCOPED_CAPABILITIES,
+    normalize_network_origin,
+    normalize_network_scope,
+)
 from app.run_events import RunEventType
 from app.runstore.invocations import (
     acquire_invocation,
@@ -82,6 +111,7 @@ ToolEffect = Literal["none", "filesystem", "store", "external"]
 ToolExecution = Literal["local", "interaction"]
 ToolResultEncoding = Literal["default", "shell_tail"]
 ToolExecutionMode = Literal["auto", "sequential"]
+HumanOnlyApprovalResolver = Callable[[BaseModel], str | None]
 LOAD_TOOLS_TOOL_NAME = "load_tools"
 
 
@@ -143,6 +173,11 @@ class RequestCapabilityArgs(_StrictArgs):
             raise ValueError(
                 "network.fetch 必须提供 origin/domain resource_scope，其他能力不能携带该字段"
             )
+        if self.resource_scope is not None:
+            try:
+                self.resource_scope = normalize_network_scope(self.resource_scope)
+            except RuntimeError as error:
+                raise ValueError(str(error)) from error
         return self
 
 
@@ -192,6 +227,22 @@ class RunSandboxArgs(_StrictArgs):
         description="省略时使用第一个具有写权限的工作区根目录",
     )
     reason: str = Field(min_length=1, max_length=1000)
+    artifact_operation: Literal["none", "edit_existing"] = Field(
+        default="none",
+        description=(
+            "默认 none，不能提交新建 DOCX/XLSX/PPTX/PDF；仅在保真编辑既有文件时使用 "
+            "edit_existing，并提供 source_paths"
+        ),
+    )
+    source_paths: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_artifact_operation(self) -> RunSandboxArgs:
+        if self.artifact_operation == "edit_existing" and not self.source_paths:
+            raise ValueError("edit_existing 必须提供至少一个 source_paths")
+        if self.artifact_operation == "none" and self.source_paths:
+            raise ValueError("source_paths 只能与 artifact_operation=edit_existing 一起使用")
+        return self
 
 
 class SleepArgs(_StrictArgs):
@@ -332,6 +383,59 @@ class WriteFileArgs(WriteTextFileArgs):
         return self
 
 
+class RenderArtifactArgs(_StrictArgs):
+    path: str = Field(min_length=1, max_length=4096)
+    spec: ArtifactSpec
+    skill_name: str | None = Field(default=None, min_length=1, max_length=64)
+    baseline_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class PreviewPresentationArgs(_StrictArgs):
+    spec: PresentationSpec
+    pages: list[int] = Field(
+        default_factory=list,
+        max_length=8,
+        description=(
+            "要查看的 1-based 页码，最多 8 页；省略时自动选择封面、结尾和均匀分布的代表页"
+        ),
+    )
+    asset_root: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=4096,
+        description="spec 使用相对 image_path 时的绝对项目目录；没有相对图片时省略",
+    )
+
+    @model_validator(mode="after")
+    def _valid_pages(self) -> PreviewPresentationArgs:
+        if any(page < 1 for page in self.pages):
+            raise ValueError("pages 必须使用从 1 开始的正整数页码")
+        self.pages = list(dict.fromkeys(self.pages))
+        return self
+
+
+def _prepare_render_artifact_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """兼容把 ``spec`` 错序列化成单层 JSON 字符串的模型/Provider。
+
+    转换刻意只做一次：这既覆盖 OpenAI-compatible 模型常见的 nested-object
+    字符串化问题，也不会把递归字符串、数组或标量悄悄解释成另一套协议。
+    Pydantic 仍在转换后执行完整的 discriminated-union 与字段边界校验。
+    """
+
+    raw_spec = arguments.get("spec")
+    if not isinstance(raw_spec, str):
+        return arguments
+    try:
+        decoded = json.loads(raw_spec)
+    except (TypeError, ValueError) as error:
+        raise ValueError("render_artifact.spec 字符串必须是合法 JSON object") from error
+    if not isinstance(decoded, dict):
+        raise ValueError("render_artifact.spec 字符串解码后必须是 JSON object")
+    prepared = dict(arguments)
+    prepared["spec"] = decoded
+    return prepared
+
+
 class LoadToolsArgs(_StrictArgs):
     names: list[str] = Field(min_length=1)
 
@@ -364,6 +468,8 @@ class CoworkToolContext:
     tool_call_id: str
     approved_call_ids: frozenset[str] = frozenset()
     approval_evidence: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    # 当前 checkpoint 的完整 Evidence Ledger，只读注入给 Artifact Claim 绑定。
+    evidence_ledger: tuple[dict[str, Any], ...] = ()
     # Checkpoint-only HMAC key for semantic-review evidence. It is not part of any
     # model-visible schema or tool output.
     semantic_approval_signing_key: str = ""
@@ -539,6 +645,9 @@ class CoworkToolSpec:
     # 某些动作（当前是创建 Agent Team）即使会话处于 auto，也必须让用户逐次看见并批准。
     # 这和 standing approval 分开：false 同时禁止 auto 与常驻规则豁免。
     approval_can_be_waived: bool = True
+    # 参数决定动作是否必须由人确认时使用。例如同一连接器工具的 create/update 可由
+    # AI 自动审核，delete 则始终不可豁免。返回值是展示给用户的原因。
+    human_only_approval_resolver: HumanOnlyApprovalResolver | None = None
     # 必须独占一批模型调用：不需要逐次审批，但同批的后续调用会拿到失效的控件编号。
     exclusive: bool = False
     # 生成常驻审批规则时，哪几个参数决定了"后果落在哪里"。用户勾"以后同样的目标不用再问"
@@ -646,6 +755,28 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
     def result_encoding(self, name: str) -> ToolResultEncoding:
         return self.get(name).result_encoding
 
+    def required_global_capabilities(self, names: Iterable[str]) -> frozenset[Capability]:
+        """只向模型展示当前工具面实际使用的全局能力。
+
+        历史 grant 仍可在设置页查看和撤销，但不应因为数据库里还留着旧能力，就诱导模型
+        主动拼 capability 字符串。延迟工具加载后会在下一轮自然进入这份集合。
+        """
+
+        required: set[Capability] = set()
+        for name in names:
+            try:
+                spec = self.get(name)
+            except ToolRegistryError:
+                continue
+            if spec.capability in GLOBAL_CAPABILITIES:
+                required.add(spec.capability)
+            required.update(
+                capability
+                for capability in spec.extra_capabilities
+                if capability in GLOBAL_CAPABILITIES
+            )
+        return frozenset(required)
+
     def human_only_approval_reason(
         self,
         name: str,
@@ -657,6 +788,14 @@ class CoworkToolRegistry(ToolRegistry[CoworkToolSpec]):
             spec = self.get(name)
         except ToolRegistryError:
             return None
+        if spec.human_only_approval_resolver is not None:
+            try:
+                parsed = spec.args_model.model_validate(arguments)
+            except ValueError:
+                return None
+            resolved = spec.human_only_approval_resolver(parsed)
+            if resolved is not None:
+                return resolved
         if spec.path_argument is None:
             return None
         raw_path = arguments.get(spec.path_argument)
@@ -1597,6 +1736,11 @@ async def _create_artifact(context: CoworkToolContext, raw: BaseModel) -> Cowork
     target_path = Path(args.path)
     if target_path.suffix.casefold() not in TEXT_ARTIFACT_SUFFIXES:
         raise CoworkToolError("交付物必须使用受支持的文本扩展名")
+    if target_path.suffix.casefold() in {".html", ".htm"}:
+        raise CoworkToolError(
+            "HTML 交付物必须使用 html-report Skill + render_artifact，"
+            "以便在提交前检查脚本、远程依赖与主动内容"
+        )
     mime_type = _trusted_artifact_mime_type(target_path, args.mime_type)
     result = await write_text_file(
         target_path,
@@ -1680,6 +1824,386 @@ async def _write_file(context: CoworkToolContext, raw: BaseModel) -> CoworkToolR
     )
 
 
+async def _render_artifact(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+    # Preserve nested Pydantic ``fields_set`` so omitted theme defaults stay omitted.
+    # The renderer uses that distinction to apply a visual kit before explicit overrides.
+    args = RenderArtifactArgs.model_validate(raw.model_dump(exclude_unset=True))
+    requested_target = Path(args.path)
+    authorization = await authorize_path(
+        context.session,
+        conversation_id=context.conversation_id,
+        target_path=requested_target,
+        capability="filesystem.write",
+    )
+    context.authorization_annotations.append(
+        _path_decision(authorization, capability="filesystem.write")
+    )
+    target = authorization.target_path
+    spec = args.spec
+    await _authorize_artifact_images(context, spec, base_dir=target.parent)
+
+    roots = await list_session_roots(context.session, conversation_id=context.conversation_id)
+    project_roots = tuple(Path(root.canonical_path) for root in roots if root.enabled)
+    catalog = load_skill_catalog(
+        context.settings.cowork_skills_path,
+        max_files=context.settings.cowork_skill_max_files,
+        max_bytes=context.settings.cowork_skill_max_bytes,
+        project_roots=project_roots,
+    )
+    default_skill = "html-report" if spec.artifact_type == "html" else spec.artifact_type
+    skill_name = args.skill_name or default_skill
+    try:
+        definition = catalog.get(skill_name)
+    except SkillCatalogError as error:
+        raise CoworkToolError("Renderer 使用的 Skill 不存在或未启用") from error
+    if definition.kind != "artifact":
+        raise CoworkToolError("render_artifact 只能记录 kind=artifact 的 Skill")
+    if definition.origin == "project":
+        await authorize_path(
+            context.session,
+            conversation_id=context.conversation_id,
+            target_path=definition.source_path,
+            capability="filesystem.read",
+        )
+    bindings = bind_claim_evidence(spec, list(context.evidence_ledger))
+    try:
+        result = await asyncio.to_thread(
+            render_validate_commit,
+            spec=spec,
+            target=target,
+            baseline_sha256=args.baseline_sha256,
+            skill=ArtifactSkillRef(
+                name=definition.name,
+                origin=definition.origin,
+                sha256=definition.sha256,
+                kind=definition.kind,
+            ),
+            evidence_bindings=bindings,
+            max_bytes=context.settings.workspace_max_file_bytes,
+            backup_versions=context.settings.workspace_backup_versions_per_file,
+        )
+    except (CoworkFileError, OSError, ValueError) as error:
+        raise CoworkToolError(str(error)) from error
+    kind: Literal["file", "report", "table"] = (
+        "table" if spec.artifact_type == "xlsx" else "report"
+    )
+    mime_type = {
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "pdf": "application/pdf",
+        "html": "text/html; charset=utf-8",
+    }[spec.artifact_type]
+    registration_warning: str | None = None
+    try:
+        artifact = await register_artifact(
+            context.session,
+            conversation_id=context.conversation_id,
+            run_id=context.run_id,
+            session_root_id=authorization.root_id,
+            kind=kind,
+            title=spec.title,
+            uri=str(result.path),
+            mime_type=mime_type,
+            meta={
+                "sha256": result.sha256,
+                "size_bytes": result.size_bytes,
+                "created": result.created,
+                "backup_uri": (
+                    str(result.backup_path) if result.backup_path is not None else None
+                ),
+                "diff": result.diff,
+                "artifact_manifest": result.manifest.model_dump(mode="json"),
+            },
+        )
+    except asyncio.CancelledError:
+        # 文件已经提交，取消不能把本次 identity 伪装成可安全重放的普通失败。
+        raise CoworkToolCancelledOutcomeUnknownError() from None
+    except Exception as error:
+        # 提交是事实；登记是附加索引。回滚失败事务后返回带警告的成功，让外层幂等
+        # ledger 固化文件 effect，禁止同一 invocation 再次覆盖。
+        await context.session.rollback()
+        artifact = None
+        registration_warning = f"Artifact 文件已提交，但登记失败（{type(error).__name__}）"
+    return CoworkToolResult(
+        content={
+            "artifact_id": None if artifact is None else str(artifact.id),
+            "kind": kind if artifact is None else artifact.kind,
+            "title": spec.title if artifact is None else artifact.title,
+            "mime_type": mime_type if artifact is None else artifact.mime_type,
+            "file": {
+                "name": result.path.name,
+                "path": str(result.path),
+                "sha256": result.sha256,
+                "size_bytes": result.size_bytes,
+            },
+            "created": result.created,
+            "backup_uri": str(result.backup_path) if result.backup_path is not None else None,
+            "validation": result.manifest.validation,
+            "quality": result.manifest.quality,
+            "evidence_bindings": len(result.manifest.evidence_bindings),
+            "registration_warning": registration_warning,
+        },
+        effect_ref=f"file:{result.path}#sha256={result.sha256}",
+    )
+
+
+def _artifact_image_owners(spec: ArtifactSpec) -> list[Any]:
+    if isinstance(spec, PresentationSpec):
+        owners: list[Any] = [slide for slide in spec.slides if slide.image_path]
+        owners.extend(
+            element
+            for slide in spec.slides
+            if slide.canvas is not None
+            for element in slide.canvas.elements
+            if getattr(element, "type", None) == "image"
+        )
+        return owners
+    if isinstance(spec, (DocumentSpec, HtmlReportSpec, PdfSpec)):
+        return [
+            block
+            for section in spec.sections
+            for block in section.blocks
+            if block.image_path
+        ]
+    return []
+
+
+async def _authorize_artifact_images(
+    context: CoworkToolContext,
+    spec: ArtifactSpec,
+    *,
+    base_dir: Path | None,
+) -> None:
+    for owner in _artifact_image_owners(spec):
+        image_path = Path(owner.image_path)
+        if not image_path.is_absolute():
+            if base_dir is None:
+                raise CoworkToolError("预览中的相对 image_path 必须同时提供绝对 asset_root")
+            image_path = base_dir / image_path
+        image_authorization = await authorize_path(
+            context.session,
+            conversation_id=context.conversation_id,
+            target_path=image_path,
+            capability="filesystem.read",
+        )
+        context.authorization_annotations.append(
+            _path_decision(image_authorization, capability="filesystem.read")
+        )
+        if not image_authorization.target_path.is_file():
+            raise CoworkToolError("ArtifactSpec image_path 必须是已授权的现有图片")
+        owner.image_path = str(image_authorization.target_path)
+
+
+def _representative_pages(total: int, *, limit: int) -> list[int]:
+    if total < 1 or limit < 1:
+        return []
+    if limit == 1:
+        return [1]
+    if total <= limit:
+        return list(range(1, total + 1))
+    selected = {
+        1 + round(index * (total - 1) / (limit - 1))
+        for index in range(limit)
+    }
+    return sorted(selected)
+
+
+def _model_image_attachment(path: Path, *, max_bytes: int) -> MessageAttachment:
+    resolved = path.resolve(strict=True)
+    stat = resolved.stat()
+    if stat.st_size > max_bytes:
+        raise ValueError(f"预览图片超过模型附件上限 {max_bytes} bytes")
+    digest = hashlib.sha256()
+    with resolved.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return MessageAttachment(
+        kind="image",
+        filename=resolved.name,
+        media_type="image/png",
+        path=str(resolved),
+        size_bytes=stat.st_size,
+        sha256=digest.hexdigest(),
+    )
+
+
+def _preview_cache_key(spec: PresentationSpec) -> str:
+    digest = hashlib.sha256(spec.model_dump_json(exclude_none=True).encode("utf-8"))
+    for owner in _artifact_image_owners(spec):
+        path = Path(owner.image_path)
+        if not path.is_file():
+            continue
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _preview_tree_size(path: Path) -> int:
+    total = 0
+    for item in path.rglob("*"):
+        if item.is_symlink() or not item.is_file():
+            continue
+        total += item.stat().st_size
+    return total
+
+
+def _prune_model_preview_cache(
+    root: Path,
+    *,
+    keep: Path,
+    entries_per_run: int,
+    max_bytes: int,
+) -> None:
+    """同时约束每个 run 的迭代数和全局字节容量。"""
+
+    leaves: list[tuple[Path, int, int]] = []
+    for run_root in root.iterdir():
+        if not run_root.is_dir() or run_root.is_symlink():
+            continue
+        run_leaves = sorted(
+            (
+                item
+                for item in run_root.iterdir()
+                if item.is_dir() and not item.is_symlink()
+            ),
+            key=lambda item: item.stat().st_mtime_ns,
+            reverse=True,
+        )
+        retained_paths = {keep} if keep.parent == run_root else set()
+        for item in run_leaves:
+            if len(retained_paths) >= entries_per_run:
+                break
+            if item != keep:
+                retained_paths.add(item)
+        for leaf in run_leaves:
+            if leaf in retained_paths:
+                leaves.append((leaf, leaf.stat().st_mtime_ns, _preview_tree_size(leaf)))
+            else:
+                shutil.rmtree(leaf, ignore_errors=True)
+    total = sum(size for _, _, size in leaves)
+    for leaf, _, size in sorted(leaves, key=lambda item: item[1]):
+        if total <= max_bytes:
+            break
+        if leaf == keep:
+            continue
+        shutil.rmtree(leaf, ignore_errors=True)
+        total -= size
+    for run_root in root.iterdir():
+        if run_root.is_dir() and not run_root.is_symlink():
+            try:
+                run_root.rmdir()
+            except OSError:
+                pass
+
+
+async def _preview_presentation(
+    context: CoworkToolContext,
+    raw: BaseModel,
+) -> CoworkToolResult:
+    args = PreviewPresentationArgs.model_validate(raw.model_dump(exclude_unset=True))
+    asset_root = Path(args.asset_root) if args.asset_root is not None else None
+    if asset_root is not None and not asset_root.is_absolute():
+        raise CoworkToolError("asset_root 必须是绝对路径")
+    await _authorize_artifact_images(context, args.spec, base_dir=asset_root)
+    cache_root = (
+        context.settings.office_preview_cache_path.expanduser().resolve()
+        / "model-presentation"
+        / str(getattr(context, "run_id", "standalone"))
+        / _preview_cache_key(args.spec)
+    )
+    candidate = cache_root / "candidate.pptx"
+    pages_dir = cache_root / "pages"
+    try:
+        cache_root.mkdir(parents=True, exist_ok=True)
+        cache_root.chmod(0o700)
+        await asyncio.to_thread(render_candidate, args.spec, candidate)
+        if candidate.stat().st_size > context.settings.workspace_max_file_bytes:
+            raise ValueError("试制 PPTX 超过工作区单文件上限")
+        report = await asyncio.to_thread(
+            validate_artifact,
+            candidate,
+            spec=args.spec,
+            render_visual=True,
+        )
+        raster = await asyncio.to_thread(
+            render_presentation_pages,
+            candidate,
+            pages_dir,
+            width_px=1400,
+        )
+    except (OSError, ValueError, PptxRasterError) as error:
+        raise CoworkToolError(f"演示页面试制失败：{error}") from error
+    montage_included = (
+        len(raster.pages) > 1 and context.settings.cowork_attachment_max_count > 1
+    )
+    page_limit = min(
+        8,
+        context.settings.cowork_attachment_max_count - int(montage_included),
+    )
+    selected = args.pages or _representative_pages(len(raster.pages), limit=page_limit)
+    if len(selected) > page_limit:
+        raise CoworkToolError(f"一次最多检查 {page_limit} 页；请分批调用")
+    if any(page > len(raster.pages) for page in selected):
+        raise CoworkToolError(f"pages 超出范围；当前试制稿共 {len(raster.pages)} 页")
+    try:
+        page_attachments = tuple(
+            _model_image_attachment(
+                raster.pages[page - 1],
+                max_bytes=context.settings.cowork_attachment_max_bytes,
+            )
+            for page in selected
+        )
+        if montage_included:
+            montage_path = await asyncio.to_thread(
+                create_slide_montage,
+                raster.pages,
+                cache_root / "montage.png",
+            )
+            attachments = (
+                _model_image_attachment(
+                    montage_path,
+                    max_bytes=context.settings.cowork_attachment_max_bytes,
+                ),
+                *page_attachments,
+            )
+        else:
+            attachments = page_attachments
+    except (OSError, ValueError) as error:
+        raise CoworkToolError(f"试制页已生成但无法作为图片检查：{error}") from error
+    try:
+        cache_root.touch(exist_ok=True)
+        await asyncio.to_thread(
+            _prune_model_preview_cache,
+            cache_root.parent.parent,
+            keep=cache_root,
+            entries_per_run=context.settings.office_preview_model_entries_per_run,
+            max_bytes=context.settings.office_preview_model_cache_max_bytes,
+        )
+    except OSError as error:
+        raise CoworkToolError(f"演示预览缓存清理失败：{error}") from error
+    inspection_instruction = (
+        "先查看随结果返回的全稿总览和代表页图"
+        if montage_included
+        else "先查看随结果返回的页图"
+    )
+    return CoworkToolResult(
+        content={
+            "page_count": len(raster.pages),
+            "previewed_pages": selected,
+            "montage_included": montage_included,
+            "validation": report.model_dump(mode="json"),
+            "instruction": (
+                f"{inspection_instruction}，按内容、视觉层级、空洞/拥挤、裁切、"
+                "连续同构与风格一致性修正；"
+                "试制稿不是交付物，通过后再调用 render_artifact。"
+            ),
+        },
+        attachments=attachments,
+    )
+
+
 async def _todo_write(_: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
     args = TodoWriteArgs.model_validate(raw.model_dump())
     todos = todo_items(args)
@@ -1696,6 +2220,7 @@ async def _finish_shell_result(
     output: dict[str, Any],
     effect_ref: str,
     scan_warnings: list[str],
+    sandboxed_generated_code: bool = False,
 ) -> CoworkToolResult:
     """登记命令产生的工作区文件；登记失败不能导致命令被危险地重放。"""
 
@@ -1752,6 +2277,7 @@ async def _finish_shell_result(
                 max_scan_entries=context.settings.workspace_max_scan_entries,
                 max_files=context.settings.cowork_shell_artifact_max_files,
                 max_file_bytes=context.settings.workspace_max_file_bytes,
+                sandboxed_generated_code=sandboxed_generated_code,
             )
             truncated = discovery.truncated
             scan_warnings.extend(discovery.warnings)
@@ -1772,6 +2298,11 @@ async def _finish_shell_result(
                             # 差分只证明文件在命令窗口内发生变化，不能证明一定由该进程写入。
                             "discovered_after": "run_shell",
                             "diff": item.diff,
+                            **(
+                                {"artifact_manifest": item.artifact_manifest}
+                                if item.artifact_manifest is not None
+                                else {}
+                            ),
                         },
                     )
                 except Exception as error:  # 命令已经执行，不能因索引失败把它标成可安全重试
@@ -2021,6 +2552,34 @@ async def _run_sandbox(context: CoworkToolContext, raw: BaseModel) -> CoworkTool
     )
     if not authorization.target_path.is_dir():
         raise CoworkToolError("sandbox cwd 必须是已授权的现有目录")
+    office_edit_baselines: dict[str, str] = {}
+    if args.artifact_operation == "edit_existing":
+        for raw_source in args.source_paths:
+            source = Path(raw_source)
+            if not source.is_absolute():
+                source = authorization.target_path / source
+            if source.is_symlink():
+                raise CoworkToolError("sandbox 既有产物源文件不能是符号链接")
+            try:
+                resolved_source = source.resolve(strict=True)
+                resolved_source.relative_to(authorization.target_path)
+            except (OSError, ValueError) as error:
+                raise CoworkToolError("sandbox 既有产物源文件必须位于 cwd 内") from error
+            if not resolved_source.is_file():
+                raise CoworkToolError("sandbox 既有产物源路径必须是普通文件")
+            suffix = resolved_source.suffix.casefold()
+            if suffix not in {".docx", ".xlsx", ".pptx", ".pdf"}:
+                raise CoworkToolError("sandbox edit_existing 只支持 DOCX/XLSX/PPTX/PDF 源文件")
+            relative_source = resolved_source.relative_to(
+                authorization.target_path.resolve(strict=True)
+            ).as_posix()
+            if relative_source in office_edit_baselines:
+                raise CoworkToolError("sandbox source_paths 不能重复")
+            _, baseline_sha256, _ = _shell_output_fingerprint(
+                resolved_source,
+                authorization.target_path,
+            )
+            office_edit_baselines[relative_source] = baseline_sha256
     before: WorkspaceArtifactSnapshot | None = None
     scan_warnings: list[str] = []
     try:
@@ -2032,11 +2591,30 @@ async def _run_sandbox(context: CoworkToolContext, raw: BaseModel) -> CoworkTool
     except Exception as error:
         scan_warnings.append(f"无法建立执行前产物快照：{error}")
     try:
+        roots = await list_session_roots(
+            context.session,
+            conversation_id=context.conversation_id,
+        )
+        raw_skill_roots = [BUILTIN_SKILLS_ROOT, context.settings.cowork_skills_path]
+        raw_skill_roots.extend(
+            Path(root.canonical_path) / PROJECT_SKILLS_RELATIVE
+            for root in roots
+            if root.enabled
+        )
+        skill_roots = tuple(
+            path
+            for path in raw_skill_roots
+            if path.is_dir() and not path.is_symlink()
+        )
         result = await execute_sandbox_command(
             args.command,
             cwd=authorization.target_path,
+            output_root=authorization.target_path,
+            skill_roots=skill_roots,
             limits=SandboxLimits(
                 runtime=context.settings.cowork_sandbox_runtime,
+                python_executable=context.settings.cowork_sandbox_python_path,
+                profile=context.settings.cowork_sandbox_profile,
                 image=context.settings.cowork_sandbox_image,
                 memory_mb=context.settings.cowork_sandbox_memory_mb,
                 pids_limit=context.settings.cowork_sandbox_pids_limit,
@@ -2048,9 +2626,14 @@ async def _run_sandbox(context: CoworkToolContext, raw: BaseModel) -> CoworkTool
             max_output_bytes=context.settings.cowork_shell_max_output_bytes,
             full_output_path=_shell_full_output_path(context, authorization.root_path),
             full_output_max_bytes=context.settings.cowork_shell_full_output_max_bytes,
+            output_max_files=context.settings.cowork_shell_artifact_max_files,
+            output_max_bytes=context.settings.workspace_max_file_bytes,
+            office_edit_baselines=office_edit_baselines,
+            backup_versions=context.settings.workspace_backup_versions_per_file,
         )
     except CoworkSandboxError as error:
         raise CoworkToolError(str(error)) from error
+    scan_warnings.extend(result.output_warnings)
     return await _finish_shell_result(
         context,
         root_path=authorization.root_path,
@@ -2062,15 +2645,24 @@ async def _run_sandbox(context: CoworkToolContext, raw: BaseModel) -> CoworkTool
             "stdout": result.stdout,
             "stderr": result.stderr,
             "output_truncated": result.output_truncated,
-            "execution_mode": "container",
+            "execution_mode": result.execution_mode,
+            "sandbox_engine": result.sandbox_engine,
             "network": "none",
-            "image": context.settings.cowork_sandbox_image,
+            "runtime_profile": result.runtime_profile,
+            "workspace": {
+                "inputs": "$WORKPILOT_INPUTS (read-only)",
+                "work": "$WORKPILOT_WORK (ephemeral read-write)",
+                "outputs": "$WORKPILOT_OUTPUTS (validated then committed)",
+                "skills": "$WORKPILOT_SKILLS (read-only path list)",
+            },
+            "committed_outputs": list(result.committed_outputs),
             "full_output_path": result.full_output_path,
             "full_output_truncated": result.full_output_truncated,
             "full_output_size_bytes": result.full_output_size_bytes,
         },
         effect_ref=f"sandbox:{result.command_sha256}",
         scan_warnings=scan_warnings,
+        sandboxed_generated_code=True,
     )
 
 
@@ -2233,8 +2825,8 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             description=(
                 "在宿主机具有 filesystem.write 授权的目录中运行 shell 命令。cwd 可省略："
                 "持久 PTY 沿用当前 cwd，其他命令使用第一个可写工作区根目录。"
-                "同时需要独立 host.execute capability；"
-                "未命中管理员 argv allowlist 的原命令会暂停并逐命令请求用户批准。"
+                "未命中管理员 argv allowlist 的原命令会直接生成一张命令审批卡；"
+                "批准该卡即授权本次宿主执行，不再预先申请抽象 host.execute capability。"
                 "必须单独调用；运行中的进程可被停止。persistent_session=true 时复用会话级 "
                 "PTY，cd/export/venv 在进程内持续；WorkPilot 重启后从最后 cwd 重建，"
                 "但会明确报告 env 未恢复。前台命令结束后会扫描授权工作区，将新建或修改且"
@@ -2242,7 +2834,6 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
                 "后台命令不做自动登记。"
             ),
             args_model=RunShellArgs,
-            capability="host.execute",
             risk="external",
             effect="external",
             parallel_safe=False,
@@ -2256,13 +2847,20 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
         CoworkToolSpec(
             name="run_sandbox",
             description=(
-                "在真实 Docker/Podman 容器中执行命令。容器无网络、rootfs 只读、删除 Linux "
-                "capabilities，仅把已授权 cwd 读写挂载到 /workspace；需要 sandbox.execute 和"
-                " cwd 的 filesystem.write。只在任务明确需要隔离执行时加载；普通本机 Office/脚本"
-                "任务使用 run_shell。镜像或容器后端不可用时直接失败，绝不降级到宿主机。"
+                "使用 WorkPilot 随包 Python 在操作系统原生沙箱中执行命令；macOS 使用 Seatbelt，"
+                "Linux 使用 bubblewrap，默认无网络。已授权 cwd 通过 $WORKPILOT_INPUTS 只读访问，"
+                "临时工作区为 $WORKPILOT_WORK，候选输出写入 $WORKPILOT_OUTPUTS，Skill 路径列表见 "
+                "$WORKPILOT_SKILLS。只有通过边界与 Artifact 验证的新输出才原子提交回 cwd，"
+                "不允许无 baseline 覆盖。模型生成的 Python、user/project Skill script "
+                "默认使用此工具；命令必须直接调用 $WORKPILOT_PYTHON，不得依赖 PATH 中的 "
+                "python/python3，也不得扫描或试用宿主解释器。用户授权 cwd 写入即允许使用受限 Sandbox，不再重复申请 "
+                "sandbox.execute。默认不能提交新建 DOCX/XLSX/PPTX/PDF；只有 artifact_operation="
+                "edit_existing 且 source_paths 指向 cwd 内真实既有文件时，才能提交 Office 候选；"
+                "候选在 $WORKPILOT_OUTPUTS 中必须使用与源文件相同的相对路径，提交前会再次"
+                "核对该源文件 baseline，不能借任意同后缀源文件创建新 Office 文件。"
+                "随包运行时或原生沙箱后端不可用时直接失败，绝不降级到普通宿主 Shell。"
             ),
             args_model=RunSandboxArgs,
-            capability="sandbox.execute",
             risk="write",
             effect="filesystem",
             parallel_safe=False,
@@ -2335,7 +2933,6 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             name="shell_task_kill",
             description="结束一个后台 shell 任务，连同它派生的子进程一起收掉。",
             args_model=ShellTaskArgs,
-            capability="host.execute",
             risk="external",
             effect="external",
             parallel_safe=False,
@@ -2396,9 +2993,10 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
         CoworkToolSpec(
             name="request_capability",
             description=(
-                "任务需要当前未授予的目录、网络、sandbox/host 或外部操作能力时申请并暂停。"
-                "说明用途；路径能力必须提供 session_root_id；network.fetch 必须提供 "
-                "origin:https://host 或 domain:example.com；必须单独调用。"
+                "任务需要当前未授予的目录、网络或兼容扩展能力时申请并暂停。"
+                "不要为已挂载知识库、run_sandbox、run_shell 或已连接账户读取调用。"
+                "network.fetch 只能提供单个 origin:https://host 或 domain:example.com；"
+                "必须单独调用。"
             ),
             args_model=RequestCapabilityArgs,
             risk="external",
@@ -2406,6 +3004,7 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             parallel_safe=False,
             handler=None,
             execution="interaction",
+            model_visible=False,
         )
     )
     registry.register(
@@ -2462,6 +3061,62 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             handler=_write_file,
             path_argument="path",
         )
+    )
+    registry.register_deferred(
+        CoworkToolSpec(
+            name="preview_presentation",
+            description=(
+                "把 PresentationSpec 渲染到 WorkPilot 私有缓存并把选定页作为图片返回给模型检查；"
+                "不创建、不覆盖用户交付物。用于封面 canary、代表页抽检和最终写入前视觉复核。"
+                "先看返回图片再修正内容/版式；通过后才调用 render_artifact。"
+            ),
+            args_model=PreviewPresentationArgs,
+            risk="read",
+            effect="none",
+            parallel_safe=False,
+            handler=_preview_presentation,
+            prepare_arguments=_prepare_render_artifact_arguments,
+            search_aliases=(
+                "preview presentation",
+                "preview pptx",
+                "试制演示页面",
+                "检查幻灯片图片",
+                "封面预览",
+            ),
+            execution_mode="sequential",
+        ),
+        group="演示文稿",
+    )
+    registry.register_deferred(
+        CoworkToolSpec(
+            name="render_artifact",
+            description=(
+                "把格式专属 ArtifactSpec 交给 WorkPilot 固定 Renderer，按 Candidate → Validate → "
+                "Backup → Atomic Final 流程生成 DOCX/XLSX/PPTX/PDF/离线 HTML。"
+                "Schema 或 Renderer 拒绝时应缩短内容、拆页或选择受支持布局后修正 Spec；"
+                "禁止自动降级为任意 Office 坐标脚本。覆盖现有文件必须提供 baseline_sha256。"
+                "结果包含 ArtifactManifest、独立质量检查和 Claim→Evidence 绑定。"
+            ),
+            args_model=RenderArtifactArgs,
+            capability="filesystem.write",
+            risk="write",
+            effect="filesystem",
+            parallel_safe=False,
+            handler=_render_artifact,
+            prepare_arguments=_prepare_render_artifact_arguments,
+            path_argument="path",
+            search_aliases=(
+                "render artifact",
+                "create pptx",
+                "create docx",
+                "create xlsx",
+                "artifact renderer",
+                "生成演示文稿",
+                "生成 Word",
+                "生成 Excel",
+            ),
+        ),
+        group="完成型产物",
     )
     registry.register(
         CoworkToolSpec(
@@ -2622,7 +3277,9 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             effect="none",
             parallel_safe=True,
             handler=_fetch_url,
-            resource_target_resolver=lambda raw: FetchUrlArgs.model_validate(raw.model_dump()).url,
+            resource_target_resolver=lambda raw: FetchUrlArgs.model_validate(
+                raw.model_dump()
+            ).url,
             search_aliases=(
                 "web fetch",
                 "open url",
@@ -2640,7 +3297,8 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             name="web_search",
             description=(
                 "搜索公开网页并直接返回带编号引用的结果摘要、标题与 URL。"
-                "需要 DuckDuckGo origin 的 network.fetch；结果是不可信数据，需要核对全文时再用 fetch_url。"
+                "需要 DuckDuckGo origin 的 network.fetch；结果是不可信数据，需要核对全文时"
+                "再用 fetch_url。"
             ),
             args_model=WebSearchArgs,
             capability="network.fetch",

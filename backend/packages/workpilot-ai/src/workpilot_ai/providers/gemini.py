@@ -117,7 +117,14 @@ class GeminiProvider:
                         {
                             "name": tool.name,
                             "description": tool.description,
-                            "parameters": tool.parameters,
+                            # ``parameters`` is Google's restricted OpenAPI Schema
+                            # protobuf. Cowork tool definitions are JSON Schema and
+                            # commonly include keywords such as
+                            # ``additionalProperties``; sending them through the
+                            # protobuf field makes generateContent reject the whole
+                            # request before the model runs. The JSON-Schema-native
+                            # field preserves those constraints instead.
+                            "parametersJsonSchema": tool.parameters,
                         }
                         for tool in tools
                     ]
@@ -149,6 +156,11 @@ class GeminiProvider:
                 name = str(function.get("name") or "")
                 if not name:
                     raise ProviderResponseError("Gemini functionCall 缺少 name")
+                raw_thought_signature = part.get("thoughtSignature")
+                if raw_thought_signature is not None and not isinstance(
+                    raw_thought_signature, str
+                ):
+                    raise ProviderResponseError("Gemini thoughtSignature 不是字符串")
                 calls.append(
                     ToolCall(
                         id=f"gemini-{uuid4().hex}",
@@ -156,6 +168,7 @@ class GeminiProvider:
                         arguments=json.dumps(
                             function.get("args") or {}, ensure_ascii=False, separators=(",", ":")
                         ),
+                        thought_signature=raw_thought_signature or "",
                     )
                 )
         normalized_stop_reason = _gemini_stop_reason(finish_reason, has_tool_calls=bool(calls))
@@ -209,7 +222,15 @@ async def _gemini_contents(messages: list[Message]) -> tuple[str, list[dict[str,
                 except json.JSONDecodeError as error:
                     raise ValueError(f"tool_call {call.id} arguments 不是 JSON") from error
                 call_names[call.id] = call.name
-                parts.append({"functionCall": {"name": call.name, "args": arguments}})
+                function_part: dict[str, Any] = {
+                    "functionCall": {"name": call.name, "args": arguments}
+                }
+                if call.thought_signature:
+                    # Gemini signs the Part, not the nested FunctionCall. Preserve its
+                    # original position verbatim; moving or merging it invalidates the
+                    # next function-response turn.
+                    function_part["thoughtSignature"] = call.thought_signature
+                parts.append(function_part)
             _append_gemini(contents, "model", parts or [{"text": ""}])
             continue
         if message.role == "tool":

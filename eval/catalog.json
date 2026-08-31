@@ -78,6 +78,13 @@
       "mode": "pytest_no_model_io",
       "suite": "eval/contracts/control-plane-v1.json",
       "case_count": 30
+    },
+    {
+      "id": "office-eval-contract",
+      "kind": "pytest_deterministic",
+      "mode": "pytest_no_model_io",
+      "suite": "eval/contracts/office-eval-v1.json",
+      "case_count": 10
     }
   ],
   "replay_suites": [

@@ -6,6 +6,7 @@
 
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import httpx
 import pytest
@@ -25,6 +26,7 @@ from workpilot_ai.types import (
     CompletionChunk,
     CompletionResult,
     Message,
+    MessageAttachment,
     TextContentBlock,
     ThinkingContentBlock,
     ToolCall,
@@ -138,6 +140,89 @@ async def test_openai_stream_accumulates_tool_calls_by_index() -> None:
     assert [(call.id, call.name) for call in result.tool_calls] == [("call_a", "read_text_file")]
     assert json.loads(result.tool_calls[0].arguments) == {"path": "README.md"}
     assert result.usage.output_tokens == 7
+
+
+async def test_openai_stream_retries_tool_preview_without_images_for_text_model(
+    tmp_path: Path,
+) -> None:
+    image = tmp_path / "preview.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\npreview")
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        contains_image = any(
+            isinstance(block, dict) and block.get("type") == "image_url"
+            for message in payload["messages"]
+            if isinstance(message.get("content"), list)
+            for block in message["content"]
+        )
+        if contains_image:
+            return httpx.Response(
+                400,
+                json={"error": {"message": "deepseek-v4-flash is not a multimodal model"}},
+            )
+        return httpx.Response(
+            200,
+            text=_sse(
+                {"choices": [{"delta": {"content": "继续制作"}}]},
+                {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    provider = OpenAICompatibleProvider(
+        base_url="http://model.test/v1",
+        api_key="secret",
+        chat_model="deepseek-v4-flash",
+        embedding_model="embed",
+        client=httpx.AsyncClient(
+            base_url="http://model.test/v1",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    preview = Message(
+        role="user",
+        source="tool_result_attachment",
+        content=(
+            '<runtime_directive source="tool_result_attachment">\n'
+            "工具 preview_presentation 返回了模型可见附件。\n"
+            "</runtime_directive>"
+        ),
+        attachments=(
+            MessageAttachment(
+                kind="image",
+                filename="preview.png",
+                media_type="image/png",
+                path=str(image),
+                size_bytes=image.stat().st_size,
+                sha256="a" * 64,
+            ),
+        ),
+    )
+    try:
+        text, _, result = await _collect(
+            provider.stream_with_tools(
+                [preview],
+                tools=TOOLS,
+                parallel_tool_calls=True,
+                max_tokens=64,
+                temperature=0.0,
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert text == "继续制作"
+    assert result is not None and result.text == text
+    assert len(requests) == 2
+    assert any(
+        isinstance(block, dict) and block.get("type") == "image_url"
+        for block in requests[0]["messages"][-1]["content"]  # type: ignore[index]
+    )
+    assert isinstance(requests[1]["messages"][-1]["content"], str)  # type: ignore[index]
+    assert "未进行模型视觉审阅" in requests[1]["messages"][-1]["content"]  # type: ignore[index]
 
 
 async def test_openai_stream_exposes_tool_call_fragments_before_terminal_result() -> None:
@@ -612,6 +697,196 @@ async def test_gemini_rejects_response_without_finish_reason() -> None:
     )
     with pytest.raises(ProviderRetryableError, match=r"without.*finishReason"):
         await provider.complete(ASK, max_tokens=64, temperature=0.0)
+
+
+async def test_gemini_sends_tool_parameters_as_json_schema() -> None:
+    captured: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "functionCall": {
+                                        "name": "write_document",
+                                        "args": {"document": {"title": "周报"}},
+                                    }
+                                }
+                            ]
+                        },
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 2},
+            },
+        )
+
+    parameters = {
+        "type": "object",
+        "properties": {
+            "document": {
+                "type": "object",
+                "properties": {"title": {"type": "string"}},
+                "additionalProperties": False,
+            }
+        },
+        "additionalProperties": False,
+        "required": ["document"],
+    }
+    provider = GeminiProvider(
+        base_url="http://gemini.test/v1beta",
+        api_key="secret",
+        chat_model="gemini-test",
+        timeout_s=5.0,
+        client=httpx.AsyncClient(
+            base_url="http://gemini.test/v1beta/", transport=httpx.MockTransport(handler)
+        ),
+    )
+    try:
+        result = await provider.complete_with_tools(
+            ASK,
+            tools=[
+                ToolDefinition(
+                    name="write_document",
+                    description="写文档",
+                    parameters=parameters,
+                )
+            ],
+            parallel_tool_calls=False,
+            max_tokens=64,
+            temperature=0.0,
+        )
+    finally:
+        await provider.aclose()
+
+    declarations = captured["tools"]
+    assert isinstance(declarations, list)
+    declaration = declarations[0]["functionDeclarations"][0]
+    assert "parameters" not in declaration
+    assert declaration["parametersJsonSchema"] == parameters
+    assert declaration["parametersJsonSchema"]["properties"]["document"][
+        "additionalProperties"
+    ] is False
+    assert result.stop_reason == "tool_use"
+    assert result.tool_calls[0].name == "write_document"
+    assert json.loads(result.tool_calls[0].arguments) == {"document": {"title": "周报"}}
+
+
+async def test_gemini_replays_thought_signature_on_original_parallel_call_part() -> None:
+    requests: list[dict[str, object]] = []
+    tools = [
+        ToolDefinition(
+            name="load_skill",
+            description="加载技能",
+            parameters={"type": "object"},
+        ),
+        ToolDefinition(
+            name="todo_write",
+            description="更新任务清单",
+            parameters={"type": "object"},
+        ),
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "functionCall": {
+                                            "name": "load_skill",
+                                            "args": {"name": "pptx"},
+                                        },
+                                        "thoughtSignature": "opaque-signed-thought",
+                                    },
+                                    {
+                                        "functionCall": {
+                                            "name": "todo_write",
+                                            "args": {"todos": []},
+                                        }
+                                    },
+                                ]
+                            },
+                            "finishReason": "STOP",
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": "读取完成"}]},
+                        "finishReason": "STOP",
+                    }
+                ]
+            },
+        )
+
+    provider = GeminiProvider(
+        base_url="http://gemini.test/v1beta",
+        api_key="secret",
+        chat_model="gemini-test",
+        timeout_s=5.0,
+        client=httpx.AsyncClient(
+            base_url="http://gemini.test/v1beta/", transport=httpx.MockTransport(handler)
+        ),
+    )
+    try:
+        first = await provider.complete_with_tools(
+            ASK,
+            tools=tools,
+            parallel_tool_calls=True,
+            max_tokens=64,
+            temperature=0.0,
+        )
+        load_skill, todo_write = first.tool_calls
+        second = await provider.complete_with_tools(
+            [
+                *ASK,
+                Message(role="assistant", tool_calls=first.tool_calls),
+                Message(
+                    role="tool",
+                    content='{"ok":true,"skill":"pptx"}',
+                    tool_call_id=load_skill.id,
+                ),
+                Message(
+                    role="tool",
+                    content='{"ok":true,"todos":[]}',
+                    tool_call_id=todo_write.id,
+                ),
+            ],
+            tools=tools,
+            parallel_tool_calls=True,
+            max_tokens=64,
+            temperature=0.0,
+        )
+    finally:
+        await provider.aclose()
+
+    assert load_skill.thought_signature == "opaque-signed-thought"
+    assert todo_write.thought_signature == ""
+    contents = requests[1]["contents"]
+    assert isinstance(contents, list)
+    assert contents[1]["parts"][0] == {
+        "functionCall": {"name": "load_skill", "args": {"name": "pptx"}},
+        "thoughtSignature": "opaque-signed-thought",
+    }
+    assert contents[1]["parts"][1] == {
+        "functionCall": {"name": "todo_write", "args": {"todos": []}}
+    }
+    assert second.text == "读取完成"
 
 
 class _NonStreamingProvider:

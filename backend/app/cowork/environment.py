@@ -4,8 +4,8 @@
 
 - `render_environment_block()`：日期、时区、操作系统。一次 run 内不变，进 system
   prompt，属于 provider prompt cache 的稳定前缀。
-- `render_roots_block()` / `render_capabilities_block()`：当前已授权的目录与能力。
-  `request_directory`、`request_capability` 获批都会在 run 中途改变它们，所以必须
+- `render_roots_block()` / `render_capabilities_block()`：当前已授权的目录与兼容能力。
+  目录选择或运行时授权获批都会在 run 中途改变它们，所以必须
   每轮重算，走 outbound 末尾的临时块。
 
 不注入日期的代价是具体的：模型不知道"这周""上个季度"指哪一段，只能猜。不注入 OS
@@ -105,9 +105,8 @@ def render_workspace_files_block(paths: Sequence[str]) -> str:
 def render_capabilities_block(granted: Sequence[str], available: Sequence[str]) -> str:
     """当前已授予与尚未授予的能力。每轮重算——用户可能刚批准了一项。
 
-    不注入的代价在评测里量到过：网络能力已经授权，模型仍然先调
-    `request_capability` 去要它，run 停在等人批准，任务就此失败。模型无从知道自己
-    手上有什么，保守的猜法就是先要权限——它猜得没错，错的是我们没告诉它。
+    只展示当前工具面真正使用的兼容能力；公共网页、知识库、Sandbox、Shell 和已连接
+    账户不在这里，因为它们已经收敛到用户选择或动作级审批。
     """
 
     held = sorted(set(granted))
@@ -118,14 +117,14 @@ def render_capabilities_block(granted: Sequence[str], available: Sequence[str]) 
     lines = [
         "<capabilities>",
         "已授予（直接用，不要再为它们调用 request_capability）：" + ("、".join(held) or "无"),
-        "未授予（确实需要时才调用 request_capability，并说明用途）："
+        "未授予（由运行时生成授权卡，不要自行拼 capability）："
         + ("、".join(missing) or "无"),
-        "已授予不等于免审批：有副作用的动作仍可能逐次征求用户确认，那是另一道边界。",
+        "已授予不等于跳过动作审核：有副作用的动作仍可能逐次征求用户确认。",
         # 能力是按工具划的, 不是按后果划的。模型会自己推断"删文件属于写"从而去要
         # filesystem.write, 而 run_shell 实际校验 host.execute——评测里它就是这样
         # 停在一次多余的授权请求上的。这条边界只有我们知道, 不说它就只能靠猜。
-        "能力按执行边界划分：run_shell 需要 host.execute，run_sandbox 需要 sandbox.execute，"
-        "命令自身造成的读写不再单独要 filesystem.* ；"
+        "能力按用户选择与实际动作划分：已挂载知识库、公共网页只读、受限 run_sandbox "
+        "不需要重复申请；run_shell 在真正执行命令时生成动作级审批。"
         "filesystem.* 管的是 read_file / write_file 这类文件工具。",
         "</capabilities>",
     ]

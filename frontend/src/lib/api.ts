@@ -67,6 +67,14 @@ export interface ConversationRuntimeUpdate {
   persona_name: string;
 }
 
+export interface ExpertTeamMember {
+  profile: string;
+  label: string;
+  role: string;
+  reason: string;
+  tool_patterns: string[];
+}
+
 export interface Persona {
   name: string;
   label: string;
@@ -75,6 +83,8 @@ export interface Persona {
   default_approval_mode: "interactive" | "auto";
   recommended_connectors: ConnectorKind[];
   recommended_work_mode: CoworkWorkMode;
+  expert_type: "agent" | "team";
+  team_members: ExpertTeamMember[];
   origin: "builtin" | "user" | "project";
 }
 
@@ -544,6 +554,66 @@ export interface CoworkArtifact {
   updated_at: string;
 }
 
+export type ArtifactValidationStatus = "passed" | "warning" | "failed" | "not_run";
+
+export interface ArtifactValidationCheck {
+  name: string;
+  status: ArtifactValidationStatus;
+  message: string;
+  value: number | string | boolean | null;
+}
+
+export interface ArtifactValidationDimension {
+  status: ArtifactValidationStatus;
+  checks: ArtifactValidationCheck[];
+}
+
+export interface ArtifactEvidenceRef {
+  citation_id: string;
+  kind: string | null;
+  title: string | null;
+  source_uri: string | null;
+  quote: string | null;
+  locator: number | null;
+  locations: Array<Record<string, unknown>>;
+}
+
+export interface ArtifactClaimBinding {
+  claim_id: string;
+  claim: string;
+  target_type: string;
+  target_id: string;
+  evidence: ArtifactEvidenceRef[];
+  missing_evidence_ids: string[];
+}
+
+export interface ArtifactManifestPayload {
+  schema_version: 1;
+  status: "candidate" | "validated" | "failed";
+  artifact_type: "docx" | "xlsx" | "pptx" | "pdf" | "html";
+  skill: {
+    name: string;
+    origin: "builtin" | "user" | "project" | "unknown";
+    sha256: string | null;
+    kind: "planning" | "artifact" | "workflow" | "action" | "unknown";
+  };
+  runtime: {
+    profile: string;
+    sandboxed_generated_code: boolean;
+    renderer: string;
+  };
+  validation: Record<string, ArtifactValidationStatus>;
+  validation_report: {
+    structural: ArtifactValidationDimension;
+    semantic: ArtifactValidationDimension;
+    visual: ArtifactValidationDimension;
+    evidence: ArtifactValidationDimension;
+    security: ArtifactValidationDimension;
+  };
+  quality: { score: number; warnings: string[] };
+  evidence_bindings: ArtifactClaimBinding[];
+}
+
 export function createCoworkRun(body: CreateCoworkRunRequest): Promise<CreateRunResponse> {
   return request<CreateRunResponse>("/api/v1/runs/cowork", {
     method: "POST",
@@ -589,6 +659,12 @@ export function fetchCoworkGrants(conversationId: string): Promise<{ items: Cowo
   return request<{ items: CoworkGrant[] }>(
     `/api/v1/cowork/sessions/${conversationId}/grants`,
   );
+}
+
+export function revokeCoworkGrant(conversationId: string, grantId: string): Promise<void> {
+  return requestVoid(`/api/v1/cowork/sessions/${conversationId}/grants/${grantId}`, {
+    method: "DELETE",
+  });
 }
 
 export function fetchCoworkArtifacts(
@@ -661,7 +737,7 @@ export function undoCoworkMemoryUpdate(
 
 export interface ArtifactPreviewPayload {
   blob: Blob;
-  mode: "quicklook" | "libreoffice" | "native-pdf" | "structure" | "text" | "unknown";
+  mode: "quicklook" | "libreoffice" | "native-pdf" | "structure" | "text" | "offline-html" | "unknown";
 }
 
 export interface ArtifactDiffPayload {
@@ -683,7 +759,7 @@ export async function fetchArtifactPreview(artifactId: string): Promise<Artifact
   const response = await apiFetch(`/api/v1/cowork/artifacts/${artifactId}/preview`);
   if (!response.ok) throw new ApiError(response.status, await response.text());
   const rawMode = response.headers.get("x-workpilot-preview-mode") ?? "unknown";
-  const modes = new Set(["quicklook", "libreoffice", "native-pdf", "structure", "text"]);
+  const modes = new Set(["quicklook", "libreoffice", "native-pdf", "structure", "text", "offline-html"]);
   const mode = modes.has(rawMode) ? rawMode as ArtifactPreviewPayload["mode"] : "unknown";
   return { blob: await response.blob(), mode };
 }
@@ -801,6 +877,9 @@ export interface SkillSummary {
   tools: string[];
   sha256: string;
   origin: SkillOrigin;
+  kind: SkillKind;
+  runtime_profile: string;
+  compatibility: string[];
 }
 
 export interface SkillsStatusResponse {
@@ -825,6 +904,7 @@ export interface SkillsStatusResponse {
 }
 
 export type SkillOrigin = "builtin" | "user" | "project";
+export type SkillKind = "planning" | "artifact" | "workflow" | "action";
 
 export interface ManagedSkill {
   name: string;
@@ -842,6 +922,16 @@ export interface ManagedSkill {
   shadowed: boolean;
   /** 出厂 Skill 不可卸载，只能停用或 fork。 */
   removable: boolean;
+  kind: SkillKind;
+  runtime_profile: string;
+  compatibility: string[];
+  resource_counts: {
+    references: number;
+    scripts: number;
+    assets: number;
+    evals: number;
+    other: number;
+  };
 }
 
 export interface SkillCandidate {

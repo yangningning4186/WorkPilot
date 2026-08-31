@@ -16,6 +16,7 @@ from uuid import UUID
 from playwright.async_api import (
     Browser,
     BrowserContext,
+    ElementHandle,
     Page,
     Playwright,
     Route,
@@ -24,7 +25,7 @@ from playwright.async_api import (
 from playwright.async_api import Error as PlaywrightError
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.cowork.permissions import CapabilityDeniedError, authorize_path
+from app.cowork.permissions import authorize_path
 from app.cowork.tools import (
     CoworkToolContext,
     CoworkToolError,
@@ -38,7 +39,6 @@ from app.cowork.web import (
     assert_public_target,
     normalize_public_url,
 )
-from app.cowork_store.routing import cowork_store
 from workpilot_ai.types import MessageAttachment
 
 _CONTROL_SELECTOR = (
@@ -112,20 +112,41 @@ class BrowserControlArgs(BrowserSessionArgs):
     control_index: int = Field(ge=0, le=499)
 
 
+class BrowserSubmitArgs(BrowserControlArgs):
+    expected_url: str = Field(
+        min_length=1,
+        max_length=8192,
+        description="必须原样复制最近一次 browser_snapshot 返回的 url",
+    )
+    expected_label: str = Field(
+        min_length=1,
+        max_length=240,
+        description="必须原样复制目标控件的 label，供用户确认并防止页面换控件",
+    )
+
+
 class BrowserTypeArgs(BrowserControlArgs):
+    expected_url: str = Field(min_length=1, max_length=8192)
+    expected_label: str = Field(min_length=1, max_length=240)
     text: str = Field(max_length=20_000)
     clear: bool = True
 
 
 class BrowserSelectArgs(BrowserControlArgs):
+    expected_url: str = Field(min_length=1, max_length=8192)
+    expected_label: str = Field(min_length=1, max_length=240)
     value: str = Field(min_length=1, max_length=2_000)
 
 
 class BrowserUploadArgs(BrowserControlArgs):
+    expected_url: str = Field(min_length=1, max_length=8192)
+    expected_label: str = Field(min_length=1, max_length=240)
     path: str = Field(min_length=1, max_length=4096)
 
 
 class BrowserDownloadArgs(BrowserControlArgs):
+    expected_url: str = Field(min_length=1, max_length=8192)
+    expected_label: str = Field(min_length=1, max_length=240)
     path: str = Field(min_length=1, max_length=4096)
     timeout_s: float = Field(default=30.0, gt=0, le=120.0)
 
@@ -153,7 +174,9 @@ class _BrowserSession:
     idle_expires_at: float
     # 从页面可用那一刻起固定，永不顺延；持续活跃也逃不掉这个硬上限。
     hard_expires_at: float
-    controls: list[Any] = field(default_factory=list)
+    controls: list[ElementHandle] = field(default_factory=list)
+    control_info: list[dict[str, Any]] = field(default_factory=list)
+    snapshot_url: str | None = None
     action_no: int = 0
     last_used: float = 0.0
     blocked_url: str | None = None
@@ -256,14 +279,7 @@ class PlaywrightBrowserManager:
             try:
                 checked = normalize_public_url(request_url)
                 await assert_public_target(checked)
-                # 顶层导航、重定向、脚本、图片与 XHR 都必须命中 scope。只校验导航仍会
-                # 允许恶意页面用子资源 URL 把数据送往未授权域名。
-                await cowork_store().authorize_scoped_capability(
-                    conversation_id=conversation_id,
-                    capability="network.fetch",
-                    target=checked,
-                )
-            except (CoworkWebError, CapabilityDeniedError) as error:
+            except CoworkWebError as error:
                 session.blocked_url = request_url
                 session.blocked_reason = str(error)
                 await route.abort("blockedbyclient")
@@ -283,7 +299,7 @@ class PlaywrightBrowserManager:
             await context.close()
             if session.blocked_url:
                 raise CoworkToolError(
-                    f"页面导航未获网络授权，已阻止：{session.blocked_url}；"
+                    f"页面导航未通过公网地址安全校验，已阻止：{session.blocked_url}；"
                     f"{session.blocked_reason or '目标不是公网地址'}"
                 ) from error
             raise CoworkToolError(f"浏览器打开网页失败：{error}") from error
@@ -356,6 +372,88 @@ class PlaywrightBrowserManager:
             await playwright.stop()
 
 
+async def _inspect_control(control: ElementHandle) -> dict[str, Any]:
+    info = await control.evaluate(
+        """element => ({
+            connected: Boolean(element.isConnected),
+            tag: element.tagName.toLowerCase(),
+            type: element.getAttribute('type') || '',
+            role: element.getAttribute('role') || '',
+            name: element.getAttribute('aria-label') || element.getAttribute('name') || '',
+            placeholder: element.getAttribute('placeholder') || '',
+            text: (element.innerText || element.value || '').trim().slice(0, 240),
+            href: element.href || '',
+            raw_href: element.getAttribute('href') || '',
+            target: element.getAttribute('target') || '',
+            download: element.getAttribute('download') || '',
+            aria_expanded: element.getAttribute('aria-expanded') || '',
+            aria_controls: element.getAttribute('aria-controls') || '',
+            in_form: Boolean(element.form || element.closest('form')),
+            disabled: Boolean(element.disabled || element.getAttribute('aria-disabled') === 'true')
+        })"""
+    )
+    if not bool(info.get("connected")):
+        raise CoworkToolError("目标控件已从 DOM 移除，请重新调用 browser_snapshot")
+    label = next(
+        (
+            str(info.get(key, "")).strip()
+            for key in ("name", "text", "placeholder")
+            if str(info.get(key, "")).strip()
+        ),
+        f"{info.get('tag', 'control')}:{info.get('type') or info.get('role') or 'unlabeled'}",
+    )[:240]
+    return {"label": label, **info}
+
+
+_CONTROL_IDENTITY_FIELDS = (
+    "tag",
+    "type",
+    "role",
+    "name",
+    "placeholder",
+    "text",
+    "href",
+    "raw_href",
+    "target",
+    "download",
+    "aria_expanded",
+    "aria_controls",
+    "in_form",
+    "disabled",
+    "label",
+)
+
+
+async def _fresh_control(
+    session: _BrowserSession,
+    index: int,
+    *,
+    expected_url: str | None = None,
+    expected_label: str | None = None,
+) -> tuple[ElementHandle, dict[str, Any]]:
+    control = _control(session, index)
+    cached = _control_metadata(session, index)
+    if session.snapshot_url is None or session.page.url != session.snapshot_url:
+        raise CoworkToolError("页面 URL 已变化，请重新调用 browser_snapshot 后再执行动作")
+    try:
+        fresh = await _inspect_control(control)
+    except PlaywrightError as error:
+        raise CoworkToolError("目标控件已失效，请重新调用 browser_snapshot") from error
+    if any(cached.get(field) != fresh.get(field) for field in _CONTROL_IDENTITY_FIELDS):
+        raise CoworkToolError("目标控件在快照或批准后发生变化，请重新调用 browser_snapshot")
+    if expected_url is not None and expected_url != session.page.url:
+        raise CoworkToolError("页面 URL 与已批准动作不一致，请重新调用 browser_snapshot")
+    if expected_label is not None and expected_label != str(fresh.get("label", "")):
+        raise CoworkToolError("目标控件标签与已批准动作不一致，请重新调用 browser_snapshot")
+    return control, fresh
+
+
+def _invalidate_controls(session: _BrowserSession) -> None:
+    session.controls = []
+    session.control_info = []
+    session.snapshot_url = None
+
+
 async def _snapshot(session_id: str, session: _BrowserSession, *, max_chars: int) -> dict[str, Any]:
     page = session.page
     try:
@@ -364,30 +462,25 @@ async def _snapshot(session_id: str, session: _BrowserSession, *, max_chars: int
         body = ""
     locators = page.locator(_CONTROL_SELECTOR)
     count = min(await locators.count(), 500)
-    controls: list[Any] = []
+    controls: list[ElementHandle] = []
     output_controls: list[dict[str, Any]] = []
     for raw_index in range(count):
         locator = locators.nth(raw_index)
         try:
             if not await locator.is_visible():
                 continue
-            info = await locator.evaluate(
-                """element => ({
-                    tag: element.tagName.toLowerCase(),
-                    type: element.getAttribute('type') || '',
-                    role: element.getAttribute('role') || '',
-                    name: element.getAttribute('aria-label') || element.getAttribute('name') || '',
-                    placeholder: element.getAttribute('placeholder') || '',
-                    text: (element.innerText || element.value || '').trim().slice(0, 240),
-                    disabled: Boolean(element.disabled || element.getAttribute('aria-disabled') === 'true')
-                })"""
-            )
-        except PlaywrightError:
+            control = await locator.element_handle()
+            if control is None:
+                continue
+            info = await _inspect_control(control)
+        except (PlaywrightError, CoworkToolError):
             continue
         index = len(controls)
-        controls.append(locator)
+        controls.append(control)
         output_controls.append({"index": index, **info})
     session.controls = controls
+    session.control_info = output_controls
+    session.snapshot_url = page.url
     content = body[:max_chars]
     return {
         "session_id": session_id,
@@ -401,10 +494,64 @@ async def _snapshot(session_id: str, session: _BrowserSession, *, max_chars: int
     }
 
 
-def _control(session: _BrowserSession, index: int) -> Any:
+def _control(session: _BrowserSession, index: int) -> ElementHandle:
     if index >= len(session.controls):
         raise CoworkToolError("control_index 已失效，请先重新调用 browser_snapshot")
     return session.controls[index]
+
+
+def _control_metadata(session: _BrowserSession, index: int) -> dict[str, Any]:
+    if index >= len(session.control_info):
+        raise CoworkToolError("control_index 已失效，请先重新调用 browser_snapshot")
+    return session.control_info[index]
+
+
+def _is_consequential_control(info: dict[str, Any]) -> bool:
+    """只有能从 DOM 证明是导航/展开的控件才允许无审批点击。"""
+
+    if bool(info.get("disabled")):
+        return True
+    tag = str(info.get("tag", "")).casefold()
+    role = str(info.get("role", "")).casefold()
+    href = str(info.get("href", "")).strip()
+    raw_href = str(info.get("raw_href", href)).strip()
+    label = " ".join(
+        str(info.get(key, "")) for key in ("label", "name", "text", "placeholder")
+    ).casefold()
+    action_words = (
+        "delete",
+        "remove",
+        "archive",
+        "purchase",
+        "buy",
+        "pay",
+        "submit",
+        "save",
+        "删除",
+        "移除",
+        "归档",
+        "购买",
+        "支付",
+        "提交",
+        "保存",
+    )
+    looks_like_action = any(word in label for word in action_words)
+    safe_href = bool(raw_href) and raw_href != "#" and not raw_href.casefold().startswith(
+        "javascript:"
+    )
+    if tag == "a" and href and safe_href and not str(info.get("download", "")) and not looks_like_action:
+        return False
+    if role == "link" and href and safe_href and not looks_like_action:
+        return False
+    if (
+        tag == "button"
+        and not bool(info.get("in_form"))
+        and str(info.get("type", "button")).casefold() in {"", "button"}
+        and bool(str(info.get("aria_controls", "")).strip())
+        and str(info.get("aria_expanded", "")).casefold() in {"true", "false"}
+    ):
+        return False
+    return True
 
 
 def _effect(session_id: str, session: _BrowserSession, action: str) -> str:
@@ -459,14 +606,31 @@ def register_browser_tools(
             output.update(await find_page_text(session, args.query, args.max_matches))
         return CoworkToolResult(content=output)
 
-    async def click_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
-        args = BrowserControlArgs.model_validate(raw.model_dump())
+    async def click_control(
+        context: CoworkToolContext,
+        args: BrowserControlArgs,
+        *,
+        allow_consequential: bool,
+    ) -> CoworkToolResult:
         session = await active.get(
             args.session_id,
             conversation_id=context.conversation_id,
         )
+        expected_url = args.expected_url if isinstance(args, BrowserSubmitArgs) else None
+        expected_label = args.expected_label if isinstance(args, BrowserSubmitArgs) else None
+        control, info = await _fresh_control(
+            session,
+            args.control_index,
+            expected_url=expected_url,
+            expected_label=expected_label,
+        )
+        if not allow_consequential and _is_consequential_control(info):
+            raise CoworkToolError(
+                "无法从 DOM 证明该控件只是导航或展开；请改用 browser_submit，"
+                "并原样提供当前页面 URL 与控件 label 以生成一次动作确认。"
+            )
         try:
-            await _control(session, args.control_index).click(timeout=15_000)
+            await control.click(timeout=15_000)
             await session.page.wait_for_load_state("domcontentloaded", timeout=10_000)
         except PlaywrightError as error:
             raise CoworkToolError(f"点击控件失败，请刷新 DOM 后重试：{error}") from error
@@ -476,6 +640,14 @@ def register_browser_tools(
         return CoworkToolResult(
             content=output, effect_ref=_effect(args.session_id, session, "click")
         )
+
+    async def click_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+        args = BrowserControlArgs.model_validate(raw.model_dump())
+        return await click_control(context, args, allow_consequential=False)
+
+    async def submit_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
+        args = BrowserSubmitArgs.model_validate(raw.model_dump())
+        return await click_control(context, args, allow_consequential=True)
 
     async def back_handler(context: CoworkToolContext, raw: BaseModel) -> CoworkToolResult:
         args = BrowserSessionArgs.model_validate(raw.model_dump())
@@ -501,13 +673,19 @@ def register_browser_tools(
             conversation_id=context.conversation_id,
         )
         try:
-            locator = _control(session, args.control_index)
+            control, _ = await _fresh_control(
+                session,
+                args.control_index,
+                expected_url=args.expected_url,
+                expected_label=args.expected_label,
+            )
             if args.clear:
-                await locator.fill(args.text, timeout=15_000)
+                await control.fill(args.text, timeout=15_000)
             else:
-                await locator.press_sequentially(args.text, timeout=15_000)
+                await control.type(args.text, timeout=15_000)
         except PlaywrightError as error:
             raise CoworkToolError(f"输入控件失败，请刷新 DOM 后重试：{error}") from error
+        _invalidate_controls(session)
         return CoworkToolResult(
             content={
                 "session_id": args.session_id,
@@ -524,9 +702,16 @@ def register_browser_tools(
             conversation_id=context.conversation_id,
         )
         try:
-            selected = await _control(session, args.control_index).select_option(value=args.value)
+            control, _ = await _fresh_control(
+                session,
+                args.control_index,
+                expected_url=args.expected_url,
+                expected_label=args.expected_label,
+            )
+            selected = await control.select_option(value=args.value)
         except PlaywrightError as error:
             raise CoworkToolError(f"选择下拉项失败，请刷新 DOM 后重试：{error}") from error
+        _invalidate_controls(session)
         return CoworkToolResult(
             content={"session_id": args.session_id, "url": session.page.url, "selected": selected},
             effect_ref=_effect(args.session_id, session, "select"),
@@ -548,11 +733,18 @@ def register_browser_tools(
             conversation_id=context.conversation_id,
         )
         try:
-            await _control(session, args.control_index).set_input_files(
+            control, _ = await _fresh_control(
+                session,
+                args.control_index,
+                expected_url=args.expected_url,
+                expected_label=args.expected_label,
+            )
+            await control.set_input_files(
                 str(authorization.target_path), timeout=15_000
             )
         except PlaywrightError as error:
             raise CoworkToolError(f"上传文件失败，请确认目标是文件选择控件：{error}") from error
+        _invalidate_controls(session)
         return CoworkToolResult(
             content={"session_id": args.session_id, "filename": authorization.target_path.name},
             effect_ref=_effect(args.session_id, session, "upload"),
@@ -571,12 +763,19 @@ def register_browser_tools(
             conversation_id=context.conversation_id,
         )
         try:
+            control, _ = await _fresh_control(
+                session,
+                args.control_index,
+                expected_url=args.expected_url,
+                expected_label=args.expected_label,
+            )
             async with session.page.expect_download(timeout=args.timeout_s * 1_000) as pending:
-                await _control(session, args.control_index).click(timeout=15_000)
+                await control.click(timeout=15_000)
             download = await pending.value
             await download.save_as(str(authorization.target_path))
         except PlaywrightError as error:
             raise CoworkToolError(f"下载失败或控件未触发下载：{error}") from error
+        _invalidate_controls(session)
         return CoworkToolResult(
             content={
                 "session_id": args.session_id,
@@ -640,20 +839,14 @@ def register_browser_tools(
         CoworkToolSpec(
             name="browser_open",
             description=(
-                "在隔离 Chromium 中打开公网网页并返回可见 DOM 控件。"
-                "需要目标 origin/domain 的 network.fetch 与 browser.read，"
-                "必须单独调用，但不逐次审批。"
+                "在隔离 Chromium 中打开公网网页并返回可见 DOM 控件。公网读取默认允许，"
+                "仍会逐请求执行 SSRF、DNS 重绑定与重定向安全校验；必须单独调用。"
             ),
             args_model=BrowserOpenArgs,
-            capability="browser.read",
-            extra_capabilities=("network.fetch",),
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=open_handler,
-            resource_target_resolver=lambda raw: (
-                BrowserOpenArgs.model_validate(raw.model_dump()).url
-            ),
             exclusive=True,
             search_aliases=("浏览网页", "playwright", "navigate"),
         ),
@@ -664,7 +857,6 @@ def register_browser_tools(
                 "直接提供 query，可同时得到匹配行。"
             ),
             args_model=BrowserSnapshotArgs,
-            capability="browser.read",
             risk="read",
             effect="none",
             parallel_safe=False,
@@ -674,29 +866,40 @@ def register_browser_tools(
         CoworkToolSpec(
             name="browser_click",
             description=(
-                "点击一个已枚举的可见 DOM 控件。按潜在提交/删除处理，需要 "
-                "browser.destructive 与本次批准；"
+                "点击能从 DOM 证明为普通链接或 disclosure 的可见控件，不弹确认。"
+                "无法证明只读的按钮一律拒绝，必须改用 browser_submit。"
                 "页面变化后使用返回的新控件编号。"
             ),
             args_model=BrowserControlArgs,
-            capability="browser.destructive",
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=click_handler,
-            approval_required=True,
-            approval_target_fields=("session_id", "control_index"),
-            # The enumerated control is the whole side effect; unlike connector writes,
-            # there is no hidden body that can change what gets submitted.
-            semantic_review_target_complete=True,
             exclusive=True,
             search_aliases=("点击", "click"),
         ),
         CoworkToolSpec(
+            name="browser_submit",
+            description=(
+                "点击会提交表单、发送、发布、购买、保存、删除等具有外部副作用的控件。"
+                "每次动作只确认一次；expected_url 和 expected_label 必须原样复制最近快照。"
+            ),
+            args_model=BrowserSubmitArgs,
+            risk="external",
+            effect="external",
+            parallel_safe=False,
+            handler=submit_handler,
+            approval_required=True,
+            approval_can_be_waived=False,
+            approval_target_fields=("expected_url", "expected_label"),
+            semantic_review_target_complete=True,
+            exclusive=True,
+            search_aliases=("提交", "发送", "发布", "购买", "删除", "submit"),
+        ),
+        CoworkToolSpec(
             name="browser_back",
-            description="让真实浏览器返回上一页。需要 browser.read，必须单独调用。",
+            description="让真实浏览器返回上一页；普通导航不弹确认，必须单独调用。",
             args_model=BrowserSessionArgs,
-            capability="browser.read",
             risk="external",
             effect="external",
             parallel_safe=False,
@@ -706,56 +909,69 @@ def register_browser_tools(
         CoworkToolSpec(
             name="browser_type",
             description=(
-                "向已枚举的输入控件填写文字。需要 browser.write，必须单独调用；填写不等于提交。"
+                "向已枚举输入控件填写文字；输入事件可能触发自动保存，每次必须单独批准。"
+                "expected_url 和 expected_label 必须原样复制最近快照。"
             ),
             args_model=BrowserTypeArgs,
-            capability="browser.write",
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=type_handler,
+            approval_required=True,
+            approval_can_be_waived=False,
+            approval_target_fields=("expected_url", "expected_label"),
+            semantic_review_target_complete=True,
             exclusive=True,
             search_aliases=("输入", "fill", "type"),
         ),
         CoworkToolSpec(
             name="browser_select",
-            description="选择下拉控件的值。需要 browser.write，必须单独调用。",
+            description=(
+                "选择下拉控件的值；change 事件可能立即修改远端数据，每次必须单独批准。"
+                "expected_url 和 expected_label 必须原样复制最近快照。"
+            ),
             args_model=BrowserSelectArgs,
-            capability="browser.write",
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=select_handler,
+            approval_required=True,
+            approval_can_be_waived=False,
+            approval_target_fields=("expected_url", "expected_label"),
+            semantic_review_target_complete=True,
             exclusive=True,
         ),
         CoworkToolSpec(
             name="browser_upload",
             description="把已授权工作目录中的文件设置到网页上传控件；每次上传需要单独批准。",
             args_model=BrowserUploadArgs,
-            capability="browser.destructive",
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=upload_handler,
             approval_required=True,
-            approval_target_fields=("path",),
+            approval_can_be_waived=False,
+            approval_target_fields=("expected_url", "expected_label", "path"),
             exclusive=True,
             search_aliases=("上传", "upload"),
         ),
         CoworkToolSpec(
             name="browser_download",
             description=(
-                "点击控件并把下载保存到已授权工作目录；需要 browser.destructive 与目标目录写授权，"
-                "不逐次审批，但必须单独调用。"
+                "点击已确认的下载控件并保存到已授权工作目录；点击本身可能有外部副作用，"
+                "每次都必须批准，并原样提供快照 URL 与 label。"
             ),
             args_model=BrowserDownloadArgs,
             capability="filesystem.write",
-            extra_capabilities=("browser.destructive",),
             risk="external",
             effect="filesystem",
             parallel_safe=False,
             handler=download_handler,
             path_argument="path",
+            approval_required=True,
+            approval_can_be_waived=False,
+            approval_target_fields=("expected_url", "expected_label", "path"),
+            semantic_review_target_complete=True,
             exclusive=True,
             search_aliases=("下载", "download"),
         ),
@@ -764,7 +980,6 @@ def register_browser_tools(
             description="把当前网页截图保存到已授权工作目录；依赖目录写授权，不逐次审批。",
             args_model=BrowserScreenshotArgs,
             capability="filesystem.write",
-            extra_capabilities=("browser.read",),
             risk="write",
             effect="filesystem",
             parallel_safe=False,
@@ -776,7 +991,6 @@ def register_browser_tools(
             name="browser_find",
             description="旧版页面查找入口，仅用于历史 checkpoint/cassette 兼容。",
             args_model=BrowserFindArgs,
-            capability="browser.read",
             risk="read",
             effect="none",
             parallel_safe=False,
@@ -789,7 +1003,6 @@ def register_browser_tools(
             name="browser_close",
             description="关闭浏览器会话并释放本地资源。",
             args_model=BrowserCloseArgs,
-            capability="browser.read",
             risk="read",
             effect="none",
             parallel_safe=False,
@@ -800,11 +1013,12 @@ def register_browser_tools(
         registry.register_deferred(spec, group="浏览器")
     registry.add_system_instructions(
         "需要真实网页交互时使用 browser_open/browser_snapshot 和编号控件工具。"
-        "浏览器按 browser.read/browser.write/browser.destructive 拆分；打开或跨域导航还必须"
-        "命中目标 origin/domain 的 network.fetch。"
-        "browser_open/click/back/type/select/upload/download 必须逐个调用，禁止放在同一批；"
+        "公网网页读取、普通链接跳转、展开菜单和翻页默认允许，但始终执行 SSRF、重定向与"
+        "DNS 重绑定校验。无法证明只读的控件必须使用 browser_submit；填写、选择、上传和"
+        "下载也都可能触发网页事件，因此逐动作确认。"
+        "browser_open/click/submit/back/type/select/upload/download 必须逐个调用，禁止放在同一批；"
         "禁止猜测 "
         "control_index，页面变化后使用动作返回的新快照或重新 snapshot。"
-        "browser_click、browser_upload 和触发下载按潜在外部副作用处理；只读资料抓取仍优先 fetch_url。"
+        "browser_click 会在代码层拒绝疑似提交控件；只读资料抓取仍优先 fetch_url。"
     )
     return active

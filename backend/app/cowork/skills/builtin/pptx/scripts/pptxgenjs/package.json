@@ -1,0 +1,29 @@
+{
+  "name": "workpilot-pptxgenjs-renderer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Deterministic PresentationSpec to PPTX renderer for the WorkPilot pptx Skill",
+  "type": "commonjs",
+  "main": "render_pptx.cjs",
+  "bin": "render_pptx.cjs",
+  "scripts": {
+    "check": "node --check render_pptx.cjs && node --check components.cjs && node --check helpers/image.js && node --check helpers/layout.js && node --check helpers/util.js",
+    "selftest": "node render_pptx.cjs --workpilot-selftest"
+  },
+  "dependencies": {
+    "pptxgenjs": "4.0.1"
+  },
+  "overrides": {
+    "image-size": "npm:image-size-next@2.1.1"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "6.22.0"
+  },
+  "pkg": {
+    "scripts": [
+      "render_pptx.cjs",
+      "components.cjs",
+      "helpers/*.js"
+    ]
+  }
+}

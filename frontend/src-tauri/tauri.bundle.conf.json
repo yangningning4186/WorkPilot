@@ -1,6 +1,10 @@
 {
   "bundle": {
-    "externalBin": ["binaries/workpilot-sidecar"],
+    "externalBin": [
+      "binaries/workpilot-sidecar",
+      "binaries/workpilot-artifact-python",
+      "binaries/workpilot-pptx-renderer"
+    ],
     "resources": {
       "binaries/sidecar-manifest.json": "sidecar-manifest.json",
       "resources/ms-playwright/": "ms-playwright/"

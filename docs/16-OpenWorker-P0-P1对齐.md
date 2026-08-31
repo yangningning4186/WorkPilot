@@ -1,6 +1,6 @@
 # 16 · OpenWorker P0/P1 能力对齐
 
-> 状态：2026-08-23（第五轮）。本文只记录已经进入代码、客户端和测试的能力；明确的安全边界不包装成缺陷。
+> 状态：2026-08-28（第六轮，核心控制面加固）。本文只记录已经进入代码、客户端和测试的能力；明确的安全边界不包装成缺陷。本轮刻意不处理产品 Runtime/打包发布，以及公开发布前的许可证与供应链决策。
 >
 > **这张表只覆盖 OpenWorker 那一半。** 另一半（DeepTutor 的沉浸阅读）见文末的
 > [§ DeepTutor 侧对齐](#deeptutor-侧对齐)，两者合流的理由见
@@ -8,17 +8,19 @@
 
 | 能力面 | P0/P1 实现 | 关键边界 |
 |---|---|---|
-| Provider 与密钥 | OpenAI、Anthropic、Gemini、DeepSeek、Qwen、Ollama、OpenAI-compatible；会话级 Provider/模型切换；Fernet 密文和数据库外 0600 主密钥 | Anthropic/Gemini profile 只接管对话；资料库 embedding **直连本机 Ollama、不过网关**（约束 1 的唯一豁免，[04 §3.8](04-知识与阅读设计.md)） |
+| Provider、身份与密钥 | OpenAI、Anthropic、Gemini、DeepSeek、Qwen、Ollama、OpenAI-compatible；会话级 Provider/模型切换；Fernet 密文和数据库外 0600 主密钥。主密钥/父目录拒绝软链、非 owner、过宽权限和不安全替换；管理 API 要求本机 owner 身份 | Anthropic/Gemini profile 只接管对话；资料库 embedding **直连本机 Ollama、不过网关**（约束 1 的唯一豁免，[04 §3.8](04-知识与阅读设计.md)）。密钥错误不回显输入，也不把原始异常写入持久审计 |
 | 连接器与 OAuth | Connector Descriptor 统一驱动五类账户的 catalog、官方主机、鉴权、OAuth adapter、默认 scope、能力与专用工具装配；飞书已有日历、多维表格、文档、云盘、任务、审批固定 schema 工具 | 新平台新增 Descriptor + 域 registrar，不再堆 `if account.kind`；同一飞书身份复用 scopes；不支持个人微信模拟登录；外部写动作逐次审批 |
-| MCP client 管理 | stdio/Streamable HTTP、服务 CRUD、OAuth 绑定、探测、目录哈希固定、逐工具数据域与副作用策略 | 未策展、目录漂移、`data_scope=deny` 均不可见；stdio 需显式信任 |
-| Skills 与 Persona | Skill 生命周期完整；`builtin` / `user` / 已授权工作区 `.workpilot/skills` 三层按 project > user > builtin 合并。轻量 Persona 组合稳定提示块、工具面、默认审批档、推荐连接器与工作模式 | project Skill 跟仓库走但不能越过目录授权；Persona 只能收窄工具，不能授予 capability/审批。切 Persona 才应用默认审批，换模型不顺带改审批档 |
+| MCP client 管理 | stdio/Streamable HTTP、服务 CRUD、OAuth 绑定、探测、目录哈希固定、逐工具数据域与副作用策略；URL、header/env、credential args 强制安全形态；bounded JSON Schema 在 catalog、注册和每次调用前复核；runtime provenance 防构造绕过；stderr/错误脱敏 | 未策展、目录漂移、`data_scope=deny`、危险/递归 schema 均不可见；stdio 需显式信任。配置 API 手工限长解析，422 不回显误填 secret；handler 已开始后的取消、超时或无法结算统一进入 `outcome_unknown`，同 invocation 禁止自动重放 |
+| Skills 与 Persona | Skill 生命周期完整；`builtin` / `user` / 已授权工作区 `.workpilot/skills` 三层按 project > user > builtin 合并；候选蒸馏、证据与签名 provenance、人工晋升已落地。会话可持久静音某个有效 Skill，API/客户端可见，所有启动入口共享同一 effective catalog | project Skill 跟仓库走但不能越过目录授权；自动蒸馏不读取文件正文，排除敏感/评测/副作用轨迹，auto promotion 默认关闭且不能覆盖 builtin。会话 mute 只做 deny、不能重启全局禁用项，运行中不可修改。Persona 源文件与能力快照带 hash，漂移 fail closed；Persona 只能收窄工具，不能授予 capability/审批 |
 | Web 与浏览器 | 公网搜索、网页/远程 PDF 读取；`network.fetch` 必须绑定 origin/domain scope，浏览器再拆为 `browser.read/write/destructive` | 浏览器无持久 Cookie/登录态；每个请求与顶层重定向重新做 scope 和 SSRF/DNS 校验；session 绑定会话，上传/点击归 destructive，下载/截图另需目录写授权 |
 | 格式交付物 | 系统选择器点名原文件并明示其父目录读写授权；`docx/xlsx/pptx/pdf` 出厂 Skill 指导 Python/CLI；前台 Shell 后有界发现新增/修改文件，经格式重开与 SHA-256 校验后登记 Artifact；右栏并列安全预览和登记时冻结的语义 diff | 默认生成新文件；明确覆盖时由 Skill 要求备份、临时写入和重开验证。diff 基线只供审阅，不是并发冲突门禁；2 MiB 上限和语义抽取意味着它不承诺像素级版式差异。只读附件仍上传副本，不悄悄升级成原目录写权限 |
 | 审批粒度 | 三档：计划模式（只读）· 逐次审批（默认）· 免审批（会话设置里由用户显式开，模型没有对应工具）。常驻规则只允许完整 argv + 精确 cwd，或 action + target | 规则只省掉「再问一次」，**不放大 capability**：没有 `host.execute` 的会话攒再多规则也跑不了宿主命令。追加参数、改变 cwd、Shell 操作符或目标变化都不命中；规则必须从用户看到的 inbox payload 派生。每次放行产生 `approval.waived` 与统一 authorization receipt |
+| 语义审批复核 | 高风险豁免在执行前再过独立 reviewer；只接受本机 owner 原文或受信入站来源，prompt、模型路由、输入摘要和签名 provenance 固定；连续拒绝触发持久 breaker | reviewer 不可用、输出不合法、路由缺失、provenance 不匹配或来源未知全部 fail closed；外部内容不能替用户授权。breaker 只能由 owner 显式处理，不能靠后续模型调用自愈绕过 |
+| 副作用不确定态 | 通用 registry、本地 store、MCP 与 Team worker tool 都在副作用前 claim；成功必须持久结算 `effect_ref`，开始执行后的取消、租约过期、缺收据或结算失败落 `outcome_unknown/unknown` | 不再把“租约过期”猜成“动作没发生”。不确定态宁可交给人对账，也不自动重放可能已经完成的写操作；持久错误只保留脱敏且有界的诊断类型 |
 | 仓库自带白名单 | 仓库在 `.workpilot/config.toml` 的 `[shell].allow` 里声明命令前缀，**只在用户信任过那个规范化路径之后**生效；条目数有上限，带操作符的条目一律拒绝并回带原因 | 仓库自己说了不算：clone 一个陌生仓库就等于执行它声明的命令，那是一条从「读代码」到「跑代码」的静默升级。信任跟着路径走而不是配置快照，因为「每次仓库改 allowlist 都重新问一遍」会把信任变成又一个闭眼点过的弹窗 |
 | 计划的常驻授权 | `create_schedule` 接受 `standing_approvals`，批准创建的那一刻派生 scope=schedule 的规则；删除计划连带删除 | 不做成会话级：手工发起的对话不该悄悄继承一批自己从没看过的授权。不列出来的话，一条每天七点跑的计划每天都会停在「允许 `npm test` 吗」上——那就不是无人值守 |
 | Scheduler / Inbox | 单次/五段 cron、离线最多补跑一次、重叠保护、按持久化 `next_run_at` 轮询补偿、立即运行、暂停/恢复/删除；跨会话 Inbox | Unattended 不自动续权；提问、目录/能力、Shell 与外部动作都会安全暂停 |
-| Shell / Sandbox | `run_shell` 明确使用 `host.execute`；`run_sandbox` 使用 `sandbox.execute` 调 Docker/Podman，默认断网、只读根、drop capabilities、no-new-privileges、非 root 与资源上限 | sandbox 只读写已授权 cwd，runtime 或镜像不可用时 fail closed、不回退 host。宿主持久 PTY/后台任务仍属于 `host.execute`，保留逐次审批、路径复核和幂等租约 |
+| Shell / Sandbox | `run_shell` 明确使用 `host.execute`；`run_sandbox` 使用随包 `artifact-python`，macOS 由 Seatbelt、Linux 由 bubblewrap 强制隔离，默认断网，输入与 Skill 只读，工作区和候选输出临时可写 | 只有验证通过的候选输出由可信 sidecar 提交回已授权 cwd；随包 runtime 或原生沙箱不可用时 fail closed、不回退 host。宿主持久 PTY/后台任务仍属于 `host.execute`，保留逐次审批、路径复核和幂等租约 |
 | 只读版本视图 | `git_status` / `git_diff` / `git_log`，固定 argv、不拼 shell 字符串、输出按已授权目录收窄 | 不走 `run_shell` 是为了拿掉审批摩擦又不给写操作留入口：放行整个 `git` 等于同时放行 `push`、`reset --hard`、`clean -fd`。`git -C` 会顺着找到仓库根，所以每条命令都追加 `-- <已授权目录>` pathspec，否则会吐出用户没授权的那半个仓库的差异 |
 | 代码搜索与读取 | `search_files` 有 ripgrep 时走 ripgrep（尊重 `.gitignore`、跳过二进制与 `node_modules`），否则回落纯 Python；`read_file` 自动识别文本/PDF，文本返回 `行号<TAB>` 前缀并在截断时给出续读指令 | ripgrep 的 include glob 是一层 override，把 `pattern` 交给 `--glob` 会连 `.gitignore` 一起绕过（`--glob '*'` 把整个 `build/` 列回来），所以 pattern 留在 Python 侧过滤。行号的税是明确的：模型可能把前缀抄进 `replace_in_file` 的 `old_text`，工具描述里必须显式写清楚它不属于文件内容 |
 | 局部编辑 | `replace_in_file` 精确文本替换，默认要求全文唯一命中，命中多处需显式 expected_count | baseline_sha256 挡的是并发写，挡不住「只读了前 500 行就整份重写」——后者校验照样通过而文件后半段被静默丢掉 |
@@ -26,13 +28,15 @@
 | 空转熔断 | 按调用签名（工具名 + 规范化参数）计数，同一签名超过 3 次不再执行并回一条可执行纠正指令；连续 2 轮整批都是重复调用就收回全部工具，做一次不带 tool-calling 的补全强制交付回答 | 判据是签名不是工具名：读十个不同文件是正常工作，读同一个文件十遍不是。同批里只拒重复的那几个，否则一次空转会放大成一轮空转。拒绝只是提示——评测里模型无视了 22 次直到预算熔断，所以第二层必须把工具拿走 |
 | 上下文装配 | system prompt 只放一次 run 内不变的内容（基座、工具说明、环境块、记忆快照）；任务清单、当前目录、**已授权能力**、计划模式提醒每轮重算，挂在 outbound 视图末尾的 session_state 块里 | 分界依据是「这一次 run 里会不会变」而不是主题：provider 前缀缓存从 system 起算，会变的内容放进去等于每轮作废整段前缀；末尾块只让自己失效。临时块不写回 canonical。能力块同时写明「已授予不等于免审批」与「能力按工具划分不按后果划分」——不写，模型会自己推断「删文件属于写」从而去要一个用不上的 filesystem.write |
 | 消息面（出站） | 命名 Inbox + 投递绑定：审批与提问镜像到飞书群，离散选项渲染成卡片按钮，点击就地解析同一条 item。会话按「自己的覆盖 → default」两级路由 | 应用内 Inbox 永远是 store of record，绑定只是镜像：投递失败只是没镜像出去，请求本身还在。按钮 value 里编着 item id，所以不需要回复里的 `[id]` 标记也不需要 thread 反查。开放式提问不给按钮——一条自由回复既没有身份也没法校验格式 |
-| 消息面（入站） | 频道订阅把群消息带进会话；@机器人在无人订阅的群里会开一个新会话并**拥有**那条 thread；忙就 steer、闲就起一轮，与自唤醒同一条路径 | 订阅与 Inbox 绑定方向相反，别指到同一个频道——那是自问自答的回路。thread 键就是地址串本身（`feishu:oc_x:om_y`），发消息、查会话、判定授权共用一份真相；分别拼一次迟早出现「看起来一样但比不相等」的地址。事件回调没配 `encrypt_key` 就整个关闭，配了就逐条验签 |
+| 消息面（入站） | 频道订阅把群消息带进会话；@机器人在无人订阅的群里会开一个新会话并**拥有**那条 thread；忙就 steer、闲就起一轮，与自唤醒同一条路径。飞书回调有 256 KiB 上限、签名时效、AES/JSON 边界与持久 event receipt | 签名只证明来自飞书，不证明 sender 是 owner；订阅、按钮审批和新 thread 都按 OAuth 绑定身份复核。actionable event 没稳定 event id 就在副作用前拒绝；receipt 仅保存 event id 哈希，claim 后即按 at-most-once 抑制重放，崩溃也不冒险重复起 run/重复批准 |
 | 死信 | 无处投递的入站消息与失败的后台轮次进 `cowork_unrouted`，界面里可读，按条数封顶 | 它是可见性设施不是队列，条目不会被重投。没有它，「我在群里说了一句，什么都没发生，也查不到为什么」就是彻底静默的失败 |
-| 长期记忆 | `remember` / `memory_update` / `memory_forget` / `memory_read`；global / workspace / conversation 三级作用域，软删除，run 起始快照进 system prompt；客户端记忆面板与内联撤销 | **2026-08-22 起与 RAG 的 memory 合并成一张表**：作用域抄 OpenWorker 的扁平结构，改写用本项目的时序有效性（不覆盖，只失效——ADR-0005），比两个参照物都多一层「当前 / 历史」。去重不用向量：把最近 N 条活跃记忆整批给模型，让它指名道姓选一条改。只注入本会话可见的那部分 |
+| 长期记忆 | `remember` / `memory_update` / `memory_forget` / `memory_read`；global / workspace / conversation 三级作用域，时序历史，run 起始快照；owner 与 conversation 两层 save/recall policy、standing rules、客户端管理与 server-side undo | 每次写入在 SQLite 事务内按 policy revision 做 CAS，任一层关闭保存都 fail closed；并发 keyed update 原子建立 successor、释放旧 active key。终态抽取作业清空用户正文，错误脱敏限长，会话删除级联清理。run 事件不再携带记忆明文，浏览器不能靠伪造旧内容执行 undo |
 | 计划模式 | 会话发起时可选；计划阶段只下发只读与交互工具，`propose_plan` 提交方案后暂停，批准即翻转运行时模式并把步骤变成任务清单；客户端计划卡片支持批准或带修改意见退回 | 批准是 checkpoint 里 `mode` 的翻转，不是 prompt 约定：未批准前写工具既不下发，执行边界也拒绝；准入判据是 `risk`/`execution` 而不是工具名单 |
 | 任务清单 | `todo_write` 整份替换的 pending/in_progress/done 清单，存进 checkpoint、每轮重发在末尾临时块里、前端独立渲染 | 与 `agent_plan_steps` 并存不互相替代：前者是模型主动声明的计划，后者是 runtime 从 tool call 派生的事后日志 |
 | 只读子 Agent | `explore` 独立上下文、共享预算、轮次/调用上限、证据工具记录；调查轮与收尾轮在 `routing.yaml` 里分开登记（收尾轮走 light）；`subagent.progress` 事件逐轮上报进度与自己那份 token 账；轮次与每次工具调用之前都看一眼取消旗 | 过滤所有副作用、`sandbox.execute` / `host.execute` 与 `external.write/destructive`，当前不开放可写子 Agent。**共享预算不等于不记账**：花的仍是同一个 run 的额度，但"这次委派花了多少"要单独报得出来，否则事后只看得到主循环的总量。取消是"下一次调用之前"生效，不是"立刻掐断"——正在跑的那一次工具调用会跑完，它本来就是只读的 |
+| Agent Team / Board | Lead 先提议并获批编制，再创建持久 Worker Session、Board task、review/rework；四维预算并发前预留，worker checkpoint 可恢复；append-only hash-chain event、独立 head、cursor 与 durable wake outbox 支持可验证重建和唤醒 | Worker 默认没有写权；写委派必须有精确资源 scope 与签名 receipt，撤销/暂停/归档停止新动作。tool attempt 独立记录 unknown，不能把未知结果重派。普通路径禁止改删事件，但用户删除会话时以事务内 purge guard 完成隐私清理 |
 | 工具规模治理 | 首轮只下发基础工具和 WorkMode 热路径 schema；长尾工具以稳定摘要清单供模型发现，再由 `load_tools` 按准确名称加载，历史 tool_call 的 schema 在切换范围后仍保留 | 不设工具数量和工具执行步数上限；计划模式、只读子 Agent、capability 与审批仍收窄可执行边界。模型调用数、token、墙钟和重复空转熔断继续作为运行安全预算 |
+| 评测控制面 | 版本化 catalog + deterministic contract 固定 30 类关键控制面回归（56 个实际测试），覆盖权限、Memory、Skill、MCP、Team、unknown-effect 与飞书 durable replay；nightly/Cowork/Generation runner 对 wall/calls/tokens 做 fail-closed 硬熔断 | 并发 dispatch 前预留，usage 缺失按最坏额度结算；超时终止整个进程组。四份 v2 baseline 已 ready，当前代码尚未生成真实模型 candidate 并对既有 baseline 过门禁；这些测试证明安全协议不回退，不等价于宣称产品质量已达发布门槛 |
 
 ## 与 OpenWorker 仍存在的差异
 
@@ -42,9 +46,14 @@
 |---|---|---|
 | 消息传输 | 只接飞书 | 路由层传输无关（`sender` 注入、按钮只认 `(label, value)`），加一个平台是再写一个适配器。先接飞书是因为它已经是本项目的官方连接器 |
 | 连接器广度 | 5 个平台账户，飞书已细分日历、Base、文档、云盘、任务、审批和通用 OpenAPI；仍少于对方约 40 个 descriptor | 主方向是中国办公栈，不按西方 SaaS 清单抹平；Descriptor 已消除扩展结构债，下一批可直接补企微/钉钉消息域 |
+| MCP 服务端 | 客户端与治理面已完成；尚未把 WorkPilot 本地知识库作为独立 MCP server 暴露 | 这是生态功能缺口，不是当前 client 安全边界的旁路；见 [14](14-技能自进化与MCP集成.md) |
+| Skill 自动门禁 | 隐私安全蒸馏、签名来源、人工晋升与默认关闭的 auto promotion 已有；尚无“候选 vs 无 Skill baseline”的自动回放晋升与线上退化降级 | 在真实 paired 数据和正式 baseline 之前保持人工门禁，不能用候选数量冒充自进化质量 |
+| Team 真实质量基线 | 控制面、恢复、预算、权限、event replay 与 deterministic contract 已有；尚未用真实模型跑稳定的多 Agent 质量/成本 baseline | 当前只能证明协议与安全不变量，不能声称多 Agent 比单 Agent 更好 |
+| 本轮质量复验 | Catalog 中 Cowork dev/test、KB retrieval、Grounded Generation 四份 v2 baseline 均为 ready；本轮只运行零模型控制面契约，没有调用真实模型生成 candidate report | 当前改动在进入发布候选前仍需与既有 baseline 做一次 live 配对门禁；安全测试通过不等于本轮产品质量没有回退 |
 | 用户本地 risk override | 没有独立全局 override 表；会话规则只接受完整 argv + cwd 或 action + target | 对方的 override 是全局 glob；这里牺牲宽泛复用，换取参数、目录或目标变化后自动失配，以及单一撤销点 |
 | 多 persona / 多入口 | 单一 Cowork runtime；`office` / `reading` 由正式 WorkMode/Capability 协议映射，另有会话级轻量 Persona | WorkMode 管玩法与 pre-loop，Persona 管角色组合；两者正交且都复用同一个 run、权限、checkpoint、审批与租约，不复制 runtime（ADR-0013、ADR-0015） |
-| STT、TUI、应用自动更新 | 没有 | 还没做 |
+| STT、TUI、应用自动更新 | 没有 | 属于产品 Runtime / 分发层，本轮按范围明确后置 |
+| 打包发布、许可证与供应链决策 | 尚未定稿公开发行许可证、第三方 notice、SBOM/依赖签名与发布门禁 | 这是公开发布前必须单独完成的最终层；本轮不做，也不把“暂未决定”伪装成已合规 |
 | 语义缓存 | 没有，且**已决定不做** | 错误命中会安静地返回一个"看起来对"的答案。在一个把接地当核心承诺的产品里，为省一次调用引入一条会静默说谎的路径不划算（[07 §6](07-模型路由与成本.md)） |
 | 请求层限流 | **没有**（随 Redis 一起删掉了） | 桌面形态下没有匿名公网请求，但这是一张欠条，见 [12 §2.2](12-安全与部署.md) |
 

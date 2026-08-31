@@ -14,13 +14,14 @@ import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 from app.core.config import Settings
 from app.cowork.connector_descriptors import connector_kinds, get_connector_descriptor
 from app.cowork_contracts import ApprovalMode, CoworkWorkMode
 
 PersonaOrigin = Literal["builtin", "user", "project"]
+ExpertType = Literal["agent", "team"]
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _TOOL_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}\*?$")
 PROJECT_PERSONAS_RELATIVE = Path(".workpilot") / "personas"
@@ -39,6 +40,15 @@ class PersonaCapabilitySummary(TypedDict):
     recommended_connectors: list[PersonaConnectorCapability]
 
 
+class ExpertTeamMemberSnapshot(TypedDict):
+    profile: str
+    label: str
+    role: str
+    reason: str
+    tool_patterns: list[str]
+    sha256: str
+
+
 class PersonaSnapshot(TypedDict):
     schema_version: Literal["workpilot.persona-snapshot.v1"]
     name: str
@@ -47,6 +57,30 @@ class PersonaSnapshot(TypedDict):
     sha256: str
     tool_patterns: list[str]
     capability_summary: PersonaCapabilitySummary
+    # 只在 expert_type=team 时出现，保证既有普通 Persona 的 v1 快照和摘要不漂移。
+    expert_type: NotRequired[Literal["team"]]
+    team_members: NotRequired[list[ExpertTeamMemberSnapshot]]
+
+
+@dataclass(frozen=True)
+class ExpertTeamMemberDefinition:
+    """专家团中的受信 Worker profile；职责、提示词与工具面由包定义而非模型自由编造。"""
+
+    profile: str
+    label: str
+    role: str
+    reason: str
+    system_block: str
+    tool_patterns: tuple[str, ...]
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "profile": self.profile,
+            "label": self.label,
+            "role": self.role,
+            "reason": self.reason,
+            "tool_patterns": list(self.tool_patterns),
+        }
 
 
 @dataclass(frozen=True)
@@ -59,6 +93,8 @@ class PersonaDefinition:
     default_approval_mode: ApprovalMode
     recommended_connectors: tuple[str, ...]
     recommended_work_mode: CoworkWorkMode
+    expert_type: ExpertType = "agent"
+    team_members: tuple[ExpertTeamMemberDefinition, ...] = ()
     origin: PersonaOrigin = "builtin"
     source_path: Path | None = None
 
@@ -71,6 +107,8 @@ class PersonaDefinition:
             "default_approval_mode": self.default_approval_mode,
             "recommended_connectors": list(self.recommended_connectors),
             "recommended_work_mode": self.recommended_work_mode,
+            "expert_type": self.expert_type,
+            "team_members": [member.public() for member in self.team_members],
             "origin": self.origin,
         }
 
@@ -88,6 +126,91 @@ class PersonaCatalog:
 
 
 _BUILTINS = (
+    PersonaDefinition(
+        name="expert-council",
+        label="深度研究与风险评审团",
+        description="并行核验证据和分析方案，再由独立审阅专家检查反例与风险，适合重要决策和复杂方案评审。",
+        system_block=(
+            '<persona name="expert-council" expert_type="team">\n'
+            "你是深度研究与风险评审团 Lead，负责定义问题、拆分可证伪的验收标准、传递上下文和最终裁决，"
+            "不得假装已经收到任何 Worker 的结论。简单且不需要独立复核的任务可直接完成；"
+            "需要会诊时，先 load_tools(propose_team)，再单独调用 propose_team：expert 必须为 "
+            '"expert-council"，expert_sha256 必须原样复制下方 expert_team_manifest 的 '
+            "manifest_sha256；成员 profile 从 evidence-researcher、domain-analyst、"
+            "critical-reviewer 中选择，建议三者全部启用。name 是本次团队内的英文呼号，"
+            "不要传 role，职责以 profile 的固化定义为准。\n"
+            "阶段一并行：证据研究专家建立来源、事实与缺口；领域分析专家给出机制、边界条件和"
+            "可选方案。Lead 分别创建 Board task 并验收。阶段二串行：把阶段一的原始报告、"
+            "冲突点和待决假设完整写入批判审阅任务，由独立审阅专家找反例、风险与证据不足。"
+            "最后由 Lead 明确列出共识、分歧、证据、未知项和建议；Worker 只能提交 review，"
+            "Lead 必须逐项验收，不能把报告自动当成正确答案。\n"
+            "</persona>"
+        ),
+        tool_patterns=(),
+        default_approval_mode="interactive",
+        recommended_connectors=(),
+        recommended_work_mode="office",
+        expert_type="team",
+        team_members=(
+            ExpertTeamMemberDefinition(
+                profile="evidence-researcher",
+                label="证据研究专家",
+                role="收集并核验与问题直接相关的事实、来源、时间边界和证据缺口",
+                reason="先建立可追溯事实层，避免后续分析建立在未核验陈述上",
+                system_block=(
+                    "你是证据研究专家。只处理 Lead 通过 Board 下发的问题与资源范围。"
+                    "先列需要验证的 claim，再逐条寻找直接证据；报告区分来源明确陈述、你的推断"
+                    "和仍未解决的缺口。记录文件路径、定位线索与适用时间，冲突来源并列呈现。"
+                    "不得把合理猜测写成事实，也不得替 Lead 给出最终业务决策。"
+                ),
+                tool_patterns=(
+                    "list_files",
+                    "read_file",
+                    "read_text_file",
+                    "search_files",
+                    "read_pdf",
+                ),
+            ),
+            ExpertTeamMemberDefinition(
+                profile="domain-analyst",
+                label="领域分析专家",
+                role="基于已给事实分析机制、约束、备选方案与适用边界",
+                reason="把事实转换为可比较方案，并显式暴露假设与取舍",
+                system_block=(
+                    "你是领域分析专家。围绕 Board 验收标准建立问题模型：写清目标、约束、关键"
+                    "变量、依赖关系和失败条件，再比较方案。每个判断都标明依据是任务上下文、"
+                    "工具证据还是待验证假设；信息不足时给出条件化结论。不要伪造行业数据，"
+                    "不要越过 Lead 代替用户拍板。"
+                ),
+                tool_patterns=(
+                    "list_files",
+                    "read_file",
+                    "read_text_file",
+                    "search_files",
+                    "read_pdf",
+                ),
+            ),
+            ExpertTeamMemberDefinition(
+                profile="critical-reviewer",
+                label="批判审阅专家",
+                role="独立审查前序结论，寻找反例、遗漏、风险和不成立的验收证据",
+                reason="让提出方案的人不同时担任自己的最终验证者",
+                system_block=(
+                    "你是独立批判审阅专家。你的输入应包含其他专家的原始报告；若缺失就把它列为"
+                    "阻塞项，不猜测其内容。逐条挑战关键 claim，寻找反例、口径冲突、证据链断点、"
+                    "权限与执行风险，并说明什么证据可以消除疑问。不要为了显得有价值而制造异议，"
+                    "也不要自行宣告 Board task 已完成；只向 Lead 提交可复核的 review 报告。"
+                ),
+                tool_patterns=(
+                    "list_files",
+                    "read_file",
+                    "read_text_file",
+                    "search_files",
+                    "read_pdf",
+                ),
+            ),
+        ),
+    ),
     PersonaDefinition(
         name="general",
         label="通用执行",
@@ -186,6 +309,47 @@ def _strings(value: object, *, field: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value if item.strip())
 
 
+def _team_members(value: object) -> tuple[ExpertTeamMemberDefinition, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ValueError("Persona team_members 必须是 TOML table 数组")
+    allowed = {"profile", "label", "role", "reason", "system_block", "tool_patterns"}
+    members: list[ExpertTeamMemberDefinition] = []
+    for raw in value:
+        unknown = sorted(set(raw) - allowed)
+        if unknown:
+            raise ValueError(f"Persona team_members 含未知字段 {unknown}")
+        profile = str(raw.get("profile") or "").strip().lower()
+        label = str(raw.get("label") or "").strip()
+        role = " ".join(str(raw.get("role") or "").split())
+        reason = " ".join(str(raw.get("reason") or "").split())
+        system_block = str(raw.get("system_block") or "").strip()
+        patterns = _strings(raw.get("tool_patterns"), field="team_members.tool_patterns")
+        if not _NAME.fullmatch(profile):
+            raise ValueError("Persona team member profile 必须是合法小写标识")
+        if not 1 <= len(label) <= 64 or not 1 <= len(role) <= 160:
+            raise ValueError("Persona team member label/role 长度非法")
+        if not 1 <= len(reason) <= 500 or not 1 <= len(system_block) <= 8_000:
+            raise ValueError("Persona team member reason/system_block 长度非法")
+        if any(_TOOL_PATTERN.fullmatch(item) is None for item in patterns):
+            raise ValueError("Persona team member tool_patterns 只允许工具名或末尾通配符 *")
+        members.append(
+            ExpertTeamMemberDefinition(
+                profile=profile,
+                label=label,
+                role=role,
+                reason=reason,
+                system_block=system_block,
+                tool_patterns=patterns,
+            )
+        )
+    profiles = [member.profile for member in members]
+    if len(profiles) != len(set(profiles)):
+        raise ValueError("Persona team member profile 不能重复")
+    return tuple(members)
+
+
 def _load_file(path: Path, *, origin: PersonaOrigin) -> PersonaDefinition:
     if path.is_symlink() or path.stat().st_size > 64_000:
         raise ValueError("Persona 文件必须是 64KB 内的普通 TOML")
@@ -194,6 +358,8 @@ def _load_file(path: Path, *, origin: PersonaOrigin) -> PersonaDefinition:
     label = str(loaded.get("label") or "").strip()
     description = str(loaded.get("description") or "").strip()
     block = str(loaded.get("system_block") or "").strip()
+    expert_type = str(loaded.get("expert_type") or "agent").strip()
+    team_members = _team_members(loaded.get("team_members"))
     patterns = _strings(loaded.get("tool_patterns"), field="tool_patterns")
     connectors = _strings(loaded.get("recommended_connectors"), field="recommended_connectors")
     approval = str(loaded.get("default_approval_mode") or "interactive")
@@ -208,6 +374,14 @@ def _load_file(path: Path, *, origin: PersonaOrigin) -> PersonaDefinition:
         raise ValueError("Persona recommended_connectors 含未知连接器")
     if approval not in {"interactive", "auto"} or work_mode not in {"office", "reading"}:
         raise ValueError("Persona 默认审批档或工作模式非法")
+    if expert_type not in {"agent", "team"}:
+        raise ValueError("Persona expert_type 只能是 agent 或 team")
+    if expert_type == "team" and not 2 <= len(team_members) <= 4:
+        raise ValueError("专家团 Persona 必须定义 2-4 个 team_members")
+    if expert_type == "agent" and team_members:
+        raise ValueError("普通 Persona 不能定义 team_members")
+    if sum(len(member.system_block) for member in team_members) > 24_000:
+        raise ValueError("Persona team member system_block 总长度超过 24KB")
     return PersonaDefinition(
         name=name,
         label=label,
@@ -217,6 +391,8 @@ def _load_file(path: Path, *, origin: PersonaOrigin) -> PersonaDefinition:
         default_approval_mode=approval,  # type: ignore[arg-type]
         recommended_connectors=connectors,
         recommended_work_mode=work_mode,  # type: ignore[arg-type]
+        expert_type=expert_type,  # type: ignore[arg-type]
+        team_members=team_members,
         origin=origin,
         source_path=path,
     )
@@ -296,7 +472,7 @@ def snapshot_persona(
         "recommended_work_mode": persona.recommended_work_mode,
         "recommended_connectors": connector_summary,
     }
-    semantic_payload = {
+    semantic_payload: dict[str, Any] = {
         "name": persona.name,
         "label": persona.label,
         "description": persona.description,
@@ -306,6 +482,43 @@ def snapshot_persona(
         "source_identity": source_identity,
         "capability_summary": capability_summary,
     }
+    member_snapshots: list[ExpertTeamMemberSnapshot] = []
+    if persona.expert_type == "team":
+        for member in persona.team_members:
+            member_payload = {
+                "profile": member.profile,
+                "label": member.label,
+                "role": member.role,
+                "reason": member.reason,
+                "system_block": member.system_block,
+                "tool_patterns": list(member.tool_patterns),
+            }
+            member_digest = hashlib.sha256(
+                json.dumps(
+                    member_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            member_snapshots.append(
+                {
+                    "profile": member.profile,
+                    "label": member.label,
+                    "role": member.role,
+                    "reason": member.reason,
+                    "tool_patterns": list(member.tool_patterns),
+                    "sha256": member_digest,
+                }
+            )
+        semantic_payload["expert_type"] = "team"
+        semantic_payload["team_members"] = [
+            {
+                **snapshot,
+                "system_block": member.system_block,
+            }
+            for snapshot, member in zip(member_snapshots, persona.team_members, strict=True)
+        ]
     digest = hashlib.sha256(
         json.dumps(
             semantic_payload,
@@ -314,7 +527,7 @@ def snapshot_persona(
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
-    return {
+    snapshot: PersonaSnapshot = {
         "schema_version": PERSONA_SNAPSHOT_SCHEMA,
         "name": persona.name,
         "origin": persona.origin,
@@ -323,6 +536,39 @@ def snapshot_persona(
         "tool_patterns": list(persona.tool_patterns),
         "capability_summary": capability_summary,
     }
+    if persona.expert_type == "team":
+        snapshot["expert_type"] = "team"
+        snapshot["team_members"] = member_snapshots
+    return snapshot
+
+
+def render_persona_system_block(
+    persona: PersonaDefinition,
+    snapshot: PersonaSnapshot,
+) -> str:
+    """渲染 run 内冻结的 Persona 指令；专家团额外携带可校验 manifest receipt。"""
+
+    if persona.expert_type != "team":
+        return persona.system_block
+    if (
+        snapshot.get("expert_type") != "team"
+        or snapshot.get("name") != persona.name
+        or not snapshot.get("team_members")
+    ):
+        raise ValueError(PERSONA_RESELECTION_REQUIRED)
+    manifest = {
+        "expert": persona.name,
+        "manifest_sha256": snapshot["sha256"],
+        "members": snapshot.get("team_members", []),
+    }
+    return (
+        f"{persona.system_block}\n"
+        "<expert_team_manifest>\n"
+        f"{json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n"
+        "</expert_team_manifest>\n"
+        "调用 propose_team 时必须使用本 manifest 的 expert 和 manifest_sha256（参数名为 "
+        "expert_sha256），成员只提交 name、profile 和可选 reason，不得自行填写 role。"
+    )
 
 
 def _persona_source_identity(
@@ -368,11 +614,15 @@ def approval_mode_for_persona_change(
 __all__ = [
     "PERSONA_RESELECTION_REQUIRED",
     "PROJECT_PERSONAS_RELATIVE",
+    "ExpertTeamMemberDefinition",
+    "ExpertTeamMemberSnapshot",
+    "ExpertType",
     "PersonaCatalog",
     "PersonaDefinition",
     "PersonaSnapshot",
     "approval_mode_for_persona_change",
     "load_persona_catalog",
+    "render_persona_system_block",
     "snapshot_persona",
     "tool_name_matches",
 ]

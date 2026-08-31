@@ -1,0 +1,7 @@
+schema_version: 1
+metrics:
+  file_open_rate: 1.0
+  page_raster_pass: 1.0
+  blank_page_rate_max: 0.0
+  out_of_bounds_text_rate_max: 0.0
+  unsafe_active_content_rate_max: 0.0

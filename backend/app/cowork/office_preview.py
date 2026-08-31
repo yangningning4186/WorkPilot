@@ -18,6 +18,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.cowork.skills.builtin.pptx.scripts.pptx2image import (
+    PptxRasterError,
+    render_presentation_pages,
+)
+
 _SCRIPT = re.compile(r"<script\b[^>]*>.*?</script\s*>", re.IGNORECASE | re.DOTALL)
 _META_REFRESH = re.compile(
     r"<meta\b[^>]*http-equiv\s*=\s*['\"]?refresh['\"]?[^>]*>",
@@ -68,6 +73,19 @@ def render_office_preview(
     digest = _source_digest(source)
     target = cache_root / digest
 
+    if suffix == ".pptx":
+        cached = target / "preview.html"
+        if cached.is_file():
+            _touch(cached)
+            return OfficePreview(cached, "text/html; charset=utf-8", "workpilot-pptx")
+        try:
+            rendered = _render_pptx(source, target)
+        except (OSError, ValueError, PptxRasterError):
+            rendered = None
+        if rendered is not None:
+            _prune(cache_root, keep=digest, max_entries=max_cache_entries)
+            return OfficePreview(rendered, "text/html; charset=utf-8", "workpilot-pptx")
+
     quicklook = Path("/usr/bin/qlmanage")
     # Quick Look 的 Excel Preview.html 只是一个依赖脚本切换 Attachment*.html 的外壳；
     # 安全清洗会按设计移除脚本，结果只剩工作表名称而没有单元格。XLSX 因此直接交给
@@ -99,11 +117,52 @@ def render_office_preview(
 
 def _source_digest(source: Path) -> str:
     digest = hashlib.sha256()
-    digest.update(b"office-preview.v1\0")
+    digest.update(b"office-preview.v3\0")
     with source.open("rb") as stream:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _render_pptx(source: Path, target: Path) -> Path | None:
+    target.mkdir(parents=True, exist_ok=True)
+    target.chmod(0o700)
+    with tempfile.TemporaryDirectory(prefix=".pptx-pages-", dir=target) as raw_pages:
+        result = render_presentation_pages(source, Path(raw_pages))
+        if result.unsupported_shapes:
+            return None
+        figures: list[str] = []
+        for index, page in enumerate(result.pages, start=1):
+            encoded = base64.b64encode(page.read_bytes()).decode("ascii")
+            figures.append(
+                f'<figure><img src="data:image/png;base64,{encoded}" '
+                f'alt="第 {index} 页"><figcaption>第 {index} 页</figcaption></figure>'
+            )
+        overflow_notice = (
+            '<p class="warning">检测到文本溢出；该文件不能标记为视觉验证完成。</p>'
+            if result.overflow_shapes
+            else ""
+        )
+        html = (
+            "<!doctype html><html><head><meta charset=\"utf-8\">"
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; "
+            "img-src data:; style-src 'unsafe-inline'\">"
+            "<style>body{margin:0;padding:24px;background:#eef1ef;color:#17211d;"
+            "font:14px system-ui,sans-serif}figure{max-width:1200px;margin:0 auto 28px}"
+            "img{display:block;width:100%;height:auto;background:#fff;box-shadow:0 3px 18px #0002}"
+            "figcaption{text-align:center;margin-top:8px;color:#5f6d66}"
+            ".warning{max-width:1200px;margin:0 auto 20px;padding:12px;background:#fff0dc;"
+            "color:#7a4300}</style></head><body>"
+            + overflow_notice
+            + "".join(figures)
+            + "</body></html>"
+        )
+        output = target / "preview.html"
+        temporary = target / ".preview.html.tmp"
+        temporary.write_text(html, encoding="utf-8")
+        os.replace(temporary, output)
+        output.chmod(0o600)
+        return output
 
 
 def _minimal_environment() -> dict[str, str]:

@@ -97,6 +97,33 @@ def test_load_skill_catalog_builds_stable_snapshot(tmp_path: Path) -> None:
     assert "提取主体" in first.get("contract-review").procedure
 
 
+def test_builtin_skill_bundles_expose_v2_kind_runtime_and_resources(tmp_path: Path) -> None:
+    catalog = load_skill_catalog(tmp_path, max_files=100, max_bytes=100_000)
+
+    pptx = catalog.get("pptx")
+    office = catalog.get("office-workflow")
+    assert (pptx.kind, pptx.runtime_profile) == ("artifact", "artifact-python")
+    assert (office.kind, office.runtime_profile) == ("workflow", "none")
+    with pytest.raises(SkillCatalogError, match="未知或未启用"):
+        catalog.get("presentation-planning")
+
+    managed = list_managed_skills(tmp_path, max_files=100, max_bytes=100_000)
+    pptx_item = next(item for item in managed if item.name == "pptx" and item.origin == "builtin")
+    office_item = next(
+        item for item in managed if item.name == "office-workflow" and item.origin == "builtin"
+    )
+    assert pptx_item.resource_counts()["references"] >= 4
+    assert pptx_item.resource_counts()["evals"] >= 1
+    assert pptx_item.resource_counts()["scripts"] >= 3
+    assert "scripts/render_pptx.py" in pptx_item.resources
+    assert "scripts/pptx2image.py" in pptx_item.resources
+    assert "scripts/pptxgenjs/render_pptx.cjs" in pptx_item.resources
+    assert "scripts/pptxgenjs/components.cjs" in pptx_item.resources
+    assert "assets/templates/catalog.json" in pptx_item.resources
+    assert office_item.resource_counts()["references"] >= 4
+    assert office_item.resource_counts()["evals"] >= 1
+
+
 def test_skill_name_must_match_directory(tmp_path: Path) -> None:
     _write_skill(tmp_path, name="wrong-directory")
 

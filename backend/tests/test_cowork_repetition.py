@@ -253,6 +253,71 @@ async def test_repeated_call_is_refused_with_an_actionable_instruction(
     assert "直接回答用户" in payload["error"]
 
 
+async def test_identical_schema_failure_is_validated_only_twice(
+    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
+) -> None:
+    conversation_id = await ensure_conversation(db_session, title="Schema 重复熔断")
+    await create_session_root(
+        db_session,
+        conversation_id=conversation_id,
+        requested_path=str(tmp_path),
+        access_mode="read_write",
+    )
+    run = await create_run(
+        db_session,
+        conversation_id=conversation_id,
+        goal="列出文件",
+        budget_tokens=100_000,
+        budget_calls=20,
+        budget_wall_ms=60_000,
+        workflow_type="cowork",
+    )
+    await append_message(
+        db_session,
+        conversation_id=conversation_id,
+        role="user",
+        content=run.goal,
+        run_id=run.id,
+    )
+    await db_session.commit()
+
+    registry = build_default_cowork_registry()
+    bus = InMemoryRunBus()
+    await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
+    invalid = json.dumps({}, ensure_ascii=False)
+    provider = NativeToolProvider(
+        [
+            _tool_completion(ToolCall(id=f"invalid-{index}", name="list_files", arguments=invalid))
+            for index in range(3)
+        ]
+        + [_final_completion("参数缺少 path，已停止原样重试。")]
+    )
+
+    await cowork_run(
+        {
+            "settings": get_settings().model_copy(update={"run_heartbeat_s": 60.0}),
+            "session_factory": session_factory,
+            "bus": bus,
+            "cowork_gateway": ModelGateway(provider, embedding_dimensions=1024),
+            "cowork_registry": registry,
+        },
+        str(run.id),
+    )
+
+    checkpoint = await load_cowork_checkpoint(db_session, run_id=run.id)
+    assert checkpoint is not None
+    signature = call_signature("list_files", {})
+    assert checkpoint.state["call_signatures"][signature] == 2
+    tool_payloads = [
+        json.loads(str(message["content"]))
+        for message in checkpoint.state["messages"]
+        if message.get("role") == "tool" and str(message.get("tool_call_id", "")).startswith("invalid-")
+    ]
+    assert len(tool_payloads) == 3
+    assert sum("Field required" in payload["error"] for payload in tool_payloads) == 2
+    assert "连续两次未通过" in tool_payloads[-1]["error"]
+
+
 async def test_mixed_batch_keeps_the_call_that_still_makes_progress(
     db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path
 ) -> None:

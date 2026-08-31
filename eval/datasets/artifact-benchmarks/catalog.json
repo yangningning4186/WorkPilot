@@ -1,0 +1,109 @@
+{
+  "schema_version": "workpilot-public-artifact-benchmarks.v1",
+  "benchmarks": [
+    {
+      "id": "pptc",
+      "name": "PPTC Benchmark",
+      "artifact_types": ["pptx"],
+      "task_types": ["generation", "editing"],
+      "source_url": "https://github.com/gydpku/PPTC",
+      "paper_url": "https://arxiv.org/abs/2311.01767",
+      "license": {
+        "status": "verified",
+        "spdx": "MIT",
+        "url": "https://github.com/gydpku/PPTC/blob/main/LICENSE"
+      },
+      "integration_status": "adapter_planned",
+      "split_policy": "保留 upstream short/long 任务边界；固定 commit 后再划分 WorkPilot dev 与冻结 test，不把冻结 test 用于提示词调优。",
+      "use_for": [
+        "新建幻灯片任务完成率",
+        "既有模板编辑任务完成率",
+        "多轮指令与会话级成功率"
+      ],
+      "limitations": [
+        "原评测依赖自身 API action space，需映射为 WorkPilot 工具轨迹与最终文件断言。",
+        "不能直接用 PPTX-Match 分数代替逐页视觉验证。"
+      ]
+    },
+    {
+      "id": "presentbench",
+      "name": "PresentBench",
+      "artifact_types": ["pptx", "pdf"],
+      "task_types": ["generation", "evaluation"],
+      "source_url": "https://github.com/PresentBench/PresentBench",
+      "paper_url": "https://arxiv.org/abs/2603.07244",
+      "license": {
+        "status": "review_required",
+        "url": "https://huggingface.co/datasets/PresentBench/PresentBench"
+      },
+      "integration_status": "adapter_planned",
+      "split_policy": "238 条 upstream 数据只有 test 标记；接入前必须固定 dataset revision，并另建内部 dev 子集，完整集只用于冻结验收。",
+      "use_for": [
+        "材料依赖的内容完整性与正确性",
+        "视觉设计与布局",
+        "逐实例原子 checklist 评分",
+        "中英文长材料到完整 deck"
+      ],
+      "limitations": [
+        "代码仓库为 Apache-2.0，但 Hugging Face 数据集标注为 other，材料逐项许可需复核。",
+        "官方 Judge 需要外部模型调用；确定性结构分与模型 Judge 分必须分轨报告。"
+      ]
+    },
+    {
+      "id": "doc2ppt",
+      "name": "DOC2PPT",
+      "artifact_types": ["pptx"],
+      "task_types": ["generation"],
+      "source_url": "https://doc2ppt.github.io/",
+      "paper_url": "https://arxiv.org/abs/2101.11796",
+      "license": {"status": "review_required"},
+      "integration_status": "reference_only",
+      "split_policy": "复用 upstream train/validation/test；人工清洗 test 不进入开发调参。",
+      "use_for": [
+        "学术论文到幻灯片的内容选择",
+        "原文句子、图片与页面的对应关系",
+        "长文档摘要和图文对齐"
+      ],
+      "limitations": [
+        "约 6K 文档—deck 对主要提供 PDF/JPEG 与抽取结果，不足以评估原生 PPTX 结构和可编辑性。",
+        "数据许可与上游论文/图片版权需单独复核，当前不自动下载。"
+      ]
+    },
+    {
+      "id": "ppteval",
+      "name": "PPTEval from PPTAgent",
+      "artifact_types": ["pptx", "pdf"],
+      "task_types": ["generation", "evaluation"],
+      "source_url": "https://github.com/mendaxfz/pptagent",
+      "paper_url": "https://arxiv.org/abs/2501.03936",
+      "license": {"status": "review_required"},
+      "integration_status": "reference_only",
+      "split_policy": "只迁移评测维度与经许可的样例；内容、设计、连贯性 Judge 必须与生成模型隔离并记录版本。",
+      "use_for": ["内容质量", "设计一致性", "跨页叙事连贯性"],
+      "limitations": [
+        "通用 Judge 维度不替代实例级事实 checklist。",
+        "模型 Judge 结果需做人类偏好校准，不能单独作为发布门禁。"
+      ]
+    },
+    {
+      "id": "officebench",
+      "name": "OfficeBench",
+      "artifact_types": ["docx", "xlsx", "pptx"],
+      "task_types": ["editing", "workflow"],
+      "source_url": "https://github.com/zlwang-cs/OfficeBench",
+      "paper_url": null,
+      "license": {"status": "review_required"},
+      "integration_status": "reference_only",
+      "split_policy": "按单应用与跨应用工作流分层；固定 task revision 后再映射为 WorkPilot 的 tool/effect 断言。",
+      "use_for": [
+        "长程 Office 自动化工作流",
+        "跨 Word、Excel、PowerPoint 的任务切换",
+        "执行型最终状态评测"
+      ],
+      "limitations": [
+        "原执行环境和 action space 与 WorkPilot 不同，需要适配层，不能直接比较绝对分数。",
+        "工作流成功率与单个文件的渲染质量需要分别报告。"
+      ]
+    }
+  ]
+}

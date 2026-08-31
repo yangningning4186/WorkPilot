@@ -40,6 +40,10 @@ BUILTIN_DISABLED_DIRNAME = ".builtin-disabled"
 PROJECT_SKILLS_RELATIVE = Path(".workpilot") / "skills"
 
 SkillOrigin = Literal["builtin", "user", "project"]
+SkillKind = Literal["planning", "artifact", "workflow", "action"]
+
+_SKILL_KINDS = frozenset({"planning", "artifact", "workflow", "action"})
+_RUNTIME_PROFILE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 class SkillCatalogError(ValueError):
@@ -69,6 +73,11 @@ class SkillDefinition:
     source_path: Path
     sha256: str
     origin: SkillOrigin = "user"
+    # v1 Skill 没有 kind/runtime。默认 workflow + none 保持旧包可加载，只有显式声明
+    # artifact 的包才会被界面和运行时视作格式生产能力。
+    kind: SkillKind = "workflow"
+    runtime_profile: str = "none"
+    compatibility: tuple[str, ...] = ()
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -79,6 +88,9 @@ class SkillDefinition:
             "tools": list(self.tools),
             "sha256": self.sha256,
             "origin": self.origin,
+            "kind": self.kind,
+            "runtime_profile": self.runtime_profile,
+            "compatibility": list(self.compatibility),
         }
 
 
@@ -133,6 +145,21 @@ def _load_one(path: Path, *, max_bytes: int, origin: SkillOrigin = "user") -> Sk
     name = str(merged.get("name", "")).strip()
     description = str(merged.get("description", "")).strip()
     status = str(merged.get("status", "active")).strip().casefold()
+    raw_kind = str(merged.get("kind", "workflow")).strip().casefold()
+    if raw_kind not in _SKILL_KINDS:
+        raise SkillCatalogError("Skill kind 必须是 planning/artifact/workflow/action")
+    kind: SkillKind = raw_kind  # type: ignore[assignment]
+    raw_runtime = merged.get("runtime")
+    if raw_runtime is None:
+        runtime_profile = "none"
+    elif isinstance(raw_runtime, str):
+        runtime_profile = raw_runtime.strip().casefold()
+    elif isinstance(raw_runtime, dict):
+        runtime_profile = str(raw_runtime.get("profile", "none")).strip().casefold()
+    else:
+        raise SkillCatalogError("Skill runtime 必须是 profile 字符串或 object")
+    if not _RUNTIME_PROFILE.fullmatch(runtime_profile):
+        raise SkillCatalogError("Skill runtime profile 格式无效")
     if not _SKILL_NAME.fullmatch(name):
         raise SkillCatalogError("Skill name 只能包含小写字母、数字、下划线或连字符")
     if path.parent.name != name:
@@ -155,6 +182,9 @@ def _load_one(path: Path, *, max_bytes: int, origin: SkillOrigin = "user") -> Sk
         source_path=path,
         sha256=digest,
         origin=origin,
+        kind=kind,
+        runtime_profile=runtime_profile,
+        compatibility=_string_list(merged.get("compatibility"), field="compatibility"),
     )
 
 

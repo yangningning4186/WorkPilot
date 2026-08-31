@@ -1,0 +1,326 @@
+{
+  "schema_version": "workpilot-artifact-eval-suite.v1",
+  "name": "artifact-rendering-dev",
+  "version": "1.0",
+  "origin": "synthetic",
+  "review_status": "pending_human_review",
+  "reviewer": null,
+  "reviewed_at": null,
+  "items": [
+    {
+      "id": "artifact-pptx-001-cjk-bold",
+      "split": "dev",
+      "artifact_type": "pptx",
+      "category": "cjk_typography",
+      "expected_stage": "passed",
+      "min_quality_score": 95,
+      "required_checks": {
+        "structural.reopen": "passed",
+        "visual.render": "passed",
+        "visual.min_font_pt": "passed",
+        "visual.out_of_bounds": "passed",
+        "security.external_relationships": "passed"
+      },
+      "spec": {
+        "artifact_type": "pptx",
+        "title": "中秋主题班会",
+        "slides": [
+          {
+            "id": "cover",
+            "role": "hero",
+            "rhythm": "peak",
+            "layout": "title",
+            "title": "月满中秋 · 情满校园",
+            "subtitle": "中秋主题班会"
+          },
+          {
+            "id": "message",
+            "layout": "statement",
+            "title": "团圆不仅是相聚，也是理解与分享",
+            "body": "从月相、诗词和家书中认识中秋"
+          }
+        ]
+      }
+    },
+    {
+      "id": "artifact-pptx-002-svg",
+      "split": "dev",
+      "artifact_type": "pptx",
+      "category": "svg_visual",
+      "expected_stage": "passed",
+      "min_quality_score": 95,
+      "required_checks": {
+        "visual.render": "passed",
+        "visual.large_overlap": "passed",
+        "security.external_relationships": "passed"
+      },
+      "fixtures": [
+        {
+          "path": "diagram.svg",
+          "content": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 800 480\"><defs><linearGradient id=\"g\"><stop stop-color=\"#167a5b\"/><stop offset=\"1\" stop-color=\"#75b89f\"/></linearGradient></defs><rect width=\"800\" height=\"480\" rx=\"30\" fill=\"#edf5f1\"/><path d=\"M180 240H620\" stroke=\"url(#g)\" stroke-width=\"22\"/><circle cx=\"180\" cy=\"240\" r=\"72\" fill=\"#fff\" stroke=\"#167a5b\" stroke-width=\"12\"/><circle cx=\"620\" cy=\"240\" r=\"72\" fill=\"#fff\" stroke=\"#167a5b\" stroke-width=\"12\"/></svg>"
+        }
+      ],
+      "spec": {
+        "artifact_type": "pptx",
+        "title": "系统关系",
+        "slides": [
+          {
+            "id": "diagram",
+            "layout": "image_text",
+            "title": "输入经过验证后进入固定渲染器",
+            "image_path": "{{fixture:diagram.svg}}",
+            "image_alt": "两个圆形节点通过绿色连线连接",
+            "image_caption": "确定性 SVG 示意图",
+            "bullets": ["SVG 保留为源素材", "PPTX 中嵌入兼容 PNG"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "artifact-pptx-003-chart",
+      "split": "dev",
+      "artifact_type": "pptx",
+      "category": "native_chart",
+      "expected_stage": "passed",
+      "min_quality_score": 95,
+      "required_checks": {
+        "semantic.titles": "passed",
+        "visual.render": "passed",
+        "visual.text_overload": "passed"
+      },
+      "spec": {
+        "artifact_type": "pptx",
+        "title": "季度趋势",
+        "slides": [
+          {
+            "id": "trend",
+            "layout": "chart",
+            "title": "第四季度交付量达到全年峰值",
+            "chart": {
+              "chart_type": "column",
+              "categories": ["Q1", "Q2", "Q3", "Q4"],
+              "series": [{"name": "交付量", "values": [18, 23, 31, 46]}],
+              "unit": "份"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "artifact-pptx-004-overflow-rejected",
+      "split": "dev",
+      "artifact_type": "pptx",
+      "category": "overflow_guard",
+      "expected_stage": "validation",
+      "expected_detail_contains": "文本溢出",
+      "required_checks": {"visual.render": "failed"},
+      "spec": {
+        "artifact_type": "pptx",
+        "title": "溢出门禁",
+        "slides": [
+          {
+            "id": "overflow",
+            "layout": "two_column",
+            "title": "这是一个故意写得非常长、会在普通页标题安全区域里发生换行并溢出的标题这是一个故意写得非常长、会在普通页标题安全区域里发生换行并溢出的标题这是一个故意写得非常长、会在普通页标题安全区域里发生换行并溢出的标题",
+            "left_title": "左侧",
+            "left_items": ["内容"],
+            "right_title": "右侧",
+            "right_items": ["内容"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "artifact-docx-001-structure",
+      "split": "dev",
+      "artifact_type": "docx",
+      "category": "document_structure",
+      "expected_stage": "passed",
+      "min_quality_score": 90,
+      "required_checks": {
+        "structural.reopen": "passed",
+        "structural.page_geometry": "passed",
+        "structural.table_layout": "passed",
+        "semantic.heading_hierarchy": "passed",
+        "security.embedded_objects": "passed"
+      },
+      "spec": {
+        "artifact_type": "docx",
+        "title": "项目复盘报告",
+        "subtitle": "结构化、可编辑、可验证",
+        "sections": [
+          {
+            "id": "summary",
+            "heading": "执行摘要",
+            "level": 1,
+            "blocks": [
+              {"id": "p1", "type": "paragraph", "style": "lead", "text": "本期完成关键交付，并建立了可重复的质量门禁。"},
+              {"type": "callout", "text": "结论：先验证最终文件，再对外宣称完成。"},
+              {"type": "table", "headers": ["指标", "结果"], "rows": [["文件打开率", "100%"], ["越界元素", 0]]}
+            ]
+          },
+          {
+            "id": "actions",
+            "heading": "后续行动",
+            "level": 2,
+            "blocks": [{"type": "bullets", "items": ["扩大真实样本覆盖", "保留冻结测试集"]}]
+          }
+        ]
+      }
+    },
+    {
+      "id": "artifact-docx-002-svg",
+      "split": "dev",
+      "artifact_type": "docx",
+      "category": "svg_visual",
+      "expected_stage": "passed",
+      "min_quality_score": 90,
+      "required_checks": {
+        "structural.reopen": "passed",
+        "semantic.heading_hierarchy": "passed",
+        "security.external_relationships": "passed"
+      },
+      "fixtures": [
+        {
+          "path": "flow.svg",
+          "content": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 900 360\"><rect width=\"900\" height=\"360\" fill=\"#f7f8f6\"/><rect x=\"70\" y=\"105\" width=\"240\" height=\"150\" rx=\"22\" fill=\"#dcebe5\"/><path d=\"M330 180H570\" stroke=\"#167a5b\" stroke-width=\"18\"/><path d=\"M545 150l45 30-45 30\" fill=\"none\" stroke=\"#167a5b\" stroke-width=\"18\"/><rect x=\"590\" y=\"105\" width=\"240\" height=\"150\" rx=\"22\" fill=\"#dcebe5\"/></svg>"
+        }
+      ],
+      "spec": {
+        "artifact_type": "docx",
+        "title": "图文说明",
+        "sections": [
+          {
+            "id": "flow",
+            "heading": "处理流程",
+            "blocks": [
+              {
+                "type": "image",
+                "image_path": "{{fixture:flow.svg}}",
+                "image_alt": "左侧输入框通过箭头流向右侧输出框",
+                "image_caption": "图 1 输入—验证—输出流程",
+                "image_width_inches": 5.8
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "artifact-xlsx-001-formula-wrap",
+      "split": "dev",
+      "artifact_type": "xlsx",
+      "category": "formula_and_clipping",
+      "expected_stage": "passed",
+      "min_quality_score": 90,
+      "required_checks": {
+        "structural.reopen": "passed",
+        "semantic.formulas": "passed",
+        "semantic.potential_clipping": "passed",
+        "security.dde_or_external_formula": "passed"
+      },
+      "spec": {
+        "artifact_type": "xlsx",
+        "title": "交付指标",
+        "sheets": [
+          {
+            "name": "Summary",
+            "freeze_panes": "A2",
+            "cells": [
+              {"address": "A1", "value": "指标", "style": "header"},
+              {"address": "B1", "value": "结果", "style": "header"},
+              {"address": "A2", "value": "完成数量"},
+              {"address": "B2", "value": 42, "style": "metric"},
+              {"address": "A3", "value": "同比增长"},
+              {"address": "B3", "formula": "=B2/35-1", "style": "percent"},
+              {"address": "A4", "value": "这是一段需要自动换行且不能被列宽裁切的中文说明，用于验证表格渲染质量。"}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "artifact-pdf-001-page-render",
+      "split": "dev",
+      "artifact_type": "pdf",
+      "category": "page_rendering",
+      "expected_stage": "passed",
+      "min_quality_score": 95,
+      "required_checks": {
+        "structural.reopen": "passed",
+        "semantic.pages": "passed",
+        "visual.page_raster": "passed",
+        "visual.text_bounds": "passed",
+        "security.active_content": "passed"
+      },
+      "spec": {
+        "artifact_type": "pdf",
+        "title": "归档报告",
+        "summary": "最终文件必须可以重新打开并逐页栅格化。",
+        "sections": [
+          {"id": "summary", "heading": "摘要", "blocks": [{"type": "paragraph", "text": "本报告用于验证 PDF 的结构、文字边界和页面渲染。"}]},
+          {"id": "details", "heading": "结果", "blocks": [{"type": "table", "headers": ["检查项", "状态"], "rows": [["重新打开", "通过"], ["逐页栅格化", "通过"]]}]}
+        ]
+      }
+    },
+    {
+      "id": "artifact-html-001-inline-svg",
+      "split": "dev",
+      "artifact_type": "html",
+      "category": "offline_visual",
+      "expected_stage": "passed",
+      "min_quality_score": 95,
+      "required_checks": {
+        "structural.utf8": "passed",
+        "semantic.title": "passed",
+        "security.active_or_external_content": "passed"
+      },
+      "fixtures": [
+        {
+          "path": "badge.svg",
+          "content": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 160\"><rect width=\"320\" height=\"160\" rx=\"28\" fill=\"#167a5b\"/><circle cx=\"80\" cy=\"80\" r=\"36\" fill=\"#fff\"/><path d=\"M145 58h120M145 83h95M145 108h70\" stroke=\"#fff\" stroke-width=\"12\"/></svg>"
+        }
+      ],
+      "spec": {
+        "artifact_type": "html",
+        "title": "离线质量报告",
+        "summary": "页面不加载远程脚本、字体或图片。",
+        "sections": [
+          {
+            "id": "result",
+            "heading": "结果",
+            "blocks": [
+              {"type": "image", "image_path": "{{fixture:badge.svg}}", "image_alt": "绿色质量徽章"},
+              {"type": "paragraph", "text": "所有视觉资源以内联 data URI 交付。"}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "artifact-docx-003-unsafe-svg-rejected",
+      "split": "dev",
+      "artifact_type": "docx",
+      "category": "active_content_guard",
+      "expected_stage": "render",
+      "expected_detail_contains": "脚本",
+      "fixtures": [
+        {
+          "path": "unsafe.svg",
+          "content": "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>"
+        }
+      ],
+      "spec": {
+        "artifact_type": "docx",
+        "title": "不安全素材",
+        "sections": [
+          {
+            "id": "unsafe",
+            "heading": "素材",
+            "blocks": [{"type": "image", "image_path": "{{fixture:unsafe.svg}}", "image_alt": "不安全示例"}]
+          }
+        ]
+      }
+    }
+  ]
+}

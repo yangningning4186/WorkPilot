@@ -1,0 +1,43 @@
+schema_version: 1
+cases:
+  - name: material-to-management-deck
+    input: 根据经营数据和会议纪要做一份管理层月度复盘 PPTX
+    assertions:
+      - route_new_material_pipeline
+      - parse_each_material_once
+      - build_office_brief_source_map_content_map
+      - handoff_presentation_planning_then_pptx
+      - review_content_structure_visual_usability_evidence_security
+  - name: ambiguous-office-output
+    input: 把这段会议记录整理成一份可以发给参会人的正式文件
+    assertions:
+      - default_continuous_text_to_docx
+      - preserve_decided_open_action_status
+      - no_unnecessary_multi_format_output
+  - name: spreadsheet-from-requirements
+    input: 做一份项目预算跟踪表，要能改明细后自动汇总
+    assertions:
+      - choose_xlsx_plan_stats_model_prototypes
+      - formulas_not_hardcoded_results
+      - input_calculation_summary_roles_are_distinct
+      - final_formula_and_visual_review
+  - name: localized-existing-edit
+    input: 把现有报告第三节标题改成“风险与行动”，其他不要动
+    assertions:
+      - route_directly_to_existing_file_edit
+      - no_whole_document_replanning
+  - name: too-empty-feedback
+    input: 这份 PPT 太空、太水了，内容像套模板
+    assertions:
+      - return_to_content_map_before_style
+      - merge_weak_slides_or_add_support
+      - require_visual_role_and_density_review
+  - name: festival-class-meeting
+    input: 做一份中秋节主题班会 PPT，给初中生现场使用，要有文化内容，也要能互动
+    assertions:
+      - route_to_facilitation_prototype_not_encyclopedia
+      - define_observable_audience_outcome
+      - include_knowledge_activity_debrief_action_loop
+      - activity_has_prompt_steps_timebox_and_debrief
+      - handoff_page_function_audience_action_and_visual_role
+      - require_cover_canary_and_representative_page_preview

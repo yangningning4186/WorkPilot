@@ -47,6 +47,7 @@ _TITLES: dict[str, str] = {
     "wake_on": "等待后台任务",
     "sleep": "等待后继续",
     "create_artifact": "生成交付物",
+    "preview_presentation": "试制演示页面",
     "load_tools": "加载扩展工具",
     "list_skills": "查看可用技能",
     "load_skill": "加载格式 Skill",
@@ -211,6 +212,13 @@ def describe_tool_activity(name: str, raw_arguments: object) -> ToolActivity:
         title = _string(arguments, "title")
         if title:
             activity["summary"] = f"生成“{_clip(title, 100)}”"
+    elif name == "preview_presentation":
+        pages = arguments.get("pages")
+        activity["summary"] = (
+            "检查指定页面的视觉效果"
+            if isinstance(pages, list) and pages
+            else "检查封面、结尾与代表页面"
+        )
     elif name in {"web_search", "search_knowledge"}:
         query = _string(arguments, "query")
         if query:

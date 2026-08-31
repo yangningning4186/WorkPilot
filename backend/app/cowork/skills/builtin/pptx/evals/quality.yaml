@@ -1,0 +1,15 @@
+schema_version: 1
+metrics:
+  story_structure_pass: 1.0
+  layout_content_contract_pass: 1.0
+  supporting_density_pass: 1.0
+  rendered_content_density_pass: 1.0
+  visual_story_warning_rate_max: 0.0
+  focus_page_ratio_warning_rate_max: 0.0
+  numeric_insight_pass: 1.0
+  file_open_rate: 1.0
+  visual_render_pass: 1.0
+  overflow_rate_max: 0.0
+  min_font_violation_max: 0.0
+  evidence_coverage_min: 0.9
+  unsafe_active_content_rate_max: 0.0
