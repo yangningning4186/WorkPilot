@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import hmac
 import html
 from collections.abc import Callable
 from pathlib import Path
@@ -134,6 +136,17 @@ _PREVIEW_SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
 }
+_OFFLINE_HTML_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
+# Response headers disappear when the frontend converts a preview to a Blob URL.  Put the
+# restrictive policy into the document bytes as well, before any untrusted markup can run or
+# start a subresource request.  A later meta policy can only further restrict this one.
+_OFFLINE_HTML_CSP_PREFIX = (
+    b'<!doctype html><meta charset="utf-8">'
+    b'<meta http-equiv="Content-Security-Policy" content="'
+    b"default-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; "
+    b"img-src data: blob:; media-src data: blob:; font-src data:; "
+    b"style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\">"
+)
 
 
 def _root_response(value: object) -> SessionRootResponse:
@@ -647,6 +660,18 @@ async def get_artifact_preview(
             else _pptx_preview(path)
         )
         preview_mode = "structure"
+    elif suffix == ".html" and (
+        offline_html := _validated_offline_html(artifact.meta, path)
+    ) is not None:
+        return Response(
+            content=offline_html,
+            media_type="text/html; charset=utf-8",
+            headers={
+                **_PREVIEW_SECURITY_HEADERS,
+                "Content-Disposition": _preview_content_disposition(path),
+                "X-WorkPilot-Preview-Mode": "offline-html",
+            },
+        )
     elif suffix in TEXT_ARTIFACT_SUFFIXES:
         if path.stat().st_size > 5 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="交付物过大，无法在线预览")
@@ -671,6 +696,37 @@ async def get_artifact_preview(
         document,
         headers={**_PREVIEW_SECURITY_HEADERS, "X-WorkPilot-Preview-Mode": preview_mode},
     )
+
+
+def _validated_offline_html(meta: dict[str, object], path: Path) -> bytes | None:
+    """读取、验 hash 并返回同一份 HTML 字节，消除 hash→FileResponse 的竞态。"""
+
+    manifest = meta.get("artifact_manifest")
+    if not isinstance(manifest, dict) or manifest.get("status") != "validated":
+        return None
+    validation = manifest.get("validation")
+    expected_sha256 = meta.get("sha256")
+    if (
+        not isinstance(validation, dict)
+        or validation.get("security") != "passed"
+        or not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+    ):
+        return None
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        stat = path.stat()
+        if stat.st_size < 1 or stat.st_size > _OFFLINE_HTML_PREVIEW_MAX_BYTES:
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if len(raw) != stat.st_size or not hmac.compare_digest(
+        hashlib.sha256(raw).hexdigest(), expected_sha256
+    ):
+        return None
+    return _OFFLINE_HTML_CSP_PREFIX + raw
 
 
 @router.get("/artifacts/{artifact_id}/diff", response_model=ArtifactDiffResponse)

@@ -63,20 +63,17 @@ def test_capabilities_block_keeps_approval_separate_from_authorization() -> None
 
     block = render_capabilities_block(["host.execute"], sorted(ALL_CAPABILITIES))
 
-    assert "已授予不等于免审批" in block
+    assert "已授予不等于跳过动作审核" in block
 
 
 def test_capabilities_block_is_empty_when_there_is_nothing_to_say() -> None:
     assert render_capabilities_block([], []) == ""
 
 
-def test_capabilities_block_says_shell_covers_its_own_side_effects() -> None:
-    """能力按工具划分而不按后果划分——不说清楚，模型会自己推断错。
-
-    评测里已授权 host.execute，模型仍去要 filesystem.write，
-    理由是"删文件属于写"。推断合理，但和 run_shell 的实际校验不符，run 白停一次。
-    """
+def test_capabilities_block_says_shell_uses_action_level_approval() -> None:
+    """模型不得再为 Shell 先拼一层 host.execute capability。"""
 
     block = render_capabilities_block(["host.execute"], sorted(ALL_CAPABILITIES))
 
-    assert "run_shell 需要 host.execute" in block
+    assert "run_shell 在真正执行命令时生成动作级审批" in block
+    assert "不要自行拼 capability" in block

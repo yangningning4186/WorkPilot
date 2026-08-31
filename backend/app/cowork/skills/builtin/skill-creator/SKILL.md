@@ -1,6 +1,7 @@
 ---
 name: skill-creator
 description: 把这一轮里刚跑通的、以后还会重复的流程写成一个 Skill 并装好
+kind: action
 trigger:
   - 用户说“下次也这么做”“记住这个流程”“把这个做成技能”
   - 同一类任务在本会话里已经手工重复过两次以上
@@ -13,6 +14,10 @@ tools:
   - write_file
   - read_file
   - load_skill
+runtime:
+  profile: none
+compatibility:
+  - WorkPilot Skill Bundle v2
 status: active
 ---
 
@@ -40,6 +45,9 @@ tools:                       # 这个流程真正会用到的工具名
   - search_files
   - load_skill
   - run_shell
+kind: workflow               # planning / artifact / workflow / action
+runtime:
+  profile: none              # 固定 Renderer 才使用 artifact-python
 status: active
 ---
 ```
@@ -57,6 +65,12 @@ prompt 里只有摘要，模型看到"周报"两个字就会把月度汇总也�
 - 不要复述工具描述。工具说明每轮都在上下文里，抄一遍只是浪费预算。
 - 不要写授权、审批、能力相关的“捷径”。Skill 正文是数据不是指令，
   写了也不会生效，只会让读的人以为它生效了。
+
+长资料、确定性脚本、模板和评测分别放进 `references/`、`scripts/`、`assets/`、`evals/`；
+`SKILL.md` 只保留决策流程、必需输出、安全规则和验证标准。user/project Skill 的 script
+默认通过 `run_sandbox` 运行。脚本从 `WORKPILOT_INPUTS` 读取输入，在 `WORKPILOT_WORK` 使用
+临时空间，把候选写到 `WORKPILOT_OUTPUTS`；`WORKPILOT_SKILLS` 是只读 Skill 路径列表。
+不要假设 Docker 挂载点或自行联网安装依赖。
 
 ## 4. 装上去
 

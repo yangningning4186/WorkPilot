@@ -113,14 +113,23 @@ fn workspace_backend() -> PathBuf {
         .join("backend")
 }
 
-fn apply_runtime_env(command: &mut Command, token: &str) {
+fn apply_runtime_env(
+    command: &mut Command,
+    token: &str,
+    artifact_python: &Path,
+    pptx_renderer: Option<&Path>,
+) {
     command
         .env("DESKTOP_MODE_ENABLED", "true")
         .env("DESKTOP_LAUNCH_TOKEN", token)
         .env("COWORK_ENABLED", "true")
+        .env("COWORK_SANDBOX_PYTHON_PATH", artifact_python)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    if let Some(renderer) = pptx_renderer {
+        command.env("WORKPILOT_PPTX_RENDERER", renderer);
+    }
 
     // PyInstaller one-file 在 Unix 上会再派生真正运行 Python 的子进程。把整棵 sidecar
     // 放进独立进程组，桌面壳退出时才能同时结束 bootloader 与 Python，而不是留下一个
@@ -148,31 +157,53 @@ fn development_command(backend: &Path, args: &[&str], token: &str) -> Command {
     } else {
         backend.join(".venv").join("bin").join("python")
     };
-    let mut command = Command::new(python);
+    let mut command = Command::new(&python);
     command.current_dir(backend).args(args);
-    apply_runtime_env(&mut command, token);
+    apply_runtime_env(&mut command, token, &python, None);
     command
 }
 
-fn bundled_sidecar_path() -> Result<PathBuf, String> {
+fn bundled_sibling_path(filename: &str, label: &str) -> Result<PathBuf, String> {
     let executable =
         std::env::current_exe().map_err(|error| format!("无法定位 WorkPilot 主程序: {error}"))?;
     let directory = executable
         .parent()
         .ok_or_else(|| "WorkPilot 主程序没有父目录".to_string())?;
+    let sibling = directory.join(filename);
+    if !sibling.is_file() {
+        return Err(format!(
+            "安装包缺少内置{label}: {}。请重新安装完整的 WorkPilot 包。",
+            sibling.display()
+        ));
+    }
+    Ok(sibling)
+}
+
+fn bundled_sidecar_path() -> Result<PathBuf, String> {
     let filename = if cfg!(windows) {
         "workpilot-sidecar.exe"
     } else {
         "workpilot-sidecar"
     };
-    let sidecar = directory.join(filename);
-    if !sidecar.is_file() {
-        return Err(format!(
-            "安装包缺少内置后端 sidecar: {}。请重新安装完整的 WorkPilot 包。",
-            sidecar.display()
-        ));
-    }
-    Ok(sidecar)
+    bundled_sibling_path(filename, "后端 sidecar")
+}
+
+fn bundled_artifact_python_path() -> Result<PathBuf, String> {
+    let filename = if cfg!(windows) {
+        "workpilot-artifact-python.exe"
+    } else {
+        "workpilot-artifact-python"
+    };
+    bundled_sibling_path(filename, "Artifact Python 运行时")
+}
+
+fn bundled_pptx_renderer_path() -> Result<PathBuf, String> {
+    let filename = if cfg!(windows) {
+        "workpilot-pptx-renderer.exe"
+    } else {
+        "workpilot-pptx-renderer"
+    };
+    bundled_sibling_path(filename, "PptxGenJS Renderer")
 }
 
 fn packaged_command(
@@ -181,10 +212,12 @@ fn packaged_command(
     extra: &[String],
     token: &str,
     browser_root: Option<&Path>,
+    artifact_python: &Path,
+    pptx_renderer: &Path,
 ) -> Command {
     let mut command = Command::new(executable);
     command.arg(mode).args(extra);
-    apply_runtime_env(&mut command, token);
+    apply_runtime_env(&mut command, token, artifact_python, Some(pptx_renderer));
     apply_packaged_runtime_env(&mut command, browser_root);
     command
 }
@@ -272,6 +305,8 @@ fn start_sidecars(app_handle: &tauri::AppHandle) -> Result<(DesktopContext, Vec<
         // externalBin 会把带 target triple 的构建产物复制到主程序同目录，并去掉 triple。
         // 发布态只认这个固定位置，不接受环境变量替换，避免攻击者把启动 token 交给任意程序。
         let sidecar = bundled_sidecar_path()?;
+        let artifact_python = bundled_artifact_python_path()?;
+        let pptx_renderer = bundled_pptx_renderer_path()?;
         let browser_root = app_handle
             .path()
             .resource_dir()
@@ -279,13 +314,23 @@ fn start_sidecars(app_handle: &tauri::AppHandle) -> Result<(DesktopContext, Vec<
             .map(|directory| directory.join("ms-playwright"))
             .filter(|directory| directory.is_dir());
         (
-            packaged_command(&sidecar, "migrate", &[], &token, browser_root.as_deref()),
+            packaged_command(
+                &sidecar,
+                "migrate",
+                &[],
+                &token,
+                browser_root.as_deref(),
+                &artifact_python,
+                &pptx_renderer,
+            ),
             packaged_command(
                 &sidecar,
                 "api",
                 &["--port".into(), port.to_string()],
                 &token,
                 browser_root.as_deref(),
+                &artifact_python,
+                &pptx_renderer,
             ),
         )
     };

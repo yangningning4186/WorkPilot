@@ -7,11 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from app.cowork.sandbox import CoworkSandboxError, SandboxLimits, build_sandbox_argv
+from app.cowork.sandbox import CoworkSandboxError, SandboxLimits, build_sandbox_launch
 from app.cowork.self_protection import protected_shell_command_reason
 from app.cowork.shell import (
     CoworkShellCancelledError,
     CoworkShellError,
+    CoworkShellResourceLimitError,
     assess_shell_command,
     compile_allowlist,
     execute_shell_command,
@@ -156,43 +157,96 @@ def test_shell_protection_keeps_ordinary_read_only_commands_eligible(
     assert assess_shell_command(command, [parsed.argv[0]]).allowlisted is True
 
 
-def test_sandbox_backend_has_hard_isolation_flags_and_never_falls_back(
+def test_native_sandbox_uses_seatbelt_managed_python_and_never_falls_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("app.cowork.sandbox.shutil.which", lambda name: f"/usr/bin/{name}")
-    limits = SandboxLimits(
-        runtime="docker",
-        image="alpine:3.20",
-        memory_mb=256,
-        pids_limit=64,
-        cpus=0.5,
+    monkeypatch.setattr("app.cowork.sandbox.sys.platform", "darwin")
+    monkeypatch.setattr(
+        "app.cowork.sandbox.shutil.which",
+        lambda name: "/usr/bin/sandbox-exec" if name == "sandbox-exec" else None,
     )
-    argv = build_sandbox_argv(
+    limits = SandboxLimits(
+        runtime="native",
+        python_executable=Path(sys.executable),
+    )
+    inputs = tmp_path / "inputs"
+    work = tmp_path / "work"
+    outputs = tmp_path / "outputs"
+    temporary = tmp_path / "tmp"
+    runtime_bin = tmp_path / "runtime" / "bin"
+    skills = tmp_path / "skills"
+    for directory in (inputs, work, outputs, temporary, skills):
+        directory.mkdir(parents=True)
+    runtime_bin.mkdir(parents=True)
+    launch = build_sandbox_launch(
         command="printf ok; touch output.txt",
-        cwd=tmp_path,
+        inputs=inputs,
+        work=work,
+        outputs=outputs,
+        temporary=temporary,
+        runtime_bin=runtime_bin,
+        skill_roots=(skills,),
         limits=limits,
     )
 
-    assert argv[0] == "/usr/bin/docker"
-    assert "--network=none" in argv
-    assert "--read-only" in argv
-    assert "--cap-drop=ALL" in argv
-    assert "--security-opt=no-new-privileges" in argv
-    assert f"type=bind,source={tmp_path.resolve()},target=/workspace" in argv
-    assert argv[-3:] == ("/bin/sh", "-lc", "printf ok; touch output.txt")
+    assert launch.engine == "seatbelt"
+    assert launch.argv[0] == "/usr/bin/sandbox-exec"
+    assert "(deny network*)" in launch.argv[2]
+    assert "(allow ipc-sysv-sem)" in launch.argv[2]
+    assert f'(subpath "{inputs.resolve()}")' in launch.argv[2]
+    assert f'(subpath "{work.resolve()}")' in launch.argv[2]
+    assert launch.argv[-3:] == ("/bin/sh", "-c", "printf ok; touch output.txt")
+    assert launch.cwd == work.resolve()
+    assert launch.environment["WORKPILOT_INPUTS"] == str(inputs.resolve())
+    assert launch.environment["WORKPILOT_OUTPUTS"] == str(outputs.resolve())
+    assert launch.environment["WORKPILOT_PYTHON"] == str(Path(sys.executable).absolute())
+    assert (runtime_bin / "python").read_text(encoding="utf-8").startswith("#!/bin/sh")
+    assert "docker" not in " ".join(launch.argv).casefold()
 
     with pytest.raises(CoworkSandboxError, match="不能降级"):
-        build_sandbox_argv(
+        build_sandbox_launch(
             command="true",
-            cwd=tmp_path,
+            inputs=inputs,
+            work=work,
+            outputs=outputs,
+            temporary=temporary,
+            runtime_bin=runtime_bin,
+            skill_roots=(),
             limits=SandboxLimits(
                 runtime="disabled",
-                image="alpine:3.20",
-                memory_mb=256,
-                pids_limit=64,
-                cpus=0.5,
+                python_executable=Path(sys.executable),
             ),
         )
+
+
+def test_native_sandbox_rejects_bare_python_entrypoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("app.cowork.sandbox.sys.platform", "darwin")
+    monkeypatch.setattr(
+        "app.cowork.sandbox.shutil.which",
+        lambda name: "/usr/bin/sandbox-exec" if name == "sandbox-exec" else None,
+    )
+    directories = [
+        tmp_path / name for name in ("inputs", "work", "outputs", "tmp", "runtime/bin")
+    ]
+    for directory in directories:
+        directory.mkdir(parents=True)
+    arguments = dict(
+        inputs=directories[0],
+        work=directories[1],
+        outputs=directories[2],
+        temporary=directories[3],
+        runtime_bin=directories[4],
+        skill_roots=(),
+        limits=SandboxLimits(runtime="native", python_executable=Path(sys.executable)),
+    )
+
+    with pytest.raises(CoworkSandboxError, match=r"\$WORKPILOT_PYTHON"):
+        build_sandbox_launch(command="python3 build.py", **arguments)
+
+    launch = build_sandbox_launch(command="$WORKPILOT_PYTHON build.py", **arguments)
+    assert launch.argv[-2:] == ("-c", "$WORKPILOT_PYTHON build.py")
 
 
 async def test_shell_execution_caps_output_and_does_not_inherit_secrets(tmp_path: Path) -> None:
@@ -285,6 +339,29 @@ async def test_shell_cancel_terminates_operator_process_group_promptly(tmp_path:
     with pytest.raises(CoworkShellCancelledError, match="用户停止"):
         await task
     assert time.monotonic() - started < 2
+
+
+@pytest.mark.skipif(os.name != "posix", reason="进程树监控使用 POSIX ps")
+async def test_shell_process_tree_memory_limit_stops_allocator(tmp_path: Path) -> None:
+    script = "import time; payload=bytearray(160*1024*1024); print(len(payload)); time.sleep(30)"
+    started = time.monotonic()
+
+    with pytest.raises(CoworkShellResourceLimitError, match="内存"):
+        await execute_shell_command(
+            parse_shell_command(
+                f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+            ),
+            cwd=tmp_path,
+            cancel_event=None,
+            timeout_s=10,
+            terminate_grace_s=0.1,
+            max_output_bytes=1024,
+            process_tree_memory_bytes=64 * 1024 * 1024,
+            process_tree_pids_limit=8,
+            process_tree_cpu_seconds=5,
+        )
+
+    assert time.monotonic() - started < 3
 
 
 @pytest.mark.skipif(os.name != "posix", reason="setsid process-group behavior is POSIX-only")

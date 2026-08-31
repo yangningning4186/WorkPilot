@@ -351,13 +351,37 @@ def test_feishu_calendar_and_base_are_first_class_catalog_capabilities() -> None
     assert {"feishu_calendar_events", "feishu_calendar_event_action"} <= calendar
     assert {"feishu_base_records", "feishu_base_record_action"} <= base
     specs = {item["name"]: item for item in registry.catalog()}
+    assert specs["feishu_calendar_events"]["capability"] is None
     assert specs["feishu_calendar_event_action"]["approval_required"] is True
+    assert specs["feishu_calendar_event_action"]["capability"] is None
     assert specs["feishu_base_record_action"]["approval_required"] is True
     assert "external_approval" in specs["feishu_calendar_event_action"]["description"]
     instructions = registry.system_instructions()
     assert "account_id 时直接使用" in instructions
     assert "不要提前用 ask_user" in instructions
     assert "属于高级 fallback" in instructions
+
+    account_id = str(uuid4())
+    assert registry.human_only_approval_reason(
+        "feishu_calendar_event_action",
+        {
+            "account_id": account_id,
+            "action": "delete",
+            "calendar_id": "primary",
+            "event_id": "event_1",
+            "event": {},
+        },
+    ) is not None
+    assert registry.human_only_approval_reason(
+        "feishu_calendar_event_action",
+        {
+            "account_id": account_id,
+            "action": "update",
+            "calendar_id": "primary",
+            "event_id": "event_1",
+            "event": {"summary": "新标题"},
+        },
+    ) is None
 
 
 def test_connected_accounts_control_connector_surface(tmp_path: Path) -> None:
@@ -578,7 +602,7 @@ def test_tool_catalog_matches_english_aliases_for_chinese_web_tools() -> None:
     assert "ai news" in web_search["search_aliases"]
 
 
-def test_read_only_subagent_catalog_is_unbounded_but_excludes_external_actions() -> None:
+def test_read_only_subagent_catalog_includes_connected_reads_but_excludes_actions() -> None:
     registry = build_default_cowork_registry()
     register_browser_tools(registry)
     register_connector_tools(registry)
@@ -594,7 +618,7 @@ def test_read_only_subagent_catalog_is_unbounded_but_excludes_external_actions()
     assert {"browser_snapshot", "web_search"} <= names
     assert "browser_open" not in names
     assert "act_connector_api" not in names
-    assert "read_connector_api" not in names
+    assert "read_connector_api" in names
 
 
 async def test_tencent_docs_oauth_uses_get_and_persists_open_id() -> None:

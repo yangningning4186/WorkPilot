@@ -1,6 +1,31 @@
+import subprocess
+import sys
 from pathlib import Path
 
 from app import desktop_sidecar
+
+
+def test_api_and_pptx_skill_import_cleanly_in_fresh_processes() -> None:
+    backend_root = Path(__file__).resolve().parents[1]
+    probes = (
+        "from app.main import app; print(app.title)",
+        (
+            "from app.cowork.skills.builtin.pptx.scripts.render_pptx "
+            "import render_presentation; print(render_presentation.__module__)"
+        ),
+    )
+
+    for probe in probes:
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", probe],
+            cwd=backend_root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert "fitz API is deprecated" not in completed.stderr
 
 
 def test_frozen_sidecar_anchors_mutable_paths_to_data_root(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]

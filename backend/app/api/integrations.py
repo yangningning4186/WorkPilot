@@ -322,6 +322,7 @@ async def get_skills_status(
                 settings.cowork_skills_path,
                 max_files=settings.cowork_skill_max_files,
                 max_bytes=settings.cowork_skill_max_bytes,
+                project_roots=project_roots,
             )
         ],
     }

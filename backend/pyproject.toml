@@ -22,6 +22,7 @@ dependencies = [
   # MCP v1 的异步 ClientSession 与 stdio / Streamable HTTP transport。
   "mcp>=1.28.1,<2",
   "openpyxl>=3.1,<4",
+  "Pillow>=12,<13",
   "playwright==1.55.0",
   "pydantic-settings>=2.10,<3",
   "pymupdf>=1.26,<2",
@@ -30,6 +31,8 @@ dependencies = [
   "python-multipart>=0.0.20,<1",
   "python-pptx>=1.0,<2",
   "pyyaml>=6.0.3,<7",
+  # 随包 artifact Python 的 PDF 生成能力；运行时版本由 uv.lock 与自检双重固定。
+  "reportlab>=5.0,<6",
   # 用到的只有 from_url / publish / pubsub / aclose, 5.0.1+ 全部具备。
   "sqlalchemy[asyncio]>=2.0.41,<3",
   "structlog>=25.4,<26",

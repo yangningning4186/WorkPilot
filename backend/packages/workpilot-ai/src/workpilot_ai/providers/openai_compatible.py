@@ -5,6 +5,7 @@ import json
 import re
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -72,6 +73,81 @@ _ORPHAN_THINK_PREAMBLE_LIMIT = 8_192
 # 的首轮流式输出长时间没有任何反馈。一旦识别成功，provider 实例后续轮次会直接按
 # orphan 协议实时分流。
 _ORPHAN_THINK_PROBE_CHARS = 256
+
+# Cowork 把工具生成的预览页作为一条 runtime directive 回传给模型。PPT 页图用于增强
+# 视觉复核，但不是用户输入本身；纯文本模型可以安全地退化到工具的结构化校验结果。
+# 来源与工具名必须同时命中：用户图片、浏览器截图等任务必需图绝不能被静默丢弃。
+_OPTIONAL_TOOL_PREVIEW_MARKER = "工具 preview_presentation 返回了"
+_TOOL_PREVIEW_VISION_FALLBACK = """
+<vision_fallback>
+当前模型不支持视觉输入，工具生成的预览页图已省略。继续任务时只能依据工具返回的结构化渲染、内容与校验结果；不要声称已经看过或视觉检查过这些图片。最终交付时须明确说明未进行模型视觉审阅。
+</vision_fallback>
+""".strip()
+
+
+def _contains_image_attachments(messages: list[Message]) -> bool:
+    return any(
+        attachment.kind == "image"
+        for message in messages
+        for attachment in message.attachments
+    )
+
+
+def _without_optional_tool_result_images(messages: list[Message]) -> tuple[list[Message], int]:
+    """只剥离 Cowork 工具预览图，保留用户图片和其他附件。
+
+    返回新列表而不改 canonical history。调用者还必须确认清理后不存在其他图片，
+    才能把 provider 的多模态拒绝自动降级成纯文本重试。
+    """
+
+    cleaned: list[Message] = []
+    removed = 0
+    for message in messages:
+        if (
+            message.role == "user"
+            and message.source == "tool_result_attachment"
+            and _OPTIONAL_TOOL_PREVIEW_MARKER in message.content
+            and any(attachment.kind == "image" for attachment in message.attachments)
+        ):
+            kept = tuple(
+                attachment for attachment in message.attachments if attachment.kind != "image"
+            )
+            removed += len(message.attachments) - len(kept)
+            notice = (
+                message.content
+                if _TOOL_PREVIEW_VISION_FALLBACK in message.content
+                else f"{message.content}\n\n{_TOOL_PREVIEW_VISION_FALLBACK}"
+            )
+            cleaned.append(replace(message, content=notice, attachments=kept))
+            continue
+        cleaned.append(message)
+    return cleaned, removed
+
+
+def _is_non_multimodal_response(response: httpx.Response, body: str) -> bool:
+    """识别端点明确声明模型不接收图片的 4xx；不吞掉图片格式等真实错误。"""
+
+    if response.status_code not in {400, 422}:
+        return False
+    normalized = body.casefold()
+    return any(
+        marker in normalized
+        for marker in (
+            "not a multimodal model",
+            "is not multimodal",
+            "does not support image input",
+            "doesn't support image input",
+            "image input is not supported",
+            "image inputs are not supported",
+            "does not support vision",
+            "vision input is not supported",
+            "text-only model",
+            "only supports text input",
+            "非多模态模型",
+            "不支持图像输入",
+            "不支持视觉输入",
+        )
+    )
 
 
 class _LeadingThinkStreamFilter:
@@ -420,6 +496,9 @@ class OpenAICompatibleProvider:
         # 同一 run 的后续工具轮就能从首 token 开始走 reasoning_delta。
         self._orphan_think_protocol: bool | None = None
         self._clean_think_probe_responses = 0
+        # None = 未知；False = 端点已明确拒绝工具预览图。只缓存负向探测，避免每个
+        # preview 工具轮都先撞一次 400。用户上传的图片不会触发或使用这条降级路径。
+        self._tool_result_images_supported: bool | None = None
         self._prompt_cache_key_supported = prompt_cache_key_supported
         self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = client or httpx.AsyncClient(
@@ -437,6 +516,30 @@ class OpenAICompatibleProvider:
         """
 
         return f"thinking={self._enable_thinking}"
+
+    def _messages_for_known_capability(self, messages: list[Message]) -> list[Message]:
+        if self._tool_result_images_supported is not False:
+            return messages
+        cleaned, removed = _without_optional_tool_result_images(messages)
+        # 存在用户图片时不做静默降级：让端点返回原始能力错误，要求调用方换视觉模型。
+        if removed and not _contains_image_attachments(cleaned):
+            return cleaned
+        return messages
+
+    def _fallback_after_multimodal_rejection(
+        self,
+        messages: list[Message],
+        *,
+        response: httpx.Response,
+        body: str,
+    ) -> list[Message] | None:
+        if not _is_non_multimodal_response(response, body):
+            return None
+        cleaned, removed = _without_optional_tool_result_images(messages)
+        if not removed or _contains_image_attachments(cleaned):
+            return None
+        self._tool_result_images_supported = False
+        return cleaned
 
     async def complete(
         self,
@@ -503,9 +606,10 @@ class OpenAICompatibleProvider:
         parallel_tool_calls: bool = False,
         prompt_cache_key: str | None = None,
     ) -> CompletionResult:
+        request_messages = self._messages_for_known_capability(messages)
         request_payload: dict[str, Any] = {
             "model": self.chat_model,
-            "messages": [await self._message_payload(message) for message in messages],
+            "messages": [await self._message_payload(message) for message in request_messages],
             "temperature": temperature,
         }
         if max_tokens is not None:
@@ -536,7 +640,26 @@ class OpenAICompatibleProvider:
                 json=request_payload,
             )
         if response.is_error:
-            _raise_with_body(response, response.text)
+            body = response.text
+            fallback_messages = self._fallback_after_multimodal_rejection(
+                request_messages,
+                response=response,
+                body=body,
+            )
+            if fallback_messages is None:
+                _raise_with_body(response, body)
+            assert fallback_messages is not None
+            request_payload["messages"] = [
+                await self._message_payload(message) for message in fallback_messages
+            ]
+            with _dispatch_guard():
+                response = await self._client.post(
+                    "chat/completions",
+                    headers=self._headers,
+                    json=request_payload,
+                )
+            if response.is_error:
+                _raise_with_body(response, response.text)
         payload: dict[str, Any] = response.json()
         try:
             message = payload["choices"][0]["message"]
@@ -637,9 +760,10 @@ class OpenAICompatibleProvider:
 
         if not tools:
             raise ValueError("原生 tool-calling 至少需要一个工具")
+        request_messages = self._messages_for_known_capability(messages)
         request_payload: dict[str, Any] = {
             "model": self.chat_model,
-            "messages": [await self._message_payload(message) for message in messages],
+            "messages": [await self._message_payload(message) for message in request_messages],
             "temperature": temperature,
             "stream": True,
             # 不支持的端点会忽略这个字段；支持的会在末尾多给一块带 usage 的 chunk。
@@ -686,10 +810,34 @@ class OpenAICompatibleProvider:
                 json=request_payload,
             )
             response = await stream.__aenter__()
-        try:
+        if response.is_error:
+            # 还没有消费任何 SSE delta，可以安全地只针对工具预览图重试一次。
+            body = (await response.aread()).decode("utf-8", "replace")
+            fallback_messages = self._fallback_after_multimodal_rejection(
+                request_messages,
+                response=response,
+                body=body,
+            )
+            await stream.__aexit__(None, None, None)
+            if fallback_messages is None:
+                _raise_with_body(response, body)
+            assert fallback_messages is not None
+            request_payload["messages"] = [
+                await self._message_payload(message) for message in fallback_messages
+            ]
+            with _dispatch_guard():
+                stream = self._client.stream(
+                    "POST",
+                    "chat/completions",
+                    headers=self._headers,
+                    json=request_payload,
+                )
+                response = await stream.__aenter__()
             if response.is_error:
-                # 流式响应要先把体读出来才有内容, 否则拿到的是空串。
-                _raise_with_body(response, (await response.aread()).decode("utf-8", "replace"))
+                retry_body = (await response.aread()).decode("utf-8", "replace")
+                await stream.__aexit__(None, None, None)
+                _raise_with_body(response, retry_body)
+        try:
             async for line in response.aiter_lines():
                 if not line.startswith("data:"):
                     continue

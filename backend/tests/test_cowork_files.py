@@ -3,7 +3,7 @@ import hashlib
 import subprocess
 from pathlib import Path
 
-import fitz
+import pymupdf
 import pytest
 
 from app.core.config import Settings
@@ -149,10 +149,10 @@ async def test_read_text_rejects_binary_and_oversized_files(tmp_path: Path) -> N
 
 async def test_read_pdf_uses_existing_parser_and_returns_bounded_text(tmp_path: Path) -> None:
     pdf_path = tmp_path / "brief.pdf"
-    document = fitz.open()
+    document = pymupdf.open()
     page = document.new_page()
     page.insert_textbox(
-        fitz.Rect(72, 72, 540, 770),
+        pymupdf.Rect(72, 72, 540, 770),
         "WorkPilot " + ("PDF content " * 150),
         fontsize=8,
     )

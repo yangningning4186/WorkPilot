@@ -133,6 +133,73 @@ def test_skill_resource_enumeration_bounds_directory_entries(tmp_path: Path) -> 
         )
 
 
+def test_skill_resource_enumeration_ignores_build_and_dependency_directories(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "skills"
+    install_skill(
+        root,
+        name="summarize",
+        skill_md=SKILL_MD,
+        enabled=True,
+        max_bytes=64_000,
+        replace=False,
+    )
+    skill = root / "summarize"
+    (skill / "scripts").mkdir()
+    (skill / "scripts" / "tool.js").write_text("export {};", encoding="utf-8")
+    for ignored in ("node_modules", "dist", "__pycache__"):
+        directory = skill / ignored / "nested"
+        directory.mkdir(parents=True)
+        (directory / "ignored.txt").write_text("ignored", encoding="utf-8")
+
+    resources = list_skill_resources(
+        skill / "SKILL.md",
+        max_files=10,
+        max_bytes=64_000,
+    )
+    managed = list_managed_skills(
+        root,
+        max_files=20,
+        max_bytes=64_000,
+        builtin_root=None,
+    )
+
+    assert [item.path for item in resources] == ["scripts/tool.js"]
+    assert managed[0].resources == ("scripts/tool.js",)
+
+
+def test_broken_project_skill_does_not_shadow_loadable_user_skill(tmp_path: Path) -> None:
+    user_root = tmp_path / "user-skills"
+    install_skill(
+        user_root,
+        name="summarize",
+        skill_md=SKILL_MD,
+        enabled=True,
+        max_bytes=64_000,
+        replace=False,
+    )
+    workspace = tmp_path / "workspace"
+    broken = workspace / ".workpilot" / "skills" / "summarize"
+    broken.mkdir(parents=True)
+    (broken / "SKILL.md").write_text("---\nname: summarize\n---\n", encoding="utf-8")
+
+    managed = list_managed_skills(
+        user_root,
+        max_files=20,
+        max_bytes=64_000,
+        builtin_root=None,
+        project_roots=(workspace,),
+    )
+
+    user = next(item for item in managed if item.origin == "user")
+    project = next(item for item in managed if item.origin == "project")
+    assert user.shadowed is False
+    assert user.enabled is True
+    assert project.error is not None
+    assert project.enabled is False
+
+
 def test_skill_zip_enforces_actual_streamed_member_size(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -7,11 +7,14 @@ import hashlib
 import os
 import shlex
 import signal
+import subprocess
 import sys
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Literal
 
+from app.cowork.process_limits import read_process_tree_usage
 from app.cowork.self_protection import shell_argument_indirection_reason
 
 SHELL_OPERATOR_TOKENS = ("\n", "\r", ";", "|", "&", ">", "<", "`", "$")
@@ -74,6 +77,10 @@ class CoworkShellCancelledError(CoworkShellError):
 
 
 class CoworkShellTimeoutError(CoworkShellError):
+    pass
+
+
+class CoworkShellResourceLimitError(CoworkShellError):
     pass
 
 
@@ -252,10 +259,32 @@ async def execute_shell_command(
     max_output_bytes: int,
     full_output_path: Path | None = None,
     full_output_max_bytes: int = 64 * 1024 * 1024,
+    environment_overrides: Mapping[str, str] | None = None,
+    preexec_fn: Callable[[], None] | None = None,
+    process_tree_memory_bytes: int | None = None,
+    process_tree_pids_limit: int | None = None,
+    process_tree_cpu_seconds: float | None = None,
 ) -> ShellExecutionResult:
     if timeout_s <= 0 or terminate_grace_s < 0 or max_output_bytes < 1 or full_output_max_bytes < 1:
         raise ValueError("shell 执行限制必须为正数")
     environment = _minimal_environment()
+    if environment_overrides:
+        for key, value in environment_overrides.items():
+            if not key or "=" in key or "\x00" in key or "\x00" in value:
+                raise ValueError("shell 环境变量包含非法名称或空字符")
+            environment[key] = value
+    if preexec_fn is not None:
+        if os.name != "posix":
+            raise ValueError("preexec_fn 只能用于 POSIX 子进程")
+    process_tree_limits = (
+        process_tree_memory_bytes,
+        process_tree_pids_limit,
+        process_tree_cpu_seconds,
+    )
+    if any(value is not None and value <= 0 for value in process_tree_limits):
+        raise ValueError("进程树资源限制必须为正数")
+    if any(value is not None for value in process_tree_limits) and os.name != "posix":
+        raise ValueError("进程树资源监控只能用于 POSIX 子进程")
     if command.has_operators:
         process = await asyncio.create_subprocess_exec(
             "/bin/sh",
@@ -267,6 +296,7 @@ async def execute_shell_command(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=os.name == "posix",
+            preexec_fn=preexec_fn,
         )
         execution_mode: Literal["argv", "shell"] = "shell"
     else:
@@ -278,6 +308,7 @@ async def execute_shell_command(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=os.name == "posix",
+            preexec_fn=preexec_fn,
         )
         execution_mode = "argv"
 
@@ -298,9 +329,25 @@ async def execute_shell_command(
     )
     process_task = asyncio.create_task(process.wait())
     cancel_task = asyncio.create_task(cancel_event.wait()) if cancel_event is not None else None
-    waiters: set[asyncio.Task[int] | asyncio.Task[bool]] = {process_task}
+    resource_task = (
+        asyncio.create_task(
+            _wait_for_process_tree_limit(
+                process.pid,
+                memory_bytes=process_tree_memory_bytes,
+                pids_limit=process_tree_pids_limit,
+                cpu_seconds=process_tree_cpu_seconds,
+            )
+        )
+        if any(value is not None for value in process_tree_limits)
+        else None
+    )
+    waiters: set[asyncio.Task[int] | asyncio.Task[bool] | asyncio.Task[str]] = {
+        process_task
+    }
     if cancel_task is not None:
         waiters.add(cancel_task)
+    if resource_task is not None:
+        waiters.add(resource_task)
     pending_error: CoworkShellError | None = None
     exit_code = -1
     try:
@@ -314,12 +361,18 @@ async def execute_shell_command(
         elif cancel_task is not None and cancel_task in done:
             await _terminate_process_group(process, terminate_grace_s)
             pending_error = CoworkShellCancelledError("用户停止，shell 进程已终止")
+        elif resource_task is not None and resource_task in done:
+            reason = resource_task.result()
+            await _terminate_process_group(process, terminate_grace_s)
+            pending_error = CoworkShellResourceLimitError(reason)
         else:
             await _terminate_process_group(process, terminate_grace_s)
             pending_error = CoworkShellTimeoutError(f"shell 命令超过 {timeout_s:g} 秒，已终止")
     finally:
         if cancel_task is not None:
             cancel_task.cancel()
+        if resource_task is not None:
+            resource_task.cancel()
         if process.returncode is None:
             await _terminate_process_group(process, terminate_grace_s)
 
@@ -347,6 +400,8 @@ async def execute_shell_command(
         # stdout/stderr 管道 EOF；reader 已超时就不能再在这里无界等待。
         process_task.cancel()
     await asyncio.gather(process_task, return_exceptions=True)
+    if resource_task is not None:
+        await asyncio.gather(resource_task, return_exceptions=True)
     if pending_error is not None:
         raise pending_error
     if reader_timed_out:
@@ -392,6 +447,33 @@ async def _read_limited(
         if len(retained) > max_bytes:
             del retained[: len(retained) - max_bytes]
             truncated = True
+
+
+async def _wait_for_process_tree_limit(
+    root_pid: int,
+    *,
+    memory_bytes: int | None,
+    pids_limit: int | None,
+    cpu_seconds: float | None,
+) -> str:
+    while True:
+        try:
+            usage = await asyncio.to_thread(read_process_tree_usage, root_pid)
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            return f"无法验证 sandbox 进程树资源用量，已终止：{error}"
+        if memory_bytes is not None and usage.rss_bytes > memory_bytes:
+            return (
+                f"sandbox 进程树内存 {usage.rss_bytes} bytes 超过上限 "
+                f"{memory_bytes} bytes，已终止"
+            )
+        if pids_limit is not None and usage.pids > pids_limit:
+            return f"sandbox 进程数 {usage.pids} 超过上限 {pids_limit}，已终止"
+        if cpu_seconds is not None and usage.cpu_seconds > cpu_seconds:
+            return (
+                f"sandbox 进程树 CPU 时间 {usage.cpu_seconds:g} 秒超过上限 "
+                f"{cpu_seconds:g} 秒，已终止"
+            )
+        await asyncio.sleep(0.1)
 
 
 async def _terminate_process_group(process: asyncio.subprocess.Process, grace_s: float) -> None:

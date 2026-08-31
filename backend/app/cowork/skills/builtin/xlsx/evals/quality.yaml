@@ -1,0 +1,17 @@
+schema_version: 1
+metrics:
+  file_open_rate: 1.0
+  formula_validity: 1.0
+  formula_pattern_consistency: 1.0
+  formula_range_boundary_pass: 1.0
+  hardcoded_formula_override_rate_max: 0.0
+  cross_sheet_alignment_pass: 1.0
+  chart_source_alignment: 1.0
+  coordinate_overlap_rate_max: 0.0
+  type_preservation: 1.0
+  nonempty_sheet_rate: 1.0
+  clipping_rate_max: 0.0
+  # 视觉渲染依赖本机 LibreOffice；缺失时 Validator 返回 not_run，
+  # 这一项按“未测量”处理，不得记为通过。
+  visual_render_pass_when_available: 1.0
+  external_reference_rate_max: 0.0

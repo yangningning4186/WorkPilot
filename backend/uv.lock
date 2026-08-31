@@ -1585,6 +1585,19 @@ wheels = [
 ]
 
 [[package]]
+name = "reportlab"
+version = "5.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "charset-normalizer" },
+    { name = "pillow" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4a/51/dbe28534ae12c852f61be91f039f343305fd1f34f1c66b8de75afae7a525/reportlab-5.0.1.tar.gz", hash = "sha256:ebd13154be1c8515e665de70bd2d303ae9ddc3ef47e44afd5116441ca0283a26", size = 3945711, upload-time = "2026-08-20T13:48:16.461Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/db/cb/dacbc268cb68d0428ea2cbd85266195a9ab3e677449589ddae59bd7542ac/reportlab-5.0.1-py3-none-any.whl", hash = "sha256:1c36e6bb0e71780c72331eba60da7f602e8d4389a8723825af71342e49d791e8", size = 1957258, upload-time = "2026-08-20T13:48:14.026Z" },
+]
+
+[[package]]
 name = "requests"
 version = "2.34.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2010,6 +2023,7 @@ dependencies = [
     { name = "llama-index-vector-stores-faiss" },
     { name = "mcp" },
     { name = "openpyxl" },
+    { name = "pillow" },
     { name = "playwright" },
     { name = "pydantic-settings" },
     { name = "pymupdf" },
@@ -2017,6 +2031,7 @@ dependencies = [
     { name = "python-multipart" },
     { name = "python-pptx" },
     { name = "pyyaml" },
+    { name = "reportlab" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "structlog" },
     { name = "uuid6" },
@@ -2053,6 +2068,7 @@ requires-dist = [
     { name = "llama-index-vector-stores-faiss", specifier = ">=0.3,<1" },
     { name = "mcp", specifier = ">=1.28.1,<2" },
     { name = "openpyxl", specifier = ">=3.1,<4" },
+    { name = "pillow", specifier = ">=12,<13" },
     { name = "playwright", specifier = "==1.55.0" },
     { name = "pydantic-settings", specifier = ">=2.10,<3" },
     { name = "pymupdf", specifier = ">=1.26,<2" },
@@ -2060,6 +2076,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.20,<1" },
     { name = "python-pptx", specifier = ">=1.0,<2" },
     { name = "pyyaml", specifier = ">=6.0.3,<7" },
+    { name = "reportlab", specifier = ">=5.0,<6" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.41,<3" },
     { name = "structlog", specifier = ">=25.4,<26" },
     { name = "uuid6", specifier = ">=2025.0.1,<2026" },

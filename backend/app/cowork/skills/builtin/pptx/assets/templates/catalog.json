@@ -1,0 +1,348 @@
+{
+  "schema_version": 1,
+  "source_bundle": "local slides Skill/slide_templates (copied into this Skill)",
+  "overview_file": "Overview.png",
+  "license_notice": "Source bundle contains OpenAI copyright notices but no standalone license file. Confirm redistribution rights before publishing these binary templates outside the local product repository.",
+  "kits": {
+    "workpilot-clean": {
+      "family": "clean",
+      "template_file": null,
+      "source_sha256": null,
+      "source_fonts": ["Arial", "Microsoft YaHei"],
+      "scenes": ["通用汇报", "产品说明", "内部同步"],
+      "theme": {
+        "name": "workpilot-clean",
+        "background": "F7F8F6",
+        "surface": "FFFFFF",
+        "text_primary": "17211D",
+        "text_secondary": "5F6D66",
+        "accent": "167A5B",
+        "positive": "26845F",
+        "warning": "C37632",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "academic-01": {
+      "family": "editorial",
+      "template_file": "Academic_01.pptx",
+      "source_sha256": "6e3ed1dbef0191cd27cebea73db5d65399788e1469c02cb871df110362d1beda",
+      "source_fonts": ["Avenir Black", "Avenir Book", "Avenir Light", "Avenir Medium"],
+      "scenes": ["学术报告", "课程讲授", "建筑与设计研究"],
+      "theme": {
+        "name": "academic-01",
+        "background": "F5F4F1",
+        "surface": "FFFFFF",
+        "text_primary": "111111",
+        "text_secondary": "5B5B5B",
+        "accent": "1E1E1E",
+        "positive": "2F6D68",
+        "warning": "A65D36",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "academic-02": {
+      "family": "luminous",
+      "template_file": "Academic_02.pptx",
+      "source_sha256": "351955549fdc04ad61e0199841e183c1185311babc1fdb88f0ebceb1a6eedee1",
+      "source_fonts": ["Avenir Book", "Avenir Heavy", "DM Serif Display"],
+      "scenes": ["生命科学", "技术研究", "未来主题"],
+      "theme": {
+        "name": "academic-02",
+        "background": "090625",
+        "surface": "17113C",
+        "text_primary": "F7F4FF",
+        "text_secondary": "C3B8E8",
+        "accent": "7C3CFF",
+        "positive": "39D4B2",
+        "warning": "FF9B64",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "academic-03": {
+      "family": "editorial",
+      "template_file": "Academic_03.pptx",
+      "source_sha256": "b5649598104d339981a62eb26e7f9a1feb88b83613329d85e9c6918be128f83f",
+      "source_fonts": ["Aptos", "Arial Black"],
+      "scenes": ["论文答辩", "医学研究", "正式课题汇报"],
+      "theme": {
+        "name": "academic-03",
+        "background": "82767F",
+        "surface": "F2EDF0",
+        "text_primary": "FFFFFF",
+        "text_secondary": "E2D9DE",
+        "accent": "D8C7D0",
+        "positive": "8DB5A1",
+        "warning": "E2A36F",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "academic-04": {
+      "family": "organic",
+      "template_file": "Academic_04.pptx",
+      "source_sha256": "0420822c3ee295086d735b070a52d990e143e12b744b4392a624609d6303a2f2",
+      "source_fonts": ["Elephant"],
+      "scenes": ["生态环境", "自然科学", "可持续发展"],
+      "theme": {
+        "name": "academic-04",
+        "background": "6F7925",
+        "surface": "E9E4B9",
+        "text_primary": "FFF9D9",
+        "text_secondary": "DFD9A9",
+        "accent": "D3C45B",
+        "positive": "AFC85B",
+        "warning": "D98B4B",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "brand-01": {
+      "family": "luminous",
+      "template_file": "Brand_Design_01.pptx",
+      "source_sha256": "9ed16d444705d01441cef6834d7c8da0a1e4634461a9477b17254699a9073baf",
+      "source_fonts": ["Arial", "Arial Black"],
+      "scenes": ["品牌提案", "视觉识别", "创意展示"],
+      "theme": {
+        "name": "brand-01",
+        "background": "240043",
+        "surface": "3B075D",
+        "text_primary": "FFF7FF",
+        "text_secondary": "DDBFEA",
+        "accent": "9C29FF",
+        "positive": "27D5AE",
+        "warning": "FF7A45",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "brand-02": {
+      "family": "organic",
+      "template_file": "Brand_Design_02.pptx",
+      "source_sha256": "d0fef71b9861ec31516fdd1509994237162e23e2f1bc341e392fa3e435b477ce",
+      "source_fonts": ["DM Serif Display", "Helvetica Neue Medium", "Libre Baskerville", "Recoleta Regular Demo"],
+      "scenes": ["生活方式品牌", "设计工作室", "品牌规范"],
+      "theme": {
+        "name": "brand-02",
+        "background": "FBF5EB",
+        "surface": "FFFDFC",
+        "text_primary": "2D241F",
+        "text_secondary": "776A61",
+        "accent": "B69275",
+        "positive": "6E8C74",
+        "warning": "C77B54",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "brand-03": {
+      "family": "bold",
+      "template_file": "Brand_Design_03.pptx",
+      "source_sha256": "ae9841bdc556bb859efddaae398817eee653369e6e33a01c4ee271f54b7a8393",
+      "source_fonts": ["Avenir Book", "Avenir Heavy", "Avenir Light"],
+      "scenes": ["科技品牌", "产品发布", "动感视觉"],
+      "theme": {
+        "name": "brand-03",
+        "background": "F7F5F1",
+        "surface": "FFFFFF",
+        "text_primary": "141414",
+        "text_secondary": "68625D",
+        "accent": "FF5A14",
+        "positive": "299B73",
+        "warning": "D63A19",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "brand-04": {
+      "family": "organic",
+      "template_file": "Brand_Design_04.pptx",
+      "source_sha256": "01f815a7533e0ff9b78431b8637ff0e6f391f3273502427bd37451a3e070cbb7",
+      "source_fonts": ["Aptos Light", "Arial", "Avenir", "GFS Didot", "Lato"],
+      "scenes": ["消费品牌", "文旅品牌", "品牌手册"],
+      "theme": {
+        "name": "brand-04",
+        "background": "E6D7B8",
+        "surface": "F5EDD9",
+        "text_primary": "3A2B20",
+        "text_secondary": "766453",
+        "accent": "C48A37",
+        "positive": "6D8A55",
+        "warning": "B55A3C",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "consulting-01": {
+      "family": "consulting",
+      "template_file": "Consulting_Proposal_01.pptx",
+      "source_sha256": "d5b8ba03b3fb7ca0147db1a959b47799d4b2275066f67e3f11b9afd4bbe910e2",
+      "source_fonts": ["Aptos", "Aptos Display", "Book Antiqua", "Times Roman"],
+      "scenes": ["经营汇报", "财务优化", "咨询建议"],
+      "theme": {
+        "name": "consulting-01",
+        "background": "071C47",
+        "surface": "102C61",
+        "text_primary": "FFFFFF",
+        "text_secondary": "B8C8E7",
+        "accent": "1F76FF",
+        "positive": "35C29A",
+        "warning": "F59A4A",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "consulting-02": {
+      "family": "consulting",
+      "template_file": "Consulting_Proposal_02.pptx",
+      "source_sha256": "17d74d5d970209da38fc89c78c0e1587e0e979ff83d69f79a4ef0b51e809eab6",
+      "source_fonts": ["Avenir Book", "Avenir Heavy", "Avenir Light", "Avenir Medium", "DM Serif Display"],
+      "scenes": ["金融分析", "战略咨询", "董事会材料"],
+      "theme": {
+        "name": "consulting-02",
+        "background": "F4F7F8",
+        "surface": "FFFFFF",
+        "text_primary": "092D37",
+        "text_secondary": "536F77",
+        "accent": "1B9C95",
+        "positive": "2DAF76",
+        "warning": "C87A3C",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "consulting-03": {
+      "family": "tech",
+      "template_file": "Consulting_Proposal_03.pptx",
+      "source_sha256": "8dc88c238277b9aa6e0bd973fb0ebb5f82c40d5a4ed1da1aafcf1498f78d4414",
+      "source_fonts": ["Avenir Book", "Avenir Heavy", "Avenir Medium"],
+      "scenes": ["保险咨询", "企业方案", "数字化转型"],
+      "theme": {
+        "name": "consulting-03",
+        "background": "082A24",
+        "surface": "0D3A31",
+        "text_primary": "F2FFF9",
+        "text_secondary": "A5CDBD",
+        "accent": "8DDC35",
+        "positive": "45D69B",
+        "warning": "F2B04E",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "consulting-04": {
+      "family": "tech",
+      "template_file": "Consulting_Proposal_04.pptx",
+      "source_sha256": "1eeb7d281acfb8f10700e3c54b8255089fe7a509c0912e2cecffb2a16cdddab3",
+      "source_fonts": ["Consolas", "Corbel"],
+      "scenes": ["金融科技", "技术咨询", "架构方案"],
+      "theme": {
+        "name": "consulting-04",
+        "background": "0C342E",
+        "surface": "11483F",
+        "text_primary": "EFFFF9",
+        "text_secondary": "9CC8BC",
+        "accent": "2FD2A5",
+        "positive": "6CDE9D",
+        "warning": "E5A84C",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "market-research-01": {
+      "family": "consulting",
+      "template_file": "Market_Research_01.pptx",
+      "source_sha256": "c398025aa670d8878e023d3812e52ed98c879340bbe5079f0d3161bfdde052c8",
+      "source_fonts": ["Avenir Book", "Avenir Heavy", "Avenir Medium", "Gotham Rounded Book"],
+      "scenes": ["市场研究", "用户洞察", "行业分析"],
+      "theme": {
+        "name": "market-research-01",
+        "background": "EAF8FA",
+        "surface": "FFFFFF",
+        "text_primary": "123B55",
+        "text_secondary": "587486",
+        "accent": "16A8B8",
+        "positive": "39A878",
+        "warning": "D18142",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "pitch-deck": {
+      "family": "bold",
+      "template_file": "Pitch_Deck.pptx",
+      "source_sha256": "2438ed4b0130e2324d1014e08b8e34d5e9442c639db83d5208faacbf4c517c24",
+      "source_fonts": ["Inter", "Inter Light", "Inter Medium", "Inter Semibold"],
+      "scenes": ["融资路演", "产品提案", "创业项目"],
+      "theme": {
+        "name": "pitch-deck",
+        "background": "FBFAF7",
+        "surface": "FFFFFF",
+        "text_primary": "171717",
+        "text_secondary": "626262",
+        "accent": "FF5B36",
+        "positive": "22A06B",
+        "warning": "D83E2D",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "project-kickoff-01": {
+      "family": "luminous",
+      "template_file": "Project_Kick-off_01.pptx",
+      "source_sha256": "9e5e1bbb668ea917dce1426eb10bf4dcbbbc6c8425f5759532c066f0e92526ab",
+      "source_fonts": ["Quicksand", "Reddit Sans", "Reddit Sans ExtraBold"],
+      "scenes": ["项目启动", "消费科技", "团队共创"],
+      "theme": {
+        "name": "project-kickoff-01",
+        "background": "E7D5FF",
+        "surface": "F8F1FF",
+        "text_primary": "243269",
+        "text_secondary": "626A93",
+        "accent": "7653F6",
+        "positive": "3AAE8E",
+        "warning": "E1B534",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    },
+    "project-kickoff-02": {
+      "family": "clean",
+      "template_file": "Project_Kick-off_02.pptx",
+      "source_sha256": "53af201473afbce8bcc311444d592aa47ba3bd31f9692a41c7ee8c7a9c110a55",
+      "source_fonts": ["Aptos", "Avenir Book", "Figtree Medium", "Montserrat", "Montserrat Bold"],
+      "scenes": ["企业项目启动", "跨部门协作", "交付计划"],
+      "theme": {
+        "name": "project-kickoff-02",
+        "background": "F5F7F7",
+        "surface": "FFFFFF",
+        "text_primary": "163E57",
+        "text_secondary": "647985",
+        "accent": "1F789E",
+        "positive": "2D9877",
+        "warning": "C88A45",
+        "title_font": "Arial",
+        "body_font": "Arial",
+        "east_asia_font": "Microsoft YaHei"
+      }
+    }
+  }
+}

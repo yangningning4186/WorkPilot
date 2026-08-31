@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from html import escape
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from workpilot_ai.types import (
     Message,
@@ -26,6 +26,7 @@ class CanonicalToolCall(TypedDict):
     id: str
     type: Literal["function"]
     function: CanonicalToolFunction
+    thought_signature: NotRequired[str]
 
 
 AgentMessageRole = Literal[
@@ -107,6 +108,7 @@ def convert_to_llm(raw: Mapping[str, Any]) -> Message | None:
             role="user",
             content=(f'<runtime_directive source="{source}">\n{content}\n</runtime_directive>'),
             attachments=_message_attachments(raw),
+            source=str(raw.get("source") or "runtime"),
         )
     if role == "compaction_summary":
         return Message(role="user", content=content)
@@ -124,11 +126,15 @@ def convert_to_llm(raw: Mapping[str, Any]) -> Message | None:
             if not isinstance(item, Mapping) or not isinstance(item.get("function"), Mapping):
                 raise ValueError("非法 canonical tool_call")
             function = cast("Mapping[str, Any]", item["function"])
+            thought_signature = item.get("thought_signature", "")
+            if not isinstance(thought_signature, str):
+                raise ValueError("canonical tool_call thought_signature 必须是字符串")
             calls.append(
                 ToolCall(
                     id=str(item.get("id", "")),
                     name=str(function.get("name", "")),
                     arguments=str(function.get("arguments", "")),
+                    thought_signature=thought_signature,
                 )
             )
     return Message(
@@ -137,6 +143,7 @@ def convert_to_llm(raw: Mapping[str, Any]) -> Message | None:
         tool_calls=tuple(calls),
         tool_call_id=(None if raw.get("tool_call_id") is None else str(raw["tool_call_id"])),
         attachments=_message_attachments(raw),
+        source=(None if raw.get("source") is None else str(raw["source"])),
         content_blocks=_message_content_blocks(raw),
     )
 

@@ -6,7 +6,7 @@ from app.agent_core.messages import (
     convert_to_llm_messages,
     runtime_directive,
 )
-from workpilot_ai.types import TextContentBlock, ThinkingContentBlock
+from workpilot_ai.types import TextContentBlock, ThinkingContentBlock, ToolCall
 
 
 def test_runtime_directive_is_canonical_custom_role_and_flattens_once() -> None:
@@ -70,4 +70,31 @@ def test_assistant_signed_thinking_blocks_survive_provider_conversion() -> None:
     assert converted.content_blocks == (
         ThinkingContentBlock(thinking="内部推理", signature="signed-payload"),
         TextContentBlock(text="开始调用工具"),
+    )
+
+
+def test_gemini_tool_thought_signature_survives_provider_conversion() -> None:
+    converted = convert_to_llm(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "gemini-call",
+                    "type": "function",
+                    "function": {"name": "load_skill", "arguments": '{"name":"pptx"}'},
+                    "thought_signature": "opaque-gemini-signature",
+                }
+            ],
+        }
+    )
+
+    assert converted is not None
+    assert converted.tool_calls == (
+        ToolCall(
+            id="gemini-call",
+            name="load_skill",
+            arguments='{"name":"pptx"}',
+            thought_signature="opaque-gemini-signature",
+        ),
     )

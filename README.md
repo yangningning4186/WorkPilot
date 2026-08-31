@@ -75,6 +75,7 @@ WorkPilot 是一个运行在本机的 AI 工作助手，把有依据的文档阅
 ```bash
 cd backend
 uv sync --locked
+npm --prefix app/cowork/skills/builtin/pptx/scripts/pptxgenjs ci
 
 cd ../frontend
 npm ci
@@ -103,7 +104,9 @@ MCP 服务可以在桌面端新增、探测、固定目录、绑定 OAuth 连接
 
 ## 构建安装包
 
-构建脚本会冻结 FastAPI sidecar，执行迁移与健康检查，复制 Playwright Chromium/FFmpeg，再交给 Tauri 生成当前平台的原生安装包：
+构建脚本会冻结 FastAPI sidecar 和 Artifact Python，并把 PptxGenJS 与 Node 22 封装为独立
+`workpilot-pptx-renderer`，执行各自自检后再交给 Tauri 生成当前平台的原生安装包。发布态不要求用户
+安装 Node；构建脚本会根据 Skill 内的 lockfile 自动安装 Renderer 依赖。
 
 ```bash
 cd backend

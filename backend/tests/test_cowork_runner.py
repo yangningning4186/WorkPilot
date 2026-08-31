@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid6 import uuid7
 
+from app.agent_core.messages import convert_to_llm
 from app.agent_core.session_records import reduce_model_step_attempts
 from app.api.dependencies import (
     get_run_bus,
@@ -42,6 +43,8 @@ from app.cowork.runtime import (
     CoworkCheckpointCorruptionError,
     CoworkHookBus,
     ModelAttemptHookContext,
+    _assistant_message,
+    _completion_from_record,
     _completion_record_payload,
     _encode_tool_result,
     _external_action_sha256,
@@ -98,6 +101,30 @@ from workpilot_ai.types import (
 )
 
 pytestmark = pytest.mark.integration
+
+
+def test_model_attempt_record_preserves_gemini_thought_signature() -> None:
+    completion = CompletionResult(
+        text="",
+        model="gemini-3.6-flash",
+        provider="gemini",
+        tool_calls=(
+            ToolCall(
+                id="gemini-call",
+                name="load_skill",
+                arguments='{"name":"pptx"}',
+                thought_signature="opaque-gemini-signature",
+            ),
+        ),
+        stop_reason="tool_use",
+    )
+
+    restored = _completion_from_record(_completion_record_payload(completion))
+    replayed = convert_to_llm(_assistant_message(restored))
+
+    assert restored.tool_calls == completion.tool_calls
+    assert replayed is not None
+    assert replayed.tool_calls == completion.tool_calls
 
 
 def test_cowork_failure_message_keeps_actionable_detail_bounded() -> None:
@@ -430,11 +457,11 @@ async def test_shell_rejects_read_only_cwd(
         )
 
 
-async def test_browser_open_requires_scoped_network_on_top_of_browser_read(
+async def test_browser_open_does_not_require_legacy_browser_or_network_grants(
     db_session: AsyncSession,
     tmp_path: Path,
 ) -> None:
-    """browser_open 的返回值就是完整页面快照，不能绕过 origin scope。"""
+    """公网读取默认允许；地址安全校验留在 browser manager 内，不靠重复 grant。"""
 
     conversation_id = await ensure_conversation(db_session, title="Browser capability split")
     await create_session_root(
@@ -442,11 +469,6 @@ async def test_browser_open_requires_scoped_network_on_top_of_browser_read(
         conversation_id=conversation_id,
         requested_path=str(tmp_path),
         access_mode="read_write",
-    )
-    await grant_capability(
-        db_session,
-        conversation_id=conversation_id,
-        capability="browser.read",
     )
     run = await create_run(
         db_session,
@@ -458,7 +480,9 @@ async def test_browser_open_requires_scoped_network_on_top_of_browser_read(
         workflow_type="cowork",
     )
     registry = build_default_cowork_registry()
-    register_browser_tools(registry)
+    session_id = "public-browser-session"
+    manager = _FakeBrowserManager(session_id, _FakeBrowserSession(_FakeBrowserControl()))
+    register_browser_tools(registry, manager)  # type: ignore[arg-type]
     context = CoworkToolContext(
         session=db_session,
         gateway=ModelGateway(DeterministicProvider(), embedding_dimensions=1024),
@@ -470,13 +494,15 @@ async def test_browser_open_requires_scoped_network_on_top_of_browser_read(
         tool_call_id="browser-capability-call",
     )
 
-    # 校验发生在 handler 之前，所以这里不会真的去启动 Chromium。
-    with pytest.raises(CapabilityDeniedError, match=r"network\.fetch"):
-        await registry.execute(
-            "browser_open",
-            {"url": "https://example.com/"},
-            context=context,
-        )
+    result = await registry.execute(
+        "browser_open",
+        {"url": "https://example.com/"},
+        context=context,
+    )
+
+    assert result.content["renderer"] == "playwright_chromium"
+    assert registry.get("browser_open").capability is None
+    assert registry.get("browser_open").extra_capabilities == ()
 
 
 async def test_shell_requires_executor_approval_and_reuses_completed_invocation(
@@ -1429,6 +1455,26 @@ class _FakeBrowserControl:
     def __init__(self) -> None:
         self.clicked = False
 
+    async def evaluate(self, expression: str) -> dict[str, object]:
+        assert "element.isConnected" in expression
+        return {
+            "connected": True,
+            "tag": "a",
+            "type": "",
+            "role": "",
+            "name": "",
+            "placeholder": "",
+            "text": "下一页",
+            "href": "https://example.com/next",
+            "raw_href": "https://example.com/next",
+            "target": "",
+            "download": "",
+            "aria_expanded": "",
+            "aria_controls": "",
+            "in_form": False,
+            "disabled": False,
+        }
+
     async def click(self, **options: int) -> None:
         assert options["timeout"] > 0
         self.clicked = True
@@ -1467,6 +1513,28 @@ class _FakeBrowserSession:
     def __init__(self, control: _FakeBrowserControl) -> None:
         self.page = _FakeBrowserPage()
         self.controls: list[object] = [control]
+        self.control_info: list[dict[str, object]] = [
+            {
+                "index": 0,
+                "connected": True,
+                "tag": "a",
+                "type": "",
+                "role": "",
+                "name": "",
+                "placeholder": "",
+                "text": "下一页",
+                "label": "下一页",
+                "href": "https://example.com/next",
+                "raw_href": "https://example.com/next",
+                "target": "",
+                "download": "",
+                "aria_expanded": "",
+                "aria_controls": "",
+                "in_form": False,
+                "disabled": False,
+            }
+        ]
+        self.snapshot_url = self.page.url
         self.action_no = 0
         self.last_used = 0.0
 
@@ -1475,6 +1543,18 @@ class _FakeBrowserManager:
     def __init__(self, session_id: str, session: _FakeBrowserSession) -> None:
         self.session_id = session_id
         self.session = session
+
+    async def open(
+        self,
+        url: str,
+        *,
+        conversation_id: UUID,
+        timeout_s: float,
+    ) -> tuple[str, _FakeBrowserSession]:
+        assert url.startswith("https://")
+        assert isinstance(conversation_id, UUID)
+        assert timeout_s > 0
+        return self.session_id, self.session
 
     async def get(
         self,
@@ -1583,15 +1663,10 @@ async def test_browser_screenshot_reaches_next_model_turn_as_image_attachment(
     assert directive["attachments"][0]["sha256"] == attachment.sha256
 
 
-async def test_auto_mode_browser_destructive_clicks_without_inbox_round_trip(
+async def test_normal_browser_click_needs_neither_grant_nor_approval_round_trip(
     db_engine: AsyncEngine, db_session: AsyncSession
 ) -> None:
     conversation_id = await ensure_conversation(db_session, title="Cowork browser control")
-    await grant_capability(
-        db_session,
-        conversation_id=conversation_id,
-        capability="browser.destructive",
-    )
     await update_conversation_runtime(
         db_session,
         conversation_id=conversation_id,
@@ -1649,7 +1724,6 @@ async def test_auto_mode_browser_destructive_clicks_without_inbox_round_trip(
             ),
             _final_completion("点击完成。"),
         ],
-        regular_completions=['{"decision":"allow"}'],
     )
 
     await cowork_run(
@@ -1672,18 +1746,8 @@ async def test_auto_mode_browser_destructive_clicks_without_inbox_round_trip(
     assert "fetch_url" in loaded_tail and "web_search" in loaded_tail
     events = await list_events(db_session, run_id=run.id, limit=200)
     assert "interrupt" not in {event.type for event in events}
-    semantic_review = next(event for event in events if event.type == "approval.semantic_review")
-    assert semantic_review.payload["decision"] == "allow"
-    assert provider.regular_calls == 1
-    review_envelope = json.loads(provider.regular_histories[0][-1].content)
-    assert set(review_envelope) == {
-        "schema",
-        "frozen_session_facts",
-        "user_authored_text",
-        "user_text_truncated",
-        "canonical_action",
-    }
-    assert review_envelope["canonical_action"]["target"] is not None
+    assert not any(event.type == "approval.semantic_review" for event in events)
+    assert provider.regular_calls == 0
 
     follow_up = await create_run(
         db_session,
@@ -1717,11 +1781,6 @@ async def test_batched_exclusive_browser_actions_are_rejected_without_execution(
 ) -> None:
     conversation_id = await ensure_conversation(
         db_session, title="Cowork exclusive browser control"
-    )
-    await grant_capability(
-        db_session,
-        conversation_id=conversation_id,
-        capability="browser.destructive",
     )
     run = await create_run(
         db_session,
@@ -1793,7 +1852,7 @@ async def test_batched_exclusive_browser_actions_are_rejected_without_execution(
         if message["role"] == "tool" and '"ok":false' in message["content"]
     ]
     assert len(tool_errors) == 2
-    assert all("需要审批的外部动作必须单独调用" in item["error"] for item in tool_errors)
+    assert all("独占工具必须单独调用" in item["error"] for item in tool_errors)
     events = await list_events(db_session, run_id=run.id, limit=200)
     assert "interrupt" not in {event.type for event in events}
     assert not any(
@@ -2764,8 +2823,8 @@ def test_default_registry_exposes_risk_and_capability_contract() -> None:
     assert catalog["write_file"]["effect"] == "filesystem"
     assert catalog["write_file"]["risk"] == "write"
     assert registry.parallel_safe(["list_files", "search_files", "read_file"]) is True
-    assert catalog["run_shell"]["capability"] == "host.execute"
-    assert catalog["run_sandbox"]["capability"] == "sandbox.execute"
+    assert catalog["run_shell"]["capability"] is None
+    assert catalog["run_sandbox"]["capability"] is None
     assert catalog["run_shell"]["effect"] == "external"
     assert catalog["ask_user"]["execution"] == "interaction"
     assert catalog["request_directory"]["execution"] == "interaction"
@@ -2954,10 +3013,10 @@ async def test_queued_message_api_exposes_effective_delivery_and_cancel(
     assert successor["status"] == "ready"
 
 
-@pytest.mark.parametrize("tool_name", ["request_directory", "request_capability"])
-async def test_cowork_runtime_permission_requests_apply_only_after_user_approval(
-    tool_name: str, db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path, store_sql
+async def test_cowork_runtime_directory_request_applies_only_after_user_approval(
+    db_engine: AsyncEngine, db_session: AsyncSession, tmp_path: Path, store_sql
 ) -> None:
+    tool_name = "request_directory"
     initial_root = tmp_path / f"initial-{tool_name}"
     initial_root.mkdir()
     extra_root = tmp_path / f"extra-{tool_name}"
@@ -2988,11 +3047,7 @@ async def test_cowork_runtime_permission_requests_apply_only_after_user_approval
     bus = InMemoryRunBus()
     registry = build_default_cowork_registry()
     await initialize_cowork_state(db_session, run_id=run.id, registry=registry, bus=bus)
-    arguments = (
-        {"reason": "读取补充材料", "access_mode": "read_only"}
-        if tool_name == "request_directory"
-        else {"reason": "同步外部系统", "capability": "external.write"}
-    )
+    arguments = {"reason": "读取补充材料", "access_mode": "read_only"}
     provider = NativeToolProvider(
         [
             _tool_completion(
@@ -3016,9 +3071,7 @@ async def test_cowork_runtime_permission_requests_apply_only_after_user_approval
     )
     events = await list_events(db_session, run_id=run.id, limit=200)
     interrupt = next(event for event in events if event.type == "interrupt")
-    assert interrupt.payload["kind"] == (
-        "directory_request" if tool_name == "request_directory" else "capability_request"
-    )
+    assert interrupt.payload["kind"] == "directory_request"
 
     queue = RecordingCoworkQueue()
 
@@ -3031,8 +3084,7 @@ async def test_cowork_runtime_permission_requests_apply_only_after_user_approval
     app.dependency_overrides[get_run_bus] = lambda: bus
     app.dependency_overrides[require_owner_identity] = lambda: None
     body: dict[str, object] = {"approved": True}
-    if tool_name == "request_directory":
-        body["path"] = str(extra_root)
+    body["path"] = str(extra_root)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
@@ -3041,21 +3093,12 @@ async def test_cowork_runtime_permission_requests_apply_only_after_user_approval
         )
     assert response.status_code == 202
     assert response.json()["status"] == "queued"
-    if tool_name == "request_directory":
-        granted = store_sql(
-            """SELECT access_mode FROM session_roots
-               WHERE conversation_id = ? AND canonical_path = ?""",
-            (str(conversation_id), str(extra_root.resolve())),
-        )[0]["access_mode"]
-        assert granted == "read_only"
-    else:
-        granted = store_sql(
-            """SELECT capability FROM capability_grants
-               WHERE conversation_id = ?
-                 AND capability = 'external.write' AND revoked_at IS NULL""",
-            (str(conversation_id),),
-        )[0]["capability"]
-        assert granted == "external.write"
+    granted = store_sql(
+        """SELECT access_mode FROM session_roots
+           WHERE conversation_id = ? AND canonical_path = ?""",
+        (str(conversation_id), str(extra_root.resolve())),
+    )[0]["access_mode"]
+    assert granted == "read_only"
 
 
 async def test_cowork_shell_defaults_missing_cwd_to_writable_root(

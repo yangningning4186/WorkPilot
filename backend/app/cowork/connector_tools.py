@@ -36,11 +36,12 @@ class _StrictArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-def _external_mutation_capability(
-    raw: BaseModel,
-) -> Literal["external.write", "external.destructive"]:
-    action = str(getattr(raw, "action", getattr(raw, "method", ""))).casefold()
-    return "external.destructive" if action == "delete" else "external.write"
+def _external_human_only_reason(raw: BaseModel) -> str | None:
+    action = str(getattr(raw, "action", "")).casefold()
+    method = str(getattr(raw, "method", "")).casefold()
+    if action == "delete" or method == "delete":
+        return "删除外部系统数据不可由 AI 自动审核或常驻规则豁免"
+    return None
 
 
 class ListConnectorsArgs(_StrictArgs):
@@ -663,9 +664,11 @@ def _feishu_calendar_specs() -> tuple[CoworkToolSpec, ...]:
     return (
         CoworkToolSpec(
             name="feishu_calendar_events",
-            description="读取飞书日历指定时间范围内的日程；固定调用 calendar/v4。",
+            description=(
+                "读取已连接飞书账户指定时间范围内的日程；连接并启用账户即授权只读访问，"
+                "固定调用 calendar/v4。"
+            ),
             args_model=FeishuCalendarEventsArgs,
-            capability="external.read",
             risk="read",
             effect="none",
             parallel_safe=True,
@@ -679,12 +682,12 @@ def _feishu_calendar_specs() -> tuple[CoworkToolSpec, ...]:
                 " external_approval 并暂停，禁止先用 ask_user 做一遍重复确认。"
             ),
             args_model=FeishuCalendarEventActionArgs,
-            capability_resolver=_external_mutation_capability,
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=_calendar_action_handler,
             approval_required=True,
+            human_only_approval_resolver=_external_human_only_reason,
             approval_target_fields=("account_id", "action", "calendar_id", "event_id"),
             search_aliases=("飞书日历", "创建日程", "修改日程", "删除日程"),
         ),
@@ -695,9 +698,11 @@ def _feishu_content_specs() -> tuple[CoworkToolSpec, ...]:
     return (
         CoworkToolSpec(
             name="feishu_base_records",
-            description="读取飞书多维表格记录，支持视图、筛选、排序、字段裁剪和分页。",
+            description=(
+                "读取已连接飞书账户的多维表格记录；连接并启用账户即授权只读访问，"
+                "支持视图、筛选、排序、字段裁剪和分页。"
+            ),
             args_model=FeishuBaseRecordsArgs,
-            capability="external.read",
             risk="read",
             effect="none",
             parallel_safe=True,
@@ -711,20 +716,22 @@ def _feishu_content_specs() -> tuple[CoworkToolSpec, ...]:
                 "执行前生成 external_approval 并暂停，禁止先用 ask_user 做一遍重复确认。"
             ),
             args_model=FeishuBaseRecordActionArgs,
-            capability_resolver=_external_mutation_capability,
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=_base_action_handler,
             approval_required=True,
+            human_only_approval_resolver=_external_human_only_reason,
             approval_target_fields=("account_id", "action", "app_token", "table_id", "record_id"),
             search_aliases=("飞书多维表格", "写入多维表", "bitable", "base record"),
         ),
         CoworkToolSpec(
             name="feishu_document_read",
-            description="读取飞书新版文档的纯文本正文；固定调用 docx/v1，不需要拼 API path。",
+            description=(
+                "读取已连接飞书账户的新版文档纯文本正文；连接并启用账户即授权只读访问，"
+                "固定调用 docx/v1。"
+            ),
             args_model=FeishuDocumentArgs,
-            capability="external.read",
             risk="read",
             effect="none",
             parallel_safe=True,
@@ -733,9 +740,10 @@ def _feishu_content_specs() -> tuple[CoworkToolSpec, ...]:
         ),
         CoworkToolSpec(
             name="feishu_drive_files",
-            description="列出飞书云盘或指定文件夹中的文件，支持分页与排序。",
+            description=(
+                "列出已连接飞书账户的云盘文件；连接并启用账户即授权只读访问，支持分页与排序。"
+            ),
             args_model=FeishuDriveFilesArgs,
-            capability="external.read",
             risk="read",
             effect="none",
             parallel_safe=True,
@@ -749,9 +757,8 @@ def _feishu_workflow_specs() -> tuple[CoworkToolSpec, ...]:
     return (
         CoworkToolSpec(
             name="feishu_task_read",
-            description="按 task_guid 读取一条飞书任务。",
+            description="从已连接飞书账户按 task_guid 读取任务；连接并启用账户即授权只读访问。",
             args_model=FeishuTaskArgs,
-            capability="external.read",
             risk="read",
             effect="none",
             parallel_safe=True,
@@ -765,20 +772,21 @@ def _feishu_workflow_specs() -> tuple[CoworkToolSpec, ...]:
                 " external_approval 并暂停，禁止先用 ask_user 做一遍重复确认。"
             ),
             args_model=FeishuTaskActionArgs,
-            capability_resolver=_external_mutation_capability,
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=_task_action_handler,
             approval_required=True,
+            human_only_approval_resolver=_external_human_only_reason,
             approval_target_fields=("account_id", "action", "task_guid"),
             search_aliases=("飞书任务", "创建待办", "更新任务", "task"),
         ),
         CoworkToolSpec(
             name="feishu_approval_instance",
-            description="按 instance_code 读取飞书审批实例详情。",
+            description=(
+                "从已连接飞书账户按 instance_code 读取审批实例；连接并启用账户即授权只读访问。"
+            ),
             args_model=FeishuApprovalInstanceArgs,
-            capability="external.read",
             risk="read",
             effect="none",
             parallel_safe=True,
@@ -792,12 +800,12 @@ def _feishu_workflow_specs() -> tuple[CoworkToolSpec, ...]:
                 "会在提交前生成 external_approval 并暂停，禁止先用 ask_user 做一遍重复确认。"
             ),
             args_model=FeishuApprovalSubmitArgs,
-            capability="external.write",
             risk="external",
             effect="external",
             parallel_safe=False,
             handler=_approval_submit_handler,
             approval_required=True,
+            approval_can_be_waived=False,
             approval_target_fields=("account_id", "approval_code", "user_id"),
             search_aliases=("飞书审批", "发起审批", "submit approval"),
         ),
@@ -872,7 +880,6 @@ def register_connector_tools(
                     " Descriptor 能力；不返回密钥。account_id 已给出时禁止调用。"
                 ),
                 args_model=ListConnectorsArgs,
-                capability="external.read",
                 risk="read",
                 effect="none",
                 parallel_safe=True,
@@ -894,7 +901,6 @@ def register_connector_tools(
                     " fallback。飞书日历、Base、文档、云盘、任务、审批必须优先使用 feishu_*。"
                 ),
                 args_model=ConnectorRequestArgs,
-                capability="external.read",
                 risk="read",
                 effect="none",
                 parallel_safe=True,
@@ -909,12 +915,12 @@ def register_connector_tools(
                     "时直接调用，运行时会生成 external_approval；不要先用 ask_user 重复确认。"
                 ),
                 args_model=ConnectorActionArgs,
-                capability_resolver=_external_mutation_capability,
                 risk="external",
                 effect="external",
                 parallel_safe=False,
                 handler=_action_handler,
                 approval_required=True,
+                human_only_approval_resolver=_external_human_only_reason,
                 approval_target_fields=("account_id", "method", "path"),
                 search_aliases=(
                     *platform_aliases,
@@ -940,6 +946,6 @@ def register_connector_tools(
         "任务与审批必须优先使用 feishu_* 专用工具。通用 read_connector_api/act_connector_api "
         "属于高级 fallback：只有明确操作未被专用域工具覆盖时，才按准确名称 load_tools；"
         + (f"当前需要通用 API 的连接器：{fallback_labels}。" if fallback_labels else "")
-        + "外部写工具参数齐全时直接调用：运行时会先生成 "
+        + "已连接并启用账户即允许读取该账户；外部写工具参数齐全时直接调用：运行时会先生成 "
         "external_approval 并暂停，不要提前用 ask_user 做重复确认。"
     )

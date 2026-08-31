@@ -42,6 +42,7 @@ import {
   patchCoworkMemory,
   undoCoworkMemoryUpdate,
   fetchProviders,
+  revokeCoworkGrant,
   revokeCoworkRoot,
   respondToCoworkInteraction,
   revokeApprovalRule,
@@ -86,7 +87,7 @@ const CAPABILITY_LABELS: Record<string, string> = {
   "browser.read": "读取浏览器页面",
   "browser.write": "填写浏览器页面",
   "browser.destructive": "提交或删除网页内容",
-  "sandbox.execute": "在隔离容器中执行",
+  "sandbox.execute": "在原生沙箱中执行",
   "host.execute": "在宿主机执行 Shell",
   "external.read": "读取外部系统",
   "external.write": "写入外部系统",
@@ -107,6 +108,7 @@ interface TeamProposalMember {
   name: string;
   role: string;
   reason: string;
+  profile: string | null;
 }
 
 function teamProposalMembers(payload: Record<string, unknown>): TeamProposalMember[] {
@@ -122,6 +124,7 @@ function teamProposalMembers(payload: Record<string, unknown>): TeamProposalMemb
       name: record.name,
       role: record.role,
       reason: typeof record.reason === "string" ? record.reason : "",
+      profile: typeof record.profile === "string" ? record.profile : null,
     }];
   });
 }
@@ -376,6 +379,9 @@ export default function CoworkPage() {
   );
   const [providers, setProviders] = useState<ProviderProfile[]>([]);
   const [personas, setPersonas] = useState<Persona[]>([]);
+  // 空白“新任务”尚未创建 conversation，角色选择也要像 Provider/知识库一样先留在
+  // 浏览器草稿中，首次发送时再与新会话一次性绑定。
+  const [personaDraft, setPersonaDraft] = useState("general");
   const [contextUsage, setContextUsage] = useState<ConversationContextUsage | null>(null);
   const [artifactRailOpen, setArtifactRailOpen] = useState(true);
   const [inspectorWidth, setInspectorWidth] = useState(DEFAULT_INSPECTOR_WIDTH);
@@ -618,6 +624,26 @@ export default function CoworkPage() {
   }, [conversationId, loadSession]);
 
   useEffect(() => {
+    if (authState !== "authenticated" || conversationId !== null) return;
+    let cancelled = false;
+    // 无 conversation_id 时只能展示 builtin 与用户级 Persona；项目 Persona 必须等目录
+    // 真正授权给会话后由 loadSession 重新加载，不能沿用上一条会话的项目角色。
+    fetchPersonas()
+      .then((response) => {
+        if (!cancelled) setPersonas(response.items);
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setPersonas([]);
+          setNotice(readableError(reason));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authState, conversationId]);
+
+  useEffect(() => {
     if (conversationId === null || run.cursor === 0n) return;
     let cancelled = false;
     // cursor 会随每个 SSE 事件推进。直接请求会把一次流式回答放大成几十到上百个
@@ -711,6 +737,11 @@ export default function CoworkPage() {
     return values;
   }, [grants]);
 
+  const globalGrants = useMemo(
+    () => grants.filter((grant) => grant.active && grant.session_root_id === null),
+    [grants],
+  );
+
   const removeRoot = useCallback(
     async (rootId: string) => {
       if (conversationId === null) return;
@@ -726,6 +757,23 @@ export default function CoworkPage() {
       }
     },
     [conversationId, loadSession],
+  );
+
+  const removeGrant = useCallback(
+    async (grantId: string) => {
+      if (conversationId === null) return;
+      setBusy(true);
+      try {
+        await revokeCoworkGrant(conversationId, grantId);
+        setGrants((current) => current.filter((grant) => grant.id !== grantId));
+        setNotice("全局能力已收回；后续工具调用会立即按新的边界重新校验。");
+      } catch (reason) {
+        setNotice(readableError(reason));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [conversationId],
   );
 
   const createSession = useCallback(() => {
@@ -759,6 +807,10 @@ export default function CoworkPage() {
     setKnowledgeBaseDraft(null);
     setKnowledgeBaseDraftDirty(false);
     setProviderDraft(null);
+    setPersonaDraft("general");
+    // 先剔除只属于旧会话授权目录的项目 Persona；builtin/user 继续可选，随后无会话
+    // catalog 请求会做一次权威刷新。即使用户连续点击“新建任务”也不会清空下拉框。
+    setPersonas((current) => current.filter((item) => item.origin !== "project"));
     setNotice(null);
   }, []);
 
@@ -797,6 +849,7 @@ export default function CoworkPage() {
     setKnowledgeBaseDraft(null);
     setKnowledgeBaseDraftDirty(false);
     setProviderDraft(null);
+    setPersonaDraft("general");
     setNotice(null);
   }, []);
 
@@ -917,6 +970,9 @@ export default function CoworkPage() {
     const currentConversation = [...conversations, ...archivedConversations].find(
       (item) => item.id === conversationId,
     );
+    const requestedPersonaName = conversationId === null
+      ? personaDraft
+      : currentConversation?.persona_name ?? "general";
     const requestedProviderId = conversationId === null
       ? providerDraft ?? providers[0]?.id ?? null
       : currentConversation?.provider_profile_id ?? providers[0]?.id ?? null;
@@ -942,7 +998,7 @@ export default function CoworkPage() {
           model_override: selectedProvider.default_model,
           unattended: false,
           approval_mode: "interactive",
-          persona_name: "general",
+          persona_name: requestedPersonaName,
         });
       } else if (currentConversation?.provider_profile_id === null) {
         const updated = await updateConversationRuntime(targetConversationId, {
@@ -1065,6 +1121,7 @@ export default function CoworkPage() {
     loadSession,
     mountedKb,
     planMode,
+    personaDraft,
     providerDraft,
     providers,
     readerPath,
@@ -1240,12 +1297,11 @@ export default function CoworkPage() {
   const knowledgeBaseLoading = conversationId !== null
     && knowledgeBaseLoadedFor !== conversationId;
   const selectedKnowledgeBase = knowledgeBaseDraftDirty ? knowledgeBaseDraft : mountedKb;
-  const activePersona = personas.find(
-    (item) => item.name === (activeConversation?.persona_name ?? "general"),
-  );
+  const selectedPersonaName = activeConversation?.persona_name ?? personaDraft;
+  const activePersona = personas.find((item) => item.name === selectedPersonaName);
   const customizedRunSettings = [
     activeConversation?.provider_profile_id ?? providerDraft,
-    activeConversation?.persona_name !== undefined && activeConversation.persona_name !== "general",
+    selectedPersonaName !== "general",
     workMode !== "office",
     selectedKnowledgeBase,
     planMode,
@@ -1258,7 +1314,11 @@ export default function CoworkPage() {
   const providerReady = providers.some((item) => item.id === selectedProviderId);
 
   const toggleApprovalMode = useCallback(async () => {
-    if (conversationId === null || activeConversation === undefined || running) return;
+    if (
+      conversationId === null
+      || activeConversation === undefined
+      || (running && activeConversation.approval_mode !== "auto")
+    ) return;
     setBusy(true);
     try {
       const updated = await updateConversationRuntime(conversationId, {
@@ -1355,9 +1415,16 @@ export default function CoworkPage() {
   }, [activeConversation, conversationId, providers, running]);
 
   const selectPersona = useCallback(async (personaName: string) => {
-    if (conversationId === null || activeConversation === undefined || running) return;
+    if (running) return;
     const selected = personas.find((item) => item.name === personaName);
     if (selected === undefined) return;
+    if (conversationId === null) {
+      setPersonaDraft(selected.name);
+      setWorkMode(selected.recommended_work_mode);
+      setNotice(`已为新任务选择“${selected.label}”，首次发送时生效。`);
+      return;
+    }
+    if (activeConversation === undefined) return;
     setBusy(true);
     try {
       const updated = await updateConversationRuntime(conversationId, {
@@ -1434,13 +1501,33 @@ export default function CoworkPage() {
   const planNotes = typeof interactionPayload.notes === "string" ? interactionPayload.notes : "";
   const isTeamProposal =
     run.interrupt?.kind === "external_approval" && interactionPayload.tool === "propose_team";
-  const proposedTeamMembers = isTeamProposal ? teamProposalMembers(interactionPayload) : [];
   const proposedTeamArgs =
     typeof interactionPayload.arguments === "object"
       && interactionPayload.arguments !== null
       && !Array.isArray(interactionPayload.arguments)
       ? interactionPayload.arguments as Record<string, unknown>
       : {};
+  const proposedExpertName =
+    typeof proposedTeamArgs.expert === "string" ? proposedTeamArgs.expert : null;
+  const proposedExpert = proposedExpertName === null
+    ? undefined
+    : personas.find((persona) => persona.name === proposedExpertName);
+  const proposedTeamMembers = (isTeamProposal ? teamProposalMembers(interactionPayload) : []).map((member) => {
+    if (member.profile === null) return member;
+    const frozen = proposedExpert?.team_members.find((item) => item.profile === member.profile);
+    return {
+      ...member,
+      role: frozen?.role ?? `由专家 profile “${member.profile}” 固化`,
+      reason: member.reason || frozen?.reason || "职责来自已哈希锁定的专家定义",
+    };
+  });
+  const proposedWriteDelegations = Array.isArray(proposedTeamArgs.write_delegation_scope)
+    ? proposedTeamArgs.write_delegation_scope.flatMap((item) => {
+      if (typeof item !== "object" || item === null || Array.isArray(item)) return [];
+      const path = (item as Record<string, unknown>).path;
+      return typeof path === "string" ? [path] : [];
+    })
+    : [];
   const teamProposalNote =
     typeof proposedTeamArgs.note === "string" ? proposedTeamArgs.note : "";
   const runAnswer = useSmoothStreamText(run.answer, steering);
@@ -1852,7 +1939,7 @@ export default function CoworkPage() {
                             <span>
                               没有向你确认就执行了 <code>{waived.command ?? waived.tool}</code>：
                               {waived.reason === "approval_mode=auto"
-                                ? "这个会话开着免审批。"
+                                ? "这个会话开着 AI 自动审核。"
                                 : waived.reason === "workspace_trust"
                                   ? `这个目录被你信任过，且它的白名单里有 ${waived.allowlist_entry ?? ""}。`
                                   : "命中了一条你之前留下的“不再询问”规则。"}
@@ -1990,6 +2077,7 @@ export default function CoworkPage() {
                             <div>
                               <strong>{member.name}</strong>
                               <p>{member.role}</p>
+                              {member.profile !== null && <small>固化专家职责：{member.profile}</small>}
                               {member.reason !== "" && <small>{member.reason}</small>}
                             </div>
                             <em>待创建</em>
@@ -1997,6 +2085,22 @@ export default function CoworkPage() {
                         ))}
                       </div>
                       {teamProposalNote !== "" && <p className="workdesk-team-note">{teamProposalNote}</p>}
+                      <div className="workdesk-team-delegation">
+                        <strong>Worker 写入委派</strong>
+                        {proposedWriteDelegations.length === 0 ? (
+                          <span>未委派写目录；Worker 只能接收只读资源范围。</span>
+                        ) : (
+                          <ul>
+                            {proposedWriteDelegations.map((path) => <li key={path}><code>{path}</code></li>)}
+                          </ul>
+                        )}
+                      </div>
+                      {proposedExpertName !== null && (
+                        <div className="workdesk-team-boundary">
+                          <strong>专家定义</strong>
+                          <span>{proposedExpert?.label ?? proposedExpertName}；职责按 profile 固化，定义哈希会在执行前再次核对。</span>
+                        </div>
+                      )}
                       <div className="workdesk-team-boundary">
                         <strong>隔离边界</strong>
                         <span>Worker 不继承当前对话历史，只通过 Board 接收任务描述、验收标准与资源范围。</span>
@@ -2067,6 +2171,25 @@ export default function CoworkPage() {
               />
               <div className="workdesk-composer-actions">
                 <button aria-label="添加只读资料副本" disabled={busy || running || conversationArchived} onClick={() => attachmentInput.current?.click()} title={conversationArchived ? "恢复会话后可添加资料" : running ? "运行期间暂不支持追加资料" : "上传图片、PDF 或文本的私有只读副本"} type="button"><WorkdeskIcon name="add" /></button>
+                <div
+                  className={`workdesk-persona-picker${activePersona?.expert_type === "team" ? " is-team" : ""}`}
+                  title={activePersona?.description ?? "选择这一条任务使用的执行角色"}
+                >
+                  <span><WorkdeskIcon name={activePersona?.expert_type === "team" ? "spark" : "agent"} /></span>
+                  <select
+                    aria-label="执行角色"
+                    disabled={busy || running || conversationArchived || personas.length === 0}
+                    onChange={(event) => void selectPersona(event.target.value)}
+                    value={selectedPersonaName}
+                  >
+                    {personas.length === 0 && <option value={selectedPersonaName}>加载角色…</option>}
+                    {personas.map((persona) => (
+                      <option key={`${persona.origin}:${persona.name}`} value={persona.name}>
+                        {persona.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <span className="workdesk-composer-status">{conversationArchived ? "归档会话 · 只读" : run.phase === "waiting_human" ? "请先处理输入框中的请求" : steering ? "发送后将在安全边界转向" : !providerReady ? providers.length === 0 ? "请先配置模型服务" : "请选择模型服务" : workspaceDraftPath !== null ? `将在 ${workspaceLabel} 中工作 · 可读写` : attachments.length > 0 ? `已添加 ${attachments.length} 份只读资料` : planMode ? "计划模式 · 先出方案等你批准" : "Agent 已就绪"}</span>
                 <div className="workdesk-composer-primary-tools">
                   {conversationId !== null && <ContextUsageMeter draft={goal} usage={contextUsage} />}
@@ -2078,7 +2201,6 @@ export default function CoworkPage() {
                   <summary>
                     <WorkdeskIcon name="spark" />
                     <span>运行设置</span>
-                    <small>{activePersona?.label ?? "通用执行"}</small>
                     <b>{customizedRunSettings > 0 ? customizedRunSettings : "⌄"}</b>
                   </summary>
                   <div>
@@ -2097,16 +2219,6 @@ export default function CoworkPage() {
                         <input aria-label="具体模型" defaultValue={activeConversation.selected_model ?? ""} disabled={busy || running} key={`${activeConversation.id}:${activeConversation.selected_model ?? ""}`} onBlur={(event) => void saveModelOverride(event.target.value)} />
                       </label>
                     )}
-                    <label className="workdesk-run-setting-field">
-                      <span><strong>执行角色</strong><small>组合提示词与工具面</small></span>
-                      <select aria-label="执行角色" disabled={busy || running || conversationArchived} onChange={(event) => void selectPersona(event.target.value)} value={activeConversation?.persona_name ?? "general"}>
-                        {personas.map((persona) => (
-                          <option key={`${persona.origin}:${persona.name}`} value={persona.name}>
-                            {persona.label}{persona.origin === "project" ? "（项目）" : persona.origin === "user" ? "（自定义）" : ""}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
                     <label className="workdesk-run-setting-field">
                       <span><strong>工作模式</strong><small>日常办公或带定位的阅读流程</small></span>
                       <select aria-label="工作模式" disabled={busy || running || conversationArchived} onChange={(event) => setWorkMode(event.target.value as CoworkWorkMode)} value={workMode}>
@@ -2148,28 +2260,41 @@ export default function CoworkPage() {
                   <summary><WorkdeskIcon name="shield" /><span>默认权限</span><b>⌄</b></summary>
                   <div>
                     <h3>默认权限</h3>
-                    <p>普通任务可以直接开始，新生成的文件默认保存在本机 ~/Documents/WorkPilot。读取其他本机目录、运行 Shell 或操作外部系统时，WorkPilot 会在需要的那一步单独向你确认。</p>
+                    <p>选择工作目录、挂载知识库或连接账户，就代表允许本会话在对应范围内读取；公网只读与受限 Sandbox 默认可用。Shell、上传及网页或外部系统提交会在真正执行时做一次动作确认。</p>
                     {roots.length > 0 && <h4>本次会话已授权目录</h4>}
                     {roots.map((root) => (
-                      <article key={root.id}><div><strong>{root.label}</strong><small title={root.canonical_path}>{shortPath(root.canonical_path)} · {(capabilitiesByRoot.get(root.id) ?? []).join(" · ")}</small></div><button disabled={busy || running} onClick={() => void removeRoot(root.id)} type="button">收回</button></article>
+                      <article key={root.id}><div><strong>{root.label}</strong><small title={root.canonical_path}>{shortPath(root.canonical_path)} · {(capabilitiesByRoot.get(root.id) ?? []).join(" · ")}</small></div><button disabled={busy} onClick={() => void removeRoot(root.id)} type="button">收回</button></article>
                     ))}
 
-                    <h4>自主权上限</h4>
+                    {globalGrants.length > 0 && <h4>本次会话保留的全局能力</h4>}
+                    {globalGrants.map((grant) => (
+                      <article key={grant.id}>
+                        <div>
+                          <strong>{CAPABILITY_LABELS[grant.capability] ?? grant.capability}</strong>
+                          <small>
+                            {grant.resource_scope ?? "会话级"} · {RETIRED_CAPABILITIES.has(grant.capability) ? "旧版兼容授权" : "可随时收回"}
+                          </small>
+                        </div>
+                        <button disabled={busy} onClick={() => void removeGrant(grant.id)} type="button">撤销</button>
+                      </article>
+                    ))}
+
+                    <h4>动作审核方式</h4>
                     <p className="workdesk-permission-note">
                       {activeConversation?.approval_mode === "auto"
-                        ? "这个会话当前不逐次询问写入与命令。目录与能力边界仍然生效——免审批省掉的是“再问一次”，不是权限本身。"
-                        : "写入文件和运行命令时会逐次问你。改成免审批可以让无人值守任务不中断，但那意味着你事后才会看到发生了什么。"}
+                        ? "AI 会按你的原始请求审核 Shell 和可豁免的外部动作，判断不清就暂停并恢复逐次审批。目录边界仍生效；删除、上传、发布等不可豁免动作仍由你确认。"
+                        : "Shell 和有外部副作用的动作会在执行前逐次询问。可切换为 AI 自动审核以减少无人值守任务中断。"}
                     </p>
                     <button
                       aria-checked={activeConversation?.approval_mode === "auto"}
                       className={`workdesk-approval-toggle${activeConversation?.approval_mode === "auto" ? " is-on" : ""}`}
-                      disabled={busy || running || conversationArchived}
+                      disabled={busy || conversationArchived || (running && activeConversation?.approval_mode !== "auto")}
                       onClick={() => void toggleApprovalMode()}
                       role="switch"
                       type="button"
                     >
                       <WorkdeskIcon name="shield" />
-                      <span>{activeConversation?.approval_mode === "auto" ? "免审批已开启" : "逐次审批（推荐）"}</span>
+                      <span>{activeConversation?.approval_mode === "auto" ? "AI 自动审核已开启" : "逐次审批（推荐）"}</span>
                     </button>
 
                     {approvalRules.length > 0 && <h4>不再询问的动作</h4>}
@@ -2249,7 +2374,21 @@ export default function CoworkPage() {
       </section>
 
       {artifactRailVisible && (
-        <ArtifactRail artifacts={artifacts} onClose={() => setArtifactRailOpen(false)} />
+        <ArtifactRail
+          artifacts={artifacts}
+          onClose={() => setArtifactRailOpen(false)}
+          onOpenEvidence={(path, locator) => {
+            if (path.includes("://")) {
+              setNotice("这条证据来自远程来源，当前阅读器只打开已授权的本地原文。");
+              return;
+            }
+            setWorkMode("reading");
+            setReadingPath(path);
+            setReadingLocator(locator ?? 1);
+            setReaderOpen(true);
+            setArtifactRailOpen(false);
+          }}
+        />
       )}
 
       {readerVisible && conversationId !== null && (

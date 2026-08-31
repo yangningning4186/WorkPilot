@@ -52,11 +52,11 @@ from app.cowork.permissions import (
 )
 from app.cowork.rag_tools import register_rag_tools
 from app.cowork.runtime import (
-    CoworkState,
     initialize_cowork_state,
     load_cowork_checkpoint,
     resume_cowork_after_human,
 )
+from app.cowork.state import CoworkState
 from app.cowork.teams import register_team_tools
 from app.cowork.tools import (
     CoworkToolContext,
@@ -760,17 +760,12 @@ def build_fixture_registry(
         registry.register(
             CoworkToolSpec(
                 name="browser_open",
-                description="在隔离浏览器中打开 fixture 网页。",
+                description="在隔离浏览器中打开 fixture 公网网页；不重复申请全局网络能力。",
                 args_model=BrowserOpenArgs,
-                capability="browser.read",
-                extra_capabilities=("network.fetch",),
                 risk="external",
                 effect="external",
                 parallel_safe=False,
                 handler=browser_open,
-                resource_target_resolver=lambda raw: (
-                    BrowserOpenArgs.model_validate(raw.model_dump()).url
-                ),
                 search_aliases=("浏览器", "browser", "打开网页"),
             )
         )
@@ -779,7 +774,6 @@ def build_fixture_registry(
                 name="browser_snapshot",
                 description="读取当前 fixture 浏览器页面的可见文本。",
                 args_model=BrowserSessionArgs,
-                capability="browser.read",
                 risk="read",
                 effect="none",
                 parallel_safe=False,

@@ -39,6 +39,7 @@ class _InjectingGateway:
                         id="injected-write",
                         name="write_text_file",
                         arguments=json.dumps({"path": "/tmp/escape.txt", "content": "owned"}),
+                        thought_signature="subagent-gemini-signature",
                     ),
                 ),
             )
@@ -85,6 +86,8 @@ async def test_readonly_subagent_cannot_execute_undeclared_write_tool() -> None:
     )
 
     assert result.output["answer"] == "没有执行未授权工具。"
+    assistant_message = gateway.histories[1][-2]
+    assert assistant_message.tool_calls[0].thought_signature == "subagent-gemini-signature"
     tool_message = gateway.histories[1][-1]
     assert tool_message.role == "tool"
     payload = json.loads(tool_message.content)

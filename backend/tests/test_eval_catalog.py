@@ -267,7 +267,7 @@ def test_repository_catalog_is_ready() -> None:
 
     assert report.healthy is True
     assert report.status == "ready"
-    assert [resource.health for resource in report.resources] == ["ready"] * 8
+    assert [resource.health for resource in report.resources] == ["ready"] * 9
     contract = next(
         resource for resource in report.resources if resource.resource_id == "agent-teams-contract"
     )
@@ -285,8 +285,8 @@ def test_cli_json_distinguishes_ready_and_warning(capsys: pytest.CaptureFixture[
     assert output["summary"] == {
         "error_count": 0,
         "invalid": 0,
-        "ready": 8,
-        "resource_count": 8,
+        "ready": 9,
+        "resource_count": 9,
         "warning_count": 0,
         "warnings": 0,
     }

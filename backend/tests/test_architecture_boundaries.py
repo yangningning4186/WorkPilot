@@ -1,8 +1,7 @@
 import ast
 import json
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, TypedDict
+from typing import TypedDict
 
 import pytest
 from uuid6 import uuid7
@@ -44,25 +43,10 @@ class _FakeRag:
 
 
 @pytest.mark.asyncio
-async def test_search_knowledge_returns_only_evidence_bundle_fields(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_search_knowledge_returns_only_evidence_bundle_fields() -> None:
     registry = CoworkToolRegistry()
     register_rag_tools(registry, _FakeRag())
-    assert registry.get("search_knowledge").capability == "knowledge.read"
-    authorized: list[str] = []
-
-    async def authorize(_session: object, **kwargs: Any) -> object:
-        authorized.append(str(kwargs["capability"]))
-        return SimpleNamespace(
-            id=uuid7(),
-            capability=kwargs["capability"],
-            resource_scope=None,
-            grant_source="test",
-            expires_at=None,
-        )
-
-    monkeypatch.setattr("app.cowork.tools.authorize_capability", authorize)
+    assert registry.get("search_knowledge").capability is None
     run_id = uuid7()
     result = await registry.execute(
         "search_knowledge",
@@ -86,7 +70,6 @@ async def test_search_knowledge_returns_only_evidence_bundle_fields(
     assert "dense_score" not in encoded
     assert "fusion_score" not in encoded
     assert "_sa_instance_state" not in encoded
-    assert authorized == ["knowledge.read"]
 
 
 class _LoopState(TypedDict):

@@ -110,7 +110,7 @@ test.describe("Cowork 工作台", () => {
     await expect(architecture).toContainText("仍缺少主要脚本的模块边界证据。");
   });
 
-  test("输入区把低频配置收进运行设置，并随内容舒展", async ({ page }) => {
+  test("输入区把角色挂在主操作行，并把低频配置收进运行设置", async ({ page }) => {
     await page.goto("/cowork");
     await loginAsAdmin(page);
 
@@ -118,8 +118,19 @@ test.describe("Cowork 工作台", () => {
     const input = page.getByLabel("你想让 Cowork 完成什么？");
     const actionRow = composer.locator(".workdesk-composer-actions");
     await expect(input).toBeVisible();
-    await expect(actionRow.locator("select")).toHaveCount(0);
+    await expect(actionRow.getByLabel("执行角色")).toBeVisible();
+    await expect(actionRow.locator("select")).toHaveCount(1);
     await expect(actionRow.getByRole("button", { name: "开始执行任务" })).toBeVisible();
+    const [addBox, personaBox] = await Promise.all([
+      actionRow.getByRole("button", { name: "添加只读资料副本" }).boundingBox(),
+      actionRow.getByLabel("执行角色").boundingBox(),
+    ]);
+    expect(addBox).not.toBeNull();
+    expect(personaBox).not.toBeNull();
+    if (addBox !== null && personaBox !== null) {
+      expect(personaBox.x).toBeGreaterThan(addBox.x + addBox.width);
+      expect(Math.abs(personaBox.y + personaBox.height / 2 - addBox.y - addBox.height / 2)).toBeLessThan(2);
+    }
 
     const initialHeight = await input.evaluate((element) => element.clientHeight);
     expect(initialHeight).toBeGreaterThanOrEqual(130);
@@ -128,11 +139,30 @@ test.describe("Cowork 工作台", () => {
 
     await composer.getByText("运行设置", { exact: true }).click();
     await expect(page.getByLabel("模型服务")).toBeVisible();
-    await expect(page.getByLabel("执行角色")).toBeVisible();
+    await expect(composer.locator(".workdesk-run-settings").getByLabel("执行角色")).toHaveCount(0);
     await expect(page.getByLabel("工作模式")).toBeVisible();
     await expect(page.getByLabel("会话知识库")).toBeVisible();
     await expect(page.getByRole("switch", { name: "先出计划再执行" })).toBeVisible();
     await expect(composer.getByText("不会扩大目录、能力或审批边界。", { exact: false })).toBeVisible();
+  });
+
+  test("新任务可在创建会话前选择专家团并在首次发送时绑定", async ({ page }) => {
+    await page.goto("/cowork?new=1");
+    await loginAsAdmin(page);
+    await selectConfiguredProvider(page);
+
+    const persona = page.getByLabel("执行角色");
+    await persona.selectOption("expert-council");
+    await expect(persona).toHaveValue("expert-council");
+    await expect(page.locator(".workdesk-persona-picker")).toHaveClass(/is-team/);
+    await expect(page.getByText("已为新任务选择“深度研究与风险评审团”，首次发送时生效。")).toBeVisible();
+
+    await page.getByLabel("你想让 Cowork 完成什么？").fill("请启动深度研究与风险评审团分析这个问题");
+    await page.getByRole("button", { name: "开始执行任务" }).click();
+    await expect(page).toHaveURL(/[?&]conversation=/);
+
+    await openRunSettings(page);
+    await expect(page.getByLabel("执行角色")).toHaveValue("expert-council");
   });
 
   test("运行授权固定在底部输入框中处理", async ({ page }) => {

@@ -25,7 +25,7 @@ def test_cowork_core_suite_has_frozen_coverage() -> None:
 
     assert summary == {
         "name": "cowork-core-50",
-        "version": "1.6.1",
+        "version": "1.6.2",
         "items": 50,
         "splits": {"dev": 39, "test": 11},
         "categories": {
@@ -40,11 +40,11 @@ def test_cowork_core_suite_has_frozen_coverage() -> None:
             "workspace": 12,
         },
         "difficulties": {"1": 10, "2": 26, "3": 14},
-        "hitl_items": 7,
-        "average_optimal_tool_calls": 1.94,
-        "review_status": "approved",
-        "reviewer": "行之",
-        "reviewed_at": "2026-08-25T10:42:21+08:00",
+        "hitl_items": 6,
+        "average_optimal_tool_calls": 1.96,
+        "review_status": "pending_human_review",
+        "reviewer": None,
+        "reviewed_at": None,
     }
 
 
@@ -78,6 +78,47 @@ def test_agent_teams_candidate_suite_covers_delegation_and_opt_out() -> None:
     assert "propose_team" in opt_out["gold"]["forbidden_tools"]
 
 
+def test_cowork_office_candidate_suite_pins_native_ppt_workflow_coverage() -> None:
+    path = Path(__file__).parents[2] / "eval" / "suites" / "cowork-office-dev-v1.json"
+    suite = load_suite(path)
+
+    assert summarize_suite(suite) == {
+        "name": "cowork-office-dev",
+        "version": "1.0",
+        "items": 12,
+        "splits": {"dev": 12},
+        "categories": {
+            "office_create": 5,
+            "office_edit": 3,
+            "office_grounding": 2,
+            "office_readonly": 2,
+        },
+        "difficulties": {"1": 1, "2": 7, "3": 4},
+        "hitl_items": 0,
+        "average_optimal_tool_calls": 3.83,
+        "review_status": "pending_human_review",
+        "reviewer": None,
+        "reviewed_at": None,
+    }
+    ppt = next(item for item in suite["items"] if item["id"] == "cowork-office-003")
+    assert ppt["gold"]["required_tools"] == [
+        "read_file",
+        "load_skill",
+        "load_tools",
+        "render_artifact",
+    ]
+    assert {"run_shell", "write_file"}.issubset(ppt["gold"]["forbidden_tools"])
+    artifact = next(
+        assertion
+        for assertion in ppt["gold"]["assertions"]
+        if assertion["type"] == "native_artifact_valid"
+    )
+    assert artifact["path"] == "output/atlas-update.pptx"
+    assert artifact["format"] == "pptx"
+    assert artifact["slide_count"] == 4
+    assert set(artifact["must_include"]) == {"发布计划", "风险", "支付回调"}
+
+
 def test_agent_teams_contract_rejects_missing_or_escaping_pytest_targets() -> None:
     path = Path(__file__).parents[2] / "eval" / "suites" / "agent-teams-dev-v1.json"
     suite = deepcopy(load_suite(path))
@@ -107,7 +148,7 @@ def test_cowork_suite_approval_requires_complete_auditable_signoff() -> None:
 def test_pending_cowork_suite_cannot_preclaim_a_reviewer() -> None:
     suite = deepcopy(load_suite(DEFAULT_SUITE))
     suite["review_status"] = "pending_human_review"
-    suite.pop("reviewed_at")
+    suite.pop("reviewed_at", None)
     suite["reviewer"] = "not-yet-reviewed"
     for item in suite["items"]:
         item["review_status"] = "pending_human"
@@ -149,7 +190,9 @@ def test_cowork_knowledge_tasks_pin_evidence_contract() -> None:
 
 def test_repaired_cases_pin_solvable_permissions_and_deterministic_assertions() -> None:
     suite = load_suite(DEFAULT_SUITE)
+    public_web = next(item for item in suite["items"] if item["id"] == "cowork-core-027")
     knowledge = next(item for item in suite["items"] if item["id"] == "cowork-core-034")
+    write_upgrade = next(item for item in suite["items"] if item["id"] == "cowork-core-038")
     shell = next(item for item in suite["items"] if item["id"] == "cowork-core-040")
     long_edit = next(item for item in suite["items"] if item["id"] == "cowork-core-044")
 
@@ -159,6 +202,9 @@ def test_repaired_cases_pin_solvable_permissions_and_deterministic_assertions() 
         if assertion["type"] == "file_contains_evidence_citations"
     )
     assert citation_assertion["required_document_ids"] == ["K001", "K002", "K005"]
+    assert public_web["gold"]["required_tools"] == ["web_search", "fetch_url"]
+    assert public_web["gold"]["expected_status"] == "done"
+    assert write_upgrade["gold"]["required_tools"] == ["request_directory"]
     assert "filesystem.write" in shell["granted_capabilities"]
     baseline = next(
         assertion

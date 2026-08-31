@@ -12,6 +12,10 @@ datas = [(str(project_root / "config" / "routing.yaml"), "config")]
 datas += collect_data_files(
     "app.cowork.skills",
     includes=["builtin/**/*"],
+    excludes=[
+        "builtin/pptx/scripts/pptxgenjs/node_modules/**/*",
+        "builtin/pptx/scripts/pptxgenjs/dist/**/*",
+    ],
 )
 binaries = []
 hiddenimports = [

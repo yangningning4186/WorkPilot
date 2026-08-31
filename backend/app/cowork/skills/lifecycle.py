@@ -26,6 +26,7 @@ from app.cowork.skills.catalog import (
     BUILTIN_DISABLED_DIRNAME,
     BUILTIN_SKILLS_ROOT,
     SkillCatalogError,
+    SkillKind,
     SkillOrigin,
     disabled_skill_names,
     load_skill_file,
@@ -35,6 +36,7 @@ AUTO_DISTILLED_PROVENANCE_PURPOSE = "skill-auto-distillation-provenance-v1"
 _AUTO_DISTILLED_RECEIPT = ".auto-distilled.json"
 _INTERNAL_SKILL_FILES = frozenset({_AUTO_DISTILLED_RECEIPT})
 _AUTO_RECEIPT_MAX_BYTES = 4 * 1024
+_IGNORED_RESOURCE_DIRS = frozenset({"__pycache__", "dist", "node_modules"})
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,16 @@ class ManagedSkill:
     #: builtin 被同名 user 技能盖住时为 True。此时列表里两条都在，界面才能解释
     #: "为什么我改了出厂那份却没有生效"。
     shadowed: bool = False
+    kind: SkillKind = "workflow"
+    runtime_profile: str = "none"
+    compatibility: tuple[str, ...] = ()
+
+    def resource_counts(self) -> dict[str, int]:
+        counts = {"references": 0, "scripts": 0, "assets": 0, "evals": 0, "other": 0}
+        for resource in self.resources:
+            group = resource.partition("/")[0]
+            counts[group if group in counts else "other"] += 1
+        return counts
 
     def public(self) -> dict[str, Any]:
         return {
@@ -60,6 +72,10 @@ class ManagedSkill:
             "error": self.error,
             "origin": self.origin,
             "shadowed": self.shadowed,
+            "kind": self.kind,
+            "runtime_profile": self.runtime_profile,
+            "compatibility": list(self.compatibility),
+            "resource_counts": self.resource_counts(),
             # 界面据此决定按钮：出厂技能只能停用或 fork，不能删。
             "removable": self.origin == "user",
         }
@@ -111,7 +127,8 @@ def list_skill_resources(
                     continue
                 path = Path(entry.path)
                 if entry.is_dir(follow_symlinks=False):
-                    child_directories.append(path)
+                    if entry.name not in _IGNORED_RESOURCE_DIRS:
+                        child_directories.append(path)
                     continue
                 if not entry.is_file(follow_symlinks=False) or entry.name in {
                     "SKILL.md",
@@ -198,13 +215,25 @@ def _scan_managed(
             break
         if not child.is_dir() or child.is_symlink() or not (child / "SKILL.md").is_file():
             continue
-        resources = tuple(
-            path.relative_to(child).as_posix()
-            for path in sorted(child.rglob("*"))
-            if path.is_file()
-            and not path.is_symlink()
-            and path.name not in {"SKILL.md", ".disabled", *_INTERNAL_SKILL_FILES}
-        )
+        resources_list: list[str] = []
+        for directory, dirnames, filenames in os.walk(child, followlinks=False):
+            directory_path = Path(directory)
+            dirnames[:] = [
+                name
+                for name in sorted(dirnames)
+                if name not in _IGNORED_RESOURCE_DIRS
+                and not (directory_path / name).is_symlink()
+            ]
+            for filename in sorted(filenames):
+                path = directory_path / filename
+                if (
+                    filename in {"SKILL.md", ".disabled", *_INTERNAL_SKILL_FILES}
+                    or path.is_symlink()
+                    or not path.is_file()
+                ):
+                    continue
+                resources_list.append(path.relative_to(child).as_posix())
+        resources = tuple(sorted(resources_list))
         try:
             skill = load_skill_file(child / "SKILL.md", max_bytes=max_bytes, origin=origin)
         except (OSError, UnicodeError, SkillCatalogError) as error:
@@ -214,13 +243,16 @@ def _scan_managed(
         else:
             result.append(
                 ManagedSkill(
-                    child.name,
-                    enabled_for(child),
-                    skill.description,
-                    skill.sha256,
-                    resources,
-                    None,
-                    origin,
+                    name=child.name,
+                    enabled=enabled_for(child),
+                    description=skill.description,
+                    sha256=skill.sha256,
+                    resources=resources,
+                    error=None,
+                    origin=origin,
+                    kind=skill.kind,
+                    runtime_profile=skill.runtime_profile,
+                    compatibility=skill.compatibility,
                 )
             )
     return result
@@ -232,8 +264,9 @@ def list_managed_skills(
     max_files: int,
     max_bytes: int,
     builtin_root: Path | None = BUILTIN_SKILLS_ROOT,
+    project_roots: tuple[Path, ...] = (),
 ) -> list[ManagedSkill]:
-    """两层都列出来，出厂的排在前面。
+    """三层都列出来，出厂、用户、项目依次排列。
 
     被盖住的 builtin **仍然列出**（标 ``shadowed``），因为把它从列表里拿掉之后，
     "我 fork 过它" 这件事就只剩一条看不出来源的 user 记录了。
@@ -247,13 +280,46 @@ def list_managed_skills(
         max_bytes=max_bytes,
         enabled_for=lambda child: not (child / ".disabled").exists(),
     )
-    if builtin_root is None:
-        return user
-    user_names = {item.name for item in user}
     disabled = disabled_skill_names(resolved)
-    user = [replace(item, enabled=item.name not in disabled) for item in user]
+    project: list[ManagedSkill] = []
+    project_names: set[str] = set()
+    for workspace_root in project_roots:
+        root_items = _scan_managed(
+            _safe_root(workspace_root / ".workpilot" / "skills"),
+            origin="project",
+            max_files=max_files,
+            max_bytes=max_bytes,
+            enabled_for=lambda _: True,
+        )
+        for item in root_items:
+            loadable = item.error is None and item.enabled and item.name not in disabled
+            duplicate = loadable and item.name in project_names
+            project.append(
+                replace(
+                    item,
+                    enabled=loadable,
+                    shadowed=duplicate,
+                )
+            )
+            if loadable and not duplicate:
+                project_names.add(item.name)
+    if builtin_root is None:
+        return [replace(item, shadowed=item.name in project_names) for item in user] + project
+    user_names = {
+        item.name
+        for item in user
+        if item.error is None and item.enabled and item.name not in disabled
+    }
+    user = [
+        replace(
+            item,
+            enabled=item.name not in disabled,
+            shadowed=item.name in project_names,
+        )
+        for item in user
+    ]
     builtin = [
-        replace(item, shadowed=item.name in user_names)
+        replace(item, shadowed=item.name in user_names or item.name in project_names)
         for item in _scan_managed(
             _safe_root(builtin_root),
             origin="builtin",
@@ -262,7 +328,11 @@ def list_managed_skills(
             enabled_for=lambda child: child.name not in disabled,
         )
     ]
-    return builtin + user
+    project = [
+        replace(item, enabled=item.enabled and item.name not in disabled)
+        for item in project
+    ]
+    return builtin + user + project
 
 
 def install_skill(
@@ -672,13 +742,16 @@ def _managed_one(target: Path, *, max_bytes: int, origin: SkillOrigin = "user") 
         and not path.is_symlink()
     )
     return ManagedSkill(
-        skill.name,
-        not (target / ".disabled").exists(),
-        skill.description,
-        skill.sha256,
-        resources,
-        None,
-        origin,
+        name=skill.name,
+        enabled=not (target / ".disabled").exists(),
+        description=skill.description,
+        sha256=skill.sha256,
+        resources=resources,
+        error=None,
+        origin=origin,
+        kind=skill.kind,
+        runtime_profile=skill.runtime_profile,
+        compatibility=skill.compatibility,
     )
 
 

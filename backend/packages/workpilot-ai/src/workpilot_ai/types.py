@@ -28,6 +28,10 @@ class ToolCall:
     id: str
     name: str
     arguments: str
+    # Opaque Gemini generateContent metadata. Gemini 3 requires this exact value to be
+    # replayed on the same functionCall part during a multi-step tool turn. Other
+    # providers leave it empty and ignore it.
+    thought_signature: str = ""
 
 
 @dataclass(frozen=True)
@@ -133,6 +137,8 @@ class Message:
     # Lossless provider protocol blocks.  Other adapters may keep using ``content``; Anthropic
     # uses this tuple to replay signed thinking across tool turns.
     content_blocks: tuple[MessageContentBlock, ...] = ()
+    # 由 harness 在 canonical message 上写入的可信来源；正文中的 XML/标记不能替代它。
+    source: str | None = None
 
 
 @dataclass(frozen=True)

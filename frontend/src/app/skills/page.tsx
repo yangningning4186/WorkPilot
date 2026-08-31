@@ -14,6 +14,7 @@ import {
   setSessionSkillMuted,
   setSkillEnabled,
   type ManagedSkill,
+  type SkillKind,
   type SkillOrigin,
   type SkillsStatusResponse,
   type SkillCandidatesResponse,
@@ -39,6 +40,13 @@ function skillOriginLabel(origin: SkillOrigin): string {
   if (origin === "project") return "项目";
   if (origin === "user") return "已安装";
   return "出厂";
+}
+
+function skillKindLabel(kind: SkillKind): string {
+  if (kind === "planning") return "Planning Skill";
+  if (kind === "artifact") return "Artifact Skill";
+  if (kind === "action") return "Action Skill";
+  return "Workflow Skill";
 }
 
 export default function SkillsPage() {
@@ -202,7 +210,7 @@ export default function SkillsPage() {
                               <small className={`skill-session-origin ${item.origin}`}>{skillOriginLabel(item.origin)}</small>
                             </div>
                             <p>{item.description}</p>
-                            <small>{item.tools.length > 0 ? `${item.tools.length} 个工具约束` : "纯流程 Skill"}</small>
+                            <small>{skillKindLabel(item.kind)} · {item.tools.length > 0 ? `${item.tools.length} 个工具约束` : "纯流程"}</small>
                           </div>
                           <div className="skill-session-state">
                             <span>{muted ? "本会话不加载" : "本会话可用"}</span>
@@ -296,15 +304,19 @@ export default function SkillsPage() {
                   const key = `${managed.origin}:${managed.name}`;
                   const builtin = managed.origin === "builtin";
                   return <article className={`skill-card${managed.enabled && !managed.shadowed ? "" : " disabled"}`} key={key}>
-                    <header><span><WorkdeskIcon name="skill" /></span><div><h2>{managed.name}</h2><code>{managed.sha256?.slice(0, 10) ?? "invalid"}</code></div><small className={`skill-origin ${managed.origin}`}>{builtin ? "出厂自带" : "自己安装"}</small></header>
+                    <header><span><WorkdeskIcon name="skill" /></span><div><h2>{managed.name}</h2><code>{managed.sha256?.slice(0, 10) ?? "invalid"}</code></div><small className={`skill-origin ${managed.origin}`}>{skillOriginLabel(managed.origin)}</small></header>
                     <p>{managed.description ?? managed.error ?? "Skill 配置无效"}</p>
                     <dl>
                       <div><dt>状态</dt><dd>{managed.shadowed ? "已被同名 Skill 覆盖" : managed.enabled ? "运行时可用" : "已停用"}</dd></div>
-                      <div><dt>资源</dt><dd>{managed.resources.length} 个随附文件</dd></div>
+                      <div><dt>Kind</dt><dd>{skillKindLabel(managed.kind)}</dd></div>
+                      <div><dt>Runtime</dt><dd><code>{managed.runtime_profile}</code></dd></div>
+                      <div><dt>资源</dt><dd>{managed.resource_counts.references} refs · {managed.resource_counts.scripts} scripts · {managed.resource_counts.assets} assets · {managed.resource_counts.evals} evals</dd></div>
+                      <div><dt>Compatibility</dt><dd>{managed.compatibility.length > 0 ? managed.compatibility.join(" · ") : "无外部 Runtime"}</dd></div>
                     </dl>
                     {builtin && !managed.shadowed && <small className="skill-card-note">出厂 Skill 不能卸载。装一个同名 Skill 即可覆盖它的流程，删掉那份就会恢复。</small>}
+                    {managed.origin === "project" && <small className="skill-card-note">项目 Skill 随已授权工作区提供；可在本会话静音，不能从这里修改项目文件。</small>}
                     <footer>
-                      <button disabled={busy !== null || managed.error !== null || managed.shadowed} onClick={() => void mutate(managed, "toggle")} type="button">{managed.enabled ? "停用" : "启用"}</button>
+                      {managed.origin !== "project" && <button disabled={busy !== null || managed.error !== null || managed.shadowed} onClick={() => void mutate(managed, "toggle")} type="button">{managed.enabled ? "停用" : "启用"}</button>}
                       {managed.removable && <button className="danger" disabled={busy !== null} onClick={() => void mutate(managed, "delete")} type="button">卸载</button>}
                     </footer>
                   </article>;

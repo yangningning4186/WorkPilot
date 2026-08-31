@@ -20,6 +20,8 @@ from app.cowork.personas import (
     PERSONA_RESELECTION_REQUIRED,
     approval_mode_for_persona_change,
     load_persona_catalog,
+    render_persona_system_block,
+    snapshot_persona,
 )
 from app.cowork.runtime import (
     CoworkState,
@@ -34,6 +36,7 @@ from app.runstore.conversations import (
 )
 from app.runstore.runs import create_run, ensure_conversation, finish_run
 from app.schemas.conversations import ConversationRuntimeUpdate
+from app.schemas.personas import PersonaResponse
 
 
 async def test_reading_capability_owns_prompt_tools_and_pre_loop() -> None:
@@ -145,6 +148,91 @@ system_block = "项目事实优先。"
     )
 
 
+def test_builtin_expert_council_exposes_pinned_member_profiles(tmp_path: Path) -> None:
+    settings = Settings(cowork_data_path=tmp_path / "data")
+    persona = load_persona_catalog(settings).get("expert-council")
+
+    assert persona.expert_type == "team"
+    assert [member.profile for member in persona.team_members] == [
+        "evidence-researcher",
+        "domain-analyst",
+        "critical-reviewer",
+    ]
+    assert persona.public()["team_members"][0]["label"] == "证据研究专家"
+    response = PersonaResponse.model_validate(persona.public())
+    assert response.expert_type == "team"
+    assert response.team_members[2].profile == "critical-reviewer"
+
+    snapshot = snapshot_persona(persona, settings)
+    assert snapshot["expert_type"] == "team"
+    assert [member["profile"] for member in snapshot["team_members"]] == [
+        "evidence-researcher",
+        "domain-analyst",
+        "critical-reviewer",
+    ]
+    assert all(len(member["sha256"]) == 64 for member in snapshot["team_members"])
+    # Checkpoint 快照只保留身份、边界与摘要，不复制成员 prompt 正文。
+    assert "你是证据研究专家" not in str(snapshot)
+    runtime_block = render_persona_system_block(persona, snapshot)
+    assert snapshot["sha256"] in runtime_block
+    assert "<expert_team_manifest>" in runtime_block
+
+
+def test_project_expert_team_persona_parses_members_and_tool_boundaries(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "repo"
+    persona_root = project / ".workpilot" / "personas"
+    persona_root.mkdir(parents=True)
+    (persona_root / "release-council.toml").write_text(
+        '''name = "release-council"
+label = "发布专家团"
+description = "用实现与独立复核两个角色检查发布"
+expert_type = "team"
+tool_patterns = []
+default_approval_mode = "interactive"
+recommended_connectors = []
+recommended_work_mode = "office"
+system_block = "按阶段组织发布会诊。"
+
+[[team_members]]
+profile = "implementer"
+label = "实现专家"
+role = "检查实现与交付证据"
+reason = "建立实现侧证据"
+system_block = "只报告实际实现证据。"
+tool_patterns = ["read_*", "search_files"]
+
+[[team_members]]
+profile = "reviewer"
+label = "复核专家"
+role = "独立检查实现结论"
+reason = "避免自验收"
+system_block = "寻找反例并报告证据缺口。"
+tool_patterns = ["read_*"]
+''',
+        encoding="utf-8",
+    )
+
+    persona = load_persona_catalog(
+        Settings(cowork_data_path=tmp_path / "data"),
+        project_roots=(project,),
+    ).get("release-council")
+
+    assert persona.origin == "project"
+    assert persona.expert_type == "team"
+    assert persona.team_members[0].tool_patterns == ("read_*", "search_files")
+
+
+def test_plain_persona_snapshot_remains_v1_compatible(tmp_path: Path) -> None:
+    settings = Settings(cowork_data_path=tmp_path / "data")
+    snapshot = snapshot_persona(load_persona_catalog(settings).get("general"), settings)
+
+    assert snapshot["schema_version"] == "workpilot.persona-snapshot.v1"
+    assert "expert_type" not in snapshot
+    assert "team_members" not in snapshot
+
+
 async def test_selected_persona_persists_on_conversation(db_session: AsyncSession) -> None:
     conversation_id = await ensure_conversation(db_session, title="Persona")
 
@@ -213,6 +301,33 @@ async def _new_run(session: AsyncSession, *, conversation_id: Any, goal: str) ->
         budget_wall_ms=60_000,
         workflow_type="cowork",
     )
+
+
+async def test_selected_expert_council_freezes_manifest_into_runtime_prompt(
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    settings = Settings(cowork_data_path=tmp_path / "data")
+    conversation_id = await ensure_conversation(db_session, title="Expert manifest")
+    await _select_persona(
+        db_session,
+        conversation_id=conversation_id,
+        persona_name="expert-council",
+    )
+    run = await _new_run(db_session, conversation_id=conversation_id, goal="启动深度研究与风险评审团")
+
+    state = await initialize_cowork_state(
+        db_session,
+        run_id=run.id,
+        registry=build_default_cowork_registry(),
+        settings=settings,
+    )
+
+    snapshot = state["persona_snapshot"]
+    assert snapshot is not None
+    assert snapshot["sha256"] in state["persona_block"]
+    assert '"expert":"expert-council"' in state["persona_block"]
+    assert "<expert_team_manifest>" in state["persona_block"]
 
 
 async def test_first_run_persists_canonical_persona_snapshot(

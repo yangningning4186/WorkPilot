@@ -103,8 +103,11 @@ def test_background_json_prompts_treat_payloads_as_untrusted_data() -> None:
 def test_office_prompt_routes_binary_files_through_skills_and_shell() -> None:
     prompt = _system_prompt("")
 
-    assert "格式 Skill + Python/CLI + 工作区产物" in prompt
-    assert "没有专用 inspect/edit" in prompt
+    assert "格式 Skill + 固定 Renderer + 工作区产物" in prompt
+    assert "新建 DOCX/XLSX/PPTX/PDF\n必须使用 render_artifact" in prompt
+    assert "不得自动降级为 python-pptx/python-docx/openpyxl/reportlab" in prompt
+    assert "只有编辑既有文件、且固定 Renderer 明确不支持" in prompt
+    assert "才可按格式 Skill 使用 run_sandbox" in prompt
     assert "run_in_background=true" in prompt
     assert "默认保留原件" in prompt
     assert "不得创建辅助脚本、备份或产物" in prompt

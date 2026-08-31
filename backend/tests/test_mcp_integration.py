@@ -747,9 +747,9 @@ async def test_mcp_registry_only_exposes_reviewed_read_tools() -> None:
 
     statuses = await register_mcp_tools(registry, _FakeManager(configuration, tools))  # type: ignore[arg-type]
 
-    assert registry.get("mcp__docs__search").capability == "external.read"
+    assert registry.get("mcp__docs__search").capability is None
     publish = registry.get("mcp__docs__publish")
-    assert publish.capability == "external.write"
+    assert publish.capability is None
     assert publish.effect == "external"
     assert publish.approval_required is True
     assert {"name": "echo", "reason": "data_scope_denied"} in statuses["docs"]["blocked_tools"]

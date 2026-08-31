@@ -65,6 +65,12 @@ class Settings(BaseSettings):
         default=50 * 1024 * 1024, ge=1_024, le=500 * 1024 * 1024
     )
     office_preview_max_cache_entries: int = Field(default=100, ge=1, le=2_000)
+    office_preview_model_entries_per_run: int = Field(default=20, ge=1, le=200)
+    office_preview_model_cache_max_bytes: int = Field(
+        default=512 * 1024 * 1024,
+        ge=16 * 1024 * 1024,
+        le=10 * 1024 * 1024 * 1024,
+    )
     # Cowork 是现有 answer/review 运行时上的第三种工作流。目录授权与 artifact API
     # 可先独立上线；真正的通用工具循环仍可用此总开关紧急关闭。
     cowork_enabled: bool = True
@@ -177,10 +183,14 @@ class Settings(BaseSettings):
     cowork_shell_full_output_max_bytes: int = Field(
         default=64 * 1024 * 1024, ge=1_024, le=256 * 1024 * 1024
     )
-    # sandbox.execute 使用真实 Docker/Podman 隔离：无网络、只读 rootfs、drop capabilities。
-    # auto 只探测已安装后端；镜像不存在会直接失败，绝不回退到 host.execute。
-    cowork_sandbox_runtime: Literal["auto", "disabled", "docker", "podman"] = "auto"
-    cowork_sandbox_image: str = "alpine:3.20"
+    # macOS/Linux 优先使用原生隔离；Windows 的 auto 保留 Docker/Podman 后端。
+    # 所有后端都 fail closed，绝不退回 host.execute。
+    cowork_sandbox_runtime: Literal[
+        "auto", "disabled", "native", "docker", "podman"
+    ] = "auto"
+    cowork_sandbox_python_path: Path | None = None
+    cowork_sandbox_profile: str = "artifact-python:1.0.0"
+    cowork_sandbox_image: str = "workpilot-artifact-python:1.0.0"
     cowork_sandbox_memory_mb: int = Field(default=512, ge=64, le=16_384)
     cowork_sandbox_pids_limit: int = Field(default=128, ge=16, le=4_096)
     cowork_sandbox_cpus: float = Field(default=1.0, gt=0, le=16)

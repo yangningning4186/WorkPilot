@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -59,6 +59,7 @@ class _SubagentToolCall(TypedDict):
     id: str
     name: str
     arguments: str
+    thought_signature: NotRequired[str]
 
 
 class _SubagentMessage(TypedDict):
@@ -93,14 +94,22 @@ def _message_from_state(message: _SubagentMessage) -> Message:
     )
 
 
+def _tool_call_state(call: ToolCall) -> _SubagentToolCall:
+    payload: _SubagentToolCall = {
+        "id": call.id,
+        "name": call.name,
+        "arguments": call.arguments,
+    }
+    if call.thought_signature:
+        payload["thought_signature"] = call.thought_signature
+    return payload
+
+
 def _assistant_message(completion: CompletionResult) -> _SubagentMessage:
     return {
         "role": "assistant",
         "content": completion.text,
-        "tool_calls": [
-            {"id": call.id, "name": call.name, "arguments": call.arguments}
-            for call in completion.tool_calls
-        ],
+        "tool_calls": [_tool_call_state(call) for call in completion.tool_calls],
         "tool_call_id": None,
     }
 
@@ -188,8 +197,7 @@ class _ReadonlySubagentRuntime:
             return await self._finish(updated, status="answered", answer=completion.text)
 
         updated["pending_calls"] = [
-            {"id": call.id, "name": call.name, "arguments": call.arguments}
-            for call in completion.tool_calls
+            _tool_call_state(call) for call in completion.tool_calls
         ]
         await self._emit(
             updated,
