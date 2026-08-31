@@ -660,9 +660,10 @@ async def get_artifact_preview(
             else _pptx_preview(path)
         )
         preview_mode = "structure"
-    elif suffix == ".html" and (
-        offline_html := _validated_offline_html(artifact.meta, path)
-    ) is not None:
+    elif (
+        suffix == ".html"
+        and (offline_html := _validated_offline_html(artifact.meta, path)) is not None
+    ):
         return Response(
             content=offline_html,
             media_type="text/html; charset=utf-8",

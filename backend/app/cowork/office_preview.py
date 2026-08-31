@@ -144,8 +144,8 @@ def _render_pptx(source: Path, target: Path) -> Path | None:
             else ""
         )
         html = (
-            "<!doctype html><html><head><meta charset=\"utf-8\">"
-            "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; "
+            '<!doctype html><html><head><meta charset="utf-8">'
+            '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; '
             "img-src data:; style-src 'unsafe-inline'\">"
             "<style>body{margin:0;padding:24px;background:#eef1ef;color:#17211d;"
             "font:14px system-ui,sans-serif}figure{max-width:1200px;margin:0 auto 28px}"

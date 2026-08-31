@@ -95,9 +95,7 @@ def build_sandbox_launch(
     canonical_outputs = _sandbox_directory(outputs, label="outputs")
     canonical_temporary = _sandbox_directory(temporary, label="temporary")
     canonical_runtime_bin = _sandbox_directory(runtime_bin, label="runtime bin")
-    canonical_skills = tuple(
-        _sandbox_directory(path, label="skills") for path in skill_roots
-    )
+    canonical_skills = tuple(_sandbox_directory(path, label="skills") for path in skill_roots)
     if limits.runtime == "disabled":
         raise CoworkSandboxError("sandbox 已禁用，不能降级到 host.execute")
     backend = limits.runtime
@@ -178,9 +176,7 @@ def build_sandbox_launch(
             *canonical_skills,
         )
         read_mounts = tuple(
-            argument
-            for path in read_paths
-            for argument in ("--ro-bind", str(path), str(path))
+            argument for path in read_paths for argument in ("--ro-bind", str(path), str(path))
         )
         return SandboxLaunch(
             argv=(
@@ -233,9 +229,7 @@ def _container_launch(
 ) -> SandboxLaunch:
     executable = shutil.which(runtime)
     if executable is None:
-        raise CoworkSandboxError(
-            f"未找到 {runtime}；Windows run_sandbox 不会退回普通宿主 Shell"
-        )
+        raise CoworkSandboxError(f"未找到 {runtime}；Windows run_sandbox 不会退回普通宿主 Shell")
     if not limits.image.strip() or any(character.isspace() for character in limits.image):
         raise CoworkSandboxError("sandbox image 配置无效")
     paths = (inputs, work, outputs, temporary, *skill_roots)
@@ -362,7 +356,7 @@ def _require_managed_python_entrypoint(command: str) -> None:
 
 def _write_runtime_shims(runtime_bin: Path, python_executable: Path) -> None:
     quoted = shlex.quote(str(python_executable))
-    payload = f"#!/bin/sh\nexec {quoted} \"$@\"\n"
+    payload = f'#!/bin/sh\nexec {quoted} "$@"\n'
     for name in ("python", "python3"):
         target = runtime_bin / name
         target.write_text(payload, encoding="utf-8")
@@ -510,9 +504,7 @@ async def execute_sandbox_command(
                 else None
             ),
             process_tree_pids_limit=(
-                limits.pids_limit
-                if launch.engine in {"seatbelt", "bubblewrap"}
-                else None
+                limits.pids_limit if launch.engine in {"seatbelt", "bubblewrap"} else None
             ),
             process_tree_cpu_seconds=(
                 max(1, math.ceil(timeout_s * limits.cpus))

@@ -35,7 +35,7 @@ def _apply_cell_style(cell: Any, spec: WorkbookCell) -> None:
     elif spec.style == "metric":
         cell.font = Font(name="Aptos Display", size=20, bold=True, color="167A5B")
     elif spec.style == "currency":
-        cell.number_format = '¥#,##0.00;[Red]-¥#,##0.00'
+        cell.number_format = "¥#,##0.00;[Red]-¥#,##0.00"
     elif spec.style == "percent":
         cell.number_format = "0.0%"
     elif spec.style == "date":

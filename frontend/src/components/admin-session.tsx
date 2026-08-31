@@ -160,7 +160,7 @@ export function AdminSessionControl() {
 
   if (state === "authenticated") {
     return (
-      <div className="admin-session">
+      <div className="admin-session" data-auth-state={state}>
         <span className="admin-badge" title="owner 私有会话：可使用个人记忆与管理功能">
           {desktop ? "desktop owner" : "owner"}
         </span>
@@ -174,11 +174,12 @@ export function AdminSessionControl() {
   }
 
   return (
-    <div className="admin-session">
+    <div className="admin-session" data-auth-state={state}>
       <button
         aria-expanded={open}
         aria-haspopup="dialog"
         className="link-button"
+        disabled={state === "unknown"}
         onClick={() => (open ? close() : setOpen(true))}
         type="button"
       >

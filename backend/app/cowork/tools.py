@@ -1884,9 +1884,7 @@ async def _render_artifact(context: CoworkToolContext, raw: BaseModel) -> Cowork
         )
     except (CoworkFileError, OSError, ValueError) as error:
         raise CoworkToolError(str(error)) from error
-    kind: Literal["file", "report", "table"] = (
-        "table" if spec.artifact_type == "xlsx" else "report"
-    )
+    kind: Literal["file", "report", "table"] = "table" if spec.artifact_type == "xlsx" else "report"
     mime_type = {
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1909,9 +1907,7 @@ async def _render_artifact(context: CoworkToolContext, raw: BaseModel) -> Cowork
                 "sha256": result.sha256,
                 "size_bytes": result.size_bytes,
                 "created": result.created,
-                "backup_uri": (
-                    str(result.backup_path) if result.backup_path is not None else None
-                ),
+                "backup_uri": (str(result.backup_path) if result.backup_path is not None else None),
                 "diff": result.diff,
                 "artifact_manifest": result.manifest.model_dump(mode="json"),
             },
@@ -1960,12 +1956,7 @@ def _artifact_image_owners(spec: ArtifactSpec) -> list[Any]:
         )
         return owners
     if isinstance(spec, (DocumentSpec, HtmlReportSpec, PdfSpec)):
-        return [
-            block
-            for section in spec.sections
-            for block in section.blocks
-            if block.image_path
-        ]
+        return [block for section in spec.sections for block in section.blocks if block.image_path]
     return []
 
 
@@ -2002,10 +1993,7 @@ def _representative_pages(total: int, *, limit: int) -> list[int]:
         return [1]
     if total <= limit:
         return list(range(1, total + 1))
-    selected = {
-        1 + round(index * (total - 1) / (limit - 1))
-        for index in range(limit)
-    }
+    selected = {1 + round(index * (total - 1) / (limit - 1)) for index in range(limit)}
     return sorted(selected)
 
 
@@ -2063,11 +2051,7 @@ def _prune_model_preview_cache(
         if not run_root.is_dir() or run_root.is_symlink():
             continue
         run_leaves = sorted(
-            (
-                item
-                for item in run_root.iterdir()
-                if item.is_dir() and not item.is_symlink()
-            ),
+            (item for item in run_root.iterdir() if item.is_dir() and not item.is_symlink()),
             key=lambda item: item.stat().st_mtime_ns,
             reverse=True,
         )
@@ -2135,9 +2119,7 @@ async def _preview_presentation(
         )
     except (OSError, ValueError, PptxRasterError) as error:
         raise CoworkToolError(f"演示页面试制失败：{error}") from error
-    montage_included = (
-        len(raster.pages) > 1 and context.settings.cowork_attachment_max_count > 1
-    )
+    montage_included = len(raster.pages) > 1 and context.settings.cowork_attachment_max_count > 1
     page_limit = min(
         8,
         context.settings.cowork_attachment_max_count - int(montage_included),
@@ -2184,9 +2166,7 @@ async def _preview_presentation(
     except OSError as error:
         raise CoworkToolError(f"演示预览缓存清理失败：{error}") from error
     inspection_instruction = (
-        "先查看随结果返回的全稿总览和代表页图"
-        if montage_included
-        else "先查看随结果返回的页图"
+        "先查看随结果返回的全稿总览和代表页图" if montage_included else "先查看随结果返回的页图"
     )
     return CoworkToolResult(
         content={
@@ -2597,14 +2577,10 @@ async def _run_sandbox(context: CoworkToolContext, raw: BaseModel) -> CoworkTool
         )
         raw_skill_roots = [BUILTIN_SKILLS_ROOT, context.settings.cowork_skills_path]
         raw_skill_roots.extend(
-            Path(root.canonical_path) / PROJECT_SKILLS_RELATIVE
-            for root in roots
-            if root.enabled
+            Path(root.canonical_path) / PROJECT_SKILLS_RELATIVE for root in roots if root.enabled
         )
         skill_roots = tuple(
-            path
-            for path in raw_skill_roots
-            if path.is_dir() and not path.is_symlink()
+            path for path in raw_skill_roots if path.is_dir() and not path.is_symlink()
         )
         result = await execute_sandbox_command(
             args.command,
@@ -3277,9 +3253,7 @@ def build_default_cowork_registry() -> CoworkToolRegistry:
             effect="none",
             parallel_safe=True,
             handler=_fetch_url,
-            resource_target_resolver=lambda raw: FetchUrlArgs.model_validate(
-                raw.model_dump()
-            ).url,
+            resource_target_resolver=lambda raw: FetchUrlArgs.model_validate(raw.model_dump()).url,
             search_aliases=(
                 "web fetch",
                 "open url",

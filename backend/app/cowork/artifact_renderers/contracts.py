@@ -314,9 +314,9 @@ class CanvasTextElement(_CanvasPositionedElement):
     text: str = Field(min_length=1, max_length=500)
     font_size: int = Field(default=20, ge=16, le=36)
     bold: bool = False
-    color_role: Literal[
-        "text_primary", "text_secondary", "accent", "positive", "warning"
-    ] = "text_primary"
+    color_role: Literal["text_primary", "text_secondary", "accent", "positive", "warning"] = (
+        "text_primary"
+    )
     align: Literal["left", "center", "right"] = "left"
     valign: Literal["top", "middle", "bottom"] = "top"
 
@@ -334,9 +334,7 @@ class CanvasShapeElement(_CanvasPositionedElement):
     )
     title: str = Field(min_length=1, max_length=100)
     detail: str | None = Field(default=None, max_length=240)
-    fill_role: Literal["background", "surface", "accent", "positive", "warning"] = (
-        "surface"
-    )
+    fill_role: Literal["background", "surface", "accent", "positive", "warning"] = "surface"
     fill_style: Literal["soft", "solid"] = "soft"
     font_size: int = Field(default=18, ge=16, le=28)
 
@@ -368,10 +366,7 @@ class CanvasConnectorElement(_StrictSpec):
 
 
 CanvasElementSpec = Annotated[
-    CanvasTextElement
-    | CanvasShapeElement
-    | CanvasImageElement
-    | CanvasConnectorElement,
+    CanvasTextElement | CanvasShapeElement | CanvasImageElement | CanvasConnectorElement,
     Field(discriminator="type"),
 ]
 
@@ -398,9 +393,7 @@ class CanvasSpec(_StrictSpec):
             raise ValueError("canvas 至少需要 2 个可见元素")
         drawable_ids = {element.id for element in positioned}
         connectors = [
-            element
-            for element in self.elements
-            if isinstance(element, CanvasConnectorElement)
+            element for element in self.elements if isinstance(element, CanvasConnectorElement)
         ]
         if len(connectors) > 10:
             raise ValueError("canvas 最多支持 10 条连接线")
@@ -463,13 +456,11 @@ class CanvasSpec(_StrictSpec):
         for first, second in combinations(positioned, 2):
             overlap_width = max(
                 0.0,
-                min(first.x + first.width, second.x + second.width)
-                - max(first.x, second.x),
+                min(first.x + first.width, second.x + second.width) - max(first.x, second.x),
             )
             overlap_height = max(
                 0.0,
-                min(first.y + first.height, second.y + second.height)
-                - max(first.y, second.y),
+                min(first.y + first.height, second.y + second.height) - max(first.y, second.y),
             )
             intersection = overlap_width * overlap_height
             smaller = min(first.width * first.height, second.width * second.height)

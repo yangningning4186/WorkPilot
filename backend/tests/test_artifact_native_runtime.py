@@ -30,12 +30,8 @@ def test_artifact_runtime_locks_required_format_dependencies() -> None:
         for name, version in [line.split("==", maxsplit=1)]
     }
 
-    assert {
-        name.casefold(): pins[name.casefold()]
-        for name in EXPECTED_DISTRIBUTIONS
-    } == {
-        name.casefold(): version
-        for name, version in EXPECTED_DISTRIBUTIONS.items()
+    assert {name.casefold(): pins[name.casefold()] for name in EXPECTED_DISTRIBUTIONS} == {
+        name.casefold(): version for name, version in EXPECTED_DISTRIBUTIONS.items()
     }
 
 
@@ -51,9 +47,9 @@ def test_desktop_bundle_contains_artifact_and_pptx_external_binaries() -> None:
     config = (
         Path(__file__).parents[2] / "frontend" / "src-tauri" / "tauri.bundle.conf.json"
     ).read_text(encoding="utf-8")
-    build_script = (
-        Path(__file__).parents[1] / "scripts" / "build_sidecar.py"
-    ).read_text(encoding="utf-8")
+    build_script = (Path(__file__).parents[1] / "scripts" / "build_sidecar.py").read_text(
+        encoding="utf-8"
+    )
     desktop_shell = (
         Path(__file__).parents[2] / "frontend" / "src-tauri" / "src" / "lib.rs"
     ).read_text(encoding="utf-8")
@@ -69,13 +65,7 @@ def test_desktop_bundle_contains_artifact_and_pptx_external_binaries() -> None:
 
 
 def test_pptx_renderer_pkg_patch_is_narrow_and_version_locked(tmp_path: Path) -> None:
-    source = (
-        tmp_path
-        / "node_modules"
-        / "pptxgenjs"
-        / "dist"
-        / "pptxgen.cjs.js"
-    )
+    source = tmp_path / "node_modules" / "pptxgenjs" / "dist" / "pptxgen.cjs.js"
     source.parent.mkdir(parents=True)
     source.write_text(
         "\n".join(

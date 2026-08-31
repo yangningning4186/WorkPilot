@@ -341,9 +341,7 @@ async def execute_shell_command(
         if any(value is not None for value in process_tree_limits)
         else None
     )
-    waiters: set[asyncio.Task[int] | asyncio.Task[bool] | asyncio.Task[str]] = {
-        process_task
-    }
+    waiters: set[asyncio.Task[int] | asyncio.Task[bool] | asyncio.Task[str]] = {process_task}
     if cancel_task is not None:
         waiters.add(cancel_task)
     if resource_task is not None:
@@ -463,8 +461,7 @@ async def _wait_for_process_tree_limit(
             return f"无法验证 sandbox 进程树资源用量，已终止：{error}"
         if memory_bytes is not None and usage.rss_bytes > memory_bytes:
             return (
-                f"sandbox 进程树内存 {usage.rss_bytes} bytes 超过上限 "
-                f"{memory_bytes} bytes，已终止"
+                f"sandbox 进程树内存 {usage.rss_bytes} bytes 超过上限 {memory_bytes} bytes，已终止"
             )
         if pids_limit is not None and usage.pids > pids_limit:
             return f"sandbox 进程数 {usage.pids} 超过上限 {pids_limit}，已终止"

@@ -340,9 +340,7 @@ def test_request_capability_schema_does_not_advertise_retired_office_grants() ->
             {
                 "capability": "network.fetch",
                 "reason": "错误地合并了多个站点",
-                "resource_scope": (
-                    "origin:https://www.baidu.com, origin:https://baike.baidu.com"
-                ),
+                "resource_scope": ("origin:https://www.baidu.com, origin:https://baike.baidu.com"),
             }
         )
 

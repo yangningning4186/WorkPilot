@@ -81,10 +81,7 @@ def test_linux_sandbox_never_mounts_host_root(
         "--ro-bind",
         str(directories["inputs"].resolve()),
         str(directories["inputs"].resolve()),
-    ) in tuple(
-        launch.argv[index : index + 3]
-        for index in range(len(launch.argv) - 2)
-    )
+    ) in tuple(launch.argv[index : index + 3] for index in range(len(launch.argv) - 2))
 
 
 def test_windows_auto_retains_container_sandbox_backend(

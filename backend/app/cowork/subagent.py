@@ -196,9 +196,7 @@ class _ReadonlySubagentRuntime:
         if not completion.tool_calls:
             return await self._finish(updated, status="answered", answer=completion.text)
 
-        updated["pending_calls"] = [
-            _tool_call_state(call) for call in completion.tool_calls
-        ]
+        updated["pending_calls"] = [_tool_call_state(call) for call in completion.tool_calls]
         await self._emit(
             updated,
             "round",

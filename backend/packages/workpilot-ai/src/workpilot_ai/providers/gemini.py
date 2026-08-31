@@ -157,9 +157,7 @@ class GeminiProvider:
                 if not name:
                     raise ProviderResponseError("Gemini functionCall 缺少 name")
                 raw_thought_signature = part.get("thoughtSignature")
-                if raw_thought_signature is not None and not isinstance(
-                    raw_thought_signature, str
-                ):
+                if raw_thought_signature is not None and not isinstance(raw_thought_signature, str):
                     raise ProviderResponseError("Gemini thoughtSignature 不是字符串")
                 calls.append(
                     ToolCall(

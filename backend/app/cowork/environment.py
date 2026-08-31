@@ -117,8 +117,7 @@ def render_capabilities_block(granted: Sequence[str], available: Sequence[str]) 
     lines = [
         "<capabilities>",
         "已授予（直接用，不要再为它们调用 request_capability）：" + ("、".join(held) or "无"),
-        "未授予（由运行时生成授权卡，不要自行拼 capability）："
-        + ("、".join(missing) or "无"),
+        "未授予（由运行时生成授权卡，不要自行拼 capability）：" + ("、".join(missing) or "无"),
         "已授予不等于跳过动作审核：有副作用的动作仍可能逐次征求用户确认。",
         # 能力是按工具划的, 不是按后果划的。模型会自己推断"删文件属于写"从而去要
         # filesystem.write, 而 run_shell 实际校验 host.execute——评测里它就是这样

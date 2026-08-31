@@ -29,8 +29,8 @@ def test_artifact_commit_lock_is_exclusive_for_the_whole_target(tmp_path: Path) 
     "payload",
     [
         "<style>@import url(//evil.example/theme.css)</style>",
-        "<div style=\"background:url(https://evil.example/pixel)\">x</div>",
-        "<img srcset=\"//evil.example/a.png 1x, /local.png 2x\">",
+        '<div style="background:url(https://evil.example/pixel)">x</div>',
+        '<img srcset="//evil.example/a.png 1x, /local.png 2x">',
         "<img src=https://evil.example/unquoted.png>",
     ],
 )

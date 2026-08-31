@@ -185,9 +185,7 @@ class Settings(BaseSettings):
     )
     # macOS/Linux 优先使用原生隔离；Windows 的 auto 保留 Docker/Podman 后端。
     # 所有后端都 fail closed，绝不退回 host.execute。
-    cowork_sandbox_runtime: Literal[
-        "auto", "disabled", "native", "docker", "podman"
-    ] = "auto"
+    cowork_sandbox_runtime: Literal["auto", "disabled", "native", "docker", "podman"] = "auto"
     cowork_sandbox_python_path: Path | None = None
     cowork_sandbox_profile: str = "artifact-python:1.0.0"
     cowork_sandbox_image: str = "workpilot-artifact-python:1.0.0"

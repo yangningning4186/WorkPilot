@@ -127,37 +127,19 @@ class ScopeSpec(_StrictModel):
     @model_validator(mode="after")
     def _valid_selector(self) -> ScopeSpec:
         if self.kind == "artifact":
-            if (
-                self.index is not None
-                or self.selector is not None
-                or self.cell_range is not None
-            ):
+            if self.index is not None or self.selector is not None or self.cell_range is not None:
                 raise ValueError("artifact scope 不能带定位字段")
         elif self.kind in {"docx_table", "pdf_page"}:
-            if (
-                self.index is None
-                or self.selector is not None
-                or self.cell_range is not None
-            ):
+            if self.index is None or self.selector is not None or self.cell_range is not None:
                 raise ValueError(f"{self.kind} scope 只接受 index")
         elif self.kind == "docx_section":
-            if (
-                self.selector is None
-                or self.index is not None
-                or self.cell_range is not None
-            ):
+            if self.selector is None or self.index is not None or self.cell_range is not None:
                 raise ValueError("docx_section scope 只接受 selector")
         elif self.kind == "pptx_slide":
-            if (self.index is None) == (
-                self.selector is None
-            ) or self.cell_range is not None:
+            if (self.index is None) == (self.selector is None) or self.cell_range is not None:
                 raise ValueError("pptx_slide scope 必须且只能使用 index 或 selector")
         elif self.kind == "xlsx_sheet":
-            if (
-                self.selector is None
-                or self.index is not None
-                or self.cell_range is not None
-            ):
+            if self.selector is None or self.index is not None or self.cell_range is not None:
                 raise ValueError("xlsx_sheet scope 只接受 selector")
         elif self.kind == "xlsx_range" and (
             self.selector is None or self.cell_range is None or self.index is not None
@@ -228,9 +210,7 @@ class TextClaimContainsCheck(_StrictModel):
     values: list[str] = Field(min_length=1, max_length=20)
     match: Literal["all", "any"] = "any"
     scope: ScopeSpec = Field(default_factory=ScopeSpec)
-    negations: list[str] = Field(
-        default_factory=_default_negations, min_length=1, max_length=20
-    )
+    negations: list[str] = Field(default_factory=_default_negations, min_length=1, max_length=20)
     context_window: int = Field(default=12, ge=1, le=50)
 
 
@@ -238,9 +218,7 @@ class TextClaimNotContainsCheck(_StrictModel):
     type: Literal["text_claim_not_contains"]
     values: list[str] = Field(min_length=1, max_length=20)
     scope: ScopeSpec = Field(default_factory=ScopeSpec)
-    negations: list[str] = Field(
-        default_factory=_default_negations, min_length=1, max_length=20
-    )
+    negations: list[str] = Field(default_factory=_default_negations, min_length=1, max_length=20)
     context_window: int = Field(default=12, ge=1, le=50)
 
 
@@ -285,9 +263,7 @@ class XlsxCellsValueCheck(_StrictModel):
     @model_validator(mode="after")
     def _valid_addresses(self) -> XlsxCellsValueCheck:
         pattern = re.compile(r"^.+!\$?[A-Z]{1,3}\$?[1-9][0-9]*$")
-        invalid = [
-            address for address in self.cells if pattern.fullmatch(address) is None
-        ]
+        invalid = [address for address in self.cells if pattern.fullmatch(address) is None]
         if invalid:
             raise ValueError(f"非法 XLSX 单元格地址：{invalid}")
         return self
@@ -414,9 +390,7 @@ class GateSpec(_StrictModel):
     fail_on_dimensions: list[ValidatorDimensionName] = Field(
         default_factory=_default_gate_dimensions
     )
-    require_measured_dimensions: list[ValidatorDimensionName] = Field(
-        default_factory=list
-    )
+    require_measured_dimensions: list[ValidatorDimensionName] = Field(default_factory=list)
     min_validator_quality: int = Field(default=0, ge=0, le=100)
     max_file_bytes: int = Field(default=64 * 1024 * 1024, ge=1)
     max_uncompressed_bytes: int = Field(default=256 * 1024 * 1024, ge=1)
@@ -425,9 +399,7 @@ class GateSpec(_StrictModel):
     def _no_duplicate_dimensions(self) -> GateSpec:
         if len(self.fail_on_dimensions) != len(set(self.fail_on_dimensions)):
             raise ValueError("fail_on_dimensions 不能重复")
-        if len(self.require_measured_dimensions) != len(
-            set(self.require_measured_dimensions)
-        ):
+        if len(self.require_measured_dimensions) != len(set(self.require_measured_dimensions)):
             raise ValueError("require_measured_dimensions 不能重复")
         return self
 
@@ -473,21 +445,15 @@ class OfficeContentItem(_StrictModel):
         review_dimensions = {item.dimension for item in self.review_criteria}
         missing_review = set(_REVIEW_DIMENSIONS) - review_dimensions
         if missing_review:
-            raise ValueError(
-                f"每道题必须覆盖三个人工复核维度，缺少 {sorted(missing_review)}"
-            )
+            raise ValueError(f"每道题必须覆盖三个人工复核维度，缺少 {sorted(missing_review)}")
         if self.artifact_type == "pptx":
             required_gate_dimensions = {"structural", "visual", "security"}
             if (
                 not self.gate.render_visual
                 or not required_gate_dimensions.issubset(self.gate.fail_on_dimensions)
-                or not required_gate_dimensions.issubset(
-                    self.gate.require_measured_dimensions
-                )
+                or not required_gate_dimensions.issubset(self.gate.require_measured_dimensions)
             ):
-                raise ValueError(
-                    "PPTX 必须渲染并把 structural/visual/security 设为已测量硬门禁"
-                )
+                raise ValueError("PPTX 必须渲染并把 structural/visual/security 设为已测量硬门禁")
         incompatible_checks = [
             rubric.id
             for rubric in self.rubric
@@ -502,11 +468,7 @@ class OfficeContentItem(_StrictModel):
         fixture_names = {fixture.path for fixture in self.fixtures}
         source_refs = [
             source_ref for rubric in self.rubric for source_ref in rubric.source_refs
-        ] + [
-            source_ref
-            for penalty in self.penalties
-            for source_ref in penalty.source_refs
-        ]
+        ] + [source_ref for penalty in self.penalties for source_ref in penalty.source_refs]
         unknown_refs = sorted(
             {
                 source_ref
@@ -546,17 +508,13 @@ class OfficeContentSuite(_StrictModel):
             raise ValueError("dimension_weights 不能为负数")
         if not math.isclose(sum(self.dimension_weights.values()), 1.0, abs_tol=1e-9):
             raise ValueError("dimension_weights 之和必须为 1")
-        if not math.isclose(
-            self.automatic_weight + self.review_weight, 1.0, abs_tol=1e-9
-        ):
+        if not math.isclose(self.automatic_weight + self.review_weight, 1.0, abs_tol=1e-9):
             raise ValueError("automatic_weight + review_weight 必须为 1")
         if self.review_status == "approved":
             if self.reviewer is None or self.reviewed_at is None:
                 raise ValueError("approved suite 必须记录 reviewer 与 reviewed_at")
             try:
-                reviewed_at = datetime.fromisoformat(
-                    self.reviewed_at.replace("Z", "+00:00")
-                )
+                reviewed_at = datetime.fromisoformat(self.reviewed_at.replace("Z", "+00:00"))
             except ValueError as error:
                 raise ValueError("reviewed_at 必须是 ISO-8601 时间") from error
             if reviewed_at.tzinfo is None:
@@ -576,12 +534,8 @@ class ReviewAnnotation(_StrictModel):
     source: ReviewSource = "human"
     provider: str | None = Field(default=None, min_length=1, max_length=200)
     model: str | None = Field(default=None, min_length=1, max_length=300)
-    prompt_fingerprint: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
-    authorization_note_fingerprint: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
+    prompt_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    authorization_note_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     calibration_status: Literal["uncalibrated"] | None = None
     render_mode: ReviewRenderMode | None = None
 
@@ -676,9 +630,7 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 def load_suite(path: Path = DEFAULT_SUITE) -> OfficeContentSuite:
     try:
-        payload = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
-        )
+        payload = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
         return OfficeContentSuite.model_validate(payload)
     except (
         OSError,
@@ -693,9 +645,7 @@ def load_reviews(path: Path | None) -> ReviewFile | None:
     if path is None:
         return None
     try:
-        payload = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
-        )
+        payload = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
         return ReviewFile.model_validate(payload)
     except (
         OSError,
@@ -703,9 +653,7 @@ def load_reviews(path: Path | None) -> ReviewFile | None:
         json.JSONDecodeError,
         ValidationError,
     ) as error:
-        raise OfficeContentSuiteError(
-            f"Office content reviews 无效：{error}"
-        ) from error
+        raise OfficeContentSuiteError(f"Office content reviews 无效：{error}") from error
 
 
 def suite_summary(suite: OfficeContentSuite) -> dict[str, object]:
@@ -717,15 +665,9 @@ def suite_summary(suite: OfficeContentSuite) -> dict[str, object]:
         "review_status": suite.review_status,
         "items": len(suite.items),
         "splits": dict(sorted(Counter(item.split for item in suite.items).items())),
-        "formats": dict(
-            sorted(Counter(item.artifact_type for item in suite.items).items())
-        ),
-        "task_types": dict(
-            sorted(Counter(item.task_type for item in suite.items).items())
-        ),
-        "difficulties": dict(
-            sorted(Counter(item.difficulty for item in suite.items).items())
-        ),
+        "formats": dict(sorted(Counter(item.artifact_type for item in suite.items).items())),
+        "task_types": dict(sorted(Counter(item.task_type for item in suite.items).items())),
+        "difficulties": dict(sorted(Counter(item.difficulty for item in suite.items).items())),
         "automatic_checks": sum(len(item.rubric) for item in suite.items),
         "penalties": sum(len(item.penalties) for item in suite.items),
         "review_criteria": sum(len(item.review_criteria) for item in suite.items),
@@ -800,14 +742,9 @@ def _extract_docx(path: Path) -> ArtifactView:
             level = _heading_level(block)
             if level is not None and text:
                 headings.append(text)
-                while (
-                    active_sections
-                    and section_values[active_sections[-1]]["level"] >= level
-                ):
+                while active_sections and section_values[active_sections[-1]]["level"] >= level:
                     active_sections.pop()
-                section_values.append(
-                    {"heading": text, "level": level, "values": [text]}
-                )
+                section_values.append({"heading": text, "level": level, "values": [text]})
                 active_sections.append(len(section_values) - 1)
             elif text:
                 for index in active_sections:
@@ -858,9 +795,7 @@ def _shape_text(shape: Any) -> list[str]:
         if text:
             values.append(text)
     if bool(getattr(shape, "has_table", False)):
-        values.extend(
-            "\t".join(cell.text for cell in row.cells) for row in shape.table.rows
-        )
+        values.extend("\t".join(cell.text for cell in row.cells) for row in shape.table.rows)
     return values
 
 
@@ -972,9 +907,7 @@ def _extract_xlsx(path: Path) -> ArtifactView:
                     address = _cell_address(sheet.title, cell.coordinate)
                     cells[address] = cell.value
                     formats[address] = str(cell.number_format)
-                    formula_count += int(
-                        isinstance(cell.value, str) and cell.value.startswith("=")
-                    )
+                    formula_count += int(isinstance(cell.value, str) and cell.value.startswith("="))
                     row_values.append(str(cell.value))
                 if any(row_values):
                     rows.append("\t".join(row_values).rstrip())
@@ -1021,9 +954,7 @@ def _extract_pdf(path: Path) -> ArtifactView:
             text = page.get_text("text")  # type: ignore[no-untyped-call]
             values.append(text)
             scopes.append(
-                TextScope(
-                    kind="pdf_page", label=f"PDF page {index}", text=text, index=index
-                )
+                TextScope(kind="pdf_page", label=f"PDF page {index}", text=text, index=index)
             )
         return ArtifactView(
             artifact_type="pdf",
@@ -1091,9 +1022,7 @@ def _scope_texts(view: ArtifactView, scope: ScopeSpec) -> list[TextScope]:
         for row in range(min_row, max_row + 1):
             values: list[str] = []
             for column in range(min_col, max_col + 1):
-                address = _cell_address(
-                    scope.selector, f"{get_column_letter(column)}{row}"
-                )
+                address = _cell_address(scope.selector, f"{get_column_letter(column)}{row}")
                 value = view.cells.get(address)
                 values.append("" if value is None else str(value))
             rows.append("\t".join(values).rstrip())
@@ -1106,11 +1035,7 @@ def _scope_texts(view: ArtifactView, scope: ScopeSpec) -> list[TextScope]:
             )
         ]
     selector = _normalized(scope.selector or "")
-    return [
-        item
-        for item in candidates
-        if selector in _normalized(item.selector or item.label)
-    ]
+    return [item for item in candidates if selector in _normalized(item.selector or item.label)]
 
 
 def _text_contains(check: TextContainsCheck, view: ArtifactView) -> CheckOutcome:
@@ -1150,12 +1075,8 @@ def _text_not_contains(check: TextNotContainsCheck, view: ArtifactView) -> Check
             if normalized_value in _normalized(scope.text):
                 hits.append((value, scope.label, _snippet(scope.text, value)))
                 break
-    evidence = [
-        f"{label}: forbidden={value}｜{snippet}" for value, label, snippet in hits
-    ]
-    return CheckOutcome(
-        not hits, f"forbidden_hits={[item[0] for item in hits]!r}", evidence
-    )
+    evidence = [f"{label}: forbidden={value}｜{snippet}" for value, label, snippet in hits]
+    return CheckOutcome(not hits, f"forbidden_hits={[item[0] for item in hits]!r}", evidence)
 
 
 def _text_ordered(check: TextOrderedCheck, view: ArtifactView) -> CheckOutcome:
@@ -1191,10 +1112,7 @@ def _bounded_value_present(text: str, value: str) -> bool:
     ends_numeric = value[-1].isdigit() or value.endswith("%")
     left_boundary = r"(?<![\d.])" if starts_numeric else ""
     right_boundary = r"(?![\d.])" if ends_numeric else ""
-    return (
-        re.search(f"{left_boundary}{re.escape(value)}{right_boundary}", text)
-        is not None
-    )
+    return re.search(f"{left_boundary}{re.escape(value)}{right_boundary}", text) is not None
 
 
 def _labeled_value_match(
@@ -1252,9 +1170,7 @@ def _labeled_value_match(
                 if next_boundaries:
                     end = min(end, min(next_boundaries))
             window = text[start:end]
-            if all(
-                _bounded_value_present(window, value) for value in normalized_values
-            ):
+            if all(_bounded_value_present(window, value) for value in normalized_values):
                 return raw_label, requirement.values
             cursor = position + max(1, len(label))
     return None
@@ -1272,9 +1188,7 @@ def _text_labeled_values(
     evidence: list[str] = []
     boundary_labels = list(
         dict.fromkeys(
-            _normalized(label)
-            for requirement in check.requirements
-            for label in requirement.labels
+            _normalized(label) for requirement in check.requirements for label in requirement.labels
         )
     )
     for requirement in check.requirements:
@@ -1297,8 +1211,7 @@ def _text_labeled_values(
         scope, label, values = found
         matches.append({"label": label, "values": values, "scope": scope.label})
         evidence.append(
-            f"{scope.label}: {label} → {', '.join(values)}｜"
-            f"{_snippet(scope.text, label)}"
+            f"{scope.label}: {label} → {', '.join(values)}｜{_snippet(scope.text, label)}"
         )
     return CheckOutcome(
         not missing,
@@ -1327,12 +1240,9 @@ def _claim_hits(
                 if position < 0:
                     break
                 before = text[max(0, position - context_window) : position]
-                after = text[
-                    position + len(needle) : position + len(needle) + context_window
-                ]
+                after = text[position + len(needle) : position + len(needle) + context_window]
                 negated = any(
-                    negation in before or negation in after
-                    for negation in normalized_negations
+                    negation in before or negation in after for negation in normalized_negations
                 )
                 if not negated:
                     hits.append((value, scope.label, _snippet(scope.text, value)))
@@ -1341,9 +1251,7 @@ def _claim_hits(
     return hits
 
 
-def _text_claim_contains(
-    check: TextClaimContainsCheck, view: ArtifactView
-) -> CheckOutcome:
+def _text_claim_contains(check: TextClaimContainsCheck, view: ArtifactView) -> CheckOutcome:
     scopes = _scope_texts(view, check.scope)
     if not scopes:
         return CheckOutcome(False, "定位范围不存在", [])
@@ -1355,9 +1263,7 @@ def _text_claim_contains(
     )
     hit_values = {item[0] for item in hits}
     passed = (
-        all(value in hit_values for value in check.values)
-        if check.match == "all"
-        else bool(hits)
+        all(value in hit_values for value in check.values) if check.match == "all" else bool(hits)
     )
     return CheckOutcome(
         passed,
@@ -1367,9 +1273,7 @@ def _text_claim_contains(
     )
 
 
-def _text_claim_not_contains(
-    check: TextClaimNotContainsCheck, view: ArtifactView
-) -> CheckOutcome:
+def _text_claim_not_contains(check: TextClaimNotContainsCheck, view: ArtifactView) -> CheckOutcome:
     scopes = _scope_texts(view, check.scope)
     if not scopes:
         return CheckOutcome(False, "定位范围不存在", [])
@@ -1414,18 +1318,10 @@ def _structure_values(check: StructureValuesCheck, view: ArtifactView) -> CheckO
         passed = normalized_actual == expected
         missing = [] if passed else check.values
     else:
-        present = [
-            value
-            for value in expected
-            if any(value in item for item in normalized_actual)
-        ]
-        passed = (
-            len(present) == len(expected) if check.match == "all" else bool(present)
-        )
+        present = [value for value in expected if any(value in item for item in normalized_actual)]
+        passed = len(present) == len(expected) if check.match == "all" else bool(present)
         missing = [
-            raw
-            for raw, value in zip(check.values, expected, strict=True)
-            if value not in present
+            raw for raw, value in zip(check.values, expected, strict=True) if value not in present
         ]
     return CheckOutcome(
         passed,
@@ -1447,9 +1343,7 @@ def _pptx_chart_data(check: PptxChartDataCheck, view: ArtifactView) -> CheckOutc
 
     for chart in view.charts:
         actual_values = [
-            float(value)
-            for value in chart.get("values", [])
-            if isinstance(value, (int, float))
+            float(value) for value in chart.get("values", []) if isinstance(value, (int, float))
         ]
         labels = [
             _normalized(value)
@@ -1639,9 +1533,7 @@ def _evaluate_sumif(
         raise OfficeContentSuiteError("SUMIF 条件区域与求和区域大小不一致")
     criterion = _normalized(match.group("criterion"))
     total = 0.0
-    for criteria_address, total_address in zip(
-        criteria_addresses, total_addresses, strict=True
-    ):
+    for criteria_address, total_address in zip(criteria_addresses, total_addresses, strict=True):
         try:
             _, criteria_value = _lookup_cell(view, criteria_address)
         except KeyError:
@@ -1655,9 +1547,7 @@ def _evaluate_sumif(
     return total
 
 
-def _numeric_cell_value(
-    view: ArtifactView, address: str, stack: set[str] | None = None
-) -> float:
+def _numeric_cell_value(view: ArtifactView, address: str, stack: set[str] | None = None) -> float:
     key, raw = _lookup_cell(view, address)
     if isinstance(raw, bool):
         return float(raw)
@@ -1667,9 +1557,7 @@ def _numeric_cell_value(
         try:
             return float(raw)
         except (TypeError, ValueError) as error:
-            raise OfficeContentSuiteError(
-                f"{key} 不是数值或可计算公式：{raw!r}"
-            ) from error
+            raise OfficeContentSuiteError(f"{key} 不是数值或可计算公式：{raw!r}") from error
     active = set() if stack is None else set(stack)
     if key in active:
         raise OfficeContentSuiteError(f"公式循环引用：{key}")
@@ -1714,9 +1602,7 @@ def _xlsx_cell_value(check: XlsxCellValueCheck, view: ArtifactView) -> CheckOutc
         key, raw = _lookup_cell(view, check.address)
     except KeyError:
         return CheckOutcome(False, f"单元格不存在：{check.address}", [])
-    if isinstance(check.expected, (int, float)) and not isinstance(
-        check.expected, bool
-    ):
+    if isinstance(check.expected, (int, float)) and not isinstance(check.expected, bool):
         try:
             actual: Any = _numeric_cell_value(view, key)
         except OfficeContentSuiteError as error:
@@ -1735,29 +1621,21 @@ def _xlsx_cell_value(check: XlsxCellValueCheck, view: ArtifactView) -> CheckOutc
     )
 
 
-def _xlsx_formula_value(
-    check: XlsxFormulaValueCheck, view: ArtifactView
-) -> CheckOutcome:
+def _xlsx_formula_value(check: XlsxFormulaValueCheck, view: ArtifactView) -> CheckOutcome:
     try:
         key, raw = _lookup_cell(view, check.address)
     except KeyError:
         return CheckOutcome(False, f"单元格不存在：{check.address}", [])
     if not isinstance(raw, str) or not raw.startswith("="):
-        return CheckOutcome(
-            False, f"{key} 必须是公式，实际为 {raw!r}", [f"{key}={raw!r}"], raw
-        )
+        return CheckOutcome(False, f"{key} 必须是公式，实际为 {raw!r}", [f"{key}={raw!r}"], raw)
     missing_tokens = [
-        token
-        for token in check.must_contain
-        if _normalized(token) not in _normalized(raw)
+        token for token in check.must_contain if _normalized(token) not in _normalized(raw)
     ]
     try:
         actual = _numeric_cell_value(view, key)
     except OfficeContentSuiteError as error:
         return CheckOutcome(False, str(error), [f"{key}={raw}"], raw)
-    value_ok = math.isclose(
-        actual, check.expected, rel_tol=0.0, abs_tol=check.tolerance
-    )
+    value_ok = math.isclose(actual, check.expected, rel_tol=0.0, abs_tol=check.tolerance)
     return CheckOutcome(
         value_ok and not missing_tokens,
         f"{key}: formula={raw!r} result={actual:g} expected={check.expected:g} missing_tokens={missing_tokens!r}",
@@ -1784,24 +1662,17 @@ def _xlsx_cells_value(check: XlsxCellsValueCheck, view: ArtifactView) -> CheckOu
         not failures,
         f"matched={len(outcomes) - len(failures)}/{len(outcomes)} failures={failures!r}",
         [evidence for outcome in outcomes for evidence in outcome.evidence],
-        {
-            address: outcome.actual
-            for address, outcome in zip(check.cells, outcomes, strict=True)
-        },
+        {address: outcome.actual for address, outcome in zip(check.cells, outcomes, strict=True)},
     )
 
 
-def _xlsx_number_format(
-    check: XlsxNumberFormatCheck, view: ArtifactView
-) -> CheckOutcome:
+def _xlsx_number_format(check: XlsxNumberFormatCheck, view: ArtifactView) -> CheckOutcome:
     try:
         key, _ = _lookup_cell(view, check.address)
     except KeyError:
         return CheckOutcome(False, f"单元格不存在：{check.address}", [])
     number_format = view.number_formats.get(key, "")
-    passed = any(
-        token.casefold() in number_format.casefold() for token in check.contains_any
-    )
+    passed = any(token.casefold() in number_format.casefold() for token in check.contains_any)
     return CheckOutcome(
         passed,
         f"{key}: number_format={number_format!r} expected_any={check.contains_any!r}",
@@ -1819,9 +1690,7 @@ def _validator_status(
         actual: ValidationStatus = dimension.status
         label = check.dimension
     else:
-        found = next(
-            (item for item in dimension.checks if item.name == check.check_name), None
-        )
+        found = next((item for item in dimension.checks if item.name == check.check_name), None)
         if found is None:
             return CheckOutcome(
                 False,
@@ -1916,15 +1785,11 @@ def _gate(
         return False, [f"{type(error).__name__}: {error}"], None, None
     reasons: list[str] = []
     if report.artifact_type != item.artifact_type:
-        reasons.append(
-            f"artifact_type expected={item.artifact_type} actual={report.artifact_type}"
-        )
+        reasons.append(f"artifact_type expected={item.artifact_type} actual={report.artifact_type}")
     for name in item.gate.fail_on_dimensions:
         dimension = getattr(report, name)
         if dimension.status == "failed":
-            failed_checks = [
-                check.name for check in dimension.checks if check.status == "failed"
-            ]
+            failed_checks = [check.name for check in dimension.checks if check.status == "failed"]
             reasons.append(f"{name}=failed checks={failed_checks!r}")
     for name in item.gate.require_measured_dimensions:
         if getattr(report, name).status == "not_run":
@@ -1949,11 +1814,7 @@ def _review_index(
         if item is None:
             raise OfficeContentSuiteError(f"复核引用未知 item：{annotation.item_id}")
         criterion = next(
-            (
-                value
-                for value in item.review_criteria
-                if value.id == annotation.criterion_id
-            ),
+            (value for value in item.review_criteria if value.id == annotation.criterion_id),
             None,
         )
         if criterion is None:
@@ -2056,9 +1917,7 @@ def _score_item(
                     "evidence": outcome.evidence,
                 }
             )
-    automatic_score = (
-        round(max(0.0, raw_automatic - penalty_points), 2) if gate_passed else 0.0
-    )
+    automatic_score = round(max(0.0, raw_automatic - penalty_points), 2) if gate_passed else 0.0
     automatic_pass = bool(
         gate_passed
         and automatic_score >= item.pass_threshold
@@ -2090,18 +1949,10 @@ def _score_item(
                 "max_score": criterion.max_score,
                 "minimum_score": criterion.minimum_score,
                 "status": "stale" if stale else "scored" if annotation else "pending",
-                "score": annotation.score
-                if annotation is not None and not stale
-                else None,
-                "evidence": annotation.evidence
-                if annotation is not None and not stale
-                else None,
-                "reviewer": annotation.reviewer
-                if annotation is not None and not stale
-                else None,
-                "source": annotation.source
-                if annotation is not None and not stale
-                else None,
+                "score": annotation.score if annotation is not None and not stale else None,
+                "evidence": annotation.evidence if annotation is not None and not stale else None,
+                "reviewer": annotation.reviewer if annotation is not None and not stale else None,
+                "source": annotation.source if annotation is not None and not stale else None,
                 "model_provenance": (
                     {
                         "provider": annotation.provider,
@@ -2113,9 +1964,7 @@ def _score_item(
                         "calibration_status": annotation.calibration_status,
                         "render_mode": annotation.render_mode,
                     }
-                    if annotation is not None
-                    and not stale
-                    and annotation.source == "model"
+                    if annotation is not None and not stale and annotation.source == "model"
                     else None
                 ),
             }
@@ -2123,9 +1972,7 @@ def _score_item(
     review_complete = bool(review_results) and all(
         result["status"] == "scored" for result in review_results
     )
-    review_score = (
-        round(100.0 * review_earned / review_total, 2) if review_complete else None
-    )
+    review_score = round(100.0 * review_earned / review_total, 2) if review_complete else None
     review_dimension_scores: dict[str, float] | None = (
         {
             name: round(
@@ -2156,13 +2003,10 @@ def _score_item(
         if review_complete
         else []
     )
-    review_eligible_for_benchmark = (
-        not review_eligibility_failures if review_complete else None
-    )
+    review_eligible_for_benchmark = not review_eligibility_failures if review_complete else None
     final_score = (
         round(
-            suite.automatic_weight * automatic_score
-            + suite.review_weight * float(review_score),
+            suite.automatic_weight * automatic_score + suite.review_weight * float(review_score),
             2,
         )
         if review_score is not None
@@ -2178,9 +2022,7 @@ def _score_item(
         if engineering_pass is not None and review_eligible_for_benchmark is not None
         else None
     )
-    validation_payload = (
-        validation.model_dump(mode="json") if validation is not None else None
-    )
+    validation_payload = validation.model_dump(mode="json") if validation is not None else None
     result = {
         "id": item.id,
         "split": item.split,
@@ -2210,9 +2052,7 @@ def _score_item(
         "review_dimension_scores": review_dimension_scores,
         "review_failures": review_failures,
         "review_pass": review_pass,
-        "review_sources": sorted(
-            {annotation.source for annotation in review_annotations}
-        ),
+        "review_sources": sorted({annotation.source for annotation in review_annotations}),
         "review_eligibility_failures": review_eligibility_failures,
         "review_eligible_for_benchmark": review_eligible_for_benchmark,
         "final_score": final_score,
@@ -2302,8 +2142,7 @@ def prepare_suite(
             "required_output": f"submission/{item.output_file}",
         }
         (case_root / "task.json").write_text(
-            json.dumps(task_payload, ensure_ascii=False, indent=2, sort_keys=True)
-            + "\n",
+            json.dumps(task_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         (case_root / "TASK.md").write_text(
@@ -2343,11 +2182,7 @@ def _group_summary(
                 bool(item["automatic_pass"]) for item in results if item[key] == name
             ),
             "mean_automatic_score": round(
-                sum(
-                    float(item["automatic_score"])
-                    for item in results
-                    if item[key] == name
-                )
+                sum(float(item["automatic_score"]) for item in results if item[key] == name)
                 / count,
                 2,
             ),
@@ -2384,9 +2219,7 @@ def evaluate_suite(
     adjudicated = [item for item in results if item["review_complete"]]
     review_passes = sum(item["review_pass"] is True for item in adjudicated)
     engineering_passes = sum(item["engineering_pass"] is True for item in adjudicated)
-    benchmark_eligible = sum(
-        item["review_eligible_for_benchmark"] is True for item in adjudicated
-    )
+    benchmark_eligible = sum(item["review_eligible_for_benchmark"] is True for item in adjudicated)
     benchmark_passes = sum(bool(item["benchmark_pass"]) for item in adjudicated)
     summary = {
         "items": len(results),
@@ -2401,8 +2234,7 @@ def evaluate_suite(
         else 0.0,
         "mean_dimension_scores": {
             dimension: round(
-                sum(float(item["dimension_scores"][dimension]) for item in results)
-                / len(results),
+                sum(float(item["dimension_scores"][dimension]) for item in results) / len(results),
                 2,
             )
             if results
@@ -2414,19 +2246,14 @@ def evaluate_suite(
         "review_passed": review_passes,
         "review_pass_rate": review_passes / len(adjudicated) if adjudicated else None,
         "engineering_passed": engineering_passes,
-        "engineering_pass_rate": engineering_passes / len(adjudicated)
-        if adjudicated
-        else None,
+        "engineering_pass_rate": engineering_passes / len(adjudicated) if adjudicated else None,
         "benchmark_eligible_items": benchmark_eligible,
         "benchmark_eligibility_rate": benchmark_eligible / len(adjudicated)
         if adjudicated
         else None,
         "mean_review_dimension_scores": {
             dimension: round(
-                sum(
-                    float(item["review_dimension_scores"][dimension])
-                    for item in adjudicated
-                )
+                sum(float(item["review_dimension_scores"][dimension]) for item in adjudicated)
                 / len(adjudicated),
                 2,
             )
@@ -2441,9 +2268,7 @@ def evaluate_suite(
         if adjudicated
         else None,
         "benchmark_passed": benchmark_passes,
-        "benchmark_pass_rate": benchmark_passes / len(adjudicated)
-        if adjudicated
-        else None,
+        "benchmark_pass_rate": benchmark_passes / len(adjudicated) if adjudicated else None,
         "by_format": _group_summary(results, "artifact_type"),
         "by_task_type": _group_summary(results, "task_type"),
         "by_difficulty": _group_summary(results, "difficulty"),
@@ -2499,20 +2324,14 @@ def _main(argv: list[str] | None = None) -> int:
         help="发布门禁：所有选中任务必须完成当前文件哈希绑定的复核并通过最低分",
     )
     for command_parser in (prepare_parser, score_parser):
-        command_parser.add_argument(
-            "--split", choices=("dev", "test", "all"), default="dev"
-        )
+        command_parser.add_argument("--split", choices=("dev", "test", "all"), default="dev")
         command_parser.add_argument("--include-test", action="store_true")
         command_parser.add_argument("--test-access-note")
     args = parser.parse_args(argv)
     try:
         suite = load_suite(args.suite)
         if args.command == "validate":
-            print(
-                json.dumps(
-                    suite_summary(suite), ensure_ascii=False, indent=2, sort_keys=True
-                )
-            )
+            print(json.dumps(suite_summary(suite), ensure_ascii=False, indent=2, sort_keys=True))
             return 0
         common = {
             "split": args.split,
@@ -2551,9 +2370,7 @@ def _main(argv: list[str] | None = None) -> int:
             and report["summary"]["benchmark_passed"] == report["summary"]["items"]
             else 1
         )
-    return (
-        0 if report["summary"]["automatic_passed"] == report["summary"]["items"] else 1
-    )
+    return 0 if report["summary"]["automatic_passed"] == report["summary"]["items"] else 1
 
 
 if __name__ == "__main__":  # pragma: no cover

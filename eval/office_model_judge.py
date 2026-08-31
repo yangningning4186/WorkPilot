@@ -111,9 +111,7 @@ class RenderedArtifact:
     warnings: tuple[str, ...] = ()
 
 
-ArtifactRenderer = Callable[
-    [OfficeContentItem, Path, Path, int], Awaitable[RenderedArtifact]
-]
+ArtifactRenderer = Callable[[OfficeContentItem, Path, Path, int], Awaitable[RenderedArtifact]]
 
 
 def prompt_fingerprint() -> str:
@@ -223,17 +221,13 @@ def parse_model_response(
     if not isinstance(rows, list) or len(rows) != len(item.review_criteria):
         raise ValueError("reviews 数量必须与 criteria 完全一致")
     parsed: list[tuple[str, int, str]] = []
-    for index, (row, criterion) in enumerate(
-        zip(rows, item.review_criteria, strict=True), start=1
-    ):
+    for index, (row, criterion) in enumerate(zip(rows, item.review_criteria, strict=True), start=1):
         if not isinstance(row, dict) or list(row) != [
             "criterion_id",
             "score",
             "evidence",
         ]:
-            raise ValueError(
-                f"第 {index} 条 review 字段必须按 criterion_id、score、evidence 排列"
-            )
+            raise ValueError(f"第 {index} 条 review 字段必须按 criterion_id、score、evidence 排列")
         criterion_id = row["criterion_id"]
         score = row["score"]
         evidence = row["evidence"]
@@ -377,7 +371,7 @@ def _xlsx_structural_html(source: Path) -> str:
                 rows.append(f"<tr>{cells}</tr>")
             sheets.append(
                 f'<section class="sheet"><h1>{html.escape(worksheet.title)}</h1>'
-                f'<table>{"".join(rows)}</table></section>'
+                f"<table>{''.join(rows)}</table></section>"
             )
         return _html_shell("Excel 结构化预览", "".join(sheets), landscape=True)
     finally:
@@ -387,8 +381,8 @@ def _xlsx_structural_html(source: Path) -> str:
 def _html_shell(title: str, body: str, *, landscape: bool) -> str:
     page_size = "A4 landscape" if landscape else "A4"
     return (
-        "<!doctype html><html><head><meta charset=\"utf-8\">"
-        "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; "
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; '
         "style-src 'unsafe-inline'\">"
         f"<title>{html.escape(title)}</title><style>@page{{size:{page_size};margin:14mm}}"
         "*{box-sizing:border-box}body{font:12px system-ui,-apple-system,sans-serif;color:#17211d;"
@@ -397,9 +391,7 @@ def _html_shell(title: str, body: str, *, landscape: bool) -> str:
         "width:100%;margin:10px 0 18px;page-break-inside:auto}tr{page-break-inside:avoid}"
         "td{border:1px solid #bdc8c2;padding:5px 7px;vertical-align:top;overflow-wrap:anywhere}"
         "tr:first-child td{background:#e8efeb;font-weight:700}.sheet{page-break-after:always}"
-        ".sheet:last-child{page-break-after:auto}</style></head><body>"
-        + body
-        + "</body></html>"
+        ".sheet:last-child{page-break-after:auto}</style></head><body>" + body + "</body></html>"
     )
 
 
@@ -584,19 +576,13 @@ async def run_model_reviews(
                 else ""
             )
             system_content = SYSTEM_PROMPT + repair_instruction
-            estimated_input_tokens = (
-                len(system_content) + len(prompt) + 2_048 * len(attachments)
-            )
+            estimated_input_tokens = len(system_content) + len(prompt) + 2_048 * len(attachments)
             if (
-                input_tokens
-                + output_tokens
-                + estimated_input_tokens
-                + JUDGE_MAX_OUTPUT_TOKENS
+                input_tokens + output_tokens + estimated_input_tokens + JUDGE_MAX_OUTPUT_TOKENS
                 > max_total_tokens
             ):
                 raise OfficeModelJudgeError(
-                    f"发送 {item.id} 前的保守 token 预留将超过 "
-                    f"max_total_tokens={max_total_tokens}"
+                    f"发送 {item.id} 前的保守 token 预留将超过 max_total_tokens={max_total_tokens}"
                 )
             try:
                 calls += 1
@@ -639,9 +625,7 @@ async def run_model_reviews(
                     )
                 if result.stop_reason != "stop":
                     raise ValueError(f"Judge stop_reason={result.stop_reason!r}，响应不完整")
-                parsed = parse_model_response(
-                    str(result.text), item, render_mode=rendered.mode
-                )
+                parsed = parse_model_response(str(result.text), item, render_mode=rendered.mode)
                 repair_retries += attempt
                 break
             except OfficeModelJudgeError:
@@ -699,9 +683,7 @@ async def run_model_reviews(
         )
 
     if len(actual_identities) > 1:
-        raise OfficeModelJudgeError(
-            f"模型复核混入多个实际模型身份：{sorted(actual_identities)}"
-        )
+        raise OfficeModelJudgeError(f"模型复核混入多个实际模型身份：{sorted(actual_identities)}")
     reviews = ReviewFile(schema_version=REVIEW_SCHEMA_VERSION, reviews=annotations)
     run = {
         "schema_version": MODEL_REVIEW_RUN_SCHEMA_VERSION,

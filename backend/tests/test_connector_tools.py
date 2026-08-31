@@ -362,26 +362,32 @@ def test_feishu_calendar_and_base_are_first_class_catalog_capabilities() -> None
     assert "属于高级 fallback" in instructions
 
     account_id = str(uuid4())
-    assert registry.human_only_approval_reason(
-        "feishu_calendar_event_action",
-        {
-            "account_id": account_id,
-            "action": "delete",
-            "calendar_id": "primary",
-            "event_id": "event_1",
-            "event": {},
-        },
-    ) is not None
-    assert registry.human_only_approval_reason(
-        "feishu_calendar_event_action",
-        {
-            "account_id": account_id,
-            "action": "update",
-            "calendar_id": "primary",
-            "event_id": "event_1",
-            "event": {"summary": "新标题"},
-        },
-    ) is None
+    assert (
+        registry.human_only_approval_reason(
+            "feishu_calendar_event_action",
+            {
+                "account_id": account_id,
+                "action": "delete",
+                "calendar_id": "primary",
+                "event_id": "event_1",
+                "event": {},
+            },
+        )
+        is not None
+    )
+    assert (
+        registry.human_only_approval_reason(
+            "feishu_calendar_event_action",
+            {
+                "account_id": account_id,
+                "action": "update",
+                "calendar_id": "primary",
+                "event_id": "event_1",
+                "event": {"summary": "新标题"},
+            },
+        )
+        is None
+    )
 
 
 def test_connected_accounts_control_connector_surface(tmp_path: Path) -> None:

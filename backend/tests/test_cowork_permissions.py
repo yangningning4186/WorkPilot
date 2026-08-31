@@ -500,9 +500,7 @@ async def test_offline_html_preview_is_bound_to_registered_sha256(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",
     ) as client:
-        safe_response = await client.get(
-            f"/api/v1/cowork/artifacts/{artifact.id}/preview"
-        )
+        safe_response = await client.get(f"/api/v1/cowork/artifacts/{artifact.id}/preview")
         path.write_text(
             "<script>window.top.location='https://evil.example'</script>",
             encoding="utf-8",
@@ -511,7 +509,7 @@ async def test_offline_html_preview_is_bound_to_registered_sha256(
 
     assert safe_response.status_code == 200
     assert safe_response.headers["x-workpilot-preview-mode"] == "offline-html"
-    assert "http-equiv=\"Content-Security-Policy\"" in safe_response.text
+    assert 'http-equiv="Content-Security-Policy"' in safe_response.text
     assert "default-src 'none'" in safe_response.text
     assert "已验证" in safe_response.text
     assert response.status_code == 200

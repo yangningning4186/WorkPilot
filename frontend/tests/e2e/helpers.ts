@@ -99,7 +99,9 @@ export const ADMIN_PASSWORD = "demo-admin-pw";
  * 绕过 UI 注入等于把这个入口本身排除在验收之外。
  */
 export async function loginAsAdmin(page: Page): Promise<void> {
+  const session = page.locator(".admin-session");
   const badge = page.locator(".admin-badge");
+  await expect(session).not.toHaveAttribute("data-auth-state", "unknown");
   if (await badge.isVisible()) return;
   await page.getByRole("button", { name: "owner 登录" }).click();
   await page.getByLabel("owner 口令").fill(ADMIN_PASSWORD);

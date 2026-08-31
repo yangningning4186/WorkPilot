@@ -68,12 +68,10 @@ class ArtifactEvalItem(_StrictModel):
     artifact_type: Literal["docx", "html", "pdf", "pptx", "xlsx"]
     category: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,79}$")
     expected_stage: ExpectedStage = "passed"
-    expected_detail_contains: str | None = Field(
-        default=None, min_length=1, max_length=200
-    )
+    expected_detail_contains: str | None = Field(default=None, min_length=1, max_length=200)
     min_quality_score: int = Field(default=0, ge=0, le=100)
-    required_checks: dict[str, Literal["passed", "warning", "failed", "not_run"]] = (
-        Field(default_factory=dict)
+    required_checks: dict[str, Literal["passed", "warning", "failed", "not_run"]] = Field(
+        default_factory=dict
     )
     fixtures: list[FixtureSpec] = Field(default_factory=list, max_length=20)
     spec: dict[str, Any]
@@ -132,9 +130,7 @@ class PublicBenchmarkLicense(_StrictModel):
 class PublicBenchmark(_StrictModel):
     id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,119}$")
     name: str = Field(min_length=1, max_length=200)
-    artifact_types: list[Literal["docx", "pptx", "xlsx", "pdf", "html"]] = Field(
-        min_length=1
-    )
+    artifact_types: list[Literal["docx", "pptx", "xlsx", "pdf", "html"]] = Field(min_length=1)
     task_types: list[
         Literal["generation", "editing", "comprehension", "workflow", "evaluation"]
     ] = Field(min_length=1)
@@ -170,9 +166,7 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 def load_suite(path: Path = DEFAULT_SUITE) -> ArtifactEvalSuite:
     try:
-        payload = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
-        )
+        payload = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
         return ArtifactEvalSuite.model_validate(payload)
     except (
         OSError,
@@ -187,9 +181,7 @@ def load_public_registry(
     path: Path = DEFAULT_PUBLIC_REGISTRY,
 ) -> PublicBenchmarkRegistry:
     try:
-        payload = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
-        )
+        payload = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
         return PublicBenchmarkRegistry.model_validate(payload)
     except (
         OSError,
@@ -197,9 +189,7 @@ def load_public_registry(
         json.JSONDecodeError,
         ValidationError,
     ) as error:
-        raise ArtifactSuiteError(
-            f"公开 Artifact benchmark catalog 无效：{error}"
-        ) from error
+        raise ArtifactSuiteError(f"公开 Artifact benchmark catalog 无效：{error}") from error
 
 
 def suite_summary(suite: ArtifactEvalSuite) -> dict[str, object]:
@@ -210,12 +200,8 @@ def suite_summary(suite: ArtifactEvalSuite) -> dict[str, object]:
         "review_status": suite.review_status,
         "items": len(suite.items),
         "splits": dict(sorted(Counter(item.split for item in suite.items).items())),
-        "formats": dict(
-            sorted(Counter(item.artifact_type for item in suite.items).items())
-        ),
-        "categories": dict(
-            sorted(Counter(item.category for item in suite.items).items())
-        ),
+        "formats": dict(sorted(Counter(item.artifact_type for item in suite.items).items())),
+        "categories": dict(sorted(Counter(item.category for item in suite.items).items())),
         "expected_stages": dict(
             sorted(Counter(item.expected_stage for item in suite.items).items())
         ),
@@ -230,15 +216,11 @@ def _resolve_fixtures(value: object, fixture_paths: dict[str, Path]) -> object:
         try:
             return str(fixture_paths[match.group(1)])
         except KeyError as error:
-            raise ArtifactSuiteError(
-                f"引用了未声明 fixture：{match.group(1)}"
-            ) from error
+            raise ArtifactSuiteError(f"引用了未声明 fixture：{match.group(1)}") from error
     if isinstance(value, list):
         return [_resolve_fixtures(item, fixture_paths) for item in value]
     if isinstance(value, dict):
-        return {
-            key: _resolve_fixtures(item, fixture_paths) for key, item in value.items()
-        }
+        return {key: _resolve_fixtures(item, fixture_paths) for key, item in value.items()}
     return value
 
 
@@ -292,11 +274,7 @@ def _run_item(item: ArtifactEvalItem, output_root: Path) -> dict[str, object]:
             else:
                 metrics = scored.public()
                 actual_stage = "passed" if report.deliverable else "validation"
-                detail = (
-                    "deliverable"
-                    if report.deliverable
-                    else _failed_report_detail(report)
-                )
+                detail = "deliverable" if report.deliverable else _failed_report_detail(report)
 
     stage_matches = actual_stage == item.expected_stage
     detail_matches = (
@@ -308,9 +286,7 @@ def _run_item(item: ArtifactEvalItem, output_root: Path) -> dict[str, object]:
     for name, expected in item.required_checks.items():
         actual = check_statuses.get(name)
         if actual != expected:
-            check_failures.append(
-                f"{name}: expected={expected}, actual={actual or '<missing>'}"
-            )
+            check_failures.append(f"{name}: expected={expected}, actual={actual or '<missing>'}")
     quality_matches = report is None or report.quality.score >= item.min_quality_score
     passed = stage_matches and detail_matches and not check_failures and quality_matches
     return {
@@ -337,9 +313,7 @@ def run_suite(suite: ArtifactEvalSuite, output_root: Path) -> dict[str, object]:
     results = [_run_item(item, output_root) for item in suite.items]
     passed = sum(bool(result["passed"]) for result in results)
     format_totals = Counter(str(result["artifact_type"]) for result in results)
-    format_passes = Counter(
-        str(result["artifact_type"]) for result in results if result["passed"]
-    )
+    format_passes = Counter(str(result["artifact_type"]) for result in results if result["passed"])
     payload: dict[str, object] = {
         "schema_version": 1,
         "suite": suite_summary(suite),
@@ -366,9 +340,7 @@ def run_suite(suite: ArtifactEvalSuite, output_root: Path) -> dict[str, object]:
 
 
 def _main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Validate or run a WorkPilot artifact eval suite"
-    )
+    parser = argparse.ArgumentParser(description="Validate or run a WorkPilot artifact eval suite")
     subparsers = parser.add_subparsers(dest="command", required=True)
     validate_parser = subparsers.add_parser("validate")
     validate_parser.add_argument("--suite", type=Path, default=DEFAULT_SUITE)
@@ -390,8 +362,7 @@ def _main(argv: list[str] | None = None) -> int:
                             for item in registry.benchmarks
                         ),
                         "license_review_required": sum(
-                            item.license.status == "review_required"
-                            for item in registry.benchmarks
+                            item.license.status == "review_required" for item in registry.benchmarks
                         ),
                     },
                     ensure_ascii=False,
@@ -402,11 +373,7 @@ def _main(argv: list[str] | None = None) -> int:
             return 0
         suite = load_suite(args.suite)
         if args.command == "validate":
-            print(
-                json.dumps(
-                    suite_summary(suite), ensure_ascii=False, indent=2, sort_keys=True
-                )
-            )
+            print(json.dumps(suite_summary(suite), ensure_ascii=False, indent=2, sort_keys=True))
             return 0
         report = run_suite(suite, args.output_dir)
     except ArtifactSuiteError as error:

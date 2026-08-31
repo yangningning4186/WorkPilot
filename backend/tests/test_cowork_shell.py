@@ -227,9 +227,7 @@ def test_native_sandbox_rejects_bare_python_entrypoint(
         "app.cowork.sandbox.shutil.which",
         lambda name: "/usr/bin/sandbox-exec" if name == "sandbox-exec" else None,
     )
-    directories = [
-        tmp_path / name for name in ("inputs", "work", "outputs", "tmp", "runtime/bin")
-    ]
+    directories = [tmp_path / name for name in ("inputs", "work", "outputs", "tmp", "runtime/bin")]
     for directory in directories:
         directory.mkdir(parents=True)
     arguments = dict(
@@ -348,9 +346,7 @@ async def test_shell_process_tree_memory_limit_stops_allocator(tmp_path: Path) -
 
     with pytest.raises(CoworkShellResourceLimitError, match="内存"):
         await execute_shell_command(
-            parse_shell_command(
-                f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
-            ),
+            parse_shell_command(f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"),
             cwd=tmp_path,
             cancel_event=None,
             timeout_s=10,

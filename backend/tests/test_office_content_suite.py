@@ -850,9 +850,7 @@ def _submission(root: Path, *, good: bool) -> Path:
     return path
 
 
-def _calibration_reviews(
-    sha256: str, *, score: int | dict[str, int]
-) -> ReviewFile:
+def _calibration_reviews(sha256: str, *, score: int | dict[str, int]) -> ReviewFile:
     return ReviewFile.model_validate(
         {
             "schema_version": "workpilot-office-content-reviews.v1",
@@ -861,9 +859,7 @@ def _calibration_reviews(
                     "item_id": "calibration-docx",
                     "criterion_id": criterion_id,
                     "artifact_sha256": sha256,
-                    "score": score[criterion_id]
-                    if isinstance(score, dict)
-                    else score,
+                    "score": score[criterion_id] if isinstance(score, dict) else score,
                     "evidence": evidence,
                     "reviewer": "calibration-reviewer",
                 }
@@ -1173,9 +1169,7 @@ async def _fake_office_renderer(
     output_root: Path,
     max_pages: int,
 ) -> RenderedArtifact:
-    return await asyncio.to_thread(
-        _fake_office_renderer_sync, item, source, output_root, max_pages
-    )
+    return await asyncio.to_thread(_fake_office_renderer_sync, item, source, output_root, max_pages)
 
 
 def test_model_judge_requires_explicit_artifact_send_authorization(
@@ -1231,9 +1225,7 @@ def test_model_judge_repairs_invalid_json_and_binds_visual_review_to_hash(
     assert {review.artifact_sha256 for review in reviews.reviews} == {
         hashlib.sha256(artifact.read_bytes()).hexdigest()
     }
-    assert {review.calibration_status for review in reviews.reviews} == {
-        "uncalibrated"
-    }
+    assert {review.calibration_status for review in reviews.reviews} == {"uncalibrated"}
     assert run["model_calls"] == 2
     assert run["repair_retries"] == 1
     assert len(str(run["implementation_fingerprint"])) == 64
@@ -1256,17 +1248,11 @@ def test_structural_fallback_cannot_claim_top_visual_score() -> None:
 
 def test_model_review_renderer_rasterizes_every_pptx_slide(tmp_path: Path) -> None:
     suite = load_suite(DEFAULT_SUITE)
-    item = next(
-        value
-        for value in suite.items
-        if value.id == "office-pptx-001-monthly-review"
-    )
+    item = next(value for value in suite.items if value.id == "office-pptx-001-monthly-review")
     source = tmp_path / item.output_file
     _save_seed_pptx(source)
 
-    rendered = asyncio.run(
-        render_artifact_for_review(item, source, tmp_path / "rendered", 12)
-    )
+    rendered = asyncio.run(render_artifact_for_review(item, source, tmp_path / "rendered", 12))
 
     assert rendered.mode == "native_pptx"
     assert len(rendered.pages) == 5

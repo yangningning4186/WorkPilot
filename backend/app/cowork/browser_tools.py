@@ -536,10 +536,16 @@ def _is_consequential_control(info: dict[str, Any]) -> bool:
         "保存",
     )
     looks_like_action = any(word in label for word in action_words)
-    safe_href = bool(raw_href) and raw_href != "#" and not raw_href.casefold().startswith(
-        "javascript:"
+    safe_href = (
+        bool(raw_href) and raw_href != "#" and not raw_href.casefold().startswith("javascript:")
     )
-    if tag == "a" and href and safe_href and not str(info.get("download", "")) and not looks_like_action:
+    if (
+        tag == "a"
+        and href
+        and safe_href
+        and not str(info.get("download", ""))
+        and not looks_like_action
+    ):
         return False
     if role == "link" and href and safe_href and not looks_like_action:
         return False
@@ -739,9 +745,7 @@ def register_browser_tools(
                 expected_url=args.expected_url,
                 expected_label=args.expected_label,
             )
-            await control.set_input_files(
-                str(authorization.target_path), timeout=15_000
-            )
+            await control.set_input_files(str(authorization.target_path), timeout=15_000)
         except PlaywrightError as error:
             raise CoworkToolError(f"上传文件失败，请确认目标是文件选择控件：{error}") from error
         _invalidate_controls(session)
